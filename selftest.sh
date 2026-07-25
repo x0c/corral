@@ -34,8 +34,9 @@ wait_for() {
   return 1
 }
 # 右栏键盘交互入口：列表聚焦时 Tab 沿焦点链进入内嵌面板（搜索→列表→右栏）。
-# 回车/直启只挂接画面、不抢焦点——要测键盘转发或 IME 光标，必须先进入右栏。
-# 自动化里用 Tab 比注入 SGR 单击更稳（tmux send-keys 的假鼠标偶发不触发 Textual 命中）。
+# 回车/直启本身已经自动把输入交给右栏；这个辅助函数用于「Ctrl+\ 回列表之后」
+# 再次进入右栏的场景。自动化里用 Tab 比注入 SGR 单击更稳（tmux send-keys 的
+# 假鼠标偶发不触发 Textual 命中）。
 focus_right_pane() {
   local target="${1:-tui}"
   tmux -L "$OUTER" send-keys -t "$target" Tab
@@ -109,14 +110,13 @@ wait_for "FAKE-CLAUDE --resume aaaa1111" 60
 sessions | grep -qx "pickup-claude-aaaa1111"
 ok "回车把会话托管进后台 tmux 并在右栏展示实时画面"
 
-# 回车只挂右栏画面，焦点仍在侧边栏。先点右栏再打字，验证键盘真实转发进
-# 托管会话（同时证明「点右栏才交互」这条焦点边界生效）。
-focus_right_pane tui
+# 回车 = 明确意图：输入应当已经在右栏，直接打字就该到达托管会话（不再需要先
+# 点一下右栏 / 按 Tab）。这一步同时验证自动聚焦生效和键盘真实转发。
 tmux -L "$OUTER" send-keys -t tui -l "smoke-input"
 tmux -L "$OUTER" send-keys -t tui Enter
 wait_for "ECHO: smoke-input" 40
 sleep 0.5
-ok "点右栏后键盘输入真实转发进托管会话"
+ok "回车后无需点鼠标，键盘输入直接转发进托管会话"
 
 # Ctrl+\ 回列表：Textual 原生区分 Ctrl+\ 与连续两次按 \，不再需要旧版的双反
 # 斜杠时间窗口消歧义。回列表后按 / 聚焦搜索框并输入项目名应能过滤列表（如果焦点
@@ -149,6 +149,15 @@ sleep 0.4
 wait_for "workB:" 20
 tmux -L "$OUTER" send-keys -t tui Down
 sleep 0.2
+
+# 输入蒙版：焦点在侧边栏时，实时格底条必须提示输入未接管；Tab 进右栏后提示换成出口。
+wait_for "当前输入不会进入这里" 20
+ok "焦点在侧边栏时，实时格底条提示输入未接管"
+focus_right_pane tui
+wait_for "回列表" 20
+ok "重新进入右栏后底条换成回列表出口提示"
+tmux -L "$OUTER" send-keys -t tui C-\\
+sleep 0.6
 
 # 关闭分栏：托管会话必须在后台 tmux 继续存活，不能被一并杀掉。
 tmux -L "$OUTER" send-keys -t tui c

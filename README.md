@@ -133,11 +133,13 @@ around when their content updates; only genuinely new sessions appear, always pr
   `Enter` opens them as a split (ended sessions show conversation preview; live/hosted sessions
   embed). `Esc` clears multi-select first. Plain click or arrow keys exit multi-select.
 - `Enter` resumes the selected session in the right-hand pane (or reconnects an already-hosted
-  live terminal there). Keyboard focus stays on the sidebar so browsing shortcuts keep working;
-  click the right pane when you want to type into the agent. Moving the selection alone never
-  starts an agent.
-- Click a session card to do the same thing as `Enter`; click the right pane to interact with it,
-  and click back on the left list to return keyboard control to browsing.
+  live terminal there) **and hands keyboard input to that pane** — start typing to the agent
+  right away, no click needed. Arrow-key browsing never steals focus (and never starts an agent),
+  so the list stays usable; `Ctrl-\` gives input back to it.
+- Click a session card to do the same thing as `Enter`; clicking a pane is an equivalent way to
+  take it over, and clicking back on the left list returns keyboard control to browsing.
+- When focus is on the sidebar, live panes are dimmed and their status bar says input is not
+  going there — so you never type into a pane that isn't listening.
 - While the right pane has focus, `Ctrl-\` returns keyboard focus to the list. Hosted sessions keep
   running in the background.
 - The wheel follows where the mouse is, independent of keyboard focus: over the right pane it
@@ -259,8 +261,9 @@ agent workflows.
 | `F12` | Save a local diagnostic screenshot under `~/.cache/pickup/screenshots/` |
 | `Esc` | Clear search / close dialog, or quit |
 
-Click the right pane to type into a hosted agent; `Ctrl-\` returns keyboard focus to the sidebar
-without ending the process. Mouse wheel over either pane works regardless of which side has focus.
+`Enter` (or a click) hands input to a hosted agent; `Ctrl-\` returns keyboard focus to the sidebar
+without ending the process. While a live pane has input, sidebar shortcuts step aside so the keys
+reach the agent. Mouse wheel over either pane works regardless of which side has focus.
 
 ## Cross-Runtime Handoff
 
