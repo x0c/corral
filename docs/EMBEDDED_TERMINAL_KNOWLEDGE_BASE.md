@@ -136,6 +136,7 @@ stateDiagram-v2
 1. 启动 pickup 时，外层终端仍未被 Textual 接管，`pickup.py` 探测 OSC 10 / OSC 11 应答。
 2. 创建“运行中(托管)”会话时，`host_session()` 用 pane 实际尺寸启动目标助手，并记录 tmux pane 标识。
 3. 对支持 `refresh-client -r` 的 tmux，立即保持控制通道并向该 pane 报告外层颜色。此操作只会让**后续**背景色查询得到正确应答。
+   - **背景色与前景色必须拆成两条独立命令报告，背景色先发**：tmux 只解析 `refresh -r` 参数里的**第一条** OSC 序列、其余整段丢弃，而探测函数返回的是「OSC 10 前景 + OSC 11 背景」拼接串——整串报告等于只注入了前景色，pane 背景停在 tmux 默认猜测（纯黑），助手一律判深色。拆分由 `theme._split_osc_report()` 负责，`report_theme()` 分两次发送。症状、逐条实测结论和可复现验证方式见 [维护指南](MAINTAINER_GUIDE.md)「托管 agent 自己的深浅色检测」条目下 2026-07-25 踩坑记录。
 4. `EmbedPane.on_mount()` 还会把外层背景 RGB 设置为自身底色；这是视觉底色，不等同于上一步让助手决定深浅主题的报告。
 5. 抓帧拿到 pane 光标后，`EmbedPane._update_app_cursor()` 将 pane 内局部坐标换算为屏幕绝对坐标，并显式显示真实光标。只移动隐藏光标不足以支持 IME。
 
@@ -214,6 +215,7 @@ stateDiagram-v2
 - **AI 易错点**【隐性依赖】CJK、emoji 与组合字符的宽度必须复用 Rich 的 cell 宽度规则；样式 span 使用 Python 字符下标而非终端列数，否则选择、截断或后续文本都会错位。
 - **AI 易错点**【隐性依赖】屏幕解析可能返回 Python `Cell` 列表，也可能返回原生加速器的 `ParsedRow`。逐行 diff、尺寸比较和局部刷新必须同时支持两种形态：前者宽度取列表长度，后者用 Rich 计算 `text` 的终端格宽；把 `ParsedRow` 当列表调用 `len(row)` 会让每一帧都在抓帧线程报错，右栏永久停在静态预览。回归：`test_sync_strips_accepts_native_parsed_rows`，真实链路由 `selftest.sh` 的实时画面断言覆盖。
 - **AI 易错点**【隐性依赖】内嵌画面默认背景应垫为启动时探得的外层 OSC 11 背景色；助手主题报告要在 `host_session()` 创建后尽早注入，并保持控制通道连接。已完成主题检测的助手不能被事后注入修正，只能重启或由用户手动设主题。
+- **AI 易错点**【禁止】把探测到的 OSC 应答原串整体交给 `refresh -r` -> 必须先按 OSC 10 / OSC 11 拆成两条独立命令、背景色先发（原因：tmux 只认参数里第一条序列，整串报告实际只注入前景色，助手会在浅色终端上全部误判为深色主题）。写这类回归测试时应答样例必须用探测函数的真实输出形态（前景在前 + 背景在后），只用单条 OSC 11 会绕开该缺陷。
 - **AI 易错点**【隐性依赖】IME 依赖 pane 内正确且可见的真实硬件光标。焦点、抓帧、尺寸变化均要更新 `App.cursor_position`；失焦、会话结束或内部光标隐藏时收起外层光标。
 - **AI 易错点**【禁止】把托管窗缩到极窄（低于 `MIN_HOST_WIDTH`×`MIN_HOST_HEIGHT`）-> 创建用 `normalize_host_size` 抬下限，后续缩放用 `should_resize_host` 过滤；过窄直接跳过（原因：助手会按当前列数硬换行写入 scrollback，恢复宽度后往上滚仍是窄条历史，无法自动还原）。
 - **AI 易错点**【禁止】`resize-window` 后立刻把每一帧 Cursor/Claude 重排中间态刷到右栏 -> 已有 live `_grid` 时必须 `_begin_resize_capture_hold`，连续稳定帧或超时后再一次跳到最新（原因：助手重排观感等同「疯狂滚动」数秒）。

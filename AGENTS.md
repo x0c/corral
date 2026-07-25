@@ -52,13 +52,13 @@
 
 - `README.md`：使用、修改、评审或扩展会话扫描、终端界面、标题生成、运行时适配和跨运行时接力
 - `docs/TERMINAL_UI_KNOWLEDGE_BASE.md`：终端界面、侧边栏筛选/新建会话、对话预览（含默认钉底滚动）、右侧多分屏顶栏、分屏组合记忆、高级操作弹窗、Footer 按键、多语言文案、截图验收；排查 SSH 下 TUI 颜色失真 / 真彩降级时也读
-- `docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md`：内嵌实时终端、右栏托管画面（最多三格）、控制通道池、抓帧与按键转发、焦点边界/结束会话、连接中卡死
+- `docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md`：内嵌实时终端、右栏托管画面（最多三格）、控制通道池、抓帧与按键转发、焦点边界/结束会话、连接中卡死；排查或修改**内嵌助手深浅色主题识别错误**（外层终端背景色探测与注入）也从这里进
 - `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`：会话扫描、对话预览数据、判活、扫描性能、各助手历史格式
 - `docs/PERFORMANCE_KNOWLEDGE_BASE.md`：启动、扫描、预览、终端渲染、派生缓存、原生加速、性能基准与预编译包
 - `docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md`：跨助手接力、高级操作、原生恢复、空白新建、启动计划与接力提示词
 - `docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md`：新增一种 AI 助手、补扫描/预览/恢复/接力/空白新建与注册验收
 - `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：事件日志、诊断、F12 截图观测、界面异常排查
-- `docs/MAINTAINER_GUIDE.md`：标题生成、会话保活、直启、Agent 只读接口、开源发布、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级）
+- `docs/MAINTAINER_GUIDE.md`：标题生成、会话保活、直启、Agent 只读接口、开源发布、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）
 - `docs/SKILL.md`：修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）；这是 Agent 侧唯一的使用文档，改命令行为必须同步这里
 - `PRIVACY.md`：修改、评审或排查历史文件读取、缓存写入、标题生成、跨运行时接力和开源隐私边界
 - `CONTRIBUTING.md`：修改开源贡献流程、验证命令、设计边界或 PR 要求
@@ -106,6 +106,8 @@ python3 -m compileall -q src/pickup tests
 python3 -m unittest discover -s tests -v
 ```
 
+全量单测约 560 项、**耗时 10 分钟量级**（含真实 tmux 与 Textual 集成用例），别按"几十秒跑完"预期设超时。机器负载高时，涉及真实 tmux 回显和 Textual Pilot 等待的用例（`ControlChannelIntegrationTests`、`MainScreenEmbedFlowTests` 等）会因 4s 级等待超时而假失败：**先把失败用例单独重跑一遍确认，再判定是否真回归**，不要直接当成自己改坏了去查。
+
 涉及界面时还要运行一次真实终端冒烟。标题后台生成会调用本机 agent CLI、消耗对应账号额度；只验证界面时，在临时目录把 `claude`、`codex` 指向本机 `true`，放到 `PATH` 最前面，再启动 `python3 -m pickup --limit 5`（或已安装的 `pickup --limit 5`），确认：
 
 - 底部 Textual `Footer` 显示 `a Advanced`（中文环境下为 `a 高级操作`；`ui/main_screen.py` 的 `MainScreen.BINDINGS`，不再是 curses 手绘的底部帮助行）。
@@ -124,7 +126,7 @@ python3 docs/screenshots/capture.py   # → docs/screenshots/list.png
 
 然后用读图工具打开 `docs/screenshots/list.png`（以及必要时其它新截图）检查：左栏搜索框与卡片、右栏完整对话、Footer、有无截断错乱、错误文案（如残留「最近提问」、空白右栏、运行时名缺失、标题整行转圈）；图中应有 runtime 真彩（如 Claude `#D97757`），且无 Rich 假 macOS 标题栏/三色点。**若整图灰阶**：先查环境是否带了 `NO_COLOR`——Textual 会启用 Monochrome；`capture.py` 已在创建 App 前清除该变量，不要绕过脚本另跑导出。配色也可用真机 TUI 或 `SessionCard.render_line` 的 segment style 交叉验收。中文若成豆腐块，多半是截图环境缺 CJK 字体——本机（`root@10.10.10.2` / suzhou）需有 `fonts-noto-cjk`（`Noto Sans Mono CJK SC`）；`capture.py` 已按该字体族改写 SVG。属出图环境问题，不要当成产品回归。README 若仍引用旧「全屏预览」图，界面语义变了必须同步换图与说明。截图使用虚构演示数据，禁止把真实用户会话内容写进仓库。
 
-**改动 `keepalive`、入口层保活接线、`embed`/`ui/embed_pane` 内嵌面板、或 `pickup claude`/`pickup codex` 直启子命令时，除单测外必须额外跑一次真实 tmux 冒烟**：内嵌面板与界面交互（控制通道、滚轮转发、copy-mode、光标、主题注入、「连接中…」回归；界面层已从 curses 换成 Textual，鼠标拖拽选词这版暂未实现，见 `docs/MAINTAINER_GUIDE.md`「内嵌面板」节）的统一入口是仓库根的端到端脚本——直接跑 `bash selftest.sh`（约 90 秒，独立 tmux socket + 隔离 fake HOME，只创建/清理自己名下的 `pickup-claude-aaaa1111/bbbb2222` 会话，不碰其他保活会话），全部断言全绿才算过。用 `python3 -c "from pickup import keepalive; from pickup.models import LaunchPlan; print(keepalive.wrap_plan(LaunchPlan(('sleep','300'),None),'claude','smoketest'))"` 拿到真实 argv 后执行（加 `-d` 变成后台创建，不实际 attach），确认 `tmux -L pickup-keepalive list-sessions` 能看到会话、`keepalive.annotate()` 能靠 pid 匹配上、`keepalive.reap_idle(now=<未来时间戳>)` 能正确回收、正常退出（跑一个立即结束的命令如 `true`）后会话不留残留；测试用的 socket 用完后确认没有残留 `tmux -L pickup-keepalive` 进程（`ps aux | grep "[t]mux -L pickup-keepalive"` 应为空）。改完配置内容（`keepalive` 里的 `_TMUX_CONFIG` 常量）后，额外跑一次 `pip install --target <临时目录> .` 确认真实安装产物里 `src/pickup` 包完整。直启子命令额外验证：把 `claude`/`codex` 指向本机 `true`（或一个会 sleep 的 fake 脚本）放到 `PATH` 最前面，跑 `pickup --no-keepalive claude <参数>` 确认参数原样透传且垫上了危险参数、用户已带危险参数时不重复；默认路径（真实终端内跑 `pickup claude`）确认进入 TUI 侧边栏模式、新会话包进 `tmux -L pickup-keepalive` 并显示在右栏；非真实终端（管道）则确认退回 `tmux -L pickup-keepalive` 包装后的 execvp 全屏接管。**本机若已有其他真实保活会话在跑（`tmux -L pickup-keepalive list-sessions` 能看到非本次测试创建的 `pickup-*`/`sc-*` 会话），冒烟测试一律只操作自己新建的会话名，不得 `kill-session` 或以其他方式影响已存在的会话**——那些通常是该机器上真实在跑的 Agent 会话。
+**改动 `keepalive`、入口层保活接线、`embed`/`ui/embed_pane` 内嵌面板、或 `pickup claude`/`pickup codex` 直启子命令时，除单测外必须额外跑一次真实 tmux 冒烟**：内嵌面板与界面交互（控制通道、滚轮转发、copy-mode、光标、主题注入、「连接中…」回归；界面层已从 curses 换成 Textual，鼠标拖拽选词这版暂未实现，见 `docs/MAINTAINER_GUIDE.md`「内嵌面板」节）的统一入口是仓库根的端到端脚本——直接跑 `bash selftest.sh`（外层 TUI 跑在独立 tmux socket + 隔离 fake HOME；**但托管侧用的就是真实保活 socket `pickup-keepalive`**——除固定的 `pickup-claude-aaaa1111/bbbb2222` 外，直启与 cursor 两段还会以随机 ident 创建真实命名的会话，正常退出由 trap 清掉，**脚本中途崩溃则会残留**。收工前对照 `tmux -L pickup-keepalive list-sessions` 检查：pane 启动命令指向 `/tmp/pickup-selftest.*/fakebin/` 的才是本次残留的假夹具、可以清，其余一律不动），全部断言全绿才算过。用 `python3 -c "from pickup import keepalive; from pickup.models import LaunchPlan; print(keepalive.wrap_plan(LaunchPlan(('sleep','300'),None),'claude','smoketest'))"` 拿到真实 argv 后执行（加 `-d` 变成后台创建，不实际 attach），确认 `tmux -L pickup-keepalive list-sessions` 能看到会话、`keepalive.annotate()` 能靠 pid 匹配上、`keepalive.reap_idle(now=<未来时间戳>)` 能正确回收、正常退出（跑一个立即结束的命令如 `true`）后会话不留残留；测试用的 socket 用完后确认没有残留 `tmux -L pickup-keepalive` 进程（`ps aux | grep "[t]mux -L pickup-keepalive"` 应为空）。改完配置内容（`keepalive` 里的 `_TMUX_CONFIG` 常量）后，额外跑一次 `pip install --target <临时目录> .` 确认真实安装产物里 `src/pickup` 包完整。直启子命令额外验证：把 `claude`/`codex` 指向本机 `true`（或一个会 sleep 的 fake 脚本）放到 `PATH` 最前面，跑 `pickup --no-keepalive claude <参数>` 确认参数原样透传且垫上了危险参数、用户已带危险参数时不重复；默认路径（真实终端内跑 `pickup claude`）确认进入 TUI 侧边栏模式、新会话包进 `tmux -L pickup-keepalive` 并显示在右栏；非真实终端（管道）则确认退回 `tmux -L pickup-keepalive` 包装后的 execvp 全屏接管。**本机若已有其他真实保活会话在跑（`tmux -L pickup-keepalive list-sessions` 能看到非本次测试创建的 `pickup-*`/`sc-*` 会话），冒烟测试一律只操作自己新建的会话名，不得 `kill-session` 或以其他方式影响已存在的会话**——那些通常是该机器上真实在跑的 Agent 会话。
 
 **涉及会话扫描、标题或会话预览（`load_conversation`）时，改完必须至少随机抽查 5 条真实会话验证，不能只靠手写的单测小样例过关。** 优先用真实终端打开预览页肉眼检查内容，或写一次性脚本批量跑 `load_conversation`/`scan_sessions` 扫描本机全部真实会话文件、断言没有异常（如空文本、字面量 `"None"`、角色标错、时间戳缺失或非单调）。本机 Claude/Codex 历史里曾各自藏着单测样例覆盖不到的真实格式坑（`stop_reason` 与文本内容无关、`origin.kind` 区分真人和系统事件、`payload` 字段值可能是 JSON `null` 而不是缺失），这类坑只有跑真实数据才会暴露，见「Claude 扫描」节的具体记录。
 
