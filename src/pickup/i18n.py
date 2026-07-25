@@ -47,6 +47,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Ctrl+\\ back to list",
         "zh": "Ctrl+\\ 回列表",
     },
+    "pane.masked_hint": {
+        "en": "Not receiving input — press Enter or click here",
+        "zh": "当前输入不会进入这里 · 回车或点击接管",
+    },
     "action.quit": {
         "en": "Quit",
         "zh": "退出",

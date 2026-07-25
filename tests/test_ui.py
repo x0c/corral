@@ -1176,6 +1176,28 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             # 搜索框底边紧贴新建项顶边（搜索的末行间隔已含在 height: 2 内）
             self.assertEqual(items[0].region.y - search.region.bottom, 0)
 
+    async def test_ended_card_title_is_dimmed_to_80_percent(self) -> None:
+        """已结束会话标题吃卡片基础色：主题前景压到 8 成，不用满亮白字铺整栏。
+
+        进行中标题（显式成功绿）和运行时名（品牌色）自带颜色，不受这条影响。
+        """
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            card = next(iter(app.screen.query(SessionCard)))
+
+            self.assertAlmostEqual(card.styles.color.a, 0.8, places=2)
+            theme_fg = Color.parse(app.current_theme.foreground)
+            self.assertEqual(
+                (card.styles.color.r, card.styles.color.g, card.styles.color.b),
+                (theme_fg.r, theme_fg.g, theme_fg.b),
+                "基础色必须跟随主题前景，不能写死某个灰值",
+            )
+            # 与背景混合后真的比满亮前景暗
+            resolved = card.rich_style.color.triplet
+            self.assertLess(sum(resolved), theme_fg.r + theme_fg.g + theme_fg.b)
+
 
 class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_initial_selection_and_project_search_filter(self) -> None:
@@ -1622,8 +1644,40 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: "会话1" in _primary_embed_pane(app.screen).render().plain)
             self.assertNotIn("会话0", _primary_embed_pane(app.screen).render().plain)
 
-    async def test_enter_keeps_list_focus_until_pane_clicked(self) -> None:
-        """回车/点选只挂右栏画面，不把键盘焦点抢走；点右栏后才进入内嵌交互。"""
+    async def test_browsing_keeps_list_focus_enter_hands_input_to_pane(self) -> None:
+        """上下浏览不抢焦点；回车（明确意图）才把输入交给右栏，Ctrl+\\ 回列表。
+
+        浏览一抢焦点，列表就没法继续用了——所以自动聚焦只绑在「明确意图」上。
+        """
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+
+                await pilot.press("down")
+                await pilot.pause(delay=0.2)
+                self.assertTrue(list_view.has_focus, "浏览列表不得把焦点交给右栏")
+
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+                self.assertFalse(list_view.has_focus)
+                self.assertFalse(pane.input_masked, "持有输入的格不该压暗")
+
+                await pilot.press("ctrl+backslash")
+                await pilot.pause()
+                self.assertTrue(list_view.has_focus)
+                await _wait_until(lambda: pane.input_masked)
+
+    async def test_click_pane_focuses_embed(self) -> None:
+        """鼠标点右栏进入内嵌交互（自动聚焦之外的另一条路径）。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
         app = PickupApp(store, embed_ok=True)
@@ -1639,8 +1693,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+                await pilot.press("ctrl+backslash")
+                await pilot.pause()
                 self.assertTrue(list_view.has_focus)
-                self.assertFalse(pane.has_focus)
 
                 # 托管成功后列表重建仍可能排在下一帧；等 DOM 稳定并重新取当前 pane，
                 # 避免点击刚被替换掉的旧 Widget。
@@ -1856,8 +1912,9 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(selected.get("keepalive_name"), "pickup-cursor-handoff")
                 pane = await _wait_for_embed_pane(app.screen)
                 await _wait_until(lambda: pane.session_name == "pickup-cursor-handoff")
-                self.assertTrue(list_view.has_focus)
-                self.assertFalse(pane.has_focus)
+                # 接力托管成功 = 明确意图，输入直接落到新会话那一格
+                await _wait_until(lambda: pane.has_focus)
+                self.assertFalse(list_view.has_focus)
 
 
 class PaneCellHeaderSyncTests(unittest.TestCase):
@@ -1886,6 +1943,89 @@ class PaneCellHeaderSyncTests(unittest.TestCase):
         cell._sync_active_marker()  # noqa: SLF001 — 不得抛 NoMatches
         cell.set_title("new-title")
         self.assertEqual(cell._title, "new-title")  # noqa: SLF001
+
+
+class FooterActionGatingTests(unittest.TestCase):
+    """右栏实时终端持有输入时，列表侧快捷键必须整体让路。
+
+    这既决定 Footer 显示什么，也决定按键派不派发——preview_* 是优先级绑定，不
+    让路的话用户在助手里翻历史会被右栏预览滚动截胡。
+    """
+
+    def _screen(self, live: bool):
+        from pickup.ui.main_screen import MainScreen
+
+        store, _ = _make_store()
+        screen = MainScreen(store, embed_ok=True)
+        screen._live_embed_focused = lambda: live  # noqa: SLF001
+        screen._any_embed_focused = lambda: live  # noqa: SLF001
+        return screen
+
+    def test_list_actions_step_aside_when_live_pane_focused(self) -> None:
+        screen = self._screen(live=True)
+        for action in (
+            "handoff", "kill_keepalive", "delete_session", "close_pane",
+            "quit_app", "preview_home", "preview_page_up", "preview_page_down",
+        ):
+            with self.subTest(action=action):
+                self.assertIs(screen.check_action(action, ()), False)
+        self.assertTrue(screen.check_action("focus_list", ()))
+
+    def test_list_actions_available_when_sidebar_focused(self) -> None:
+        screen = self._screen(live=False)
+        for action in ("handoff", "kill_keepalive", "quit_app", "preview_page_up"):
+            with self.subTest(action=action):
+                self.assertTrue(screen.check_action(action, ()))
+        # 焦点已经在列表时不必展示"回列表"
+        self.assertFalse(screen.check_action("focus_list", ()))
+
+
+class InputMaskFilterTests(unittest.TestCase):
+    """输入蒙版：把整格画面拉向面板底色，任何颜色形态都不能算崩。"""
+
+    def _apply(self, style):
+        from rich.segment import Segment
+        from rich.terminal_theme import DEFAULT_TERMINAL_THEME
+        from textual.color import Color
+        from pickup.ui.embed_pane import _InputMaskFilter
+
+        f = _InputMaskFilter(DEFAULT_TERMINAL_THEME)
+        out = f.apply([Segment("x", style)], Color(0, 0, 0))
+        return out[0].style
+
+    def test_masks_ansi_default_and_truecolor(self) -> None:
+        from rich.color import Color as RichColor
+        from rich.style import Style
+
+        cases = [
+            None,  # 无样式（终端默认前景/背景）
+            Style(),  # 有样式但全默认
+            Style(color=RichColor.from_ansi(2), bgcolor=RichColor.from_ansi(4)),
+            Style(color=RichColor.from_rgb(255, 255, 255), bold=True),
+        ]
+        for style in cases:
+            with self.subTest(style=style):
+                masked = self._apply(style)
+                # 压暗后前景/背景都必须是可直接输出的真彩色，且被拉向黑色底
+                self.assertIsNotNone(masked.color)
+                self.assertIsNotNone(masked.bgcolor)
+                self.assertIsNotNone(masked.color.triplet)
+                self.assertIsNotNone(masked.bgcolor.triplet)
+
+    def test_mask_dims_white_text_toward_background(self) -> None:
+        from rich.color import Color as RichColor
+        from rich.style import Style
+
+        masked = self._apply(Style(color=RichColor.from_rgb(255, 255, 255)))
+        self.assertLess(masked.color.triplet.red, 255)
+        self.assertGreater(masked.color.triplet.red, 0)
+
+    def test_mask_keeps_text_attributes(self) -> None:
+        from rich.color import Color as RichColor
+        from rich.style import Style
+
+        masked = self._apply(Style(color=RichColor.from_rgb(255, 0, 0), bold=True))
+        self.assertTrue(masked.bold)
 
 
 @unittest.skipUnless(HAS_TMUX, "内嵌面板依赖真实 tmux")
@@ -1962,17 +2102,18 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("连接中", pane.render().plain)
             await _wait_for_pane_text(pane, "HELLO-UI-TEST")
             list_view = app.screen.query_one(SessionListView)
-            self.assertTrue(list_view.has_focus)
-            self.assertFalse(pane.has_focus)
+            # 回车 = 明确意图：输入直接交给右栏那一格，无需再点鼠标
+            await _wait_until(lambda: pane.has_focus)
+            self.assertFalse(list_view.has_focus)
             cell = app.screen.query_one(SplitPaneArea)._cells()[0]  # noqa: SLF001
             title = cell.query_one(".title")
             header = cell.query_one(".header")
             footer = cell.query_one(".footer")
-            self.assertFalse(header.has_class("-active"))
-            self.assertFalse(footer.has_class("-active"))
+            self.assertTrue(header.has_class("-active"))
+            self.assertTrue(footer.has_class("-active"))
             self.assertFalse(title.render().plain.startswith("● "))
 
-            # 点右栏后才聚焦内嵌会话；ctrl+backslash 回列表，'c' 关闭分栏
+            # 鼠标点右栏同样进入内嵌会话；ctrl+backslash 回列表，'c' 关闭分栏
             await pilot.click(pane)
             await pilot.pause()
             self.assertTrue(pane.has_focus)
@@ -2118,19 +2259,22 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             self._hosted_names.append(pane.session_name)
             await _wait_for_pane_text(pane, "CURSOR-TEST")
             list_view = app.screen.query_one(SessionListView)
-            self.assertTrue(list_view.has_focus)
-            self.assertFalse(pane._real_cursor_shown, "列表聚焦时不应显示内嵌真实光标")
-
-            # 回车只挂接画面、不抢焦点；用 Tab 进入右栏（与 selftest 一致）
-            await pilot.press("tab")
-            await pilot.pause()
-            self.assertTrue(pane.has_focus)
+            # 回车即把输入交给右栏，真实光标随之打开（IME 锚点）
+            await _wait_until(lambda: pane.has_focus)
             await _wait_until(lambda: pane._real_cursor_shown)
             self.assertTrue(pane._real_cursor_shown, "聚焦活会话时应显示外层真实光标")
 
             await pilot.press("ctrl+backslash")  # 焦点回列表
             await pilot.pause()
+            self.assertTrue(list_view.has_focus)
             self.assertFalse(pane._real_cursor_shown, "失焦后应收起外层真实光标")
+
+            # 回列表后实时画面压暗，提示此刻输入不会进到助手
+            await _wait_until(lambda: pane.input_masked)
+            await pilot.press("tab")  # Tab 也能进右栏（与 selftest 一致）
+            await pilot.pause()
+            self.assertTrue(pane.has_focus)
+            await _wait_until(lambda: not pane.input_masked)
 
     async def test_drag_select_mouseup_auto_copies_to_clipboard(self) -> None:
         """划词抬起后应自动经 OSC 52 复制，不必再按 Ctrl+C。

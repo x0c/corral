@@ -136,9 +136,15 @@ class _PaneFooter(Static):
     def __init__(self, **kwargs) -> None:
         super().__init__("", **kwargs)
 
-    def set_active(self, active: bool) -> None:
+    def set_state(self, active: bool, masked: bool) -> None:
+        """active=本格持有输入；masked=本格是实时会话但输入在别处。"""
         self.set_class(active, "-active")
-        self.update(t("pane.focus_hint") if active else "")
+        if active:
+            self.update(t("pane.focus_hint"))
+        elif masked:
+            self.update(t("pane.masked_hint"))
+        else:
+            self.update("")
 
 
 class PaneCell(Vertical):
@@ -174,6 +180,7 @@ class PaneCell(Vertical):
         osc_report: bytes | None,
         detail_renderer: Callable[[], Text | str] | None = None,
         on_pane_focused: Callable[[str], None] | None = None,
+        on_sync_mask: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -181,9 +188,11 @@ class PaneCell(Vertical):
         self._on_close = on_close
         self._on_focus_list = on_focus_list
         self._on_pane_focused = on_pane_focused
+        self._on_sync_mask = on_sync_mask
         self._osc_report = osc_report
         self._title = title
         self._detail_renderer = detail_renderer
+        self._input_masked = False
 
     def compose(self):
         yield _PaneHeader(self._title, self._on_close, classes="header")
@@ -206,6 +215,9 @@ class PaneCell(Vertical):
                 self.spec.keepalive_name,
                 self._detail_renderer,
             )
+            # 画面刚接上就要按当前焦点决定压不压暗，别等下一次焦点变化。
+            if self._on_sync_mask is not None:
+                self._on_sync_mask()
         elif self._detail_renderer is not None:
             pane.show_detail(self._detail_renderer)
 
@@ -246,6 +258,13 @@ class PaneCell(Vertical):
         if pane is not None:
             pane.focus()
 
+    def set_input_masked(self, masked: bool) -> None:
+        pane = self.embed_pane()
+        if pane is not None:
+            pane.input_masked = masked
+        self._input_masked = masked
+        self._sync_active_marker()
+
     def _on_descendant_focus(self, event: events.DescendantFocus) -> None:
         self.call_after_refresh(self._sync_active_marker)
         self.call_after_refresh(self._notify_pane_focused)
@@ -268,7 +287,7 @@ class PaneCell(Vertical):
             header.set_active(active)
         footer = self._pane_footer()
         if footer is not None:
-            footer.set_active(active)
+            footer.set_state(active, self._input_masked and not active)
 
 
 class SplitPaneArea(Vertical):
@@ -360,6 +379,27 @@ class SplitPaneArea(Vertical):
                 continue
             return bool(cell.spec.keepalive_name) and bool(pane.session_name) and not pane.dead
         return False
+
+    def sync_input_mask(self) -> None:
+        """焦点不在右栏时，把活着的实时终端整格压暗（输入无效的视觉提示）。
+
+        只看「右栏是否持有输入」这一件事：焦点在另一格时不压暗其余格——那时输入
+        是有效的，只是去了别的格，激活格自己的高亮条已经说明了这点。
+        """
+        try:
+            cells = self._cells()
+        except Exception:  # noqa: BLE001 分栏重建中间态查不到 #pane-row
+            return
+        area_has_input = self.any_embed_focused()
+        for cell in cells:
+            pane = cell.embed_pane()
+            live = (
+                pane is not None
+                and bool(cell.spec.keepalive_name)
+                and bool(pane.session_name)
+                and not pane.dead
+            )
+            cell.set_input_masked(live and not area_has_input)
 
     def update_terminal_background(self, osc_report: bytes) -> None:
         """保存新背景供后续分栏使用，并刷新所有已挂载面板。"""
@@ -581,6 +621,7 @@ class SplitPaneArea(Vertical):
 
     def _handle_pane_focused(self, session_key: str) -> None:
         self._focus_key = session_key
+        self.sync_input_mask()
         if self._on_pane_focused is not None:
             self._on_pane_focused(session_key)
 
@@ -648,6 +689,7 @@ class SplitPaneArea(Vertical):
             return
         if closing_had_focus:
             self.call_after_refresh(self._focus_after_close)
+        self.call_after_refresh(self.sync_input_mask)
 
     def _focus_after_close(self) -> None:
         """关掉持有输入的那格后：交给剩余的实时终端，都不行就退回列表。"""
@@ -698,6 +740,7 @@ class SplitPaneArea(Vertical):
                 on_close=lambda s=spec: self._close_spec(s),
                 on_focus_list=self._on_focus_list,
                 on_pane_focused=self._handle_pane_focused,
+                on_sync_mask=self.sync_input_mask,
                 osc_report=self._osc_report,
                 detail_renderer=renderer,
             )
@@ -709,3 +752,5 @@ class SplitPaneArea(Vertical):
             self.call_after_refresh(
                 lambda: self.focus_session_key(focus_key, only_live=only_live)
             )
+        # 首帧要么已经压暗、要么已经交出焦点，不能等下一次焦点事件才同步。
+        self.call_after_refresh(self.sync_input_mask)

@@ -981,6 +981,28 @@ class MainScreen(Screen):
     def _focus_list(self) -> None:
         self.query_one(SessionListView).focus()
 
+    def on_descendant_focus(self, event) -> None:
+        self._sync_input_mask()
+
+    def on_descendant_blur(self, event) -> None:
+        self._sync_input_mask()
+
+    def _sync_input_mask(self) -> None:
+        """焦点在侧边栏时把右栏实时画面压暗。
+
+        Textual 派发 Focus/Blur 时 `has_focus` 往往还没翻转（EmbedPane 的光标
+        同步踩过同一个坑），必须等这一轮刷新完再读，否则压暗状态整体慢一拍。
+        """
+        if not self.embed_ok:
+            return
+        self.call_after_refresh(self._sync_input_mask_now)
+
+    def _sync_input_mask_now(self) -> None:
+        try:
+            self._split_area().sync_input_mask()
+        except Exception:  # noqa: BLE001 分栏重建中间态查不到，下一轮焦点事件会再同步
+            return
+
     def _can_autofocus(self) -> bool:
         """自动把输入交给右栏的前置条件。
 

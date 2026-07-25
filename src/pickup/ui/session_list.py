@@ -61,6 +61,10 @@ class SessionCard(Widget):
     SessionCard {
         height: 3;
         width: 1fr;
+        /* 已结束会话的标题行不带自己的颜色，直接吃这里的基础色：满亮前景整栏
+           铺开太扎眼，压到 8 成（alpha 与当前背景混合，深浅色主题各自成立）。
+           进行中标题是显式绿、运行时名是品牌色，都不受影响。 */
+        color: $foreground 80%;
     }
     """
 

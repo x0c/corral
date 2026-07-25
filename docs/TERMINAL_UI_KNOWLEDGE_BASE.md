@@ -152,7 +152,7 @@ stateDiagram-v2
 | 首屏异步加载与后台刷新 | `ui/main_screen.py` | `_await_initial_load()`、`_background_refresh_worker()`、`_poll_cache()` | 等首次扫描、按退避间隔重扫、轮询标题缓存 |
 | 选中会话后决定右栏 | `ui/main_screen.py` | `_follow_current_selection()`、`_render_detail()`、`_warm_conversation()` | 非进行中显示完整对话；托管会话挂到右栏实时画面 |
 | 侧边栏筛选项目 | `ui/main_screen.py`、`ui/nav.py`、`pickup.py` | `on_input_changed()`、`NavState.project_query`、`_filter_sessions_by_query()` | 查询只有一份状态；按项目名、路径、标题进行大小写无关模糊匹配 |
-| 会话卡片、状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 三行：标题 / 运行时靠右 / 时间靠右；首行「项目名: 标题」整体同一样式（统一 bold，进行中叠成功绿），首行放不下时按显示宽度硬截断、不写省略号 |
+| 会话卡片、状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 三行：标题 / 运行时靠右 / 时间靠右；首行「项目名: 标题」整体同一样式（统一 bold；已结束吃卡片基础色 `$foreground 80%`，进行中叠成功绿），首行放不下时按显示宽度硬截断、不写省略号 |
 | 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`pick_project()`、`pick_runtime_for_new_session()`、`_on_runtime_pick()` | 侧边栏「＋ 新建」走项目→运行时；右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |
 | 删除会话（不可恢复） | `ui/main_screen.py`、`ui/modals.py`、`store.py`、`runtime/base.py` | `action_delete_session()`、`ConfirmModal(confirm_key="x")`、`SessionStore.remove_session()`、`BaseRuntime.delete_session()` | `ConfirmModal` 的确认键已参数化（结束会话仍是 `q`，删除会话是 `x`）；实际删除逻辑收敛在各运行时适配器，见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`/`docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md` 各存储形态的删除方式 |

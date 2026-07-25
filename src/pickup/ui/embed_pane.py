@@ -43,12 +43,15 @@ from __future__ import annotations
 
 import threading
 import time
+from functools import lru_cache
 from typing import Callable
 
 from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
+from rich.terminal_theme import DEFAULT_TERMINAL_THEME
 from rich.text import Text
+from textual.filter import LineFilter
 from textual import events, work
 from textual.dom import NoScreen
 from textual.geometry import Region
@@ -87,6 +90,64 @@ def _overlay_style(strip: Strip, style: Style) -> Strip:
     选中高亮；`style` 未设前景时（透明前景语义）仍保留原文字前景色。
     """
     return Strip(Segment.apply_style(list(strip), None, style), strip.cell_length)
+
+
+# 输入蒙版的压暗系数：0 = 完全化进背景（看不见），1 = 原样。前景比背景压得更狠，
+# 整格看起来像蒙了一层灰，但仍能看清助手在输出什么。
+_MASK_FG_FACTOR = 0.54
+_MASK_BG_FACTOR = 0.64
+
+
+@lru_cache(maxsize=4096)
+def _masked_style(style: Style | None, target: tuple[int, int, int], theme) -> Style:
+    """把单个片段的前景/背景按比例拉向面板底色。
+
+    ANSI 索引色和「终端默认色」都拿不到 RGB，必须先经 `get_truecolor` 用当前
+    ANSI 主题解析成真彩，再混色；这也是不能直接复用 Textual `DimFilter` 的原因
+    ——那个只改显式带 dim 属性的片段，托管画面里绝大多数字符压根没这个属性。
+    """
+    from rich.color import Color as RichColor
+
+    tr, tg, tb = target
+    if style is not None and style.bgcolor is not None:
+        bg = style.bgcolor.get_truecolor(theme, foreground=False)
+    else:
+        bg = None
+    if style is not None and style.color is not None:
+        fg = style.color.get_truecolor(theme, foreground=True)
+    else:
+        fg = None
+    if bg is None:
+        new_bg = (tr, tg, tb)
+    else:
+        new_bg = tuple(
+            round(t + (c - t) * _MASK_BG_FACTOR) for t, c in zip((tr, tg, tb), bg)
+        )
+    fg_src = fg if fg is not None else theme.foreground_color
+    new_fg = tuple(
+        round(b + (c - b) * _MASK_FG_FACTOR) for b, c in zip(new_bg, fg_src)
+    )
+    masked = Style(
+        color=RichColor.from_rgb(*new_fg),
+        bgcolor=RichColor.from_rgb(*new_bg),
+    )
+    return (style + masked) if style is not None else masked
+
+
+class _InputMaskFilter(LineFilter):
+    """整格压暗滤镜：焦点不在右栏时告诉用户「现在打字不会进到这里」。"""
+
+    def __init__(self, theme, *, enabled: bool = True) -> None:
+        super().__init__(enabled=enabled)
+        self.theme = theme
+
+    def apply(self, segments: list[Segment], background) -> list[Segment]:
+        target = background.rgb
+        theme = self.theme
+        return [
+            Segment(segment.text, _masked_style(segment.style, target, theme), None)
+            for segment in segments
+        ]
 
 
 def _row_cell_width(row) -> int:
@@ -144,6 +205,9 @@ class EmbedPane(Widget):
 
     session_name: reactive[str | None] = reactive(None)
     dead: reactive[bool] = reactive(False)
+    # 实时会话画面但键盘焦点不在右栏：整格压暗，提示此刻输入不会到达助手。
+    # 由 SplitPaneArea.sync_input_mask() 统一设置，本类只负责画。
+    input_masked: reactive[bool] = reactive(False)
     # 不能命名为 scroll_offset：这是 Textual Widget 的二维滚动属性，
     # 覆盖成整数会让框架的文本拖选计算变成 Offset + int。
     history_offset: reactive[int] = reactive(0)
@@ -206,6 +270,8 @@ class EmbedPane(Widget):
         self._resize_hold_deadline = 0.0
         self._resize_hold_last_text: str | None = None
         self._resize_hold_stable = 0
+        # (ansi 主题, 滤镜实例)：Strip 的滤镜缓存按滤镜对象身份命中，实例必须复用。
+        self._mask_filter_cache: tuple[object, _InputMaskFilter] | None = None
 
     # ---- 生命周期 ----
 
@@ -542,6 +608,7 @@ class EmbedPane(Widget):
         if not self._capture_is_current(generation, name):
             return
         self.dead = True
+        self.input_masked = False  # 已结束的画面不再压暗，否则像"还能输入只是没聚焦"
         self.invalidate_detail()
         self._update_app_cursor()  # 会话结束后没有可见光标，收起外层真实光标
 
@@ -560,6 +627,9 @@ class EmbedPane(Widget):
         # 宽度裁切或补空白，避免右缘残留旧画面字符（与整屏重绘防抖配合）。
         if strip.cell_length != width:
             strip = strip.adjust_cell_length(width)
+        if self.input_masked:
+            # 压暗放在选区之前：选中高亮保持原强度，用户仍能看清自己划了什么。
+            strip = strip.apply_filter(self._mask_filter(), self.background_colors[1])
         # 顺序很关键：必须**先**叠加选区高亮、**再** apply_offsets。
         # _apply_selection 会把行 crop 成「选区前 / 选区 / 选区后」三段，而
         # Strip.crop 拆分 Segment 时只是照抄原 Segment 的 offset 元数据、不重算
@@ -574,6 +644,14 @@ class EmbedPane(Widget):
         # 缺少 offset 元数据时拖选只能把整个 Widget 识别为全选，所以必须补上。
         strip = self._apply_selection(strip, y)
         return strip.apply_offsets(0, y)
+
+    def _mask_filter(self) -> _InputMaskFilter:
+        theme = getattr(self.app, "ansi_theme", None) or DEFAULT_TERMINAL_THEME
+        cached = self._mask_filter_cache
+        if cached is None or cached[0] is not theme:
+            cached = (theme, _InputMaskFilter(theme))
+            self._mask_filter_cache = cached
+        return cached[1]
 
     def _apply_selection(self, strip: Strip, y: int) -> Strip:
         """在基础 Strip 上动态叠加当前 Textual 文本选区，不污染行缓存。"""
