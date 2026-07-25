@@ -889,13 +889,22 @@ def report_theme(channel: ControlChannel, report: bytes) -> bool:
 
     只影响注入后发起查询的程序——已在运行的 agent 若启动时已完成检测，需重启
     进程或在其设置里手动固定主题。
+
+    背景色（OSC 11）与前景色（OSC 10）必须**分成两条 refresh 命令**发：tmux 只认
+    参数里的第一条 OSC 序列（见 theme._split_osc_report）。背景色先发——深/浅主题
+    检测只看它，pane 内 agent 随时可能在两条命令之间就发起查询。
     """
     if channel.pane_id is None:
         return False
-    text = report.decode("ascii", errors="ignore")
-    if not text:
-        return False
-    return channel.command("refresh", "-r", f"{channel.pane_id}:{text}")
+    from pickup import theme
+
+    background, foreground = theme._split_osc_report(report)
+    ok = False
+    for sequence in (background, foreground):  # 背景优先：抢在 agent 首次查询前落地
+        text = (sequence or b"").decode("ascii", errors="ignore")
+        if text and channel.command("refresh", "-r", f"{channel.pane_id}:{text}"):
+            ok = True
+    return ok
 
 
 # ---------------------------------------------------------------------------

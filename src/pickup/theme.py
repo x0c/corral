@@ -107,6 +107,25 @@ def _probe_osc_colours(timeout: float = 1.2) -> bytes | None:
     return b"".join(parts) or None
 
 
+def _split_osc_report(osc_report: bytes | None) -> tuple[bytes | None, bytes | None]:
+    """把探测到的应答原文拆成 (背景色应答, 前景色应答) 两条独立序列；缺哪条给 None。
+
+    **必须拆开**：tmux 的 `refresh-client -r <pane>:<应答>` 只解析参数里的**第一条**
+    OSC 序列，后面的整段丢弃（tmux next-3.7 实测）。而 `_probe_osc_colours` 返回的
+    是 `OSC 10 应答 + OSC 11 应答` 拼接串（先查前景后查背景），整串灌进去等于只注入
+    了前景色——背景色停在 tmux 的默认猜测（纯黑），pane 内 agent 一律判成深色主题。
+    浅色终端上前景恰好是黑色，症状最明显：pickup 自身正确切浅色，内嵌 agent 全是深色。
+    同类取最后一段，与 `_background_channels` 的取值规则保持一致（tmux passthrough
+    会带来重复应答，真实终端那份通常在后）。
+    """
+    if not osc_report:
+        return None, None
+    found: dict[bytes, bytes] = {}
+    for match in re.finditer(rb"\x1b\](10|11);[^\x07\x1b]+(?:\x07|\x1b\\)", osc_report):
+        found[match.group(1)] = match.group(0)
+    return found.get(b"11"), found.get(b"10")
+
+
 def _background_channels(osc_report: bytes | None) -> tuple[float, float, float] | None:
     """从 OSC 11（背景色）应答解析出终端真实背景色的 (r, g, b) 三通道（各 0~1）；解析不出返回 None。
 

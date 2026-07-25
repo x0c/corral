@@ -921,7 +921,10 @@ class ControlChannelIntegrationTests(unittest.TestCase):
         """注入 OSC 11 应答后，pane 内程序的背景色查询应拿到注入值而非超时。"""
         ch = embed.open_channel(self.SESSION)
         self.assertIsNotNone(ch.pane_id)
-        report = b"\x1b]11;rgb:abcd/1234/5678\x07"
+        # 必须用 _probe_osc_colours 的真实形态：OSC 10（前景）在前、OSC 11（背景）在后。
+        # 只测单条 OSC 11 会漏掉真机 bug——tmux 只认第一条序列，整串灌进去等于只注入
+        # 前景色，背景停在默认纯黑；浅色终端前景恰是黑色，agent 因此全判深色主题。
+        report = b"\x1b]10;rgb:0000/0000/0000\x07\x1b]11;rgb:abcd/1234/5678\x07"
         self.assertTrue(embed.report_theme(ch, report))
         probe = ("python3 -c 'import os,sys,termios,tty,select;"
                  "fd=sys.stdin.fileno();old=termios.tcgetattr(fd);tty.setraw(fd);"
@@ -979,7 +982,9 @@ class ControlChannelIntegrationTests(unittest.TestCase):
                 "time.sleep(60)"
             )
             plan = LaunchPlan(("python3", "-c", probe_script), None)
-            report = b"\x1b]11;rgb:abcd/1234/5678\x07"
+            # 同上：必须用真实形态（OSC 10 在前、OSC 11 在后），否则测不出 tmux
+            # 只认第一条序列导致的背景色注入失效
+            report = b"\x1b]10;rgb:0000/0000/0000\x07\x1b]11;rgb:abcd/1234/5678\x07"
             name = embed.host_session(plan, "themetest", "themetest-race", 80, 24,
                                       osc_report=report)
             self.addCleanup(lambda: subprocess.run(

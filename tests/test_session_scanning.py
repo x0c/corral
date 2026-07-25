@@ -2003,6 +2003,36 @@ class BackgroundLuminanceTests(unittest.TestCase):
 
     def test_missing_or_unparsable_report_returns_none(self) -> None:
         self.assertIsNone(pickup._background_is_light(None))
+
+
+class SplitOscReportTests(unittest.TestCase):
+    """探测应答拆分：注入托管 pane 前必须把 OSC 11 / OSC 10 拆成两条独立序列。
+
+    tmux 的 refresh-client -r 只解析第一条 OSC 序列，拼接串会让背景色注入整个失效
+    （真机：浅色终端下内嵌 agent 全部渲染成深色主题）。
+    """
+
+    def test_splits_combined_report(self) -> None:
+        combined = b"\x1b]10;rgb:0000/0000/0000\x07\x1b]11;rgb:ffff/ffff/ffff\x07"
+        background, foreground = pickup.theme._split_osc_report(combined)
+        self.assertEqual(background, b"\x1b]11;rgb:ffff/ffff/ffff\x07")
+        self.assertEqual(foreground, b"\x1b]10;rgb:0000/0000/0000\x07")
+
+    def test_keeps_last_duplicate_like_luminance_parsing(self) -> None:
+        # tmux passthrough 会带来重复应答，真实终端那份在后：与 _background_is_light
+        # 取 matches[-1] 的规则必须一致，否则界面与 pane 注入会各用一个颜色
+        duplicated = (b"\x1b]11;rgb:0000/0000/0000\x07"
+                      b"\x1b]11;rgb:ffff/ffff/ffff\x07")
+        background, _ = pickup.theme._split_osc_report(duplicated)
+        self.assertEqual(background, b"\x1b]11;rgb:ffff/ffff/ffff\x07")
+
+    def test_st_terminated_and_partial_reports(self) -> None:
+        background, foreground = pickup.theme._split_osc_report(
+            b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\")
+        self.assertEqual(background, b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\")
+        self.assertIsNone(foreground)
+        self.assertEqual(pickup.theme._split_osc_report(None), (None, None))
+        self.assertEqual(pickup.theme._split_osc_report(b"rubbish"), (None, None))
         self.assertIsNone(pickup._background_is_light(b""))
         self.assertIsNone(pickup._background_is_light(b"garbage"))
 
