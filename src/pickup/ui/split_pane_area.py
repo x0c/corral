@@ -110,7 +110,11 @@ class _PaneHeader(Horizontal):
 
 
 class _PaneFooter(Static):
-    """分栏底条：无文字，仅与标题栏同步高亮当前激活格。"""
+    """分栏底条：与标题栏同步高亮当前激活格；持有输入时提示怎么回列表。
+
+    自动聚焦上线后，用户可能在没点过右栏的情况下就发现按键都进了内嵌会话；出口
+    （`Ctrl+\\`）必须常驻可见，否则只能靠猜。非激活格保持无文字，避免多格时刷屏。
+    """
 
     ALLOW_SELECT = False
 
@@ -119,8 +123,10 @@ class _PaneFooter(Static):
         height: 1;
         width: 1fr;
         margin: 0;
-        padding: 0;
+        padding: 0 1;
+        color: auto 70%;
         background: $surface;
+        text-overflow: ellipsis;
     }}
     _PaneFooter.-active {{
         background: {_ACTIVE_PANE_BG};
@@ -132,6 +138,7 @@ class _PaneFooter(Static):
 
     def set_active(self, active: bool) -> None:
         self.set_class(active, "-active")
+        self.update(t("pane.focus_hint") if active else "")
 
 
 class PaneCell(Vertical):
@@ -341,6 +348,19 @@ class SplitPaneArea(Vertical):
                 return True
         return False
 
+    def live_embed_focused(self) -> bool:
+        """当前持有键盘焦点的格是不是「活着的实时终端」。
+
+        为真时按键都被转发给托管会话，列表侧的单字母/翻页快捷键必须让路（见
+        `MainScreen.check_action`）；静态对话预览格聚焦时不算，那些键仍归列表。
+        """
+        for cell in self._cells():
+            pane = cell.embed_pane()
+            if pane is None or not pane.has_focus:
+                continue
+            return bool(cell.spec.keepalive_name) and bool(pane.session_name) and not pane.dead
+        return False
+
     def update_terminal_background(self, osc_report: bytes) -> None:
         """保存新背景供后续分栏使用，并刷新所有已挂载面板。"""
         self._osc_report = osc_report
@@ -440,12 +460,16 @@ class SplitPaneArea(Vertical):
         entries: list[tuple[dict, str | None, Callable[[], Text | str] | None]],
         *,
         focus_key: str | None = None,
+        focus_pane: bool = False,
     ) -> None:
         """entries: (session, keepalive_name, detail_renderer)
 
         若 (session_key, keepalive_name) 有序身份与当前一致，只就地更新标题/
         回退 renderer，禁止整排 remount（否则会清掉 live `_grid`，首帧前
         静态回退会闪回对话开头）。
+
+        `focus_pane`=True 表示调用方带着明确意图（回车打开 / 新建托管成功），
+        此时把键盘焦点交给 `focus_key` 那一格；单纯的选择跟随不得传 True。
         """
         self.current_project = project
         target_identity = [
@@ -456,7 +480,9 @@ class SplitPaneArea(Vertical):
             and self._cells()
             and self.hosted_identity() == target_identity
         ):
-            self._update_hosted_group_inplace(entries, focus_key=focus_key)
+            self._update_hosted_group_inplace(
+                entries, focus_key=focus_key, focus_pane=focus_pane,
+            )
             return
         specs: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]] = []
         for session, kname, renderer in entries:
@@ -468,6 +494,7 @@ class SplitPaneArea(Vertical):
         self._schedule_mount(
             [(s, sess, r) for s, sess, r in specs],
             focus_key=self._focus_key,
+            focus_pane=focus_pane,
         )
 
     def _update_hosted_group_inplace(
@@ -475,6 +502,7 @@ class SplitPaneArea(Vertical):
         entries: list[tuple[dict, str | None, Callable[[], Text | str] | None]],
         *,
         focus_key: str | None = None,
+        focus_pane: bool = False,
     ) -> None:
         """同身份：更新 title / detail_renderer，保留 EmbedPane 的 live 画面。"""
         cells = self._cells()
@@ -491,6 +519,10 @@ class SplitPaneArea(Vertical):
             self._focus_key = focus_key
         elif self._panes:
             self._focus_key = self._panes[0].session_key
+        if focus_pane and self._focus_key:
+            # 身份未变不会 remount，焦点不会自己跑过来，必须显式交过去。
+            key = self._focus_key
+            self.call_after_refresh(lambda: self.focus_session_key(key, only_live=True))
 
     def add_hosted_pane(
         self,
@@ -499,6 +531,7 @@ class SplitPaneArea(Vertical):
         renderer: Callable[[], Text | str] | None,
         *,
         focus: bool = False,
+        focus_pane: bool = False,
     ) -> None:
         import pickup
 
@@ -525,14 +558,26 @@ class SplitPaneArea(Vertical):
         rebuild.append((spec, session, renderer))
         self._panes = [s for s, _, _ in rebuild]
         focus_key = key if focus else self._focus_key
-        self._schedule_mount(rebuild, focus_key=focus_key)
+        self._schedule_mount(rebuild, focus_key=focus_key, focus_pane=focus_pane)
 
-    def focus_session_key(self, session_key: str) -> None:
+    def focus_session_key(self, session_key: str, *, only_live: bool = False) -> bool:
+        """把键盘焦点交给指定会话所在格；`only_live` 时只认活着的实时终端。
+
+        自动聚焦一律带 `only_live=True`：静态预览格、已结束的格拿到焦点后用户
+        敲的字会直接丢掉，比让他多点一下鼠标糟得多。
+        """
         for cell in self._cells():
-            if cell.spec.session_key == session_key:
-                cell.focus_embed()
-                self._focus_key = session_key
-                return
+            if cell.spec.session_key != session_key:
+                continue
+            pane = cell.embed_pane()
+            if only_live and (
+                pane is None or not cell.spec.keepalive_name or pane.dead
+            ):
+                return False
+            cell.focus_embed()
+            self._focus_key = session_key
+            return True
+        return False
 
     def _handle_pane_focused(self, session_key: str) -> None:
         self._focus_key = session_key
@@ -588,8 +633,12 @@ class SplitPaneArea(Vertical):
 
     async def _remove_cell_async(self, spec: PaneSpec) -> None:
         row = self.query_one("#pane-row", Horizontal)
+        # 被关掉的这格原先是否持有输入：决定关完后焦点该落到剩余格还是不动。
+        # 焦点本来就在列表时不得因为关格子把它抢到右栏。
+        closing_had_focus = False
         for cell in list(self._cells()):
             if cell.spec.cell_id == spec.cell_id:
+                closing_had_focus = cell.has_focus_within
                 await cell.remove()
                 break
         if not self._panes:
@@ -597,26 +646,39 @@ class SplitPaneArea(Vertical):
             await row.mount(Static(t("split.empty_hint"), id="pane-row-empty"))
             self.call_after_refresh(self._on_focus_list)
             return
-        if self._focus_key:
-            self.call_after_refresh(lambda: self.focus_session_key(self._focus_key))
+        if closing_had_focus:
+            self.call_after_refresh(self._focus_after_close)
+
+    def _focus_after_close(self) -> None:
+        """关掉持有输入的那格后：交给剩余的实时终端，都不行就退回列表。"""
+        for key in [self._focus_key, *[p.session_key for p in self._panes]]:
+            if key and self.focus_session_key(key, only_live=True):
+                return
+        self._on_focus_list()
 
     def _schedule_mount(
         self,
         entries: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]],
         *,
         focus_key: str | None = None,
+        focus_pane: bool = False,
     ) -> None:
-        self.call_next(self._mount_panes_async, entries, focus_key=focus_key)
+        self.call_next(
+            self._mount_panes_async, entries, focus_key=focus_key, focus_pane=focus_pane,
+        )
 
     async def _mount_panes_async(
         self,
         entries: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]],
         *,
         focus_key: str | None = None,
+        focus_pane: bool = False,
     ) -> None:
-        # remount 会弄丢焦点；列表原先有焦点时挂载后交回，避免 Enter 选不中
+        # remount 会弄丢焦点；列表原先有焦点时挂载后交回，避免 Enter 选不中。
+        # 但 focus_pane 是调用方的明确意图（回车打开 / 新建托管成功），优先级
+        # 高于「把焦点还回列表」，否则自动聚焦会被这段逻辑立刻撤销。
         focused = getattr(self.app, "focused", None)
-        list_had_focus = focused is not None and (
+        list_had_focus = not focus_pane and focused is not None and (
             getattr(focused, "id", None) == "session-list"
             or type(focused).__name__ == "SessionListView"
         )
@@ -643,4 +705,7 @@ class SplitPaneArea(Vertical):
         if list_had_focus:
             self.call_after_refresh(self._on_focus_list)
         elif focus_key:
-            self.call_after_refresh(lambda: self.focus_session_key(focus_key))
+            only_live = focus_pane
+            self.call_after_refresh(
+                lambda: self.focus_session_key(focus_key, only_live=only_live)
+            )

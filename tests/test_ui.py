@@ -1027,7 +1027,8 @@ class SessionCardVisualTests(unittest.TestCase):
         relative_time = pickup._format_relative_time(card.session["mtime"])
         self.assertTrue(lines[2].endswith(relative_time))
 
-    def test_long_title_uses_ellipsis_without_sharing_runtime_line(self) -> None:
+    def test_long_title_is_hard_truncated_without_ellipsis(self) -> None:
+        """标题放不下时直接截断，不写 `...`：省略号只会白占三格。"""
         card = self._card(
             display_title="这是一个非常非常非常长的侧边栏标题用来验证省略",
         )
@@ -1039,7 +1040,10 @@ class SessionCardVisualTests(unittest.TestCase):
         lines = rendered.plain.splitlines()
         self.assertNotIn("OpenCode", lines[0])
         self.assertTrue(lines[1].endswith("OpenCode"))
-        self.assertIn("...", lines[0])
+        self.assertNotIn("...", lines[0])
+        self.assertNotIn("…", lines[0])
+        # 截断处仍是标题正文的字符，且整行铺满可用宽度
+        self.assertIn("这是一个非常", lines[0])
         self.assertEqual(pickup._text_width(lines[0]), 39)
 
     def test_runtime_label_uses_distinct_brand_colors(self) -> None:
@@ -1070,8 +1074,8 @@ class SessionCardVisualTests(unittest.TestCase):
                 f"{source} runtime label should be bold, spans={runtime_spans}",
             )
 
-    def test_project_name_is_bold_but_title_is_not(self) -> None:
-        """已结束会话「项目名: 标题」：项目名 bold、标题 dim，形成可见对比。"""
+    def test_title_matches_project_name_style(self) -> None:
+        """「项目名: 标题」同一视觉层级：标题与项目名同为 bold，且标题不再 dim。"""
         card = self._card(cwd="/tmp/pickup", display_title="修复侧边栏展示")
         with mock.patch.object(
             SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
@@ -1097,12 +1101,12 @@ class SessionCardVisualTests(unittest.TestCase):
             if span.start <= title_start < span.end and span.end <= len(first_line)
         ]
         self.assertTrue(
-            any("dim" in str(span.style).lower() for span in title_spans),
-            f"title should be dim, spans={title_spans}",
+            any("bold" in str(span.style).lower() for span in title_spans),
+            f"title should be bold like the project name, spans={title_spans}",
         )
         self.assertFalse(
-            any("bold" in str(span.style).lower() for span in title_spans),
-            f"title should not be bold, spans={title_spans}",
+            any("dim" in str(span.style).lower() for span in title_spans),
+            f"title should not be dim, spans={title_spans}",
         )
 
     def test_sidebar_shows_no_generating_spinner(self) -> None:
@@ -1522,6 +1526,39 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             list_view = screen.query_one(SessionListView)
             self.assertEqual(len(list_view.query(f"#{NEW_SESSION_ID}")), 1)
             self.assertEqual(len(list_view._session_cards()), 3)
+
+    async def test_list_rebuild_serialized_across_message_pumps(self) -> None:
+        """回归测试（2026-07-26 真机崩溃）：后台重扫的重建跑在 App 泵上，搜索框
+        输入触发的重建跑在 Screen 泵上，MainScreen 自己那把锁挡不住后者。两条
+        全量重建一旦在 clear()/extend() 之间交错，新建项会被挂第二次，Textual
+        抛 DuplicateIds 打崩整个 TUI。`SessionListView.rebuild()` 内部必须自带
+        闸门，无论调用方来自哪条泵都串行进 DOM。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            screen = app.screen
+            list_view = screen.query_one(SessionListView)
+
+            new_session = {
+                "source": "claude", "id": "s98", "short_id": "s98",
+                "mtime": time.time() + 1000, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "并发新会话",
+                "cwd": "/tmp", "live": False,
+            }
+            store.sessions["claude"].append(new_session)
+
+            async def interleaved_filter_rebuild() -> None:
+                # 让后台侧那次先进到 clear() 的 await 点，再模拟用户改筛选词
+                await asyncio.sleep(0)
+                screen.nav.project_query = "tmp"
+                await list_view.rebuild(keep_selection=True)
+
+            await asyncio.gather(screen._rebuild_list(), interleaved_filter_rebuild())
+
+            self.assertEqual(len(list_view.query(f"#{NEW_SESSION_ID}")), 1)
+            keys = [pickup.session_key(c.session) for c in list_view._session_cards()]
+            self.assertEqual(len(keys), len(set(keys)))
 
     async def test_rebuild_keeps_focus_on_same_session_when_new_session_appears(self) -> None:
         """回归测试：真实反馈——聚焦第三条会话时后台刷出一条新会话，高亮和

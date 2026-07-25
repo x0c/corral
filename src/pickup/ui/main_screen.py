@@ -62,6 +62,7 @@ _ACTION_I18N = {
     "kill_keepalive": "action.kill_session",
     "delete_session": "action.delete_session",
     "close_pane": "action.close_pane",
+    "focus_list": "action.focus_list",
     "save_screenshot": "action.screenshot",
     "preview_home": "action.preview_home",
     "preview_end": "action.preview_end",
@@ -71,6 +72,23 @@ _ACTION_I18N = {
 }
 
 
+# 只在「焦点还在侧边栏」时才成立的动作：右栏实时终端持有输入时，这些键要么
+# 本就到不了（EmbedPane 先 stop 掉），要么会把用户想打给助手的内容截胡。
+_LIST_ONLY_ACTIONS = frozenset(
+    {
+        "handoff",
+        "kill_keepalive",
+        "delete_session",
+        "close_pane",
+        "quit_app",
+        "preview_home",
+        "preview_end",
+        "preview_page_up",
+        "preview_page_down",
+    }
+)
+
+
 def _main_bindings() -> list[Binding]:
     """按当前语言生成底部快捷键说明。"""
     return [
@@ -78,6 +96,10 @@ def _main_bindings() -> list[Binding]:
         Binding("q", "kill_keepalive", t("action.kill_session")),
         Binding("x", "delete_session", t("action.delete_session")),
         Binding("c", "close_pane", t("action.close_pane"), show=False),
+        # 内嵌终端持有输入时的唯一出口。EmbedPane 自己会先吃掉这个键（实时会话
+        # 路径），这里的绑定负责两件事：静态预览格聚焦时也能回列表，以及让
+        # Footer 在右栏持有输入时把出口显示出来（见 check_action）。
+        Binding("ctrl+backslash", "focus_list", t("action.focus_list")),
         Binding("f12", "save_screenshot", t("action.screenshot"), show=False),
         # 右栏静态对话预览滚动（列表聚焦时也生效；优先级高于 ListView 的同名键）
         Binding("home", "preview_home", t("action.preview_home"), show=False, priority=True),
@@ -281,7 +303,8 @@ class MainScreen(Screen):
 
         self._split_store.remove_session(session_key)
         split_layout.save_layout(self._split_store)
-        self._focus_list()
+        # 焦点由 SplitPaneArea 收尾：还有剩余实时格就接着用，最后一格被关掉才
+        # 回列表。这里再调一次 _focus_list() 会把焦点提前抢走，让接力落空。
 
     def _on_runtime_pick(self, runtime_id: str) -> None:
         import pickup
@@ -331,7 +354,7 @@ class MainScreen(Screen):
                 self._show_session_group(alive[0])
                 return
 
-    def _show_session_group(self, focus_key: str) -> None:
+    def _show_session_group(self, focus_key: str, *, focus_pane: bool = False) -> None:
         from pickup import split_layout
 
         project, keys = split_layout.resolve_active_group(
@@ -344,7 +367,7 @@ class MainScreen(Screen):
         if not entries:
             return
         self._split_area().show_hosted_group(
-            project, entries, focus_key=focus_key,
+            project, entries, focus_key=focus_key, focus_pane=focus_pane and self._can_autofocus(),
         )
         self._save_split_layout()
 
@@ -653,7 +676,9 @@ class MainScreen(Screen):
             self.app.bell()
             return
         area = self._split_area()
-        area.show_hosted_group(project, entries, focus_key=focus_key)
+        area.show_hosted_group(
+            project, entries, focus_key=focus_key, focus_pane=self._can_autofocus(),
+        )
         active_keys = [k for k in keys if self._is_session_active(k)]
         if len(active_keys) >= 2:
             self._split_store.set_group(project, active_keys, focus_key=focus_key)
@@ -721,14 +746,16 @@ class MainScreen(Screen):
             request = pickup.LaunchRequest(current, request.target_runtime_id, request.title)
             existing = request.session.get("keepalive_name") if same_runtime else None
             if existing:
+                # 回车打开已托管会话 = 明确意图，直接把输入交给右栏那一格。
                 if add_pane:
                     area.add_hosted_pane(
                         current, str(existing),
                         lambda s=current: self._render_detail(s),
                         focus=True,
+                        focus_pane=self._can_autofocus(),
                     )
                 else:
-                    self._show_session_group(key)
+                    self._show_session_group(key, focus_pane=True)
                 return
             if self._host_pending > 0 and not add_pane:
                 self.app.bell()
@@ -860,8 +887,12 @@ class MainScreen(Screen):
             )
             select_key = pickup.session_key(current)
             fallback = lambda s=current: self._render_detail(s)
+        # 新建 / 接力托管成功同样是明确意图：用户就是来跟这个新会话说话的。
+        autofocus = self._can_autofocus()
         if add_pane:
-            area.add_hosted_pane(current, name, fallback, focus=False)
+            area.add_hosted_pane(
+                current, name, fallback, focus=True, focus_pane=autofocus,
+            )
         else:
             import pickup as pickup_mod
 
@@ -871,6 +902,7 @@ class MainScreen(Screen):
                 project,
                 [(current, name, fallback)],
                 focus_key=key,
+                focus_pane=autofocus,
             )
         self._save_split_layout()
         self.call_next(self._rebuild_list, select_key)
@@ -949,6 +981,53 @@ class MainScreen(Screen):
     def _focus_list(self) -> None:
         self.query_one(SessionListView).focus()
 
+    def _can_autofocus(self) -> bool:
+        """自动把输入交给右栏的前置条件。
+
+        托管是后台 worker 完成的，回调到达时用户可能已经打开了高级操作弹窗或
+        正在筛选框里打字——这两种情况下抢焦点等于把用户正在输入的内容打断。
+        """
+        if not self.embed_ok:
+            return False
+        if self.app.screen is not self:
+            return False
+        try:
+            if self.query_one("#project-search", Input).has_focus:
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _live_embed_focused(self) -> bool:
+        """右栏是否有「活着的实时终端」正持有输入（此时按键都发给托管会话）。"""
+        if not self.embed_ok:
+            return False
+        try:
+            return self._split_area().live_embed_focused()
+        except Exception:
+            return False
+
+    def _any_embed_focused(self) -> bool:
+        if not self.embed_ok:
+            return False
+        try:
+            return self._split_area().any_embed_focused()
+        except Exception:
+            return False
+
+    def check_action(self, action: str, parameters) -> bool | None:
+        """按当前焦点裁剪可用动作：右栏持有输入时，列表侧快捷键必须整体让路。
+
+        两个作用同时生效：Footer 不再展示此刻按了没用（还会被当字符打给助手）的
+        键；`run_action` 也会因此不派发，让 Home/End/翻页这些**优先级绑定**穿透到
+        内嵌会话——否则用户在助手里翻历史会被右栏预览滚动截胡。
+        """
+        if action == "focus_list":
+            return self._any_embed_focused()
+        if action in _LIST_ONLY_ACTIONS and self._live_embed_focused():
+            return False
+        return True
+
     def _on_pane_focused(self, session_key: str) -> None:
         """右栏某格拿到焦点后，侧边栏高亮切到同一会话（不改右栏布局）。"""
         list_view = self.query_one(SessionListView)
@@ -958,6 +1037,9 @@ class MainScreen(Screen):
         self._save_split_layout()
 
     # ---- 动作 ----
+
+    def action_focus_list(self) -> None:
+        self._focus_list()
 
     def action_focus_search(self) -> None:
         self.query_one("#project-search", Input).focus()
@@ -1120,7 +1202,6 @@ class MainScreen(Screen):
             return
         self._split_area().close_focused_pane()
         self._save_split_layout()
-        self._focus_list()
 
     def action_preview_home(self) -> None:
         if self.embed_ok:

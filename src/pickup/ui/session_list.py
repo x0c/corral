@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import TYPE_CHECKING
@@ -141,27 +142,19 @@ class SessionCard(Widget):
         runtime_name = runtime.display_name
         runtime_id = getattr(runtime, "id", None) or str(session.get("source") or "")
 
-        title_cell = pickup._fit_cell(title_prefix + title, width, ellipsis=True)
+        # 放不下就直接截断，不留 `...`：省略号本身要占 3 格，等于把最后几个
+        # 有效字符换成没有信息量的符号，宁可多显示几个字。
+        title_cell = pickup._fit_cell(title_prefix + title, width)
         runtime_cell = pickup._fit_cell_right(runtime_name, width)
 
         relative_time = pickup._format_relative_time(session.get("mtime") or 0)
         time_cell = pickup._fit_cell_right(relative_time, width)
 
-        # 进行中：整行标题用成功绿；已结束：项目名 bold、其后「: 标题」dim。
+        # 项目名与标题同一视觉层级：整行统一 bold，进行中再叠成功绿。
         out = Text(title_cell)
         content_len = len(title_cell.rstrip(" "))
-        project_start = len(multi_prefix)
-        project_end = min(project_start + len(project), content_len)
-        if is_running:
-            if content_len > 0:
-                out.stylize("#3F9A6A", 0, content_len)
-            if project_end > project_start:
-                out.stylize("bold #3F9A6A", project_start, project_end)
-        else:
-            if project_end > project_start:
-                out.stylize("bold", project_start, project_end)
-            if content_len > project_end:
-                out.stylize("dim", project_end, content_len)
+        if content_len > 0:
+            out.stylize("bold #3F9A6A" if is_running else "bold", 0, content_len)
         out.append("\n")
         out.append(runtime_cell, style=pickup.runtime_label_style(runtime_id))
         out.append("\n")
@@ -215,6 +208,9 @@ class SessionListView(ListView):
         # 页头占位文案 / 新建会话目录解析共用，禁止在本类另开一份状态。
         self.nav = nav
         self._multi_keys: list[str] = []
+        # rebuild() 的并发闸门：见该方法注释，多条 pump 上的调用方必须串行进 DOM。
+        self._rebuild_lock = asyncio.Lock()
+        self._rebuild_seq = 0
 
     async def on_mount(self) -> None:
         await self.rebuild()
@@ -396,7 +392,34 @@ class SessionListView(ListView):
         「界面」节的性能优化记录。
 
         `select_key`：跨运行时接力 / 空白新建后强制选中刚插入的托管占位卡。
+
+        **必须串行**：调用方分布在两条互不相让的 Textual 消息泵上——后台重扫
+        worker 走 `app.call_from_thread(_rebuild_list)`（App 泵，且 MainScreen
+        自己那把锁只挡得住同泵的重入），搜索框输入走 `on_input_changed`
+        （Screen 泵）。全量重建里的 `clear()` / `extend()` 都会 await 让出，
+        两条泵一旦交错，前一次的 extend 会把新建项插到后一次已经填好的列表上，
+        Textual 直接抛 DuplicateIds 打崩整个 TUI（2026-07-26 真机复现：连续退格
+        清空搜索词，命中数 50→57→71 连做全量重建，单次耗时已到 2s 量级，撞上
+        后台重扫必崩）。这把锁是唯一的进 DOM 闸门，禁止绕过它直接改子项结构。
         """
+        self._rebuild_seq += 1
+        seq = self._rebuild_seq
+        async with self._rebuild_lock:
+            # 排队期间又来了更新的请求：本次没有强制选中语义就直接让位，避免
+            # 连续输入把每个中间态都全量重建一遍（只认最后一次的筛选结果）。
+            if select_key is None and seq != self._rebuild_seq:
+                return
+            await self._rebuild_locked(
+                keep_selection=keep_selection, select_key=select_key
+            )
+
+    async def _rebuild_locked(
+        self,
+        *,
+        keep_selection: bool,
+        select_key: str | None,
+    ) -> None:
+        """rebuild() 的实现体；只允许持 `_rebuild_lock` 时调用。"""
         import pickup
 
         previous_key = select_key

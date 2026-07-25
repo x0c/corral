@@ -39,6 +39,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Screenshot",
         "zh": "截图",
     },
+    "action.focus_list": {
+        "en": "Back to list",
+        "zh": "回列表",
+    },
+    "pane.focus_hint": {
+        "en": "Ctrl+\\ back to list",
+        "zh": "Ctrl+\\ 回列表",
+    },
     "action.quit": {
         "en": "Quit",
         "zh": "退出",
