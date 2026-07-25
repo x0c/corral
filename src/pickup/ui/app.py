@@ -12,6 +12,13 @@ from textual.theme import Theme
 from textual.timer import Timer
 
 from pickup.ui.main_screen import MainScreen
+from pickup.ui.terminal_theme import (
+    BACKGROUND_POLL_INTERVAL,
+    TerminalBackgroundReport,
+    enhance_driver,
+    query_runtime_theme,
+    supports_runtime_theme_tracking,
+)
 
 # 窗口拖动时 SIGWINCH 会连续触发。布局跟随 Textual 自带的 ~120fps 合并即可；
 # 整屏全量重绘（用来清掉终端 reflow 残影）必须另行防抖，等尺寸停稳再做一次，
@@ -90,6 +97,10 @@ class PickupApp(App):
         background: $primary-muted;
     }
     """
+
+    def get_driver_class(self):
+        """默认 Unix 驱动增加终端主题应答解析，其他驱动保持 Textual 原行为。"""
+        return enhance_driver(super().get_driver_class())
 
     def __init__(self, store, embed_ok: bool, direct=None, osc_report: bytes | None = None) -> None:
         super().__init__()
@@ -183,6 +194,33 @@ class PickupApp(App):
         is_light = pickup._background_is_light(self._osc_report)
         self.theme = "pickup-light" if is_light is True else "pickup-dark"
         self.push_screen(MainScreen(self._store, self._embed_ok, self._direct, self._osc_report))
+        if supports_runtime_theme_tracking(self._driver):
+            self.set_interval(BACKGROUND_POLL_INTERVAL, self._query_runtime_theme)
+
+    def _query_runtime_theme(self) -> None:
+        query_runtime_theme(self._driver)
+
+    def on_terminal_background_report(self, message: TerminalBackgroundReport) -> None:
+        """终端运行中换配色时，同步 pickup 壳层、当前面板和后续新会话。"""
+        import pickup
+
+        is_light = message.is_light
+        if message.osc_report is not None:
+            self._osc_report = pickup.theme._replace_background_report(
+                self._osc_report,
+                message.osc_report,
+            )
+            is_light = pickup._background_is_light(message.osc_report)
+            try:
+                screen = self.screen
+            except ScreenError:
+                screen = None
+            if isinstance(screen, MainScreen):
+                screen.update_terminal_background(self._osc_report)
+        if is_light is not None:
+            target = "pickup-light" if is_light else "pickup-dark"
+            if self.theme != target:
+                self.theme = target
 
 
 def run_app(store, embed_ok: bool, direct=None, osc_report: bytes | None = None):

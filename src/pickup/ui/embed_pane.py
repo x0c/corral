@@ -231,6 +231,20 @@ class EmbedPane(Widget):
 
     # ---- 对外接口：聚焦/切换托管会话 ----
 
+    def update_terminal_background(self, osc_report: bytes) -> None:
+        """终端换配色后更新透明单元格底色，并把新背景报告给托管会话。"""
+        import pickup
+
+        self._osc_report = osc_report
+        bg = pickup._background_rgb(osc_report)
+        if bg is not None:
+            self.styles.background = bg
+        if self.session_name:
+            channel = embed.active_channel(self.session_name)
+            if channel is not None:
+                embed.report_theme(channel, osc_report)
+        self.refresh()
+
     def focus_session(
         self,
         name: str,

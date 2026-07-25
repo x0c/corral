@@ -208,6 +208,12 @@ class PaneCell(Vertical):
                 return child
         return None
 
+    def update_terminal_background(self, osc_report: bytes) -> None:
+        self._osc_report = osc_report
+        pane = self.embed_pane()
+        if pane is not None:
+            pane.update_terminal_background(osc_report)
+
     def _pane_header(self) -> _PaneHeader | None:
         """分栏重建/卸载过程中标题栏可能尚未挂上或已卸下。"""
         for child in self.children:
@@ -334,6 +340,12 @@ class SplitPaneArea(Vertical):
             if pane is not None and pane.has_focus:
                 return True
         return False
+
+    def update_terminal_background(self, osc_report: bytes) -> None:
+        """保存新背景供后续分栏使用，并刷新所有已挂载面板。"""
+        self._osc_report = osc_report
+        for cell in self._cells():
+            cell.update_terminal_background(osc_report)
 
     def host_pane_size(self) -> tuple[int, int]:
         """新建托管会话用的单格尺寸（主线程调用）。"""

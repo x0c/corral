@@ -38,6 +38,7 @@ from pickup.ui.embed_pane import EmbedPane
 from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.modals import ConfirmModal, PickMenuModal, RuntimePickerModal
 from pickup.ui.session_list import NEW_SESSION_ID, SessionCard, SessionListView
+from pickup.ui.terminal_theme import TerminalBackgroundReport, TerminalThemeParser
 
 HAS_TMUX = shutil.which("tmux") is not None
 
@@ -301,6 +302,35 @@ class OscProbeFlushTests(unittest.TestCase):
             os.close(slave)
 
 
+@unittest.skipIf(TerminalThemeParser is None, "Windows 不使用 Unix 终端主题解析器")
+class RuntimeThemeParserTests(unittest.TestCase):
+    """运行中的主题应答必须被单独提取，不能再变成搜索框键盘输入。"""
+
+    def test_extracts_chunked_osc_background_and_preserves_normal_keys(self) -> None:
+        parser = TerminalThemeParser()
+        parsed = []
+        parsed.extend(parser.feed("a\x1b]11;rgb:ffff/"))
+        parsed.extend(parser.feed("eeee/dddd\x07b"))
+
+        self.assertEqual(parsed[0].key, "a")
+        report = parsed[1]
+        self.assertIsInstance(report, TerminalBackgroundReport)
+        self.assertEqual(report.osc_report, b"\x1b]11;rgb:ffff/eeee/dddd\x07")
+        self.assertEqual(parsed[2].key, "b")
+
+    def test_extracts_dec_2031_light_and_dark_notifications(self) -> None:
+        parser = TerminalThemeParser()
+        light = list(parser.feed("\x1b[?997;2n"))
+        dark = list(parser.feed("\x1b[?997;1n"))
+        self.assertTrue(light[0].is_light)
+        self.assertFalse(dark[0].is_light)
+
+    def test_pickup_app_uses_runtime_theme_driver_on_unix(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        self.assertEqual(app.driver_class.__name__, "TerminalThemeLinuxDriver")
+
+
 class AppThemeTests(unittest.IsolatedAsyncioTestCase):
     """pickup 自身界面配色应跟随外层终端探测到的深浅色（真机反馈：浅色终端下
     配色不对——此前只处理了托管会话内的深浅色注入，没接 pickup 自己的界面）。"""
@@ -324,6 +354,44 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=False, osc_report=None)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
+            self.assertEqual(app.theme, "pickup-dark")
+
+    async def test_running_app_switches_theme_when_terminal_background_changes(self) -> None:
+        store, _ = _make_store()
+        old_report = b"\x1b]10;rgb:0000/0000/0000\x07\x1b]11;rgb:ffff/ffff/ffff\x07"
+        app = PickupApp(store, embed_ok=True, osc_report=old_report)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            self.assertEqual(app.theme, "pickup-light")
+
+            area = app.screen.query_one(SplitPaneArea)
+            session = store.all_sessions()[0]
+            area.show_hosted_group("/tmp", [(session, None, lambda: "")])
+            await _wait_until(lambda: len(area.cells()) == 1)
+            pane = area.cells()[0].embed_pane()
+            self.assertIsNotNone(pane)
+
+            dark_report = b"\x1b]11;rgb:1111/2222/3333\x07"
+            app.post_message(TerminalBackgroundReport(osc_report=dark_report))
+            await pilot.pause(delay=0.2)
+
+            self.assertEqual(app.theme, "pickup-dark")
+            self.assertEqual(app.screen.osc_report, b"\x1b]10;rgb:0000/0000/0000\x07" + dark_report)
+            self.assertEqual(area._osc_report, app.screen.osc_report)  # noqa: SLF001
+            self.assertEqual(pane._osc_report, app.screen.osc_report)  # noqa: SLF001
+            self.assertEqual(pane.styles.background.rgb, (17, 34, 51))
+
+    async def test_dec_mode_notification_switches_theme_before_osc_reply(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(
+            store,
+            embed_ok=False,
+            osc_report=b"\x1b]11;rgb:ffff/ffff/ffff\x07",
+        )
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            app.post_message(TerminalBackgroundReport(is_light=False))
+            await pilot.pause(delay=0.1)
             self.assertEqual(app.theme, "pickup-dark")
 
     async def test_runtime_top_bar_matches_footer_and_aligns_right(self) -> None:

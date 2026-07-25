@@ -126,6 +126,15 @@ def _split_osc_report(osc_report: bytes | None) -> tuple[bytes | None, bytes | N
     return found.get(b"11"), found.get(b"10")
 
 
+def _replace_background_report(
+    osc_report: bytes | None,
+    background_report: bytes,
+) -> bytes:
+    """用新的 OSC 11 应答替换旧背景色，同时保留启动时探到的前景色。"""
+    _old_background, foreground = _split_osc_report(osc_report)
+    return b"".join(part for part in (foreground, background_report) if part)
+
+
 def _background_channels(osc_report: bytes | None) -> tuple[float, float, float] | None:
     """从 OSC 11（背景色）应答解析出终端真实背景色的 (r, g, b) 三通道（各 0~1）；解析不出返回 None。
 

@@ -134,7 +134,7 @@ stateDiagram-v2
 
 | 目录（相对项目根） | 内容 | 关键文件 |
 |---|---|---|
-| `ui/` | Textual 终端界面组件、状态与弹窗 | `main_screen.py`、`app.py`、`session_list.py`、`nav.py`、`modals.py`、`embed_pane.py`、`split_pane_area.py`、`runtime_top_bar.py` |
+| `ui/` | Textual 终端界面组件、状态、终端主题监听与弹窗 | `main_screen.py`、`app.py`、`terminal_theme.py`、`session_list.py`、`nav.py`、`modals.py`、`embed_pane.py`、`split_pane_area.py`、`runtime_top_bar.py` |
 | 项目根 | 分屏组合记忆 | `split_layout.py` → `~/.cache/pickup/split-layout.json` |
 | `docs/screenshots/` | 虚构演示数据的截图验收脚本与产物位置 | `capture.py` |
 | `docs/` | 维护约束、相邻领域知识库与截图说明 | `MAINTAINER_GUIDE.md`、本文件 |
@@ -147,6 +147,7 @@ stateDiagram-v2
 |---|---|---|---|
 | 启动终端界面、非 TTY 降级、直启进入界面 | `src/pickup/cli.py` 等 | `main()`、`_dispatch_direct_launch()` | 交互式入口；扫描、主题探测、标题后台进程和应用启动在此接线 |
 | 应用外壳与语言初始化 | `ui/app.py` | `run_app()`、`PickupApp.on_mount()` | 初始化多语言，按外层背景选择浅/深主题，再推入主屏 |
+| 运行中深浅色跟随 | `ui/terminal_theme.py`、`ui/app.py` | `TerminalThemeParser`、`PickupApp.on_terminal_background_report()` | 解析终端主动通知或定期 OSC 11 查询应答；同步壳层、现有面板与后续托管会话 |
 | 主屏布局与 Footer | `ui/main_screen.py` | `MainScreen.compose()`、`_main_bindings()` | 左栏搜索和列表、右栏、Footer 的唯一组合处 |
 | 首屏异步加载与后台刷新 | `ui/main_screen.py` | `_await_initial_load()`、`_background_refresh_worker()`、`_poll_cache()` | 等首次扫描、按退避间隔重扫、轮询标题缓存 |
 | 选中会话后决定右栏 | `ui/main_screen.py` | `_follow_current_selection()`、`_render_detail()`、`_warm_conversation()` | 非进行中显示完整对话；托管会话挂到右栏实时画面 |
@@ -186,6 +187,7 @@ stateDiagram-v2
 | Textual 后台 worker | 首屏加载 | `MainScreen._await_initial_load()` | 先显示界面骨架，等待后台扫描完成，支持退出取消 |
 | Textual 后台 worker | 会话刷新 | `MainScreen._background_refresh_worker()` | 每 3 秒起步，连续空闲后最多退避到 10 秒；扫描变化才重建 |
 | Textual 定时器 | 标题缓存轮询 | `MainScreen._poll_cache()`，0.5 秒 | 后台标题生成完成后原地刷新标题，不重扫完整历史；侧边栏不画生成中动画 |
+| Textual 定时器 | 终端背景复查 | `PickupApp._query_runtime_theme()`，2 秒 | iTerm2 等无主动通知的终端运行中换色时，无阻塞查询 OSC 11；支持 DEC 2031 的终端也可主动通知 |
 | 按键绑定 | 主操作 | `MainScreen.BINDINGS`、`_main_bindings()` | `a` 高级操作、`q` 结束、`x` 删除、`Esc` 退出、F12 截图；新建不走底栏快捷键 |
 | 分屏焦点同步 | 右栏 → 侧边栏 | `PaneCell._notify_pane_focused`、`MainScreen._on_pane_focused`、`SessionListView.select_session_key` | 聚焦某一分屏时侧边栏高亮切到对应会话；不得因此 remount 右栏 |
 | 按键路由 | 搜索与焦点 | `MainScreen.on_key()`、`on_input_submitted()` | `/` 聚焦筛选项目；Down/Enter 回列表；Esc 先清空查询再退出 |
@@ -217,6 +219,7 @@ stateDiagram-v2
 - **AI 易错点**【窗口缩放必须防抖 + 冻结重排】拖动期禁止每次 Resize 都 `resize-window`/抓帧；停稳后再改托管窗。改窗后助手常会整屏重排数秒，**禁止把重排中间帧刷到右栏**——已有 live 画面时开启 capture hold，稳定或超时后再一次跳到最新（见 `EmbedPane._begin_resize_capture_hold`）。
 - **AI 易错点**【右栏顶栏与分栏标题】助手顶栏按钮靠右排列，背景必须与底部操作栏共用 `$footer-background`，避免出现割裂的纯黑色条。侧边栏与右栏之间、右栏各分栏之间统一保留一列空白间隔：`SplitPaneArea` 左侧 `margin-left: 1`，第二格及后续 `PaneCell` 左侧 `margin-left: 1`；不画任何分隔线或边框，避免终端字体把线条字符渲成连续方块。每格上下各有一条高亮条：标题栏（有标题/关闭）+ 无文字底条（`_PaneFooter`）；默认 `$surface`，聚焦时同步切到主题变量 `$pane-active-background`（`$primary-muted` 再提亮约 10%，便于分辨当前激活格，仍避免高饱和蓝条抢过内嵌内容），标题文字用 `auto 90%` 保证深浅主题下的对比度。禁止再用整圈边框或标题前圆点表示焦点。`PaneCell._sync_active_marker` / `set_title` 必须容忍标题栏/底条尚未挂上或已卸下（双击顶栏快速加格时焦点回调会落在中间态），禁止对 `_PaneHeader` / `_PaneFooter` 裸 `query_one`。
 - **AI 易错点**【壳层配色层级】pickup 自有主题是 `pickup-dark` / `pickup-light`（冷静工作台），不是 Textual 默认主题。筛选框用 `$panel` / 聚焦 `$primary-muted`，禁止再铺 `$primary-darken-*` 大色块；列表选中只靠主题 `block-cursor-*` 抬一层冷灰蓝底，**禁止**再给 `ListItem.-highlight` 加 `border-left`——`tall`/`solid` 边框在终端里会和选中底拼成「双蓝条」。分栏激活条用主题变量 `$pane-active-background`（muted 提亮约 10%），不要直接写死 hex 进 widget CSS。饱和色只留给助手标签、运行中状态、警告/错误。
+- **AI 易错点**【运行中主题不是启动主题的重复判断】启动前探测只决定首帧；日落、系统设置或终端 profile 在进程运行中换色时，必须由 `terminal_theme.py` 继续接收 DEC 2031 通知或每 2 秒查询 OSC 11。应答要在 Textual 输入解析入口提取成专用消息，禁止另起线程直接读 tty（会与框架抢键盘输入），也禁止把 OSC 尾巴当普通按键放进搜索框。背景变化后要同时更新 `PickupApp.theme`、`MainScreen` 保存的报告、现有 `EmbedPane` 底色和后续 `host_session` 使用的报告；只换壳层会让右栏继续留在旧底色。
 - 【隐性依赖】`Footer` 展示的是 `MainScreen.BINDINGS` 的本地化 description。验证时中文环境必须看到 `a 高级操作`，英文环境必须看到 `a Advanced`；不要再手绘底部帮助行。
 - 【隐性依赖】真实终端冒烟必须跑「`pickup` 入口实际加载的包」：`python3 -m pickup`、或对 **pipx / site-packages 同一解释器** 覆盖安装后再敲 `pickup`。系统 `python3 -c "import pickup"` 与 `pickup` CLI 可能不是同一份代码（2026-07-21：源码已钉底、pipx 旧包仍顶对齐）。布局、配色、预览滚动改动后也必须重启已打开的 TUI。命令见 `AGENTS.md`「本机入口」。
 - 【隐性依赖】截图验收分两类：`docs/screenshots/capture.py` 使用虚构数据，适合提交和回归；F12 截图反映真实 TUI，可能含私密对话，只能本地诊断。夹具图灰阶的常见根因是环境 `NO_COLOR=1`（Textual Monochrome），不是 cairosvg；`capture.py` 会在创建 App 前清除 `NO_COLOR` 并去掉 Rich 假窗口铬。仍可用真机或 `SessionCard.render_line` segment 交叉确认配色。
@@ -252,6 +255,8 @@ python3 -m pickup --limit 5
 ```
 
 人工进入终端界面确认：Footer 显示高级操作；高级操作动态列出运行时且默认选中第一个已安装的其他运行时；Esc 先关闭弹窗再退出；选择已结束会话时右栏展示完整对话（`角色: 消息` 同行且同色）；`/`、Down、Enter 与搜索框 Esc 的焦点行为正确。用户本人还应在真实终端点一次关键路径，这是本域最终的体验验收。
+
+涉及主题跟随时，保持 pickup 运行，直接切换系统或终端的深浅外观，确认 2 秒内壳层和右栏底色一起切换、搜索框没有出现 `rgb:` 乱码；再新建一格，确认新格沿用切换后的背景。支持 DEC 2031 的终端还应验证不等轮询即可切换。
 
 4. 删除会话是不可恢复的破坏性操作，改动 `action_delete_session`/`ConfirmModal`/`SessionStore.remove_session` 或任一运行时的 `delete_session()` 后，必须在临时构造的假会话（而不是真实用户历史）上跑一遍 `x → x 确认` 全流程，确认：卡片立即消失（不必等下次重扫）；对应磁盘文件/目录/数据库行确实被删除；运行中/托管会话先结束再删；删除失败（如模拟磁盘异常）时卡片保留且有失败提示，不能静默摘除列表项。
 

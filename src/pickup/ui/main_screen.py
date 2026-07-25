@@ -187,6 +187,12 @@ class MainScreen(Screen):
     def _split_area(self) -> SplitPaneArea:
         return self.query_one(SplitPaneArea)
 
+    def update_terminal_background(self, osc_report: bytes) -> None:
+        """同步运行中终端的新背景，供现有面板和后续托管会话共同使用。"""
+        self.osc_report = osc_report
+        if self.embed_ok:
+            self._split_area().update_terminal_background(osc_report)
+
     def _session_is_active(self, session: dict) -> bool:
         """单条扫描快照是否仍活跃（托管 tmux 存活或扫描器报 live）。
 
