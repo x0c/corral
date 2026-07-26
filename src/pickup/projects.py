@@ -111,13 +111,6 @@ def _realpath(path: str) -> str:
         return os.path.normpath(path)
 
 
-def _path_depth(root: str, path: str) -> int:
-    rel = os.path.relpath(path, root)
-    if rel in (".", ""):
-        return 0
-    return rel.count(os.sep) + 1
-
-
 def _should_skip_dir(name: str, abs_path: str, extra_excludes: list[str]) -> bool:
     if name in HARD_SKIP_DIR_NAMES:
         return True
@@ -183,37 +176,43 @@ def _scan_one_root(
     allow_nested: bool,
     seen: dict[str, None],
 ) -> None:
+    """自实现 DFS 而非 `os.walk`：需要跟随目录软链接（如 `~/Codes -> /Users/…/Codes`），
+    同时用 realpath 去重防成环，并保证收录的键是真实路径（与会话 cwd 对得上）。
+    """
     # 根自身若是 git 项目也收录（深度 0）。
     if _has_git_marker(root):
         seen[_normalize_cwd(root) or root] = None
         if not allow_nested:
             return
 
-    for dirpath, dirnames, _filenames in os.walk(root, topdown=True, followlinks=False):
-        # 先按名剪枝，再决定是否把当前目录当项目。
-        keep: list[str] = []
-        for name in dirnames:
-            child = os.path.join(dirpath, name)
-            if _should_skip_dir(name, child, extra_excludes):
-                continue
-            if _path_depth(root, child) > max_depth:
-                continue
-            keep.append(name)
-        dirnames[:] = keep
+    visited: set[str] = {_realpath(root)}
+    stack: list[tuple[str, int]] = [(root, 0)]
 
-        if dirpath == root and _has_git_marker(root) and not allow_nested:
-            dirnames[:] = []
+    while stack:
+        dirpath, depth = stack.pop()
+        if depth >= max_depth:
             continue
-
-        if _path_depth(root, dirpath) > max_depth:
-            dirnames[:] = []
+        try:
+            entries = list(os.scandir(dirpath))
+        except OSError:
             continue
-
-        if dirpath != root and _has_git_marker(dirpath):
-            key = _normalize_cwd(dirpath) or dirpath
-            seen[key] = None
-            if not allow_nested:
-                dirnames[:] = []
+        for entry in entries:
+            try:
+                if not entry.is_dir(follow_symlinks=True):
+                    continue
+            except OSError:
+                continue
+            if _should_skip_dir(entry.name, entry.path, extra_excludes):
+                continue
+            child = _realpath(entry.path)
+            if child in visited:
+                continue
+            visited.add(child)
+            if _has_git_marker(child):
+                seen[_normalize_cwd(child) or child] = None
+                if not allow_nested:
+                    continue
+            stack.append((child, depth + 1))
 
 
 def discover(
@@ -260,6 +259,12 @@ def discover(
     return projects
 
 
+# 子串命中（rank < _FUZZY_RANK_FLOOR）比"打散字符"的子序列命中强得多，
+# 只要有子串命中就不再掺子序列结果——否则 `alpha` 会把 `java-platform` 这类
+# 顺序恰好凑出 a-l-p-h-a 的项目也列进候选，把真正想要的淹掉。
+_FUZZY_RANK_FLOOR = 4
+
+
 def _match_rank(query: str, project: Project) -> int | None:
     """越小越优先；None 表示不匹配。"""
     needle = (query or "").casefold().strip()
@@ -274,12 +279,14 @@ def _match_rank(query: str, project: Project) -> int | None:
         return 1
     if needle in label:
         return 2
-    if _fuzzy_match(query, project.name):
+    if needle in path:
         return 3
-    if _fuzzy_match(query, project.label):
+    if _fuzzy_match(query, project.name):
         return 4
-    if needle in path or _fuzzy_match(query, project.path):
+    if _fuzzy_match(query, project.label):
         return 5
+    if _fuzzy_match(query, project.path):
+        return 6
     return None
 
 
@@ -290,6 +297,8 @@ def match_projects(query: str, projects: Iterable[Project]) -> list[Project]:
         rank = _match_rank(query, project)
         if rank is not None:
             ranked.append((rank, project))
+    if any(rank < _FUZZY_RANK_FLOOR for rank, _ in ranked):
+        ranked = [item for item in ranked if item[0] < _FUZZY_RANK_FLOOR]
     ranked.sort(key=lambda item: (item[0], item[1].label.casefold(), item[1].path))
     return [project for _, project in ranked]
 

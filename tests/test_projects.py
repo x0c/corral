@@ -72,6 +72,30 @@ class GitScanTests(unittest.TestCase):
             found = projects.scan_git_roots([str(link)], depth=4, use_cache=False)
             self.assertEqual(found, [str((real / "pickup").resolve())])
 
+    def test_scan_follows_symlinked_subdir(self) -> None:
+        """回归：`~/Codes -> /elsewhere/Codes` 这类软链接子目录必须照样扫到项目。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            home.mkdir()
+            elsewhere = root / "elsewhere" / "Codes"
+            _touch_git(elsewhere / "AlphaForge" / "backend")
+            (home / "Codes").symlink_to(elsewhere)
+
+            found = projects.scan_git_roots([str(home)], depth=4, use_cache=False)
+            # 收录的是真实路径，便于与会话 cwd 去重。
+            self.assertEqual(found, [str((elsewhere / "AlphaForge" / "backend").resolve())])
+
+    def test_scan_symlink_cycle_terminates(self) -> None:
+        """软链接成环不得死循环。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _touch_git(root / "repo")
+            (root / "loop").symlink_to(root)
+
+            found = projects.scan_git_roots([str(root)], depth=4, use_cache=False)
+            self.assertEqual(found, [str((root / "repo").resolve())])
+
     def test_pickup_project_roots_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -96,6 +120,26 @@ class MatchResolveTests(unittest.TestCase):
         matched = projects.match_projects("subswap", items)
         self.assertEqual([p.path for p in matched], ["/Codes/SubSwap"])
         self.assertEqual(projects.resolve_query("SUB", items), "/Codes/SubSwap")
+
+    def test_substring_hits_suppress_subsequence_noise(self) -> None:
+        """回归：有子串命中时，不能再把 `java-platform` 这类子序列命中掺进候选。"""
+        items = self._projects(
+            "/Codes/AlphaForge/backend",
+            "/Codes/AlphaForge/client-web",
+            "/Codes/LLMPlatform/archive/java-platform",
+        )
+        matched = projects.match_projects("alpha", items)
+        self.assertEqual(
+            [p.path for p in matched],
+            ["/Codes/AlphaForge/backend", "/Codes/AlphaForge/client-web"],
+        )
+
+    def test_subsequence_still_works_without_substring_hit(self) -> None:
+        items = self._projects("/Codes/SubSwap")
+        self.assertEqual(
+            [p.path for p in projects.match_projects("sbswp", items)],
+            ["/Codes/SubSwap"],
+        )
 
     def test_zero_matches_raises(self) -> None:
         items = self._projects("/Codes/pickup")

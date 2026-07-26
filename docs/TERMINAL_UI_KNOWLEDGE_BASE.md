@@ -128,6 +128,7 @@ stateDiagram-v2
 | `q` 结束会话 | 当前会话是运行中(托管) | 确认弹窗确认后结束托管并立即标记为已结束 | 不等待下次扫描才更新状态 |
 | `x` 删除会话 | 侧边栏选中任意会话 | 确认弹窗（确认键为 `x`）确认后，运行中/托管会话先结束再删，随后调用所选运行时适配器的 `delete_session()` 彻底抹掉本地历史 | 成功后立即从列表摘除；失败（如磁盘/数据库异常）则提示失败原因，卡片保留、不摘除 |
 | Ctrl/Cmd+点击或 Space | 侧边栏会话卡（非「＋ 新建」） | toggle 多选集（`▸` 标记；最多 3 项）；右栏暂不跟随 | 多选 ≥2 时 Enter 开分屏；Esc 先清多选；↑↓/普通点击清空 |
+| 再次点击当前持有输入的会话卡 | 右栏那一格正持有输入 | 焦点撤回侧边栏，不重新打开会话 | 与 `Ctrl+\` 等价；再点一次又进去，鼠标开关对称 |
 | 点击右栏 | 右栏已有预览或托管画面 | 键盘焦点转移到右栏 | 此后按键进入内嵌会话；`Ctrl+\` 回列表 |
 | `Ctrl+\` 回列表 | 右栏某格持有输入 | 焦点交回会话列表，托管会话继续在后台跑 | 该格恢复压暗并提示输入未接管；底部快捷键栏切回列表侧动作 |
 
@@ -192,6 +193,7 @@ stateDiagram-v2
 | 按键绑定 | 主操作 | `MainScreen.BINDINGS`、`_main_bindings()` | `a` 高级操作、`q` 结束、`x` 删除、`Esc` 退出、`Ctrl+\` 回列表、F12 截图；新建不走底栏快捷键 |
 | 快捷键随焦点裁剪 | Footer 与按键派发 | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 实时格持有输入时列表侧动作既不显示也不派发，翻页键透传给助手 |
 | 自动聚焦与输入蒙版 | 右栏 | `MainScreen._can_autofocus()`、`SplitPaneArea._request_pane_focus()` / `_settle_focus_intent()` / `focus_session_key(only_live=True)`、`sync_input_mask()` | 明确意图（回车 / 单击会话卡 / 托管成功）才交焦点，且意图跨异步 remount 存活；焦点在侧边栏时活着的实时格压暗 |
+| 点击会话卡的开关语义 | 侧边栏 → 右栏 | `SessionListView.focus_on_click()` / `take_focus_before_click()`、`MainScreen._click_returns_focus_to_list()` | 点当前持有输入的那张卡=撤回焦点；判定只能用按下前焦点 |
 | 分屏焦点同步 | 右栏 → 侧边栏 | `PaneCell._notify_pane_focused`、`MainScreen._on_pane_focused`、`SessionListView.select_session_key` | 聚焦某一分屏时侧边栏高亮切到对应会话；不得因此 remount 右栏 |
 | 按键路由 | 搜索与焦点 | `MainScreen.on_key()`、`on_input_submitted()` | `/` 聚焦筛选项目；Down/Enter 回列表；Esc 先清空查询再退出 |
 | 选择事件 | 会话操作 | `MainScreen.on_list_view_selected()` | 回车针对新建项或当前会话分流 |
@@ -230,6 +232,7 @@ stateDiagram-v2
 - 【消歧】“对话预览”固定在右栏，旧 Space 全屏预览入口不得复活；`e` 全屏接管已删除。默认展示最新消息（底部），不是会话开头。
 - 【焦点归属】焦点跟随**明确意图**：回车或单击会话卡打开、新建 / 顶栏加格 / 直启托管成功、关掉持有输入的那格 → 输入交给右栏；上下浏览（含方向键选择跟随）、后台重扫一律不抢焦点。自动聚焦只认活着的实时会话，且弹窗或筛选框正持有输入时不抢（`MainScreen._can_autofocus()`）。右栏滚轮与焦点无关。
 - **AI 易错点**【禁止】把自动聚焦挂到 `_follow_current_selection()` 上 -> 浏览必须留在列表（原因：一抢焦点方向键就全发给助手，列表没法继续用）。单击会话卡不属于浏览：Textual 的 `ListView` 点击就发 `Selected`，与回车同一条打开路径（真的会拉起 / 接管会话），必须一样自动聚焦。
+- 【点击是对称开关】点会话卡 → 输入交给右栏；再点同一张卡（该格正持有输入）→ 焦点撤回侧边栏、不重新打开会话；点别的会话卡仍是「打开」。判定依据是 `SessionListView.focus_on_click()` 记下的**按下前焦点**（`take_focus_before_click()` 一次性消费），不能事后现查——Textual 在 MouseDown 阶段先 `set_focus(列表)` 再把事件发下来，处理 `ListView.Selected` 时焦点早已是列表。
 - **AI 易错点**【自动聚焦被 remount 收尾抢回】点击会先触发一次选择跟随的异步整排挂载，其收尾会「把焦点还给列表」，落地时间晚于紧随其后的自动聚焦。所以聚焦意图必须登记成能跨挂载存活的状态（`SplitPaneArea._request_pane_focus()` / `_focus_intent_key`），并由挂载收尾统一裁决（`_settle_focus_intent()`）；判断「意图是否已兑现」只能用兑现计数 `_focus_intent_serial`，不能用 `any_embed_focused()` 现查——Textual 的 `Widget.focus()` 是 `call_later` 延迟生效的，刚聚焦完那一瞬间查到的仍是旧焦点。
 - 【输入蒙版】焦点在侧边栏且右栏是活着的实时会话时，该格压暗并在底条写明输入未接管；焦点在任一格内时都不压暗。压暗只是提示，不阻断滚轮和鼠标选词。
 - 【边界】本域仅将进行中会话交给 `EmbedPane`。tmux 抓帧、控制通道、鼠标协议、主题注入和输入转发的协议细节转至“内嵌实时终端”领域，不要为改主屏而跨层复制实现。

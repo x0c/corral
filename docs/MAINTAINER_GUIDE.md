@@ -120,7 +120,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - 会话卡三行正文（标题 / 运行时 / 时间）；进行中绿色标题、已结束默认配色；侧边栏不展示状态文案；标题生成中不画 spinner。
 - **项目搜索**：`#project-search` + `nav.project_query`；`/` 聚焦搜索；Down/Enter 回列表；Esc 先清空再回列表。
 - 右栏随选择变化：托管显示现场；未托管/已结束显示完整对话预览（选中即加载，默认钉在最新）。面板聚焦时列表→右栏跟随暂停；**右栏→列表**仍要同步高亮（`_on_pane_focused`）。长对话用 Home/End/PgUp/PgDn 或滚轮（`detail_offset` / `_detail_stick_bottom`）。
-- 点击会话卡等价 Enter；右栏聚焦时 `Ctrl-\` 交回列表。
+- 点击会话卡等价 Enter（真的会拉起 / 接管会话，并把输入交给右栏那一格）；再点当前持有输入的那张卡则把焦点撤回侧边栏，与 `Ctrl-\` 等价，点开 / 收回对称。
 
 ### 会话级快捷键
 
@@ -236,7 +236,8 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **两种形态**：
   1. **项目快捷启动** `pickup <runtime> <project>`：第二个位置参数**不以 `-` 开头**时，当作项目名（大小写无关模糊匹配）。命中后在该目录 `build_new_session_plan(cwd)` 新建空白会话（不 resume）。0 命中报错退出；多命中时交互终端编号选择，非 TTY 直接失败并列出候选。项目名后再跟其它参数一律报错（避免 `pickup claude subswap -p x` 语义含糊）——需要透传时用 `pickup claude --…`。
   2. **透传** `pickup <runtime>` / `pickup <runtime> --flag …`：无额外参数，或首个用户参数以 `-` 开头 → `build_passthrough_plan`（只垫 `auto_approve_args`）。
-- **项目发现**（`projects.py`，与 TUI「＋ 新建」的 `store.projects()` / `pick_project` 共用）：合并会话历史里的有效 cwd ∪ 本机 git 根扫描。默认扫 `$HOME`（深度 4，命中 `.git` 后不嵌套）；`PICKUP_PROJECT_ROOTS`（逗号分隔）覆盖扫描根，设为空字符串则跳过文件系统扫描；`PICKUP_PROJECT_DEPTH` / `PICKUP_PROJECT_EXCLUDE` 可选。软链根先 `realpath`。**硬排除目录名**（walk 时 SkipDir，不依赖用户配置）：`.stversions`、`.stfolder`（Syncthing 版本快照里常残留 `.git`，扫进去会冒出幽灵项目）、`node_modules`、`.cache`、`Library`、以及其它常见点目录噪音。回归：`tests/test_projects.py` 的 `test_scan_skips_stversions_syncthing_snapshots`。
+- **项目发现**（`projects.py`，与 TUI「＋ 新建」的 `store.projects()` / `pick_project` 共用）：合并会话历史里的有效 cwd ∪ 本机 git 根扫描。默认扫 `$HOME`（深度 4，命中 `.git` 后不嵌套）；`PICKUP_PROJECT_ROOTS`（逗号分隔）覆盖扫描根，设为空字符串则跳过文件系统扫描；`PICKUP_PROJECT_DEPTH` / `PICKUP_PROJECT_EXCLUDE` 可选。**必须跟随目录软链接**：`_scan_one_root` 自己写 DFS（不用 `os.walk`，它 `followlinks=False` 会整棵漏掉软链子树，`followlinks=True` 又会成环），逐层 `realpath` 去重防环，收录的键统一是真实路径，这样与会话历史里的 cwd 能对上、不会同一个项目出现两条。真实踩坑：suzhou 上 `~/Codes -> /Users/geraltgraham/Codes`，旧实现从 `$HOME` 扫出 **0** 个项目，`pickup kimi alpha` 只能靠"有过会话记录的目录"兜底，从没开过会话的项目一律「未找到匹配项目」。回归：`test_scan_follows_symlinked_subdir` / `test_scan_symlink_cycle_terminates`。**硬排除目录名**（按目录名剪枝，不依赖用户配置）：`.stversions`、`.stfolder`（Syncthing 版本快照里常残留 `.git`，扫进去会冒出幽灵项目）、`node_modules`、`.cache`、`Library`、以及其它常见点目录噪音。回归：`tests/test_projects.py` 的 `test_scan_skips_stversions_syncthing_snapshots`。
+- **项目名匹配分两档**（`match_projects`）：子串档（名字 / 标签 / 路径包含查询串，rank 0–3）与子序列档（`_fuzzy_match` 打散字符，rank 4–6）。**只要有任何子串命中，就整体丢掉子序列命中**——否则 `alpha` 会连 `LLMPlatform/archive/java-platform`（j-**a**-va-p-**l**-atform… 顺序恰好凑得出）一起列进候选，真正想要的 `AlphaForge/*` 被淹在 10 条里。一个子串都没命中时才退回子序列，`sbswp → SubSwap` 这种缩写输入仍然可用。回归：`test_substring_hits_suppress_subsequence_noise` / `test_subsequence_still_works_without_substring_hit`。
 - **为什么透传只垫危险参数，不像 TUI 里的 `build_resume_plan` 之类还塞了 codex 的 `-c model_reasoning_effort="high"`**：透传的诉求是"我知道我要传什么参数给底层 CLI，只是不想每次手打一长串跳过审批的危险参数"，属于用户对透传语义有明确预期的场景；额外静默塞入其它默认配置（哪怕是好意）会让用户没法确定"这次命令实际执行了什么"，所以 `registry.build_passthrough_plan` 只处理 `auto_approve_args`，不碰运行时的其它默认参数。
 - **危险参数改成运行时类属性 `auto_approve_args`**（`runtime/base.py` 声明、`runtime/claude.py`/`runtime/codex.py` 各赋值一次），原本在每个适配器的 `build_resume_plan`/`build_continue_plan`/`build_new_plan`/`build_new_session_plan` 四处各写一遍字面量字符串，现在四处和直启共用同一份声明。新增运行时想接入直启子命令，只需要declare 这个类属性（不声明则默认空元组，直启不会额外加任何参数）。
 - **`OpenCodeRuntime` 是这个模式下的一个刻意例外**：它的危险参数（`--dangerously-skip-permissions`）只在 `opencode run` 子命令下真实生效，裸命令（`pickup opencode` 直启透传的默认形态）带上会直接报错退出（实测确认，非猜测）。这个 flag 因此没有放进 `auto_approve_args`（该属性对 OpenCode 显式设为空元组），而是只硬编码在 `build_continue_plan` 内部——`pickup opencode`（裸直启）不会被自动垫上这个参数，这是有意为之，不是遗漏。详见「OpenCode 扫描」节最后一条。新增运行时如果也存在"危险参数只在特定子命令下有效"的情况，应参照这个处理方式，不要为了凑统一模式硬塞进 `auto_approve_args` 导致裸命令被打坏。

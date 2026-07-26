@@ -136,8 +136,10 @@ around when their content updates; only genuinely new sessions appear, always pr
   live terminal there) **and hands keyboard input to that pane** — start typing to the agent
   right away, no click needed. Arrow-key browsing never steals focus (and never starts an agent),
   so the list stays usable; `Ctrl-\` gives input back to it.
-- Click a session card to do the same thing as `Enter`; clicking a pane is an equivalent way to
-  take it over, and clicking back on the left list returns keyboard control to browsing.
+- Click a session card to do the same thing as `Enter`. Clicking is a symmetric toggle: click the
+  card of the pane that currently holds input and keyboard control goes back to the sidebar
+  (same as `Ctrl-\`, the session keeps running); click it again to step back in. Clicking a pane
+  directly is an equivalent way to take it over.
 - When focus is on the sidebar, live panes are dimmed and their status bar says input is not
   going there — so you never type into a pane that isn't listening.
 - While the right pane has focus, `Ctrl-\` returns keyboard focus to the list. Hosted sessions keep

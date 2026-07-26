@@ -212,9 +212,28 @@ class SessionListView(ListView):
         # 页头占位文案 / 新建会话目录解析共用，禁止在本类另开一份状态。
         self.nav = nav
         self._multi_keys: list[str] = []
+        # 鼠标按下前焦点所在的控件，见 focus_on_click()。
+        self.focus_before_click = None
         # rebuild() 的并发闸门：见该方法注释，多条 pump 上的调用方必须串行进 DOM。
         self._rebuild_lock = asyncio.Lock()
         self._rebuild_seq = 0
+
+    def focus_on_click(self) -> bool:
+        """记下「这次鼠标按下之前焦点在哪」。
+
+        Textual 在 MouseDown 阶段先 `set_focus(列表)` 再把事件发下来，等我们收到
+        点击 / `ListView.Selected` 时焦点已经是列表了，没法再区分「从右栏点回来」
+        和「本来就在列表里点」。这个钩子是唯一还能看到旧焦点的时机——点击当前
+        正持有输入的那张会话卡要能把焦点撤回侧边栏，就靠它。
+        """
+        self.focus_before_click = getattr(self.app, "focused", None)
+        return True
+
+    def take_focus_before_click(self):
+        """读取并清空按下前焦点，保证一次点击只被判定一次。"""
+        before = self.focus_before_click
+        self.focus_before_click = None
+        return before
 
     async def on_mount(self) -> None:
         await self.rebuild()

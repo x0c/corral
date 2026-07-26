@@ -694,6 +694,8 @@ class MainScreen(Screen):
     @work
     async def on_list_view_selected(self, event) -> None:
         session_list = self.query_one(SessionListView)
+        # 每次「打开」都要消费掉按下前焦点，避免上一次点击的旧值留到下一次判定。
+        focus_before_click = session_list.take_focus_before_click()
         multi = session_list.multi_keys()
         if len(multi) >= 2:
             session_list.clear_multi()
@@ -707,10 +709,34 @@ class MainScreen(Screen):
         if session is None:
             return
         import pickup
+        if self._click_returns_focus_to_list(focus_before_click, pickup.session_key(session)):
+            self._focus_list()
+            return
         request = pickup.LaunchRequest(
             session, str(session.get("source") or self.nav.source), self.store.get_title(session)
         )
         await self._open_or_exit(request)
+
+    def _click_returns_focus_to_list(self, focus_before_click, key: str) -> bool:
+        """点「当前正持有输入的那张会话卡」= 把焦点撤回侧边栏，与 Ctrl+\\ 等价。
+
+        点开→点同一张卡收回→再点又进去，形成对称的鼠标开关；点的是别的会话卡时
+        仍按「打开」处理，把输入交给那一格。
+        """
+        if focus_before_click is None or not self.embed_ok:
+            return False
+        try:
+            cells = self._split_area().cells()
+        except Exception:  # 右栏尚未挂上（内嵌不可用 / 首帧前）：按普通打开处理
+            return False
+        for cell in cells:
+            if cell.spec.session_key != key:
+                continue
+            pane = cell.embed_pane()
+            if pane is None or pane is not focus_before_click:
+                continue
+            return bool(cell.spec.keepalive_name) and not pane.dead
+        return False
 
     async def _start_new_session_flow(self) -> None:
         session_list = self.query_one(SessionListView)

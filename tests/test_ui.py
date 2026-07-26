@@ -1757,6 +1757,50 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(list_view.has_focus, "点已托管的会话卡必须进右栏")
                 self.assertFalse(pane.input_masked, "持有输入的格不该压暗")
 
+    async def test_click_same_card_again_returns_focus_to_list(self) -> None:
+        """点会话卡是对称开关：点开进右栏，再点同一张卡把输入撤回侧边栏。
+
+        Textual 在 MouseDown 阶段就把焦点移到列表了，判定必须靠
+        `SessionListView.focus_on_click()` 记下的「按下前焦点」，不能事后现查。
+        """
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+
+                await pilot.press("down")
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+                hosted_key = pickup.session_key(list_view.selected_session())
+
+                def hosted_card() -> SessionCard:
+                    return next(
+                        c for c in app.screen.query(SessionCard)
+                        if pickup.session_key(c.session) == hosted_key
+                    )
+
+                # 点当前正持有输入的那张卡：焦点撤回列表，该格重新压暗。
+                await pilot.click(hosted_card())
+                await _wait_until(lambda: list_view.has_focus)
+                await _wait_until(lambda: pane.input_masked)
+                self.assertFalse(pane.has_focus)
+
+                # 再点一次又进去：开关必须对称，不能一去不回。
+                await pilot.click(hosted_card())
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+                self.assertFalse(list_view.has_focus)
+                self.assertFalse(pane.input_masked)
+
     async def test_stale_highlight_after_hosting_keeps_live_pane(self) -> None:
         """托管落库早于列表重建时，旧卡片高亮事件不能把实时终端盖回静态预览。"""
         store, _ = _make_store()
