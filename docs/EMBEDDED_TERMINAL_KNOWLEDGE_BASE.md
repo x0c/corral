@@ -163,7 +163,8 @@ stateDiagram-v2
 | 创建运行中(托管)会话 | `embed.py` | `host_session()` | detached 创建专用 socket 会话，带尺寸、工作目录、环境与同名复用 |
 | 打开或接回右栏会话 | `ui/main_screen.py` | `MainScreen._embed_open()`、`MainScreen._on_embed_hosted()` | 在后台完成阻塞创建，成功后更新右栏画面并把输入交给该格（`_can_autofocus()` 把关） |
 | 聚焦实时画面 | `ui/embed_pane.py` | `EmbedPane.focus_session()` | 切会话、开控制通道、调整尺寸、启动首帧抓取；本身不动键盘焦点 |
-| 把输入交给某一格 | `ui/split_pane_area.py` | `SplitPaneArea.focus_session_key(only_live=True)`、`_focus_after_close()` | 自动聚焦的唯一入口；非实时格直接拒绝 |
+| 把输入交给某一格 | `ui/split_pane_area.py` | `SplitPaneArea._request_pane_focus()` → `_apply_focus_intent()` / `_settle_focus_intent()` → `focus_session_key(only_live=True)`、`_focus_after_close()` | 自动聚焦的唯一入口；意图登记后可跨异步 remount 存活，非实时格直接拒绝 |
+| 点击会话卡撤回焦点 | `ui/session_list.py` + `ui/main_screen.py` | `SessionListView.focus_on_click()` / `take_focus_before_click()`、`MainScreen._click_returns_focus_to_list()` | 点当前持有输入的那张卡＝回列表；只能用「按下前焦点」判定 |
 | 输入蒙版同步 | `ui/split_pane_area.py` | `SplitPaneArea.sync_input_mask()`、`PaneCell.set_input_masked()` | 焦点变化 / 挂载 / 关格后按“右栏是否持有输入”压暗活着的实时格 |
 | 按焦点裁剪快捷键 | `ui/main_screen.py` | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 实时格持有输入时列表侧动作既不显示也不派发（含优先级绑定的翻页键） |
 | 抓取实时画面 | `embed.py` | `capture()`、`pane_state()` | 优先经控制通道请求，失效时回退外部只读 tmux 调用 |
