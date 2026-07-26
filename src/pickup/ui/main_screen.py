@@ -979,6 +979,11 @@ class MainScreen(Screen):
             self.set_focus(pane)
 
     def _focus_list(self) -> None:
+        # 用户主动回列表：撤销右栏还没兑现的自动聚焦意图，别让它随后把焦点抢回去。
+        try:
+            self._split_area().clear_focus_intent()
+        except Exception:
+            pass
         self.query_one(SessionListView).focus()
 
     def on_descendant_focus(self, event) -> None:

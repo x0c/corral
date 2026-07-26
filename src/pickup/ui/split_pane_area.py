@@ -334,6 +334,11 @@ class SplitPaneArea(Vertical):
         self.current_project: str = ""
         self._panes: list[PaneSpec] = []
         self._focus_key: str | None = None
+        # 「把输入交给某一格」的待兑现意图，以及尚未执行完的整排挂载数量。
+        # 两者配合让意图能跨过一次异步 remount，见 _request_pane_focus。
+        self._focus_intent_key: str | None = None
+        self._mount_pending = 0
+        self._focus_intent_serial = 0
 
     def compose(self):
         yield RuntimeTopBar(
@@ -561,8 +566,7 @@ class SplitPaneArea(Vertical):
             self._focus_key = self._panes[0].session_key
         if focus_pane and self._focus_key:
             # 身份未变不会 remount，焦点不会自己跑过来，必须显式交过去。
-            key = self._focus_key
-            self.call_after_refresh(lambda: self.focus_session_key(key, only_live=True))
+            self._request_pane_focus(self._focus_key)
 
     def add_hosted_pane(
         self,
@@ -698,6 +702,50 @@ class SplitPaneArea(Vertical):
                 return
         self._on_focus_list()
 
+    def _request_pane_focus(self, key: str | None) -> None:
+        """登记一次「把输入交给某一格」的明确意图（回车 / 点击 / 托管成功）。
+
+        意图必须能跨过一次还没执行完的整排 remount：鼠标点会话卡时，选择跟随
+        先排了一次异步挂载（收尾会把焦点还给列表），紧接着才轮到「打开」事件；
+        若这里直接 call_after_refresh 去聚焦，会被后落地的挂载收尾抢回列表——
+        真机表现就是「点已托管的会话卡不进右栏，还得再点一下右栏」。
+        """
+        if not key:
+            return
+        self._focus_intent_key = key
+        self.call_after_refresh(self._apply_focus_intent)
+
+    def clear_focus_intent(self) -> None:
+        """用户已经主动决定焦点去哪（回列表 / 点了别处），丢弃待兑现意图。"""
+        self._focus_intent_key = None
+
+    def _apply_focus_intent(self) -> bool:
+        """兑现待办意图；还有挂载在路上时保留意图，等挂载收尾再试。"""
+        key = self._focus_intent_key
+        if not key:
+            return False
+        if self.focus_session_key(key, only_live=True):
+            self._focus_intent_key = None
+            self._focus_intent_serial += 1
+            return True
+        if not self._mount_pending:
+            # 目标不是实时格（预览 / 已结束 / 托管失败），放弃，不留到下次挂载诈尸
+            self._focus_intent_key = None
+        return False
+
+    def _settle_focus_intent(self, restore_list: bool, serial: int) -> None:
+        """挂载收尾：兑现意图，兑现不了就按挂载前的样子把焦点还给列表。
+
+        `serial` 是排这次挂载时的兑现计数。计数变了说明挂载排队期间已经有一次
+        明确意图被兑现（点击/回车打开），此时绝不能再把焦点还回列表——
+        Textual 的 `Widget.focus()` 是 `call_later` 延迟生效的，这里不能靠
+        `any_embed_focused()` 现查，那时焦点还没真正落到格子上。
+        """
+        if self._apply_focus_intent() or self._focus_intent_key:
+            return
+        if restore_list and self._focus_intent_serial == serial:
+            self._on_focus_list()
+
     def _schedule_mount(
         self,
         entries: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]],
@@ -705,6 +753,9 @@ class SplitPaneArea(Vertical):
         focus_key: str | None = None,
         focus_pane: bool = False,
     ) -> None:
+        if focus_pane:
+            self._focus_intent_key = focus_key
+        self._mount_pending += 1
         self.call_next(
             self._mount_panes_async, entries, focus_key=focus_key, focus_pane=focus_pane,
         )
@@ -724,11 +775,14 @@ class SplitPaneArea(Vertical):
             getattr(focused, "id", None) == "session-list"
             or type(focused).__name__ == "SessionListView"
         )
+        serial = self._focus_intent_serial
+        self._mount_pending = max(0, self._mount_pending - 1)
         row = self.query_one("#pane-row", Horizontal)
         await row.remove_children()
         if not entries:
             await row.mount(Static(t("split.empty_hint"), id="pane-row-empty"))
             self._panes = []
+            self._focus_intent_key = None
             if list_had_focus:
                 self.call_after_refresh(self._on_focus_list)
             return
@@ -745,12 +799,15 @@ class SplitPaneArea(Vertical):
                 detail_renderer=renderer,
             )
             await row.mount(cell)
-        if list_had_focus:
-            self.call_after_refresh(self._on_focus_list)
-        elif focus_key:
-            only_live = focus_pane
+        if self._focus_intent_key or list_had_focus:
+            # 明确意图（可能是这次挂载排队期间才发生的点击/回车）压过「把焦点还回
+            # 列表」；意图已在挂载期间兑现时也不能再抢回来，两种情况都由 settle 判。
             self.call_after_refresh(
-                lambda: self.focus_session_key(focus_key, only_live=only_live)
+                lambda: self._settle_focus_intent(list_had_focus, serial)
+            )
+        elif focus_key:
+            self.call_after_refresh(
+                lambda: self.focus_session_key(focus_key, only_live=False)
             )
         # 首帧要么已经压暗、要么已经交出焦点，不能等下一次焦点事件才同步。
         self.call_after_refresh(self.sync_input_mask)
