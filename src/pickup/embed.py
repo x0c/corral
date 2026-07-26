@@ -791,9 +791,35 @@ def open_channel(name: str, on_output=None) -> ControlChannel | None:
                 return None
         elif on_output is not None:
             ch.on_output = on_output
+        _channel_used[name] = time.monotonic()
+        _prune_channels(keep=name)
     # 通道建起来说明会话确实在，登记为存活证据（见 is_alive 的 max_age 说明）。
     note_alive(name)
     return ch
+
+
+# 通道池上限。分屏最多 3 格，多留几条给「刚切走、可能马上切回」的会话：右栏改成
+# 就地改绑后，切走的格子不再卸载、也就不再顺手关掉它的通道，没有上限的话用户在
+# 侧边栏一路翻下去就会攒出几十个 `tmux -C attach` 子进程。
+_MAX_CHANNELS = 6
+_channel_used: dict[str, float] = {}
+
+
+def _prune_channels(keep: str | None = None) -> None:
+    """按最久未用关掉超额通道。调用方必须已持有 `_channel_lock`。
+
+    正在显示的格子每轮抓帧都会经 `_active_channel` 刷新使用时间，因此 LRU 天然
+    不会淘汰在用的格子，不需要再单独维护一份「已挂载会话」名单。
+    """
+    while len(_channels) > _MAX_CHANNELS:
+        candidates = [n for n in _channels if n != keep]
+        if not candidates:
+            return
+        oldest = min(candidates, key=lambda n: _channel_used.get(n, 0.0))
+        ch = _channels.pop(oldest, None)
+        _channel_used.pop(oldest, None)
+        if ch is not None:
+            ch.close()
 
 
 def close_channel(name: str | None = None) -> None:
@@ -803,8 +829,10 @@ def close_channel(name: str | None = None) -> None:
             for ch in list(_channels.values()):
                 ch.close()
             _channels.clear()
+            _channel_used.clear()
             return
         ch = _channels.pop(name, None)
+        _channel_used.pop(name, None)
         if ch is not None:
             ch.close()
 
@@ -812,6 +840,8 @@ def close_channel(name: str | None = None) -> None:
 def _active_channel(name: str) -> ControlChannel | None:
     ch = _channels.get(name)
     if ch is not None and not ch.dead and ch.name == name:
+        # 抓帧循环每轮都会走到这里，顺手当作 LRU 的使用打点（见 _prune_channels）
+        _channel_used[name] = time.monotonic()
         return ch
     return None
 

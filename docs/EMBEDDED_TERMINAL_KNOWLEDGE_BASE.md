@@ -215,6 +215,7 @@ stateDiagram-v2
 - **AI 易错点**【禁止】用 tmux copy-mode 的 client 滚动位置实现右栏历史 -> 必须维护 `history_offset` 并用 `capture-pane -S/-E` 抓历史窗口（原因：copy-mode 的视觉偏移不影响 capture-pane，画面不会滚动）。
 - **AI 易错点**【禁止】把 `history_offset` 命名成 `scroll_offset` -> 后者是 Textual widget 的内置二维属性，覆盖后会令选区坐标计算崩溃。
 - **AI 易错点**【隐性依赖】“连接中…”不是可见产品状态。首帧前有静态详情则保持详情且**钉底**（`_detail_stick_bottom`；托管等待首帧走 `_uses_detail_window`，禁止顶裁）；没有详情则显示空白终端。重复聚焦同一静止会话不可清空有效帧，切换 / 快速往返必须用抓帧代次阻止旧回调覆盖新视图。
+- **AI 易错点**【禁止】切换会话时把右栏整排销毁重建 -> 格数相同必须 `PaneCell.rebind` 就地改绑（原因：重建会丢掉实时画面与控制通道，实测「按键→新画面」从 37ms 退回 80ms）。改绑必须沿用旧 `cell_id`（`EmbedPane` 的 DOM id 按它生成），关格回调必须按此刻绑着的 spec 解析，否则会关错会话。切走的那一屏进 `_screen_cache`、切回来先摆上去；会话确认结束必须 `forget_cached_screen`。细则与实测见 [性能知识库](PERFORMANCE_KNOWLEDGE_BASE.md)。
 - **AI 易错点**【禁止】`(session_key, keepalive_name)` 有序身份未变时对 `show_hosted_group` 整排 `remove_children` remount -> 必须就地更新 title/renderer，保留 live `_grid`（原因：remount 会清空画面，首帧前回退顶裁会闪成「跳回会话开头再滚回最新」）。
 - **AI 易错点**【隐性依赖】本进程 `store.hosted` 仍登记时，活跃判定应优先相信托管身份，不能单靠一次 `embed.is_alive`/`has-session`（高负载下假阴性会拆掉分屏组触发无意义 remount）。
 - **AI 易错点**【隐性依赖】会话结束判定为“连续三次抓帧失败且 `has-session` 失败”。单次抓帧超时、控制通道死亡都只能触发回退，不能直接宣布会话结束或移走焦点。

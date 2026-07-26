@@ -1263,6 +1263,46 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(visible), 1)
             self.assertEqual(visible[0]["id"], "b")
 
+    async def test_switching_session_rebinds_pane_instead_of_remounting(self) -> None:
+        """切到另一个会话必须就地改绑同一个格子，不能整排销毁重建。
+
+        销毁重建除了控件开销，还会连带丢掉上一格的实时画面和控制通道——真机上
+        表现为每换一个会话右栏都要先空一下再重新连。
+        """
+        from pickup.ui.split_pane_area import SplitPaneArea
+
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.open_channel", return_value=None), \
+             mock.patch("pickup.embed.should_resize_host", return_value=False):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                area = app.screen.query_one(SplitPaneArea)
+                sessions = store.sessions["claude"]
+                first, second = sessions[0], sessions[1]
+                # 选择跟随会把右栏换回静态预览，挡住它以免和本用例抢右栏
+                mock.patch.object(app.screen, "_follow_current_selection").start()
+                self.addCleanup(mock.patch.stopall)
+
+                area.show_hosted_group("/tmp", [(first, "pickup-claude-one", None)])
+                await _wait_until(
+                    lambda: bool(area.cells())
+                    and area.cells()[0].embed_pane() is not None
+                    and area.cells()[0].embed_pane().session_name == "pickup-claude-one"
+                )
+                pane_before = area.cells()[0].embed_pane()
+                cell_before = area.cells()[0]
+
+                area.show_hosted_group("/tmp", [(second, "pickup-claude-two", None)])
+                await _wait_until(
+                    lambda: bool(area.cells())
+                    and area.cells()[0].embed_pane() is not None
+                    and area.cells()[0].embed_pane().session_name == "pickup-claude-two"
+                )
+                self.assertIs(area.cells()[0], cell_before, "格子被重建了")
+                self.assertIs(area.cells()[0].embed_pane(), pane_before, "画面控件被重建了")
+                self.assertEqual(area.cells()[0].spec.keepalive_name, "pickup-claude-two")
+
     async def test_rapid_highlights_are_throttled_but_still_settle(self) -> None:
         """连按方向键翻找会话时，右栏不能每一步都重建一次。
 
@@ -2070,7 +2110,7 @@ class PaneCellHeaderSyncTests(unittest.TestCase):
         cell = PaneCell(
             PaneSpec(session_key="k", cell_id="c1"),
             title="t",
-            on_close=lambda: None,
+            on_close=lambda _spec: None,
             on_focus_list=lambda: None,
             osc_report=None,
         )
@@ -2941,6 +2981,53 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
             strip = pane.render_line(0)
         self.assertEqual(strip.cell_length, 6)
         self.assertEqual(strip.text, "abcdef")
+
+    async def test_switching_back_restores_cached_screen_immediately(self) -> None:
+        """切走再切回同一个会话，必须立刻摆出上次那一屏。
+
+        不缓存的话每次切回都要先退回静态对话回退、等首帧抓到才跳成实时画面，
+        观感就是右栏闪一下；缓存命中时 `_grid` 在 focus_session 返回时就有了。
+        """
+        import pickup.ui.embed_pane as embed_pane_mod
+        from pickup.embed import Cell
+
+        embed_pane_mod._screen_cache.clear()
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.open_channel", return_value=None), \
+             mock.patch("pickup.embed.should_resize_host", return_value=False):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                pane = _primary_embed_pane(app.screen)
+                pane.focus_session("pickup-claude-cache-a")
+                pane._sync_strips([[Cell("A")], [Cell("B")]])
+                self.assertIsNotNone(pane._grid)
+
+                pane.focus_session("pickup-claude-cache-b")
+                self.assertIsNone(pane._grid, "切到别的会话必须先清掉旧画面")
+
+                pane.focus_session("pickup-claude-cache-a")
+                self.assertIsNotNone(pane._grid, "切回来应立刻恢复缓存画面")
+                self.assertIsNotNone(pane._strips, "只恢复网格不重建 Strip 会渲染成空白")
+                self.assertEqual(pane._strips[0].text.strip(), "A")
+
+    async def test_dead_session_drops_cached_screen(self) -> None:
+        """确认结束的会话必须丢掉缓存画面，别用旧屏幕伪装成还在跑。"""
+        import pickup.ui.embed_pane as embed_pane_mod
+        from pickup.embed import Cell
+
+        embed_pane_mod._screen_cache.clear()
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.open_channel", return_value=None), \
+             mock.patch("pickup.embed.should_resize_host", return_value=False):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                pane = _primary_embed_pane(app.screen)
+                pane.focus_session("pickup-claude-gone")
+                pane._sync_strips([[Cell("X")]])
+                pane._apply_dead(pane._capture_generation, "pickup-claude-gone")
+                self.assertNotIn("pickup-claude-gone", embed_pane_mod._screen_cache)
 
     async def test_tmux_resize_and_capture_are_debounced(self) -> None:
         import pickup.ui.embed_pane as embed_pane_mod

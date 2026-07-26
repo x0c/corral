@@ -392,6 +392,22 @@ class ChannelPoolTests(unittest.TestCase):
             self.assertIs(embed.open_channel("sess-a"), ch_a)
             self.assertEqual(CC.call_count, 2)
 
+    def test_pool_evicts_least_recently_used_over_cap(self):
+        """通道池必须有上限：右栏改成就地改绑后，切走的格子不再卸载、也就不再
+        顺手关掉自己的通道，没有上限的话在侧边栏一路翻下去会攒出几十个
+        `tmux -C attach` 子进程。淘汰按最久未用，正在用的会被抓帧不断续期。"""
+        names = [f"sess-{i}" for i in range(embed._MAX_CHANNELS + 2)]
+        with mock.patch.object(embed, "ControlChannel") as CC:
+            CC.side_effect = [self._fake_channel(n) for n in names]
+            for name in names:
+                embed.open_channel(name)
+                # 每次开完都摸一下第一条，让它成为「最近用过」的那条
+                embed._active_channel(names[0])
+        self.assertLessEqual(len(embed._channels), embed._MAX_CHANNELS)
+        self.assertIn(names[0], embed._channels, "一直在用的通道不该被淘汰")
+        self.assertNotIn(names[1], embed._channels, "最久未用的通道应被关掉")
+        self.assertIn(names[-1], embed._channels, "刚打开的通道必须留下")
+
     def test_close_one_leaves_other_alive(self):
         with mock.patch.object(embed, "ControlChannel") as CC:
             ch_a = self._fake_channel("sess-a")

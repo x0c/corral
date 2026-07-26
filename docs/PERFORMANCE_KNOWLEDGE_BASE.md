@@ -35,7 +35,23 @@ pickup 的热路径分为四层：
 - **存活证据缓存**（`embed.note_alive` / `is_alive(name, max_age=...)`）：抓帧、状态查询、开通道、创建托管成功都算一次「确认它还活着」并打时间戳；界面层判活（`MainScreen._session_is_active` / `_is_session_active`，TTL `_ALIVE_EVIDENCE_TTL`=3s）先读证据，命中就不 fork。右栏在显示的会话每轮抓帧都会刷新证据，所以这条路几乎永远命中。**判定「会话是否已结束」一律不传 `max_age`**（`EmbedPane._capture_loop` 的三次失败确认），缓存只能加速「确认活着」，不能替代宣告死亡。实测主线程阻塞中位 18.2ms → 9.3ms，命中缓存时 0.6ms。
 - **选择跟随节流**（`MainScreen._schedule_follow_selection`，窗口 `_FOLLOW_THROTTLE`=120ms）：leading-edge + trailing，单次方向键零额外延迟，连按时窗口内只保留最后一次。**不能改成纯 debounce**——那会给「按一下」也加上固定延迟，单步反而更迟钝。后台重扫和搜索框过滤后的刷新也走这条节流（它们同样会整排重建右栏）。实测积压 5 次高亮：跟随 6 次 → 2 次，主线程累计阻塞 5.7ms → 0.7ms。定时器延迟下限必须 > 0，Textual 的 `Timer` 用间隔做除法，`interval=0` 会在停表时抛 `ZeroDivisionError` 把屏幕卸载流程带崩。回归：`test_rapid_highlights_are_throttled_but_still_settle`（既断言合并，也断言停下来一定收敛到最后一项）、`test_embed.py` 的三条存活证据用例。
 
-**仍未做的大头**：切换不同会话时右栏仍是 `remove_children` + 重新 `mount`，上一格的实时画面直接丢弃，切回去要重新抓帧。Textual 官方推荐的替代是预挂载 + 切 `display`；配合「按会话缓存画面网格」可以让切回已看过的会话接近瞬时。这项要动右栏画面的生命周期、焦点与输入蒙版，属于独立改动，做之前先读 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` §6 关于身份判定与 remount 的既有约束。
+v0.24.17 又补了三项，把上面表里「整排重建 + 重铺回退 + 重开通道」那三段基本消掉：
+
+- **格子就地改绑，不再整排重建**（`PaneCell.rebind` / `SplitPaneArea._mount_panes_async`）：新旧格数相同就复用现有格子，只有多出来的才新挂、超出的才卸。`EmbedPane.focus_session` 本来就支持切换会话（提升抓帧代次、拦住旧回调），不需要靠销毁控件来换会话。**`cell_id` 必须沿用旧的**——格子里 `EmbedPane` 的 DOM id 是 compose 时按它生成的。关格回调也必须改成「按此刻绑着的 spec」解析（`PaneCell._close_self`），构造时闭包捕获的那一个在改绑后就过期了，会关错会话。
+- **按会话缓存最后一屏**（`embed_pane._screen_cache`，上限 6）：切走时把网格存起来，切回来先摆上去、后台抓帧几毫秒后用新帧覆盖。恢复必须走 `_sync_strips` 而不是直接赋 `_grid`——`render_line` 的实时分支只认 `_strips`，只设网格会渲染成整片空白。会话确认结束时必须 `forget_cached_screen`，否则再选中它会先摆一屏「像还在跑」的旧画面。
+- **控制通道池加 LRU 上限**（`embed._MAX_CHANNELS`=6）：格子不再卸载，也就不再顺手关掉自己的通道；没有上限的话在侧边栏一路翻下去会攒出几十个 `tmux -C attach` 子进程。淘汰按最久未用，正在显示的格子每轮抓帧都会经 `_active_channel` 续期，天然不会被淘汰。
+
+A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径「按下方向键 → 新画面出现在屏上」）：
+
+| | 右栏换好 | 画面就绪 |
+|---|---|---|
+| 改动前（整排重建） | 24.9ms | **80.2ms** |
+| 改动后（第一次看这个会话） | 32.5ms | **37.1ms** |
+| 改动后（切回看过的会话） | 17.0ms | **17.3ms** |
+
+「右栏换好」在冷缓存下反而略高，是因为改绑把 `focus_session`（开通道 / resize）搬进了挂载协程内同步做完，旧实现是挂完再 `call_after_refresh` 补——所以只看这一列会误判，以「画面就绪」为准。
+
+**仍未做的**：`add_hosted_pane` 加格、关格仍走整排路径的一部分（格数变化时只复用前缀）；跨项目切换时格数常常也变，收益不如同格数切换明显。
 
 ## 派生缓存边界
 

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from functools import lru_cache
 from typing import Callable
 
@@ -177,6 +178,36 @@ _RESIZE_TMUX_DEBOUNCE = 0.2
 _RESIZE_CAPTURE_HOLD_MIN = 0.35
 _RESIZE_CAPTURE_HOLD_MAX = 3.0
 _RESIZE_CAPTURE_STABLE_FRAMES = 2
+
+# 按会话名缓存「切走时的最后一屏」。切回来先把这一屏摆上去，后台抓帧几毫秒后
+# 用新帧覆盖；否则每次切回都要先退回静态对话回退、等首帧到了才跳成实时画面，
+# 观感就是右栏闪一下。只存解析后的网格（原生路径下是紧凑的 ParsedRow），
+# 不存 Strip——Strip 按当前面板宽度编译，换格子/换宽度后必须重建。
+_SCREEN_CACHE_MAX = 6
+_screen_cache: "OrderedDict[str, tuple[list, tuple[int, int, bool] | None]]" = OrderedDict()
+
+
+def _cache_screen(name: str | None, grid, cursor) -> None:
+    if not name or not grid:
+        return
+    _screen_cache[name] = (grid, cursor)
+    _screen_cache.move_to_end(name)
+    while len(_screen_cache) > _SCREEN_CACHE_MAX:
+        _screen_cache.popitem(last=False)
+
+
+def _take_cached_screen(name: str):
+    """取出缓存的画面（保留条目，切回同一会话多次都能用）。"""
+    hit = _screen_cache.get(name)
+    if hit is not None:
+        _screen_cache.move_to_end(name)
+    return hit
+
+
+def forget_cached_screen(name: str | None) -> None:
+    """会话已结束 / 被删除时丢弃它的画面，别让死会话的旧屏幕留着骗人。"""
+    if name:
+        _screen_cache.pop(name, None)
 
 
 class EmbedPane(Widget):
@@ -322,6 +353,7 @@ class EmbedPane(Widget):
         # 若尚无画面，则提升版本强制后台重新解析，兼顾从旧异常状态自愈。
         reset_capture = self.session_name != name or self._grid is None
         if reset_capture:
+            self._stash_screen()
             self._capture_generation += 1
             self._grid = None
             self._strips = None
@@ -336,6 +368,8 @@ class EmbedPane(Widget):
         self.detail_offset = 0
         self.invalidate_detail()
         self.history_offset = 0
+        if reset_capture:
+            self._restore_cached_screen(name)
         channel = embed.open_channel(name, on_output=self._on_pane_output)
         pane_w, pane_h = self._pane_size()
         # 过窄时不 resize：布局尚未稳定或用户把终端缩得很小时，避免 agent
@@ -349,12 +383,33 @@ class EmbedPane(Widget):
         self._poke.set()
         return channel  # noqa: RET504（测试里需要断言通道对象，保留返回值）
 
+    def _stash_screen(self) -> None:
+        """把当前这一屏留给「切回来」用。只在真的切走时调用。"""
+        _cache_screen(self.session_name, self._grid, self._cursor)
+
+    def _restore_cached_screen(self, name: str) -> None:
+        """切回曾经看过的会话：先把上次那一屏摆上去，别退回静态回退闪一下。
+
+        走 `_sync_strips` 而不是直接赋 `_grid`：`render_line` 的实时分支只认
+        `_strips`，只设网格会渲染成整片空白；而 Strip 按当前面板宽度编译，缓存
+        里存的网格换到别的格子/别的宽度都要重编，正好由它的整屏重建路径处理。
+        """
+        hit = _take_cached_screen(name)
+        if hit is None:
+            return
+        grid, cursor = hit
+        self._sync_strips(grid)
+        self._cursor = cursor
+        # 有画面就不该再按静态回退钉底，否则新帧到达前会被当成对话预览排版。
+        self._detail_stick_bottom = False
+
     def show_detail(self, renderer: Callable[[], "Text | str"] | None) -> None:
         """未托管会话：展示静态详情而非实时画面。
 
         默认钉在对话最新（底部）；异步暖加载把正文填进来后仍保持钉底，
         直到用户主动上滚或按 Home。
         """
+        self._stash_screen()
         self._capture_generation += 1
         self.session_name = None
         self._grid = None
@@ -368,6 +423,7 @@ class EmbedPane(Widget):
         self.invalidate_detail()
 
     def clear(self) -> None:
+        self._stash_screen()
         self._capture_generation += 1
         old_name = self.session_name
         self.session_name = None
@@ -607,6 +663,9 @@ class EmbedPane(Widget):
     def _apply_dead(self, generation: int, name: str) -> None:
         if not self._capture_is_current(generation, name):
             return
+        # 会话确认结束，缓存的最后一屏必须丢掉：留着的话下次选中这条会话会先
+        # 摆出一屏「像还在跑」的旧画面，比直接显示已结束更误导人。
+        forget_cached_screen(name)
         self.dead = True
         self.input_masked = False  # 已结束的画面不再压暗，否则像"还能输入只是没聚焦"
         self.invalidate_detail()
