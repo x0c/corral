@@ -1263,6 +1263,47 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(visible), 1)
             self.assertEqual(visible[0]["id"], "b")
 
+    async def test_rapid_highlights_are_throttled_but_still_settle(self) -> None:
+        """连按方向键翻找会话时，右栏不能每一步都重建一次。
+
+        每次「选择跟随」都可能整排重建右栏（实测单次端到端约 180ms），按住方向键
+        积压 N 条高亮就是 N 次重建。这里钉死两件事：积压的高亮被合并，且停下来
+        之后一定收敛到最后选中的那一项——只快不准同样是回归。
+        """
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            screen = app.screen
+            list_view = screen.query_one(SessionListView)
+            list_view.focus()
+            await pilot.pause()
+
+            runs: list[int] = []
+            original = screen._follow_current_selection
+
+            def counted():
+                runs.append(list_view.index or 0)
+                return original()
+
+            screen._follow_current_selection = counted
+            # 同步连续移动：Highlighted 全部排进队列后才被处理，等价于按键重复积压
+            for _ in range(5):
+                list_view.action_cursor_down()
+            await pilot.pause()
+            await pilot.pause(delay=0.3)
+
+            self.assertLess(
+                len(runs), 5,
+                f"积压的高亮没有被合并，跟随了 {len(runs)} 次：{runs}",
+            )
+            self.assertTrue(runs, "节流不能把跟随整个吞掉")
+            self.assertEqual(
+                runs[-1], list_view.index,
+                "停下来之后必须收敛到最后选中的那一项",
+            )
+            self.assertIsNone(screen._follow_timer, "收敛后不应留下待触发的定时器")
+
     async def test_enter_without_embed_exits_with_launch_request(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)

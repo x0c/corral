@@ -115,6 +115,7 @@ def host_session(
         raise EmbedError(f"无法创建内嵌会话 {name}") from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise EmbedError(f"无法创建内嵌会话 {name}：{exc}") from exc
+    note_alive(name)
     if osc_report and supports_theme_report():
         open_channel(name)  # 让 report_theme 依赖的"当前有客户端连接"前提尽早成立
         channel = active_channel(name)
@@ -128,8 +129,39 @@ def host_session(
 _pane_ids: dict[str, str] = {}
 
 
-def is_alive(name: str) -> bool:
-    """托管会话是否还活着（pane 里的进程退出后 tmux 会话随之消失）。"""
+# 会话名 → 最近一次「确认它还活着」的单调时钟读数。抓帧、状态查询、开通道
+# 成功本身就是存活证据，记下来给界面层复用：切换会话时的活跃判定不必再 fork
+# 一次 `has-session`（实测每次约 5ms，分屏几格就乘几，全压在 Textual 主线程上）。
+_alive_marks: dict[str, float] = {}
+_alive_lock = threading.Lock()
+
+
+def note_alive(name: str) -> None:
+    """登记一次「刚刚确认它活着」。只有真正拿到 tmux 正常响应时才调用。"""
+    if not name:
+        return
+    with _alive_lock:
+        _alive_marks[name] = time.monotonic()
+
+
+def forget_alive(name: str) -> None:
+    """确认会话已不存在时清除存活证据，避免缓存把死会话续命。"""
+    with _alive_lock:
+        _alive_marks.pop(name, None)
+
+
+def is_alive(name: str, *, max_age: float | None = None) -> bool:
+    """托管会话是否还活着（pane 里的进程退出后 tmux 会话随之消失）。
+
+    `max_age` 给出可接受的证据陈旧上限（秒）：这段时间内有过成功抓帧 / 状态查询
+    就直接返回 True，不再 fork。判定「会话是否已结束」这类必须拿准的场景一律
+    不要传 `max_age`——缓存只能加速「确认活着」，不能替代宣告死亡。
+    """
+    if max_age is not None and name:
+        with _alive_lock:
+            marked = _alive_marks.get(name)
+        if marked is not None and (time.monotonic() - marked) <= max_age:
+            return True
     if shutil.which("tmux") is None:
         return False
     try:
@@ -138,9 +170,11 @@ def is_alive(name: str) -> bool:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=True,
         )
-        return True
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        forget_alive(name)
         return False
+    note_alive(name)
+    return True
 
 
 def capture(name: str, scroll_offset: int = 0, pane_height: int = 0) -> str | None:
@@ -166,12 +200,14 @@ def capture(name: str, scroll_offset: int = 0, pane_height: int = 0) -> str | No
     if ch is not None:
         lines = ch.request(*args)
         if lines is not None:
+            note_alive(name)
             return "\n".join(lines)
     try:
         out = subprocess.check_output([*keepalive._BASE_ARGV, *args],
                                       stderr=subprocess.DEVNULL, timeout=_CALL_TIMEOUT)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
+    note_alive(name)
     return out.decode("utf-8", errors="replace")
 
 
@@ -202,9 +238,10 @@ def pane_state(name: str) -> tuple[int, int, bool, bool, bool, int] | None:
             return None
     try:
         xs, ys, fs, ma, ms, hs = out.split("|")
-        return int(xs), int(ys), fs == "1", ma == "1", ms == "1", int(hs)
     except ValueError:
         return None
+    note_alive(name)
+    return int(xs), int(ys), fs == "1", ma == "1", ms == "1", int(hs)
 
 
 # 托管窗过窄时，Cursor/Claude 等会按当前列数硬换行并写入 scrollback；
@@ -754,7 +791,9 @@ def open_channel(name: str, on_output=None) -> ControlChannel | None:
                 return None
         elif on_output is not None:
             ch.on_output = on_output
-        return ch
+    # 通道建起来说明会话确实在，登记为存活证据（见 is_alive 的 max_age 说明）。
+    note_alive(name)
+    return ch
 
 
 def close_channel(name: str | None = None) -> None:

@@ -2,8 +2,10 @@
 
 按键语义（/ 聚焦项目搜索 / a 高级操作 /
 q 结束会话 / x 删除会话 / c 关闭面板 / Esc 退出）；选中非进行中会话时右栏直接
-展示完整对话预览。侧边栏选中或回车托管后，键盘焦点仍留在列表——只有鼠标点到右栏
-才与内嵌会话交互；右栏滚轮/预览翻页与焦点无关，鼠标在右栏上即可滚动。
+展示完整对话预览。键盘焦点跟随明确意图：回车 / 单击会话卡打开、新建或直启托管成功后
+输入交给右栏那一格（仅限活着的实时会话），上下浏览不抢焦点；再点当前持有输入的那张
+会话卡则把焦点撤回侧边栏，与 `Ctrl+\\` 等价。右栏滚轮/预览翻页与焦点无关，鼠标在右栏
+上即可滚动。焦点契约与两条易踩的时序坑见 docs/TERMINAL_UI_KNOWLEDGE_BASE.md §6。
 多分屏时聚焦某一格会把侧边栏高亮切到对应会话。新建会话走侧边栏「＋ 新建」或
 右栏顶栏加格，不再提供底栏 `n` 快捷键。
 侧边栏顶部为项目搜索框，大小写无关模糊匹配项目名与会话标题。
@@ -43,6 +45,13 @@ REFRESH_INTERVAL_MAX = 10.0  # 秒，连续空闲多轮后退避到的最长间�
 _IDLE_ROUNDS_BEFORE_BACKOFF = 3  # 连续几轮扫描都没变化才开始拉长间隔，避免偶发抖动误判空闲
 CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重扫轻得多，保持高频）
 LIST_PANE_WIDTH = 39  # 分栏时左栏固定宽度，对应旧版 EMBED_LEFT_BAND
+# 活跃判定可接受的存活证据陈旧上限（秒）。右栏在显示的会话每轮抓帧都会刷新证据，
+# 所以这条路几乎永远命中缓存；只有久未露面的会话才真去 fork 一次 has-session。
+# 判定「会话是否已结束」不走这条缓存，见 embed.is_alive 的 max_age 说明。
+_ALIVE_EVIDENCE_TTL = 3.0
+# 选择跟随的节流窗口（秒）。单次方向键立即生效（无额外延迟），连按时窗口内只
+# 保留最后一次——否则连按 N 下就实打实重建 N 次右栏，每次约 180ms。
+_FOLLOW_THROTTLE = 0.12
 
 
 def _filter_looks_like_osc_leak(value: str) -> bool:
@@ -146,6 +155,9 @@ class MainScreen(Screen):
         from pickup import split_layout
 
         self._split_store = split_layout.load_layout()
+        # 选择跟随的节流状态，见 _schedule_follow_selection
+        self._follow_timer = None
+        self._follow_last_run = 0.0
         self._update_channel: str | None = None
         self._update_latest: str | None = None
 
@@ -225,7 +237,7 @@ class MainScreen(Screen):
         from pickup import embed
 
         kname = session.get("keepalive_name")
-        if kname and embed.is_alive(str(kname)):
+        if kname and embed.is_alive(str(kname), max_age=_ALIVE_EVIDENCE_TTL):
             return True
         key = pickup.session_key(session)
         hosted = self.store.hosted.get(key)
@@ -249,10 +261,14 @@ class MainScreen(Screen):
             area = self._split_area()
         except Exception:
             return False
+        checked: set[str] = set()
         for spec in area.pane_specs():
             if spec.session_key != key or not spec.keepalive_name:
                 continue
-            if embed.is_alive(spec.keepalive_name):
+            if spec.keepalive_name in checked:
+                continue
+            checked.add(spec.keepalive_name)
+            if embed.is_alive(spec.keepalive_name, max_age=_ALIVE_EVIDENCE_TTL):
                 return True
         return False
 
@@ -495,7 +511,7 @@ class MainScreen(Screen):
             if self.embed_ok:
                 # 仅刷新当前可见预览格，避免每次重扫都把 Cursor store.db 预览整页重载。
                 self._split_area().invalidate_visible_previews()
-                self._follow_current_selection()
+                self._schedule_follow_selection()
 
     def _update_header(self) -> None:
         """刷新搜索框占位文案：空查询时展示命中数；出错/无会话时给出原因。"""
@@ -522,7 +538,39 @@ class MainScreen(Screen):
     # ---- 选择跟随：右栏默认展示左栏当前选中项 ----
 
     def on_list_view_highlighted(self, event) -> None:
+        self._schedule_follow_selection()
+
+    def _schedule_follow_selection(self) -> None:
+        """节流版选择跟随：首次立即执行，窗口内的连续高亮只保留最后一次。
+
+        用 leading-edge 而不是纯 debounce：纯 debounce 会给「按一下方向键」也加上
+        固定延迟，单步操作反而更迟钝；这里单步零延迟，只有连按才合并。
+        """
+        import time as _time
+
+        now = _time.monotonic()
+        if self._follow_timer is None and now - self._follow_last_run >= _FOLLOW_THROTTLE:
+            self._run_follow_selection()
+            return
+        if self._follow_timer is not None:
+            self._follow_timer.stop()
+        # 下限不能是 0：Textual 的 Timer 用间隔做除法，interval=0 会在停表时抛
+        # ZeroDivisionError 把整个屏幕卸载流程带崩。
+        delay = max(0.01, _FOLLOW_THROTTLE - (now - self._follow_last_run))
+        self._follow_timer = self.set_timer(delay, self._run_follow_selection)
+
+    def _run_follow_selection(self) -> None:
+        import time as _time
+
+        self._follow_timer = None
+        self._follow_last_run = _time.monotonic()
         self._follow_current_selection()
+
+    def on_unmount(self) -> None:
+        # 待触发的节流定时器不能活过屏幕本身，否则回调会打到已卸载的控件树上。
+        if self._follow_timer is not None:
+            self._follow_timer.stop()
+            self._follow_timer = None
 
     def _follow_current_selection(self) -> None:
         if not self.embed_ok:
@@ -1115,7 +1163,7 @@ class MainScreen(Screen):
         list_view.clear_multi()
         await list_view.rebuild(keep_selection=True)
         self._update_header()
-        self._follow_current_selection()
+        self._schedule_follow_selection()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "project-search":

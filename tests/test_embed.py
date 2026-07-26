@@ -191,6 +191,34 @@ class SessionIoTests(unittest.TestCase):
                                   side_effect=subprocess.CalledProcessError(1, [])):
             self.assertFalse(embed.is_alive("sc-claude-1"))
 
+    def test_alive_evidence_cache_skips_fork(self):
+        """抓帧成功即存活证据：`max_age` 内的活跃判定不得再 fork has-session。
+
+        界面层每次切换选中会话都要判活，一次 fork 约 5ms、分屏几格就乘几，
+        全压在 Textual 主线程上（真机现象：切会话时界面明显一顿）。
+        """
+        embed._alive_marks.clear()
+        with mock.patch.object(embed.subprocess, "check_output", return_value=b"frame"):
+            embed.capture("pickup-claude-cache")
+        with mock.patch.object(embed.subprocess, "run",
+                               side_effect=AssertionError("命中缓存时不该再 fork")):
+            self.assertTrue(embed.is_alive("pickup-claude-cache", max_age=3.0))
+
+    def test_stale_alive_evidence_falls_back_to_real_check(self):
+        embed._alive_marks["pickup-claude-old"] = time.monotonic() - 30
+        with mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok):
+            self.assertTrue(embed.is_alive("pickup-claude-old", max_age=3.0))
+
+    def test_death_check_never_uses_cache(self):
+        """判定「会话是否已结束」必须真问一次，缓存不能给死会话续命。"""
+        embed._alive_marks["pickup-claude-dead"] = time.monotonic()
+        with mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(embed.subprocess, "run",
+                                  side_effect=subprocess.CalledProcessError(1, [])):
+            self.assertFalse(embed.is_alive("pickup-claude-dead"))
+        self.assertNotIn("pickup-claude-dead", embed._alive_marks)
+
     def test_send_literal_and_key(self):
         calls = []
 

@@ -15,6 +15,28 @@ pickup 的热路径分为四层：
 
 静态对话预览还缓存完整布局结果；滚动只切可见窗口，不再对每一可见行重复排版整篇对话。实时终端继续按行指纹比较，只重建和刷新变化行。
 
+## 切换选中会话时的右栏更新
+
+侧边栏换一个**活跃**会话，右栏要跟着换实时画面。2026-07-26 在 suzhou 用真实托管会话逐段实测（Pilot 驱动真实事件循环，非估算），一次切换端到端约 170–200ms，构成：
+
+| 阶段 | 实测 | 是否卡住主线程 |
+|---|---|---|
+| 事件派发 + 活跃判定 | ~32ms（峰值 45ms） | 是 |
+| 排队等主线程空闲 | ~6ms | — |
+| 右栏整排拆掉重建 | ~30ms | — |
+| 重建后铺静态回退内容 | ~55ms | — |
+| 开控制通道 + resize | ~14ms | 是 |
+| 首帧抓取与渲染 | ~30–60ms | — |
+
+同机单次调用基线：`has-session` fork 约 4.8ms；`capture` 走 fork 约 5.3ms、走已建好的控制通道只要 **0.4ms**；首次建通道约 18ms。**结论是开销几乎全在「判活的 fork」和「整排重建」上，不在画面本身。**
+
+已落地的两项（v0.24.16）：
+
+- **存活证据缓存**（`embed.note_alive` / `is_alive(name, max_age=...)`）：抓帧、状态查询、开通道、创建托管成功都算一次「确认它还活着」并打时间戳；界面层判活（`MainScreen._session_is_active` / `_is_session_active`，TTL `_ALIVE_EVIDENCE_TTL`=3s）先读证据，命中就不 fork。右栏在显示的会话每轮抓帧都会刷新证据，所以这条路几乎永远命中。**判定「会话是否已结束」一律不传 `max_age`**（`EmbedPane._capture_loop` 的三次失败确认），缓存只能加速「确认活着」，不能替代宣告死亡。实测主线程阻塞中位 18.2ms → 9.3ms，命中缓存时 0.6ms。
+- **选择跟随节流**（`MainScreen._schedule_follow_selection`，窗口 `_FOLLOW_THROTTLE`=120ms）：leading-edge + trailing，单次方向键零额外延迟，连按时窗口内只保留最后一次。**不能改成纯 debounce**——那会给「按一下」也加上固定延迟，单步反而更迟钝。后台重扫和搜索框过滤后的刷新也走这条节流（它们同样会整排重建右栏）。实测积压 5 次高亮：跟随 6 次 → 2 次，主线程累计阻塞 5.7ms → 0.7ms。定时器延迟下限必须 > 0，Textual 的 `Timer` 用间隔做除法，`interval=0` 会在停表时抛 `ZeroDivisionError` 把屏幕卸载流程带崩。回归：`test_rapid_highlights_are_throttled_but_still_settle`（既断言合并，也断言停下来一定收敛到最后一项）、`test_embed.py` 的三条存活证据用例。
+
+**仍未做的大头**：切换不同会话时右栏仍是 `remove_children` + 重新 `mount`，上一格的实时画面直接丢弃，切回去要重新抓帧。Textual 官方推荐的替代是预挂载 + 切 `display`；配合「按会话缓存画面网格」可以让切回已看过的会话接近瞬时。这项要动右栏画面的生命周期、焦点与输入蒙版，属于独立改动，做之前先读 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` §6 关于身份判定与 remount 的既有约束。
+
 ## 派生缓存边界
 
 - 默认位置：`~/.cache/pickup/performance-cache.sqlite3`；遵循 `XDG_CACHE_HOME`，也可用 `PICKUP_CACHE_DIR` 改目录。
