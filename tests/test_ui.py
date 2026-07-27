@@ -1893,6 +1893,60 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(list_view.has_focus)
                 self.assertFalse(pane.input_masked)
 
+    async def test_consecutive_clicks_on_other_cards_always_hand_input_to_pane(self) -> None:
+        """回归：连续点不同的会话卡，输入必须每次都落到右栏，不能一次进一次不进。
+
+        坑：点击后紧跟的选择跟随会把同一个面板控件**就地改绑**到刚点的会话
+        （`PaneCell.rebind` 复用控件不重建），事后再按控件身份比对「按下前焦点」，
+        第二次点击就会把「点了另一张卡」误判成「点了正持有输入的那张卡」，焦点
+        被撤回侧边栏——真机表现是焦点在侧边栏和右栏之间来回跳。判定必须在鼠标
+        按下当帧解析成会话键。
+        """
+        sessions = [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp", "live": True, "keepalive_name": f"pickup-claude-s{i}",
+            }
+            for i in range(3)
+        ]
+        store, registry = _make_store(sessions)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch(
+                "pickup.embed.host_session",
+                side_effect=AssertionError("已托管会话不该重新拉起"),
+            ),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                screen = app.screen
+                list_view = screen.query_one(SessionListView)
+                area = screen.query_one(SplitPaneArea)
+
+                def card(index: int) -> SessionCard:
+                    return next(
+                        c for c in screen.query(SessionCard)
+                        if c.session["id"] == f"s{index}"
+                    )
+
+                for index in (0, 1, 2, 0):
+                    await pilot.click(card(index))
+                    pane = await _wait_for_embed_session(
+                        screen, f"pickup-claude-s{index}",
+                    )
+                    await _wait_until(lambda p=pane: p.has_focus)
+                    self.assertFalse(
+                        list_view.has_focus, f"点第 {index} 张卡后焦点没进右栏",
+                    )
+
+                # 对称开关仍然成立：点当前持有输入的那张卡才收回焦点。
+                await pilot.click(card(0))
+                await _wait_until(lambda: list_view.has_focus)
+                self.assertFalse(area.any_embed_focused())
+
     async def test_stale_highlight_after_hosting_keeps_live_pane(self) -> None:
         """托管落库早于列表重建时，旧卡片高亮事件不能把实时终端盖回静态预览。"""
         store, _ = _make_store()
@@ -3667,6 +3721,125 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
             list_view = app.screen.query_one(SessionListView)
             self.assertEqual(len(list_view._session_cards()), 1)
         self.assertIsNotNone(store.find_session("claude:s0"))
+
+
+class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
+    """在别的终端窗口里跑、没被 pickup 托管的会话。
+
+    这类会话拿不到实时画面（画面只存在于那个窗口自己的终端连接里）。以前点进去
+    会静默用原生恢复另起一个进程，右栏冒出一个刚从历史恢复的新界面，用户看到的
+    就是"会话已中断"，而且两个进程写同一份历史有互相覆盖的风险。
+    """
+
+    @staticmethod
+    def _external_sessions():
+        return [{
+            "source": "claude", "id": "s0", "short_id": "s0", "mtime": time.time(),
+            "size_bytes": 1, "size_kb": 1, "native_title": None, "fallback_title": "会话0",
+            "cwd": "/tmp", "live": True, "pid": 4242,
+        }]
+
+    def test_is_external_running_only_for_live_untracked(self) -> None:
+        from pickup.ui.main_screen import _status_key, is_external_running
+
+        external = {"live": True}
+        hosted = {"live": True, "keepalive_name": "pickup-claude-x"}
+        ended = {"live": False}
+        self.assertTrue(is_external_running(external))
+        self.assertFalse(is_external_running(hosted))
+        self.assertFalse(is_external_running(ended))
+        self.assertEqual(_status_key(external), "status.running_external")
+        self.assertEqual(_status_key(hosted), "status.running_hosted")
+        self.assertEqual(_status_key(ended), "status.ended")
+
+    async def test_detail_header_explains_why_no_live_screen(self) -> None:
+        store, _registry = _make_store(sessions=self._external_sessions())
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            header = app.screen._detail_header(store.find_session("claude:s0")).plain
+            self.assertIn(i18n.t("status.running_external"), header)
+            self.assertIn(i18n.t("detail.running_external"), header)
+
+    async def test_opening_external_session_asks_before_second_process(self) -> None:
+        """确认前不得构造启动计划，取消后也不得启动任何进程。"""
+        store, registry = _make_store(sessions=self._external_sessions())
+        registry.build_launch_plan = mock.Mock(
+            side_effect=AssertionError("确认前不该构造启动计划")
+        )
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause(delay=0.3)
+            self.assertIsInstance(app.screen, ConfirmModal)
+            await pilot.press("escape")  # 非确认键 = 取消
+            await pilot.pause(delay=0.2)
+            self.assertNotIsInstance(app.screen, ConfirmModal)
+        self.assertIsNone(app.return_value)
+        registry.build_launch_plan.assert_not_called()
+
+    async def test_confirming_external_resume_proceeds(self) -> None:
+        store, _registry = _make_store(sessions=self._external_sessions())
+        app = PickupApp(store, embed_ok=False)  # embed 不可用 → 确认后退出交外层接管
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause(delay=0.3)
+            self.assertIsInstance(app.screen, ConfirmModal)
+            await pilot.press("r")
+            await pilot.pause(delay=0.3)
+        request = app.return_value
+        self.assertIsNotNone(request)
+        self.assertEqual(pickup.session_key(request.session), "claude:s0")
+
+    async def test_transcript_keeps_being_reloaded_while_running_elsewhere(self) -> None:
+        """助手仍在写历史 → mtime 变、缓存失效；右栏必须自己补读，否则正文会空掉。"""
+        store, _registry = _make_store(sessions=self._external_sessions())
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.3)
+            screen = app.screen
+            warmed: list[str] = []
+            with mock.patch.object(
+                screen, "_warm_conversation",
+                side_effect=lambda s, gen: warmed.append(pickup.session_key(s)),
+            ):
+                screen._build_hosted_entries(["claude:s0"])
+            self.assertEqual(warmed, ["claude:s0"])
+
+    async def test_hosted_session_is_not_reloaded_from_disk(self) -> None:
+        """已托管会话右栏是实时画面，不该为它反复读历史文件。"""
+        sessions = self._external_sessions()
+        sessions[0]["keepalive_name"] = "pickup-claude-fake"
+        store, _registry = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.3)
+            screen = app.screen
+            warmed: list[str] = []
+            with mock.patch.object(
+                screen, "_warm_conversation",
+                side_effect=lambda s, gen: warmed.append(pickup.session_key(s)),
+            ):
+                screen._build_hosted_entries(["claude:s0"])
+            self.assertEqual(warmed, [])
+
+    async def test_hosted_running_session_opens_without_confirm(self) -> None:
+        """已被 pickup 托管的运行中会话是老路径，不能被新确认框挡住。"""
+        sessions = self._external_sessions()
+        sessions[0]["keepalive_name"] = "pickup-claude-fake"
+        store, _registry = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause(delay=0.3)
+            self.assertNotIsInstance(app.screen, ConfirmModal)
+        self.assertIsNotNone(app.return_value)
 
 
 if __name__ == "__main__":

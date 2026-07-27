@@ -56,6 +56,25 @@ _ALIVE_EVIDENCE_TTL = 3.0
 _FOLLOW_THROTTLE = 0.12
 
 
+def is_external_running(session: dict) -> bool:
+    """会话在本机跑着，但不在 pickup 的托管终端里——通常是用户自己开窗口起的。
+
+    这种会话拿不到实时画面：画面只存在于那个窗口自己的终端连接里，事后没法从
+    外部接管过来（macOS 上连 reptyr 那条 ptrace 路子都不存在）。右栏只能给对话
+    内容，并如实说明原因；在这里"打开"它只会另起一个恢复进程，必须先问用户。
+    """
+    return bool(session.get("live")) and not session.get("keepalive_name")
+
+
+def _status_key(session: dict) -> str:
+    """详情头的状态文案键：托管中 / 在别的窗口跑 / 已结束。"""
+    if session.get("keepalive_name"):
+        return "status.running_hosted"
+    if session.get("live"):
+        return "status.running_external"
+    return "status.ended"
+
+
 def _filter_looks_like_osc_leak(value: str) -> bool:
     """搜索框内容是否像外层终端 OSC 10/11 应答泄漏（含 ESC 或 rgb: 片段）。
 
@@ -407,14 +426,17 @@ class MainScreen(Screen):
             if session is None:
                 continue
             kname = session.get("keepalive_name")
-            if kname or session.get("live"):
+            if kname:
                 entries.append(
-                    (session, str(kname) if kname else None, lambda s=session: self._render_detail(s)),
+                    (session, str(kname), lambda s=session: self._render_detail(s)),
                 )
-            else:
-                entries.append(
-                    (session, None, lambda s=session: self._render_detail(s)),
-                )
+                continue
+            entries.append((session, None, lambda s=session: self._render_detail(s)))
+            if session.get("live"):
+                # 在别的窗口跑的会话没有实时画面，右栏就是这份对话；助手还在写
+                # 历史文件，mtime 一变 peek_conversation 就失效（正文会空掉），
+                # 必须每轮重扫后台补读一次，"下方对话持续更新"才成立。
+                self._warm_conversation(session, self._preview_gen)
         return entries
 
     # ---- 首屏异步加载：main() 把 store.load() 挪到后台线程异步跑，这里等它跑完
@@ -652,7 +674,7 @@ class MainScreen(Screen):
 
         title = self.store.get_title(session)
         runtime = self.store.registry.get(str(session.get("source") or ""))
-        status = t("status.running") if session.get("live") else t("status.ended")
+        status = t(_status_key(session))
         project = str(
             session.get("cwd") or session.get("cwd_display") or t("project.unknown")
         )
@@ -661,6 +683,9 @@ class MainScreen(Screen):
         out.append(runtime.display_name, style=pickup.runtime_label_style(runtime.id))
         out.append(f" · {status}", style="dim")
         out.append("\n" + project, style="dim")
+        # 在别的窗口跑的会话右栏永远只有静态对话，不说明原因就会被当成"会话已断"。
+        if is_external_running(session):
+            out.append("\n" + t("detail.running_external"), style="#B8860B")
         return out
 
     def _render_detail(self, session: dict) -> Text:
@@ -753,7 +778,7 @@ class MainScreen(Screen):
     @work
     async def on_list_view_selected(self, event) -> None:
         session_list = self.query_one(SessionListView)
-        # 每次「打开」都要消费掉按下前焦点，避免上一次点击的旧值留到下一次判定。
+        # 每次「打开」都要消费掉按下前的持有输入会话，避免上一次点击的旧值留到下一次判定。
         focus_before_click = session_list.take_focus_before_click()
         multi = session_list.multi_keys()
         if len(multi) >= 2:
@@ -780,22 +805,12 @@ class MainScreen(Screen):
         """点「当前正持有输入的那张会话卡」= 把焦点撤回侧边栏，与 Ctrl+\\ 等价。
 
         点开→点同一张卡收回→再点又进去，形成对称的鼠标开关；点的是别的会话卡时
-        仍按「打开」处理，把输入交给那一格。
+        一律按「打开」处理，把输入交给那一格（判定只比会话键，不看右栏此刻的
+        控件绑定，原因见 `session_list._focused_live_session_key()`）。
         """
         if focus_before_click is None or not self.embed_ok:
             return False
-        try:
-            cells = self._split_area().cells()
-        except Exception:  # 右栏尚未挂上（内嵌不可用 / 首帧前）：按普通打开处理
-            return False
-        for cell in cells:
-            if cell.spec.session_key != key:
-                continue
-            pane = cell.embed_pane()
-            if pane is None or pane is not focus_before_click:
-                continue
-            return bool(cell.spec.keepalive_name) and not pane.dead
-        return False
+        return focus_before_click == key
 
     async def _start_new_session_flow(self) -> None:
         session_list = self.query_one(SessionListView)
@@ -807,10 +822,35 @@ class MainScreen(Screen):
 
     async def _open_or_exit(self, request) -> None:
         """embed 可用则原地内嵌打开；否则退出应用，交给外层 execvp 全屏接管。"""
+        if not await self._confirm_external_resume(request):
+            return
         if self.embed_ok:
             self._embed_open(request)
         else:
             self.app.exit(result=request)
+
+    async def _confirm_external_resume(self, request) -> bool:
+        """会话正在别的窗口跑时，"打开"实际是另起一个恢复进程——先问过用户。
+
+        原来这一步是静默的：点进去右栏冒出一个刚从历史恢复的新进程，原窗口那个
+        还在跑，观感就是"会话已中断"，而且两个进程写同一份历史有互相覆盖的风险。
+        """
+        import pickup
+
+        if not isinstance(request, pickup.LaunchRequest):
+            return True
+        # 跨运行时接力只读原历史、另建目标会话，没有互相覆盖的问题，不拦。
+        if request.session.get("source") != request.target_runtime_id:
+            return True
+        session = self.store.find_session(pickup.session_key(request.session)) or request.session
+        if not is_external_running(session):
+            return True
+        title = self.store.get_title(session)
+        return bool(
+            await self.app.push_screen_wait(
+                ConfirmModal(t("confirm.resume_external_running", title=title), confirm_key="r")
+            )
+        )
 
     def _embed_open(self, request, *, add_pane: bool = False) -> None:
         """准备启动计划（不涉及阻塞 I/O）后，把 `embed.host_session` 这个真正阻塞的

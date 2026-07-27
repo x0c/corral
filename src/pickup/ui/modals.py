@@ -141,11 +141,17 @@ class ConfirmModal(ModalScreen[bool]):
         align: center middle;
     }
     ConfirmModal > Vertical {
-        width: auto;
-        max-width: 80%;
+        /* 固定基准宽 + 窄终端时按比例收，配合下面的 1fr 让长文案折行。
+           曾经是 width: auto：auto 宽按最长一行算出来，再被 max-width 裁掉，
+           于是超长确认文案（如"会话正在别的窗口运行"那条）直接被截断半句。 */
+        width: 64;
+        max-width: 90%;
         height: auto;
         border: round $warning;
         padding: 1 2;
+    }
+    ConfirmModal Label {
+        width: 1fr;
     }
     """
 

@@ -32,6 +32,28 @@ from pickup.i18n import t
 NEW_SESSION_ID = "__new_session__"
 
 
+def _focused_live_session_key(focused) -> str | None:
+    """焦点控件若是右栏某个「活着的实时终端」，返回它此刻绑定的会话键。
+
+    必须在鼠标按下的当帧解析成会话键，不能只记下控件对象事后再反查：紧随点击的
+    选择跟随会把同一个面板控件**就地改绑**到刚点的那个会话（`PaneCell.rebind`
+    复用控件不重建），事后按控件身份比对，会把「点了另一张卡」误判成「点了正
+    持有输入的那张卡」，焦点被撤回侧边栏——真机表现就是连续点不同会话时焦点
+    在侧边栏和右栏之间来回跳。
+    """
+    if focused is None or getattr(focused, "dead", True):
+        # 只有 EmbedPane 有 dead；其它控件（列表、搜索框）一律不算持有右栏输入
+        return None
+    node = getattr(focused, "parent", None)
+    while node is not None:
+        spec = getattr(node, "spec", None)
+        session_key = getattr(spec, "session_key", None)
+        if session_key:
+            return session_key if getattr(spec, "keepalive_name", None) else None
+        node = getattr(node, "parent", None)
+    return None
+
+
 class SessionMultiToggleRequested(Message):
     """Ctrl/Cmd+点击会话卡：切换侧边栏多选集（不触发 ListView Selected）。"""
 
@@ -212,25 +234,28 @@ class SessionListView(ListView):
         # 页头占位文案 / 新建会话目录解析共用，禁止在本类另开一份状态。
         self.nav = nav
         self._multi_keys: list[str] = []
-        # 鼠标按下前焦点所在的控件，见 focus_on_click()。
+        # 鼠标按下前，右栏哪一格正持有输入（会话键），见 focus_on_click()。
         self.focus_before_click = None
         # rebuild() 的并发闸门：见该方法注释，多条 pump 上的调用方必须串行进 DOM。
         self._rebuild_lock = asyncio.Lock()
         self._rebuild_seq = 0
 
     def focus_on_click(self) -> bool:
-        """记下「这次鼠标按下之前焦点在哪」。
+        """记下「这次鼠标按下之前，右栏哪一格正持有输入」（会话键，没有则 None）。
 
         Textual 在 MouseDown 阶段先 `set_focus(列表)` 再把事件发下来，等我们收到
         点击 / `ListView.Selected` 时焦点已经是列表了，没法再区分「从右栏点回来」
         和「本来就在列表里点」。这个钩子是唯一还能看到旧焦点的时机——点击当前
-        正持有输入的那张会话卡要能把焦点撤回侧边栏，就靠它。
+        正持有输入的那张会话卡要能把焦点撤回侧边栏，就靠它。解析成会话键而不是
+        留着控件对象的原因见 `_focused_live_session_key()`。
         """
-        self.focus_before_click = getattr(self.app, "focused", None)
+        self.focus_before_click = _focused_live_session_key(
+            getattr(self.app, "focused", None)
+        )
         return True
 
     def take_focus_before_click(self):
-        """读取并清空按下前焦点，保证一次点击只被判定一次。"""
+        """读取并清空按下前的持有输入会话键，保证一次点击只被判定一次。"""
         before = self.focus_before_click
         self.focus_before_click = None
         return before

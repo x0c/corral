@@ -127,6 +127,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Running (hosted)",
         "zh": "运行中(托管)",
     },
+    "status.running_external": {
+        "en": "Running in another window",
+        "zh": "运行中(其他窗口)",
+    },
     "status.ended": {
         "en": "Ended",
         "zh": "已结束",
@@ -174,6 +178,13 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "detail.session_ended": {
         "en": "Session ended (Enter to open another)",
         "zh": "会话已结束（回车打开其他会话）",
+    },
+    "detail.running_external": {
+        "en": (
+            "This session is running in another terminal window, so its live screen "
+            "cannot be shown here — the transcript below keeps updating."
+        ),
+        "zh": "该会话在另一个终端窗口里运行，这里看不到它的实时画面；下方对话会持续更新。",
     },
     "detail.empty_preview": {
         "en": "No user messages or final replies to preview",
@@ -234,6 +245,17 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "confirm.delete_running_session": {
         "en": "Session “{title}” is still running. Deleting will end it first, then permanently erase the local history — this cannot be undone",
         "zh": "会话「{title}」正在进行中。删除会先结束它，再永久抹掉本地历史，不可恢复",
+    },
+    "confirm.resume_external_running": {
+        "en": (
+            "Session “{title}” is running in another terminal window and pickup cannot take "
+            "over that window. Resuming here starts a second process on the same history, "
+            "and the two may overwrite each other — close the original window first"
+        ),
+        "zh": (
+            "会话「{title}」正在另一个终端窗口里运行，pickup 无法接管那个窗口。"
+            "在这里恢复会针对同一份历史另开一个进程，两边可能互相覆盖——建议先关掉原窗口"
+        ),
     },
     "notify.screenshot": {
         "en": "Screenshot saved: {path}",
