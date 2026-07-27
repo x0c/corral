@@ -729,6 +729,9 @@ class ParseScreenTests(unittest.TestCase):
             ("\x1b[38;5;200mx\x1b[48;2;255;0;0my", 3, 1),
             ("a好🙂e\u0301x", 9, 1),
             ("a\x1b[2Kb\x1b(Bc", 5, 1),
+            ("\x1b[31m\x1b]8;;https://example.com\x07Click Me\x1b]8;;\x07\x1b[0m!", 12, 1),
+            ("\x1b]8;;file:///tmp/a\x1b\\a\x1b]8;;\x1b\\b", 5, 1),
+            ("ab\x1b]8;;https://example.com", 6, 1),
         )
         for screen, width, height in cases:
             with self.subTest(screen=screen, width=width, height=height):
@@ -793,6 +796,33 @@ class ParseScreenTests(unittest.TestCase):
     def test_non_sgr_sequences_are_skipped(self):
         grid = embed.parse_screen("a\x1b[2Kb\x1b(Bc", 3, 1)
         self.assertEqual("".join(c.ch for c in grid[0]), "abc")
+
+    def test_osc8_hyperlink_payload_is_discarded(self):
+        """OSC 8 超链接只保留可见文字：漏掉这一支时链接前后会各粘一串 `8;;`。
+
+        BEL 与 ST 两种终止写法都要覆盖——agent CLI 两种都在用，tmux
+        capture-pane -e 原样透传。
+        """
+        for terminator in ("\x07", "\x1b\\"):
+            with self.subTest(terminator=terminator):
+                line = (f"\x1b]8;;https://example.com{terminator}"
+                        f"Click Me\x1b]8;;{terminator}!")
+                grid = embed.parse_screen(line, 9, 1)
+                self.assertEqual("".join(c.ch for c in grid[0]), "Click Me!")
+
+    def test_osc8_hyperlink_keeps_surrounding_sgr(self):
+        """超链接夹在 SGR 之间时，颜色状态不能被跳过逻辑吃掉或错位。"""
+        grid = embed.parse_screen(
+            "\x1b[31m\x1b]8;;file:///tmp/a.txt\x07a.txt\x1b]8;;\x07\x1b[0mx", 6, 1,
+        )
+        self.assertEqual("".join(c.ch for c in grid[0]), "a.txtx")
+        self.assertEqual([c.fg for c in grid[0][:5]], [1] * 5)
+        self.assertEqual(grid[0][5].fg, -1)
+
+    def test_unterminated_string_sequence_drops_rest_of_line(self):
+        """本行内没有终止符时整段丢弃，不能把载荷当正文画出来。"""
+        grid = embed.parse_screen("ab\x1b]8;;https://example.com", 4, 1)
+        self.assertEqual("".join(c.ch for c in grid[0]), "ab  ")
 
     def test_height_truncation(self):
         grid = embed.parse_screen("l1\nl2\nl3", 2, 2)

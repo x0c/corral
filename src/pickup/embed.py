@@ -1148,6 +1148,25 @@ def _parse_line(line: str, width: int) -> list[Cell]:
                     state.apply(params)
                 i = j + 1
                 continue
+            # 字符串型序列（OSC / DCS / SOS / PM / APC）：引导符之后整段都是"数据"，
+            # 不能按下面的中间字节 + 最终字节结构跳——那样只吃掉 ESC 和引导符，剩下的
+            # 载荷会被当正文画进网格。tmux capture-pane -e 会把 agent 输出的 OSC 8
+            # 超链接原样吐出来（`ESC]8;;<地址>` + 可见文字 + `ESC]8;;`），漏掉这一支
+            # 就会在链接前后各粘一串 `8;;` 和原始地址。载荷整段丢弃，只留可见文字。
+            if i + 1 < n and line[i + 1] in "]PX^_":
+                j = i + 2
+                while j < n:
+                    if line[j] == "\x07":  # BEL 终止：xterm/tmux 对 OSC 的惯用写法
+                        j += 1
+                        break
+                    if line[j] == "\x1b" and j + 1 < n and line[j + 1] == "\\":
+                        j += 2  # ST（ESC \）终止
+                        break
+                    j += 1
+                else:
+                    break  # 本行内没有终止符：剩下的全是载荷，整段丢弃
+                i = j
+                continue
             # 非 CSI 的 ESC 序列（如字符集选择 ESC ( B）：按 ECMA-48 结构跳过——
             # ESC + 若干中间字节（0x20-0x2F）+ 一个最终字节（0x30-0x7E）。
             j = i + 1

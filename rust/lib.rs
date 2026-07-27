@@ -201,6 +201,30 @@ fn parse_line(line: &str, width: usize) -> Vec<Cell> {
                 i = j + 1;
                 continue;
             }
+            // 字符串型序列（OSC / DCS / SOS / PM / APC）：载荷整段丢弃，只留可见
+            // 文字；细节见 Python 参考实现 `_parse_line` 的同一分支注释。
+            if i + 1 < chars.len() && matches!(chars[i + 1], ']' | 'P' | 'X' | '^' | '_') {
+                let mut j = i + 2;
+                let mut terminated = false;
+                while j < chars.len() {
+                    if chars[j] == '\u{7}' {
+                        j += 1;
+                        terminated = true;
+                        break;
+                    }
+                    if chars[j] == '\u{1b}' && j + 1 < chars.len() && chars[j + 1] == '\\' {
+                        j += 2;
+                        terminated = true;
+                        break;
+                    }
+                    j += 1;
+                }
+                if !terminated {
+                    break;
+                }
+                i = j;
+                continue;
+            }
             let mut j = i + 1;
             while j < chars.len() && (' '..='/').contains(&chars[j]) {
                 j += 1;
