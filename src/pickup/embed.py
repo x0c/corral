@@ -8,8 +8,10 @@ SSH 断线保活」，本模块管「不 attach——用 capture-pane 拿画面�
 （默认侧边栏，点右栏才交互）；本模块不感知焦点。
 适配器不感知本模块；主要调用方是 `ui.embed_pane.EmbedPane`。
 
-渲染保真度由 tmux 自己保证（它就是终端模拟器）：本模块只解析 capture-pane -e
-输出的 SGR 颜色序列，不做完整 VT100 模拟。
+渲染保真度由 tmux 自己保证（它就是终端模拟器）：本模块只把 capture-pane -e
+输出的 SGR 颜色序列解析成样式，不做完整 VT100 模拟。注意 capture-pane -e
+**不止吐 SGR**——tmux 会原样透传 OSC 8 超链接，非 SGR 序列必须按各自的结构
+正确跳过，不能想当然按单一形态处理（见 `_parse_line`）。
 """
 
 from __future__ import annotations
@@ -1130,8 +1132,9 @@ def _parse_line(line: str, width: int) -> list[Cell]:
     while i < n and x < width:
         ch = line[i]
         if ch == "\x1b":
-            # capture-pane -e 只输出 SGR 序列；其他 CSI/ESC 序列一律跳过，防止把
-            # 非属性序列的字母正文画进网格。
+            # 只有 SGR（CSI m）会被翻译成样式；其余序列一律跳过，防止把非属性
+            # 序列的字母正文画进网格。注意 capture-pane -e 并不是"只输出 SGR"，
+            # 跳过时必须按序列各自的结构走（见下面的字符串型序列分支）。
             if i + 1 < n and line[i + 1] == "[":
                 j = i + 2
                 while j < n and not ("@" <= line[j] <= "~"):
