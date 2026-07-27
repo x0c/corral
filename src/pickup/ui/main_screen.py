@@ -1,7 +1,7 @@
 """主屏：左栏会话列表 + 右栏预览/内嵌终端（pickup 唯一界面）。
 
 按键语义（/ 聚焦项目搜索 / a 高级操作 /
-q 结束会话 / x 删除会话 / c 关闭面板 / Esc 退出）；选中非进行中会话时右栏直接
+q 结束会话 / x 删除会话 / c 关闭面板 / Ctrl+B 显隐侧栏 / Esc 退出）；选中非进行中会话时右栏直接
 展示完整对话预览。键盘焦点跟随明确意图：回车 / 单击会话卡打开、新建或直启托管成功后
 输入交给右栏那一格（仅限活着的实时会话），上下浏览不抢焦点；再点当前持有输入的那张
 会话卡则把焦点撤回侧边栏，与 `Ctrl+\\` 等价。右栏滚轮/预览翻页与焦点无关，鼠标在右栏
@@ -9,7 +9,8 @@ q 结束会话 / x 删除会话 / c 关闭面板 / Esc 退出）；选中非进�
 多分屏时聚焦某一格会把侧边栏高亮切到对应会话。新建会话走侧边栏「＋ 新建」或
 右栏顶栏加格，不再提供底栏 `n` 快捷键。
 侧边栏顶部为项目搜索框，大小写无关模糊匹配项目名与会话标题。
-禁止再加第二套全屏预览或纯列表旧界面。
+`Ctrl+B` 与右栏顶栏左侧开关可显隐侧栏（无右栏时不可用）；偏好写入
+`~/.cache/pickup/ui-prefs.json`。禁止再加第二套全屏预览或纯列表旧界面。
 """
 
 from __future__ import annotations
@@ -27,13 +28,14 @@ from textual.worker import get_current_worker
 
 import dataclasses
 
-from pickup import i18n, updater
+from pickup import i18n, updater, ui_prefs
 from pickup.i18n import t
 from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.modals import ConfirmModal, choose_target_runtime, new_session_flow
 from pickup.ui.nav import NavState
 from pickup.ui.session_list import SessionListView
 from pickup.ui.update_toast import UpdateToast
+from pickup.ui.runtime_top_bar import RuntimeTopBar
 
 try:
     from textual.screen import Screen
@@ -72,6 +74,7 @@ _ACTION_I18N = {
     "delete_session": "action.delete_session",
     "close_pane": "action.close_pane",
     "focus_list": "action.focus_list",
+    "toggle_sidebar": "action.toggle_sidebar",
     "save_screenshot": "action.screenshot",
     "preview_home": "action.preview_home",
     "preview_end": "action.preview_end",
@@ -109,6 +112,9 @@ def _main_bindings() -> list[Binding]:
         # 路径），这里的绑定负责两件事：静态预览格聚焦时也能回列表，以及让
         # Footer 在右栏持有输入时把出口显示出来（见 check_action）。
         Binding("ctrl+backslash", "focus_list", t("action.focus_list")),
+        # 与 Ctrl+\ 同级的壳层键：右栏持焦时仍可用，不得进 _LIST_ONLY_ACTIONS。
+        # EmbedPane 实时路径会先拦截 ctrl+b，避免键被转发给托管会话。
+        Binding("ctrl+b", "toggle_sidebar", t("action.toggle_sidebar")),
         Binding("f12", "save_screenshot", t("action.screenshot"), show=False),
         # 右栏静态对话预览滚动（列表聚焦时也生效；优先级高于 ListView 的同名键）
         Binding("home", "preview_home", t("action.preview_home"), show=False, priority=True),
@@ -155,6 +161,10 @@ class MainScreen(Screen):
         from pickup import split_layout
 
         self._split_store = split_layout.load_layout()
+        # 有右栏时才允许藏侧栏；无右栏（纯列表）藏了无处可点回来。
+        self.sidebar_visible = (
+            True if not embed_ok else ui_prefs.load_sidebar_visible(default=True)
+        )
         # 选择跟随的节流状态，见 _schedule_follow_selection
         self._follow_timer = None
         self._follow_last_run = 0.0
@@ -174,6 +184,7 @@ class MainScreen(Screen):
                     on_focus_list=self._focus_list,
                     on_pane_focused=self._on_pane_focused,
                     osc_report=self.osc_report,
+                    sidebar_visible=self.sidebar_visible,
                     id="split-pane-area",
                 )
         yield UpdateToast(
@@ -187,7 +198,7 @@ class MainScreen(Screen):
 
     def on_mount(self) -> None:
         if self.embed_ok:
-            self.query_one("#list-pane").styles.width = LIST_PANE_WIDTH
+            self._apply_sidebar_visible(persist=False)
         self._update_header()
         # store 可能已经 load() 过（如 _dispatch_direct_launch、测试里的 _make_store
         # 都是同步预加载好再传进来），也可能还没有（main() 现在把 load() 挪到后台
@@ -1054,6 +1065,10 @@ class MainScreen(Screen):
 
     def _focus_list(self) -> None:
         # 用户主动回列表：撤销右栏还没兑现的自动聚焦意图，别让它随后把焦点抢回去。
+        # 侧栏已藏时先展开，否则 SessionListView 不可见、焦点落空。
+        if self.embed_ok and not self.sidebar_visible:
+            self.sidebar_visible = True
+            self._apply_sidebar_visible(persist=True)
         try:
             self._split_area().clear_focus_intent()
         except Exception:
@@ -1125,6 +1140,9 @@ class MainScreen(Screen):
         """
         if action == "focus_list":
             return self._any_embed_focused()
+        if action == "toggle_sidebar":
+            # 无右栏时藏侧栏没有工作区可扩大，顶栏开关也不存在。
+            return self.embed_ok
         if action in _LIST_ONLY_ACTIONS and self._live_embed_focused():
             return False
         return True
@@ -1142,7 +1160,61 @@ class MainScreen(Screen):
     def action_focus_list(self) -> None:
         self._focus_list()
 
+    def action_toggle_sidebar(self) -> None:
+        if not self.embed_ok:
+            return
+        self.sidebar_visible = not self.sidebar_visible
+        self._apply_sidebar_visible(persist=True)
+
+    def _apply_sidebar_visible(self, *, persist: bool) -> None:
+        """按 sidebar_visible 显隐左栏，并同步顶栏开关字形。"""
+        list_pane = self.query_one("#list-pane")
+        if self.sidebar_visible:
+            list_pane.display = True
+            list_pane.styles.width = LIST_PANE_WIDTH
+        else:
+            if self._focus_is_in_list_pane():
+                self._focus_away_from_hidden_sidebar()
+            list_pane.display = False
+        try:
+            self.query_one("#runtime-top-bar", RuntimeTopBar).set_sidebar_visible(
+                self.sidebar_visible
+            )
+        except Exception:
+            pass
+        if persist:
+            ui_prefs.save_sidebar_visible(self.sidebar_visible)
+
+    def _focus_is_in_list_pane(self) -> bool:
+        focused = self.app.focused
+        if focused is None:
+            return False
+        if getattr(focused, "id", None) in ("session-list", "project-search"):
+            return True
+        widget = focused
+        while widget is not None:
+            if getattr(widget, "id", None) == "list-pane":
+                return True
+            widget = widget.parent
+        return False
+
+    def _focus_away_from_hidden_sidebar(self) -> None:
+        """侧栏即将藏起时，把焦点挪出不可见控件。"""
+        try:
+            area = self._split_area()
+        except Exception:
+            return
+        for cell in area.cells():
+            pane = cell.embed_pane()
+            if pane is not None:
+                self.set_focus(pane)
+                return
+        # 尚无分屏格：清空焦点，避免留在即将 display:none 的列表上。
+        self.set_focus(None)
+
     def action_focus_search(self) -> None:
+        if not self.sidebar_visible:
+            return
         self.query_one("#project-search", Input).focus()
 
     async def on_input_changed(self, event: Input.Changed) -> None:

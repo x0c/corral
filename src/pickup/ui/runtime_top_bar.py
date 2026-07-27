@@ -1,4 +1,4 @@
-"""右侧助手顶栏：列出已安装运行时，点击派发新建托管会话。"""
+"""右侧助手顶栏：侧栏显隐开关 + 已安装运行时加格按钮。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,67 @@ from textual.widget import Widget
 
 if TYPE_CHECKING:
     from pickup.runtime.registry import RuntimeRegistry
+
+
+class _SidebarToggleChip(Widget):
+    """侧边栏显隐开关：藏起后仍留在右栏顶栏，才能点回来。"""
+
+    ALLOW_SELECT = False
+    can_focus = False
+
+    DEFAULT_CSS = """
+    _SidebarToggleChip {
+        height: 1;
+        width: auto;
+        min-width: 3;
+        padding: 0 1;
+        margin: 0 1 0 0;
+        content-align: center middle;
+        color: $text-muted;
+    }
+    _SidebarToggleChip:hover {
+        background: $boost;
+        color: $foreground;
+    }
+    """
+
+    def __init__(self, sidebar_visible: bool = True, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._sidebar_visible = sidebar_visible
+
+    def set_sidebar_visible(self, visible: bool) -> None:
+        if self._sidebar_visible == visible:
+            return
+        self._sidebar_visible = visible
+        self.refresh()
+
+    def render(self) -> Text:
+        # 可见时 ◀ 表示「收起左侧」；已藏时 ▶ 表示「展开」。
+        return Text("◀" if self._sidebar_visible else "▶")
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        screen = self.screen
+        action = getattr(screen, "action_toggle_sidebar", None)
+        if callable(action):
+            action()
+
+
+class _TopBarSpacer(Widget):
+    """把助手 chip 顶到右侧。"""
+
+    ALLOW_SELECT = False
+    can_focus = False
+
+    DEFAULT_CSS = """
+    _TopBarSpacer {
+        width: 1fr;
+        height: 1;
+    }
+    """
+
+    def render(self) -> Text:
+        return Text("")
 
 
 class _RuntimeChip(Widget):
@@ -56,7 +117,7 @@ class _RuntimeChip(Widget):
 
 
 class RuntimeTopBar(Horizontal):
-    """右侧顶栏：已安装助手均可点击。"""
+    """右侧顶栏：左侧侧栏开关，右侧已安装助手均可点击。"""
 
     ALLOW_SELECT = False
     can_focus = False
@@ -66,7 +127,7 @@ class RuntimeTopBar(Horizontal):
         height: 1;
         width: 1fr;
         padding: 0 1;
-        align: right middle;
+        align: left middle;
         background: $footer-background;
     }
     """
@@ -75,15 +136,30 @@ class RuntimeTopBar(Horizontal):
         self,
         registry: RuntimeRegistry,
         on_runtime_pick: Callable[[str], None],
+        *,
+        sidebar_visible: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._registry = registry
         self._on_runtime_pick = on_runtime_pick
+        self._sidebar_visible = sidebar_visible
+
+    def set_sidebar_visible(self, visible: bool) -> None:
+        self._sidebar_visible = visible
+        try:
+            self.query_one("#sidebar-toggle", _SidebarToggleChip).set_sidebar_visible(visible)
+        except Exception:
+            pass
 
     def compose(self):
         import pickup
 
+        yield _SidebarToggleChip(
+            self._sidebar_visible,
+            id="sidebar-toggle",
+        )
+        yield _TopBarSpacer()
         for runtime in self._registry:
             if not runtime.is_available():
                 continue

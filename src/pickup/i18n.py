@@ -43,6 +43,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Back to list",
         "zh": "回列表",
     },
+    "action.toggle_sidebar": {
+        "en": "Toggle sidebar",
+        "zh": "显隐侧栏",
+    },
     "pane.focus_hint": {
         "en": "Ctrl+\\ back to list",
         "zh": "Ctrl+\\ 回列表",

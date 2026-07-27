@@ -27,6 +27,14 @@ from pickup import i18n
 # 界面测试固定英文，避免 CI/本机 LANG=zh* 时断言漂移
 i18n.set_lang("en")
 
+# 侧栏显隐偏好隔离到临时文件，避免读到本机 ~/.cache 里上次藏起的状态。
+import tempfile
+
+from pickup import ui_prefs as _ui_prefs
+
+_UI_PREFS_DIR = tempfile.mkdtemp(prefix="pickup-test-ui-prefs-")
+_ui_prefs.PREFS_FILE = os.path.join(_UI_PREFS_DIR, "ui-prefs.json")
+
 import pickup
 from pickup.models import LaunchPlan
 from textual import events
@@ -39,6 +47,7 @@ from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.modals import ConfirmModal, PickMenuModal, RuntimePickerModal
 from pickup.ui.session_list import NEW_SESSION_ID, SessionCard, SessionListView
 from pickup.ui.terminal_theme import TerminalBackgroundReport, TerminalThemeParser
+from pickup.ui.runtime_top_bar import _SidebarToggleChip
 
 HAS_TMUX = shutil.which("tmux") is not None
 
@@ -394,15 +403,17 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.1)
             self.assertEqual(app.theme, "pickup-dark")
 
-    async def test_runtime_top_bar_matches_footer_and_aligns_right(self) -> None:
+    async def test_runtime_top_bar_matches_footer_and_aligns_left(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             top_bar = app.screen.query_one("#runtime-top-bar")
             footer = app.screen.query_one(Footer)
-            self.assertEqual(top_bar.styles.align_horizontal, "right")
+            # 左侧侧栏开关 + spacer 把助手 chip 顶到右侧；容器本身左对齐。
+            self.assertEqual(top_bar.styles.align_horizontal, "left")
             self.assertEqual(top_bar.styles.background, footer.styles.background)
+            self.assertIsNotNone(app.screen.query_one("#sidebar-toggle", _SidebarToggleChip))
 
     async def test_sidebar_and_split_panes_use_one_cell_blank_gaps(self) -> None:
         store, _ = _make_store()
@@ -2145,6 +2156,8 @@ class FooterActionGatingTests(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertIs(screen.check_action(action, ()), False)
         self.assertTrue(screen.check_action("focus_list", ()))
+        # 壳层显隐侧栏：与 Ctrl+\ 同级，右栏持焦时仍可用
+        self.assertTrue(screen.check_action("toggle_sidebar", ()))
 
     def test_list_actions_available_when_sidebar_focused(self) -> None:
         screen = self._screen(live=False)
@@ -2153,6 +2166,63 @@ class FooterActionGatingTests(unittest.TestCase):
                 self.assertTrue(screen.check_action(action, ()))
         # 焦点已经在列表时不必展示"回列表"
         self.assertFalse(screen.check_action("focus_list", ()))
+        self.assertTrue(screen.check_action("toggle_sidebar", ()))
+
+    def test_toggle_sidebar_disabled_without_embed(self) -> None:
+        from pickup.ui.main_screen import MainScreen
+
+        store, _ = _make_store()
+        screen = MainScreen(store, embed_ok=False)
+        self.assertFalse(screen.check_action("toggle_sidebar", ()))
+
+
+class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
+    """Ctrl+B / 顶栏开关显隐侧栏；偏好落盘；藏起后仍能点回来。"""
+
+    async def test_ctrl_b_toggles_list_pane_display(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(100, 30)) as pilot:
+            list_pane = app.screen.query_one("#list-pane")
+            chip = app.screen.query_one("#sidebar-toggle", _SidebarToggleChip)
+            self.assertTrue(list_pane.display)
+            self.assertEqual(chip.render().plain, "◀")
+
+            await pilot.press("ctrl+b")
+            self.assertFalse(app.screen.sidebar_visible)
+            self.assertFalse(list_pane.display)
+            self.assertEqual(chip.render().plain, "▶")
+            self.assertFalse(_ui_prefs.load_sidebar_visible(default=True))
+
+            await pilot.press("ctrl+b")
+            self.assertTrue(app.screen.sidebar_visible)
+            self.assertTrue(list_pane.display)
+            self.assertEqual(chip.render().plain, "◀")
+
+    async def test_top_bar_chip_click_restores_sidebar(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(100, 30)) as pilot:
+            list_pane = app.screen.query_one("#list-pane")
+            await pilot.press("ctrl+b")
+            self.assertFalse(list_pane.display)
+
+            await pilot.click("#sidebar-toggle")
+            self.assertTrue(app.screen.sidebar_visible)
+            self.assertTrue(list_pane.display)
+
+    async def test_persisted_hidden_sidebar_restored_on_mount(self) -> None:
+        _ui_prefs.save_sidebar_visible(False)
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(100, 30)) as pilot:
+            list_pane = app.screen.query_one("#list-pane")
+            chip = app.screen.query_one("#sidebar-toggle", _SidebarToggleChip)
+            self.assertFalse(app.screen.sidebar_visible)
+            self.assertFalse(list_pane.display)
+            self.assertEqual(chip.render().plain, "▶")
+        # 不影响后续用例默认态
+        _ui_prefs.save_sidebar_visible(True)
 
 
 class InputMaskFilterTests(unittest.TestCase):

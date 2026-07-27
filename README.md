@@ -259,12 +259,15 @@ agent workflows.
 | `q` | End a backgrounded / in-progress (keep-alive) session; press `q` again in the confirm dialog |
 | `x` | Permanently delete the selected local session; press `x` again in the confirm dialog |
 | `c` | Close the focused right-side pane without ending its hosted session |
+| `Ctrl+B` | Show / hide the sidebar (also the ◀/▶ control on the runtime top bar) |
 | `Home` / `End` / `PgUp` / `PgDn` | Scroll the right-pane conversation preview (also mouse wheel over the pane) |
 | `F12` | Save a local diagnostic screenshot under `~/.cache/pickup/screenshots/` |
 | `Esc` | Clear search / close dialog, or quit |
 
 `Enter` (or a click) hands input to a hosted agent; `Ctrl-\` returns keyboard focus to the sidebar
-without ending the process. While a live pane has input, sidebar shortcuts step aside so the keys
+without ending the process. `Ctrl+B` (or the ◀/▶ control on the left of the runtime top bar) toggles
+the sidebar so the panes can use the full width; the preference is remembered across launches.
+While a live pane has input, sidebar shortcuts step aside so the keys
 reach the agent. Mouse wheel over either pane works regardless of which side has focus.
 
 ## Cross-Runtime Handoff

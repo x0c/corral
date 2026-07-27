@@ -349,6 +349,7 @@ class SplitPaneArea(Vertical):
         on_pane_focused: Callable[[str], None] | None = None,
         osc_report: bytes | None = None,
         render_detail: Callable[[dict], Text] | None = None,
+        sidebar_visible: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -359,6 +360,7 @@ class SplitPaneArea(Vertical):
         self._on_pane_focused = on_pane_focused
         self._osc_report = osc_report
         self._render_detail = render_detail
+        self._sidebar_visible = sidebar_visible
         self.current_project: str = ""
         self._panes: list[PaneSpec] = []
         self._focus_key: str | None = None
@@ -372,6 +374,7 @@ class SplitPaneArea(Vertical):
         yield RuntimeTopBar(
             self.store.registry,
             self._on_runtime_pick,
+            sidebar_visible=self._sidebar_visible,
             id="runtime-top-bar",
         )
         with Horizontal(id="pane-row"):
