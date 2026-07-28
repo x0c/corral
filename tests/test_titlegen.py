@@ -72,7 +72,9 @@ class ClaudeGeneratorTests(unittest.TestCase):
                 mock.patch.dict(os.environ, _NO_ENV):
             out = titlegen.ClaudeTitleGenerator().generate("prompt 内容", timeout=5)
 
-        self.assertEqual(calls["argv"], ["claude", "-p", "--model", "haiku"])
+        self.assertEqual(calls["argv"], [
+            "claude", "-p", "--no-session-persistence", "--model", "haiku",
+        ])
         self.assertEqual(calls["input"], "prompt 内容")
         self.assertEqual(out, '{"claude:s1": "标题"}')
 
@@ -87,7 +89,9 @@ class ClaudeGeneratorTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {**_NO_ENV, titlegen.ENV_MODEL: "sonnet"}):
             titlegen.ClaudeTitleGenerator().generate("p", timeout=5)
 
-        self.assertEqual(calls["argv"], ["claude", "-p", "--model", "sonnet"])
+        self.assertEqual(calls["argv"], [
+            "claude", "-p", "--no-session-persistence", "--model", "sonnet",
+        ])
 
     def test_nonzero_exit_returns_none(self) -> None:
         with mock.patch.object(titlegen.subprocess, "run", return_value=_FakeProc(returncode=1)), \

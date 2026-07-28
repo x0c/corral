@@ -6,11 +6,11 @@
 - 文件时间不是绝对可信，且污染粒度可以细到单个文件，不一定成批出现：Claude Code 在会话驻留/被重新打开时会追加没有时间戳的元数据条目（`last-prompt`、`ai-title`、`mode`、`permission-mode`），把文件 mtime 顶到“现在”而不产生任何新对话内容；Syncthing、复制、批量元数据刷新是同一类问题的批量版本。修正逻辑统一收在 `models.py` 的 `effective_session_time(file_mtime, event_time)`：当 mtime 比会话内部最后一条真实事件新出 1 小时以上的 gap，就判定 mtime 不可信，逐会话回退到 event_time；两个扫描器的 `_build_session_info` 都在返回结果前调用它写回 `mtime`/`display_time`/`time_source`。曾经按“同一分钟桶 ≥5 个会话”识别批量污染簇的启发式已废弃——它只覆盖批量场景，漏过了本节描述的单文件被驻留进程 touch 的情形（真实故障：两个会话被 touch 到不同分钟，各自没能凑够聚簇阈值，在列表里显示成"20分钟前"，实际是 9-11 天前的会话）。
 - Claude Code 自带 `aiTitle` 不稳定，只能作为临时兜底的最后来源，不能绕过生成缓存直接展示。
 - 无缓存时必须先生成本地短标题，再交给后台模型优化。首屏不能依赖后台生成器（`claude`/`codex` 无头调用）是否及时返回。
-- 后台标题生成可能留下新的 Claude 会话记录；扫描侧必须过滤自产标题 prompt 和只有低价值消息的记录，避免历史污染反过来进入列表。
+- Claude 标题生成必须使用 `--no-session-persistence`，从源头禁止一次性标题请求写入 Claude 会话历史；扫描侧仍须过滤历史版本已落盘的自产标题 prompt 和只有低价值消息的记录，避免旧噪音反过来进入列表。
 - 标题生成以 5 条会话为一批。第一批先**串行**探测候选生成器：首选失败、超时或返回无有效标题时才试备用，避免坏首选在并发 worker 启动后重复消耗 5 次；选出健康生成器后，其余批次最多 5 路并发。每次后端调用仍以 90 秒为上限，当前首选 + 备用两级在第一批全部失败时最坏约 180 秒，但只发生一次串行健康探测；后续不会再探测已失败候选。每批完成立即原子写缓存，界面可陆续显示结果。生成出的有效标题一旦写入缓存即为该会话的固定标题，后续对话内容增长不能让它再次排队。会话只有“在吗”等无任务信息时保留本地标题且不调用模型。
 - **标题生成的失败也是必须落盘的终态，不是“下次启动再试”**：调用失败、超时、不可解析/低价值/机器 slug、批量结果部分缺项，以及本机没有任何可用生成器时，都给受影响会话写入当前 `TITLE_CACHE_VERSION` 的 `generation_state=failed`，保留本地兜底并立即清掉 `generating` 状态。同一缓存版本后续启动不再自动提交模型，避免反复排队花额度；提升缓存版本后失败标记自然失效，才允许按新规则重新尝试。成功、失败和部分缺项都要逐批 `save_cache`，不能只保存成功项，否则缺项会永远重新排队。
 - 标题生成后端已抽象为 `titlegen.py` 的 `TitleGenerator`（当前有 claude、codex 两个实现）。`titles.py` 只负责批量 prompt、JSON 解析和缓存，不感知具体 CLI；新增生成器只在 `titlegen.py` 加实现并注册进 `_GENERATORS`，禁止在 `titles.py` 里写 `subprocess` 调用。选择顺序：`PICKUP_TITLE_GENERATOR` 环境变量（旧名 `SC_TITLE_GENERATOR` 仍生效）→ 按注册顺序取已安装候选；环境变量只决定首选，第一批探测失败才降级到下一个候选。`PICKUP_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）覆盖模型。缓存与生成器无关，换生成器不重算已有成功标题，也不绕过当前缓存版本的失败终态。
-- 自产噪音会话的过滤，每个可能被生成器落盘的运行时扫描器都要有：Claude 侧靠 `PROMPT_MARKER` 预探过滤（见「扫描性能」）；Codex 侧生成用 `codex exec --ephemeral` 不落盘，扫描过滤仅是兜底。接入没有 ephemeral 类开关的 CLI 后端（如 opencode run，每次调用必然真实落一条会话）时，对应扫描器的 `PROMPT_MARKER` 过滤是必需项，漏掉会让标题生成会话刷屏列表。
+- 自产噪音会话的过滤，每个可能被生成器落盘的运行时扫描器都要有：Claude 侧生成用 `claude -p --no-session-persistence` 不落盘，`PROMPT_MARKER` 预探过滤（见「扫描性能」）负责兜住历史版本已经产生的噪音；Codex 侧生成用 `codex exec --ephemeral` 不落盘，扫描过滤同样只是兜底。接入没有 ephemeral 类开关的 CLI 后端（如 opencode run，每次调用必然真实落一条会话）时，对应扫描器的 `PROMPT_MARKER` 过滤是必需项，漏掉会让标题生成会话刷屏列表。
 - **`titles.save_cache` 是原子写（临时文件 + `os.replace`），不是直接覆写**：后台标题生成进程逐批写、TUI 每约 1 秒轮询读同一份 `titles.json`；直接 `open(..., "w")` 覆写会被并发读到半截 JSON（`load_cache` 解析失败静默退回 `{}`，界面标题短暂回退临时兜底）。改这个函数前确认没有退回裸覆写。
 
 ## 标题生成进程

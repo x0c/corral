@@ -69,7 +69,11 @@ class ClaudeTitleGenerator(TitleGenerator):
     default_model = "haiku"  # 标题生成用最便宜的模型即可
 
     def generate(self, prompt: str, timeout: int) -> str | None:
-        return _run(["claude", "-p", "--model", self._model()], prompt, timeout)
+        # 标题是一次性派生数据，不得写进 Claude 会话历史污染用户的真实会话列表。
+        return _run([
+            "claude", "-p", "--no-session-persistence",
+            "--model", self._model(),
+        ], prompt, timeout)
 
 
 class CodexTitleGenerator(TitleGenerator):

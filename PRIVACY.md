@@ -49,6 +49,8 @@ trigger this manually any time with `pickup update`, or dismiss the notice for t
 
 Optional title generation launches one of your locally installed agent CLIs (`claude` or `codex`; auto-detected, or pinned via `PICKUP_TITLE_GENERATOR`, legacy name `SC_TITLE_GENERATOR`). That command sends short session excerpts to the corresponding model provider under your own account and credentials. If the command is missing or fails, the tool keeps using local fallback titles.
 
+Title generation uses each supported CLI's non-persistent one-shot mode (`claude --no-session-persistence` or `codex exec --ephemeral`), so these derived requests are not saved as Claude Code or Codex CLI sessions.
+
 Failed, timed-out, invalid, or incomplete title results are recorded locally for the current cache
 version. Later launches do not automatically submit those sessions again, preventing repeated quota
 usage; a future cache-version upgrade may retry them under updated rules.
