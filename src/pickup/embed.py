@@ -1131,18 +1131,19 @@ def _parse_line(line: str, width: int) -> list[Cell]:
     n = len(line)
     while i < n and x < width:
         ch = line[i]
-        if ch == "\x1b":
+        if ch == "\x1b" or ch == "\x9b":
             # 只有 SGR（CSI m）会被翻译成样式；其余序列一律跳过，防止把非属性
             # 序列的字母正文画进网格。注意 capture-pane -e 并不是"只输出 SGR"，
             # 跳过时必须按序列各自的结构走（见下面的字符串型序列分支）。
-            if i + 1 < n and line[i + 1] == "[":
-                j = i + 2
+            if ch == "\x9b" or (i + 1 < n and line[i + 1] == "["):
+                body_start = i + 1 if ch == "\x9b" else i + 2
+                j = body_start
                 while j < n and not ("@" <= line[j] <= "~"):
                     j += 1
                 if j >= n:
                     break
                 final = line[j]
-                body = line[i + 2:j]
+                body = line[body_start:j]
                 if final == "m":
                     try:
                         params = [int(p) if p else 0 for p in body.split(";")] if body else [0]
@@ -1151,6 +1152,8 @@ def _parse_line(line: str, width: int) -> list[Cell]:
                     state.apply(params)
                 i = j + 1
                 continue
+            if ch == "\x9b":
+                break
             # 字符串型序列（OSC / DCS / SOS / PM / APC）：引导符之后整段都是"数据"，
             # 不能按下面的中间字节 + 最终字节结构跳——那样只吃掉 ESC 和引导符，剩下的
             # 载荷会被当正文画进网格。tmux capture-pane -e 会把 agent 输出的 OSC 8
@@ -1159,7 +1162,7 @@ def _parse_line(line: str, width: int) -> list[Cell]:
             if i + 1 < n and line[i + 1] in "]PX^_":
                 j = i + 2
                 while j < n:
-                    if line[j] == "\x07":  # BEL 终止：xterm/tmux 对 OSC 的惯用写法
+                    if line[j] in ("\x07", "\x9c"):  # BEL 或 8-bit ST
                         j += 1
                         break
                     if line[j] == "\x1b" and j + 1 < n and line[j + 1] == "\\":
@@ -1177,6 +1180,24 @@ def _parse_line(line: str, width: int) -> list[Cell]:
                 j += 1
             if j < n and "0" <= line[j] <= "~":
                 j += 1
+            i = j
+            continue
+        # ECMA-48 同时定义了 8-bit C1 形式：OSC=0x9D、DCS=0x90、
+        # SOS=0x98、PM=0x9E、APC=0x9F，ST=0x9C。输入已被解码成 str 时，
+        # 这些控制符会以对应 Unicode 控制码出现；漏掉它们的症状与漏掉 ESC ]
+        # 完全相同，都会把 `8;;<地址>` 和收尾 `8;;` 当正文画出来。
+        if ch in ("\x90", "\x98", "\x9d", "\x9e", "\x9f"):
+            j = i + 1
+            while j < n:
+                if line[j] in ("\x07", "\x9c"):
+                    j += 1
+                    break
+                if line[j] == "\x1b" and j + 1 < n and line[j + 1] == "\\":
+                    j += 2
+                    break
+                j += 1
+            else:
+                break
             i = j
             continue
         w = _char_width(ch)

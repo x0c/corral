@@ -10,6 +10,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -731,6 +732,8 @@ class ParseScreenTests(unittest.TestCase):
             ("a\x1b[2Kb\x1b(Bc", 5, 1),
             ("\x1b[31m\x1b]8;;https://example.com\x07Click Me\x1b]8;;\x07\x1b[0m!", 12, 1),
             ("\x1b]8;;file:///tmp/a\x1b\\a\x1b]8;;\x1b\\b", 5, 1),
+            ("\x9d8;;file:///tmp/a\x9ca\x9d8;;\x9cb", 5, 1),
+            ("\x9b31mred\x9b0m", 5, 1),
             ("ab\x1b]8;;https://example.com", 6, 1),
         )
         for screen, width, height in cases:
@@ -818,6 +821,19 @@ class ParseScreenTests(unittest.TestCase):
         self.assertEqual("".join(c.ch for c in grid[0]), "a.txtx")
         self.assertEqual([c.fg for c in grid[0][:5]], [1] * 5)
         self.assertEqual(grid[0][5].fg, -1)
+
+    def test_osc8_c1_form_is_discarded(self):
+        """ECMA-48 的 8-bit OSC/ST 形式也不能把 `8;;` 与地址画进正文。"""
+        line = "\x9d8;;file:///tmp/report.md\x9creport.md\x9d8;;\x9c done"
+        grid = embed.parse_screen(line, 14, 1)
+        self.assertEqual("".join(c.ch for c in grid[0]), "report.md done")
+
+    def test_c1_csi_keeps_sgr_semantics(self):
+        """8-bit CSI 与 ESC [ 等价，不能把样式参数画成正文。"""
+        grid = embed.parse_screen("\x9b31mred\x9b0mx", 4, 1)
+        self.assertEqual("".join(c.ch for c in grid[0]), "redx")
+        self.assertEqual([c.fg for c in grid[0][:3]], [1] * 3)
+        self.assertEqual(grid[0][3].fg, -1)
 
     def test_unterminated_string_sequence_drops_rest_of_line(self):
         """本行内没有终止符时整段丢弃，不能把载荷当正文画出来。"""
@@ -942,6 +958,36 @@ class ControlChannelIntegrationTests(unittest.TestCase):
         embed.send_literal(self.SESSION, "echo hello-event")
         embed.send_key(self.SESSION, "Enter")
         self.assertTrue(fired.wait(4.0), "%output 事件应在 pane 产生输出后触发")
+
+    def test_real_capture_hides_osc8_markers(self):
+        """真实 tmux 抓帧经过界面热路径后，只留下链接的可见文件名。"""
+        subprocess.run(
+            ["tmux", "-L", self.SOCKET, "kill-session", "-t", self.SESSION],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        program = (
+            "import os,time;"
+            "os.write(1,b'\\x1b]8;;file:///tmp/report.md\\x1b\\\\"
+            "report.md\\x1b]8;;\\x1b\\\\ done\\n');"
+            "time.sleep(60)"
+        )
+        subprocess.run(
+            [
+                "tmux", "-L", self.SOCKET, "new-session", "-d",
+                "-s", self.SESSION, "-x", "60", "-y", "20",
+                sys.executable, "-c", program,
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        embed.open_channel(self.SESSION)
+        raw = self._wait_text("report.md")
+        visible = "\n".join(row.text for row in embed.parse_screen_rows(raw, 60, 20))
+        self.assertIn("report.md done", visible)
+        self.assertNotIn("8;;", visible)
+        self.assertNotIn("file:///tmp/report.md", visible)
 
     def test_capture_scroll_offset_reads_history(self):
         """应用层滚动的真 tmux 验证：静态会话里 offset 抓到的历史窗口内容上移。

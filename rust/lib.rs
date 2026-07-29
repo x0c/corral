@@ -147,9 +147,10 @@ fn parse_line(line: &str, width: usize) -> Vec<Cell> {
     let mut x = 0usize;
     let mut i = 0usize;
     while i < chars.len() && x < width {
-        if chars[i] == '\u{1b}' {
-            if i + 1 < chars.len() && chars[i + 1] == '[' {
-                let mut j = i + 2;
+        if chars[i] == '\u{1b}' || chars[i] == '\u{9b}' {
+            if chars[i] == '\u{9b}' || (i + 1 < chars.len() && chars[i + 1] == '[') {
+                let body_start = if chars[i] == '\u{9b}' { i + 1 } else { i + 2 };
+                let mut j = body_start;
                 while j < chars.len() && !(('@'..='~').contains(&chars[j])) {
                     j += 1;
                 }
@@ -157,11 +158,14 @@ fn parse_line(line: &str, width: usize) -> Vec<Cell> {
                     break;
                 }
                 if chars[j] == 'm' {
-                    let body: String = chars[i + 2..j].iter().collect();
+                    let body: String = chars[body_start..j].iter().collect();
                     state.apply(&parse_params(&body));
                 }
                 i = j + 1;
                 continue;
+            }
+            if chars[i] == '\u{9b}' {
+                break;
             }
             // 字符串型序列（OSC / DCS / SOS / PM / APC）：载荷整段丢弃，只留可见
             // 文字；细节见 Python 参考实现 `_parse_line` 的同一分支注释。
@@ -169,7 +173,7 @@ fn parse_line(line: &str, width: usize) -> Vec<Cell> {
                 let mut j = i + 2;
                 let mut terminated = false;
                 while j < chars.len() {
-                    if chars[j] == '\u{7}' {
+                    if matches!(chars[j], '\u{7}' | '\u{9c}') {
                         j += 1;
                         terminated = true;
                         break;
@@ -193,6 +197,33 @@ fn parse_line(line: &str, width: usize) -> Vec<Cell> {
             }
             if j < chars.len() && ('0'..='~').contains(&chars[j]) {
                 j += 1;
+            }
+            i = j;
+            continue;
+        }
+        // ECMA-48 的 8-bit C1 形式：OSC/DCS/SOS/PM/APC 也必须整段跳到
+        // BEL、ST（0x9C）或两字节 ST（ESC \），否则 OSC 8 的 `8;;` 会漏进正文。
+        if matches!(
+            chars[i],
+            '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}'
+        ) {
+            let mut j = i + 1;
+            let mut terminated = false;
+            while j < chars.len() {
+                if matches!(chars[j], '\u{7}' | '\u{9c}') {
+                    j += 1;
+                    terminated = true;
+                    break;
+                }
+                if chars[j] == '\u{1b}' && j + 1 < chars.len() && chars[j + 1] == '\\' {
+                    j += 2;
+                    terminated = true;
+                    break;
+                }
+                j += 1;
+            }
+            if !terminated {
+                break;
             }
             i = j;
             continue;
