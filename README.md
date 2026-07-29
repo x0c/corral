@@ -1,5 +1,7 @@
 # pickup
 
+**Languages:** English | [简体中文](README.zh-CN.md)
+
 [![test](https://github.com/x0c/pickup/actions/workflows/test.yml/badge.svg)](https://github.com/x0c/pickup/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -332,6 +334,8 @@ pickup update
 | `src/pickup/display.py` | width, cards, preview, filtering helpers |
 | `src/pickup/theme.py` | OSC probe and runtime label colors |
 | `src/pickup/ui/` | Textual UI: main screen, modals, session list, split-pane area, runtime top bar, embed pane |
+| `src/pickup/ui/search_modal.py` | full-text search modal (`Ctrl+F`) |
+| `src/pickup/search.py` | in-memory full-text index over session conversations |
 | `src/pickup/split_layout.py` | remembered active split-pane groups |
 | `src/pickup/embed.py` | embedded-pane host (`capture-pane` / `send-keys`) |
 | `src/pickup/agent_api.py` | read-only `list`/`search`/`show`/`context`/`describe` |
