@@ -29,7 +29,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pickup import titles
 from pickup.cache import get_cache
 from pickup.models import ConversationMessage, effective_session_time, format_message_time
-from pickup.native import json_loads
 from pickup.scan.common import is_ephemeral_agent_cwd
 from pickup.scan.common import live_pids_by_process_name
 from pickup.scan.common import parse_timestamp as _parse_iso
@@ -101,7 +100,7 @@ def _iter_message_entries(lines):
         if _USER_EVENT_MARKER not in line and _LOOP_EVENT_MARKER not in line:
             continue
         try:
-            yield json_loads(line)
+            yield json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
 

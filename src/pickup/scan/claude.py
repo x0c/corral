@@ -18,7 +18,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pickup import titles
 from pickup.cache import get_cache
 from pickup.models import ConversationMessage, effective_session_time, format_message_time
-from pickup.native import json_loads
 from pickup.scan.common import is_ephemeral_agent_cwd
 from pickup.scan.common import parse_timestamp as _parse_timestamp
 from pickup.scan.common import shorten_cwd as _shorten_cwd
@@ -85,7 +84,7 @@ def _read_head(path: str, max_lines: int = 300) -> list[dict]:
                 if not line:
                     continue
                 try:
-                    obj = json_loads(line)
+                    obj = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
                 entries.append(obj)
@@ -111,7 +110,7 @@ def _read_tail(path: str, max_bytes: int = 65536) -> list[dict]:
             if not line:
                 continue
             try:
-                entries.append(json_loads(line))
+                entries.append(json.loads(line))
             except (json.JSONDecodeError, ValueError):
                 pass
     except OSError:
@@ -404,7 +403,7 @@ def _peek_head_meta(path: str, max_lines: int = 40) -> tuple[str | None, str | N
                 if not line:
                     continue
                 try:
-                    obj = json_loads(line)
+                    obj = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
                 if cwd is None and obj.get("cwd"):
@@ -536,7 +535,7 @@ def load_conversation(path: str) -> list[ConversationMessage]:
         with open(path, encoding="utf-8", errors="replace") as file:
             for line in file:
                 try:
-                    entry = json_loads(line)
+                    entry = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
                 if entry.get("isMeta") or entry.get("isSidechain"):

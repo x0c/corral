@@ -9,9 +9,11 @@ from __future__ import annotations
 import importlib
 import sys as sys
 
-__version__ = "0.24.21"
+__version__ = "0.24.22"
 
-_MODULE_EXPORTS = {"embed", "keepalive", "titles", "updater", "split_layout", "observe", "theme"}
+_MODULE_EXPORTS = {
+    "embed", "keepalive", "titles", "updater", "split_layout", "observe", "theme", "search",
+}
 _STANDARD_MODULE_EXPORTS = {"shutil"}
 _STANDARD_SYMBOL_EXPORTS = {"datetime": ("datetime", "datetime")}
 _SYMBOL_EXPORTS = {

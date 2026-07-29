@@ -1,6 +1,6 @@
 [package]
 name = "pickup-native"
-version = "0.24.21"
+version = "0.24.22"
 edition = "2021"
 description = "Native hot-path accelerator for pickup"
 homepage = "https://github.com/x0c/pickup"
@@ -14,7 +14,6 @@ path = "rust/lib.rs"
 
 [dependencies]
 pyo3 = { version = "0.23", features = ["abi3-py310", "extension-module"] }
-serde_json = "1.0"
 unicode-width = "0.2"
 
 [profile.release]

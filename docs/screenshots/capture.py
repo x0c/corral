@@ -383,8 +383,37 @@ def _assert_png_sane(png_path: Path) -> None:
         )
 
 
+async def _capture_search() -> None:
+    """全文搜索弹窗（Ctrl+F）：命中行 + 关键词高亮。"""
+    from pickup.ui.search_modal import FullTextSearchModal
+
+    store = _demo_store()
+    app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
+    async with app.run_test(size=(140, 36)) as pilot:
+        await pilot.pause(delay=0.4)
+        await pilot.press("ctrl+f")
+        for _ in range(100):
+            if isinstance(app.screen, FullTextSearchModal) and not app.screen._indexing:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise RuntimeError("全文搜索弹窗没有就绪")
+        modal = app.screen
+        modal.query_one("#search-query").value = "回归"
+        await pilot.pause(delay=0.5)
+        if not modal._matches:
+            raise RuntimeError("演示查询没有命中，截图会是空列表")
+        with tempfile.TemporaryDirectory() as td:
+            svg = app.save_screenshot("search.svg", path=td)
+            png_path = OUT_DIR / "search.png"
+            _svg_to_png(Path(td) / Path(svg).name, png_path)
+            _assert_png_sane(png_path)
+        print(f"wrote {png_path}")
+
+
 def main() -> None:
     asyncio.run(_capture())
+    asyncio.run(_capture_search())
 
 
 if __name__ == "__main__":

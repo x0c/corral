@@ -29,7 +29,8 @@ pickup 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 终端界面 | 左栏列表 + 右栏（顶栏助手按钮 + 最多三格内嵌） | `PickupApp` 承载应用，`MainScreen` 承载主屏；`SplitPaneArea` 管右栏 |
 | 分屏组合记忆 | 活跃会话并排布局的隐式记忆（切走再回来自动恢复同伴） | `split_layout.py` → `~/.cache/pickup/split-layout.json`；仅活跃/托管会话 |
 | 侧边栏会话列表 | 左栏的搜索框、新建会话入口及会话卡片 | `SessionListView`、`SessionCard`、`NewSessionCard` |
-| 筛选项目 | 顶部输入框按项目名、路径和标题筛选会话 | `NavState.project_query`；不是独立项目列表页 |
+| 筛选项目 | 顶部输入框按项目名、路径和标题筛选会话 | `NavState.project_query`；不是独立项目列表页；**不搜对话正文** |
+| 全文搜索 | `Ctrl+F` 弹窗，在所有会话的对话正文里找关键词并展示命中行 | `ui/search_modal.py` + `search.py` 的 `ConversationIndex`；与筛选项目是两条路，不是同一个输入框的两种模式 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或右栏顶栏点助手加格；无底栏 `n` 快捷键 |
 | 高级操作 | 对当前会话选择同运行时恢复或跨运行时接力 | `a` → `choose_target_runtime()` |
 | 删除会话 | 彻底抹掉选中会话的本地历史，不可恢复；运行中/托管会话先结束再删 | `x` → `ConfirmModal(confirm_key="x")` → `action_delete_session()` |
@@ -51,8 +52,11 @@ graph TD
     D --> E["MainScreen（终端界面）"]
     E --> F["SessionListView<br/>搜索框、新建项、会话卡"]
     E --> G["EmbedPane<br/>右栏"]
-    F --> H["NavState.project_query"]
+    F --> H["NavState.project_query<br/>只筛项目/路径/标题"]
     E --> I["ui.modals<br/>高级操作 / 新建 / 确认"]
+    E --> S["ui.search_modal<br/>Ctrl+F 全文搜索弹窗"]
+    S --> T["search.ConversationIndex<br/>对话正文内存索引"]
+    B --> T
     B --> E
     E --> J["非进行中：完整对话预览"]
     E --> K["进行中或托管：内嵌实时终端"]
@@ -155,6 +159,7 @@ stateDiagram-v2
 | 首屏异步加载与后台刷新 | `ui/main_screen.py` | `_await_initial_load()`、`_background_refresh_worker()`、`_poll_cache()` | 等首次扫描、按退避间隔重扫、轮询标题缓存 |
 | 选中会话后决定右栏 | `ui/main_screen.py` | `_follow_current_selection()`、`_render_detail()`、`_warm_conversation()` | 非进行中显示完整对话；托管会话挂到右栏实时画面；「运行中(其他窗口)」也只有完整对话，详情头额外写明拿不到实时画面的原因（`_status_key()` / `is_external_running()`） |
 | 侧边栏筛选项目 | `ui/main_screen.py`、`ui/nav.py`、`pickup.py` | `on_input_changed()`、`NavState.project_query`、`_filter_sessions_by_query()` | 查询只有一份状态；按项目名、路径、标题进行大小写无关模糊匹配 |
+| 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
 | 会话卡片、状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 三行：标题 / 运行时靠右 / 时间靠右；首行「项目名: 标题」整体同一样式（统一 bold；已结束吃卡片基础色 `$foreground 80%`，进行中叠成功绿），首行放不下时按显示宽度硬截断、不写省略号 |
 | 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`pick_project()`、`pick_runtime_for_new_session()`、`_on_runtime_pick()` | 侧边栏「＋ 新建」走项目→运行时；右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |
@@ -197,11 +202,11 @@ stateDiagram-v2
 | 自动聚焦与输入蒙版 | 右栏 | `MainScreen._can_autofocus()`、`SplitPaneArea._request_pane_focus()` / `_settle_focus_intent()` / `focus_session_key(only_live=True)`、`sync_input_mask()` | 明确意图（回车 / 单击会话卡 / 托管成功）才交焦点，且意图跨异步 remount 存活；焦点在侧边栏时活着的实时格压暗 |
 | 点击会话卡的开关语义 | 侧边栏 → 右栏 | `SessionListView.focus_on_click()` / `take_focus_before_click()`、`MainScreen._click_returns_focus_to_list()` | 点当前持有输入的那张卡=撤回焦点；判定只能用按下前焦点 |
 | 分屏焦点同步 | 右栏 → 侧边栏 | `PaneCell._notify_pane_focused`、`MainScreen._on_pane_focused`、`SessionListView.select_session_key` | 聚焦某一分屏时侧边栏高亮切到对应会话；不得因此 remount 右栏 |
-| 按键路由 | 搜索与焦点 | `MainScreen.on_key()`、`on_input_submitted()` | `/` 聚焦筛选项目；Down/Enter 回列表；Esc 先清空查询再退出 |
+| 按键路由 | 搜索与焦点 | `MainScreen.on_key()`、`on_input_submitted()` | `/` 聚焦筛选项目；`Ctrl+F` 打开全文搜索弹窗（右栏实时格持焦时让位给助手）；Down/Enter 回列表；Esc 先清空查询再退出 |
 | 选择事件 | 会话操作 | `MainScreen.on_list_view_selected()` | 回车针对新建项或当前会话分流 |
 | 模态流程 | 高级操作 / 新建 / 确认 | `ui/modals.py` | 运行时选择、项目选择和结束确认；未安装运行时不可确认 |
 | 右栏流程 | 静态预览 / 实时画面 | `EmbedPane.show_detail()`、`EmbedPane.focus_session()` | 根据会话是否托管选择展示模式 |
-| 截图脚本 | 演示截图 | `docs/screenshots/capture.py` | 生成可提交的虚构数据截图 `docs/screenshots/list.png` |
+| 截图脚本 | 演示截图 | `docs/screenshots/capture.py` | 生成可提交的虚构数据截图 `docs/screenshots/list.png`（主界面）与 `search.png`（全文搜索弹窗） |
 | 用户触发截图 | 真机截图 | F12 → `MainScreen.action_save_screenshot()` | 排查用户真实界面；产物只能留在本地缓存 |
 
 ## §6 核心业务规则与隐性约束
@@ -215,7 +220,14 @@ stateDiagram-v2
 - **AI 易错点**【多语言与绑定】所有新增用户可见文案都进入 `i18n.py` 的 `_MESSAGES`，且同时提供 en / zh。Textual 的按键绑定在类创建时已合并；本地化只能更新 description，不能整体替换绑定表，否则会丢失列表继承的方向键和确认键。
 - **AI 易错点**【确认弹窗的确认键已参数化】`ConfirmModal(message, confirm_key="q")` 的确认键不再写死为 `q`：结束会话仍用默认 `q`，删除会话显式传 `confirm_key="x"`。新增任何需要二次确认的危险动作时，必须选一个与触发键一致的 `confirm_key`（而不是复用默认 `q`），否则用户会按错键、或误把另一个动作的确认键当成本动作的确认键。`t("modal.confirm_hint", confirm_key=...)` 的提示行文案同步跟着变。
 - **AI 易错点**【宽度不是字符数】侧边栏列宽、标题截断、运行时名右对齐和预览折行一律使用 Rich 的终端显示宽度工具链（`_text_width()` / `_fit_cell()`）；禁止用 `len()`、`ljust()` 或自写 East Asian Width 表。中文、emoji、组合字符会使字符数与终端格宽不一致。
-- **AI 易错点**【筛选状态单一来源】筛选项目只认 `NavState.project_query`。搜索框输入、列表渲染、页头数量和新建会话目录推导必须共用它；不要在列表或弹窗另存一份筛选值。
+- **AI 易错点**【筛选状态单一来源】筛选项目只认 `NavState.project_query`。搜索框输入、列表渲染、页头数量和新建会话目录推导必须共用它；不要在列表或弹窗另存一份筛选值。全文搜索弹窗是例外且只读——它把 `project_query` 当初始查询带进去，但自己的查询串不写回这份状态。
+- **AI 易错点**【全文搜索是另一条路，不要往筛选框里塞】侧边栏筛选框只匹配项目名 / 路径 / 标题，**永远不搜对话正文**：它是常驻的列表收窄工具，一旦混进正文匹配，随手输个常用词就会把列表撑成一堆看不出为什么命中的会话。搜正文走 `Ctrl+F` 弹窗（`ui/search_modal.py`），结果按会话分组、显式展示命中行并高亮关键词，让用户一眼看出「为什么它出现在这」。两者共用 `store` 的会话与标题快照，但匹配逻辑分别在 `display._filter_sessions_by_query()` 和 `search.ConversationIndex.search()`，不要合并。
+- **AI 易错点**【`push_screen_wait` 必须在 worker 里】新增任何「推弹窗并等结果」的动作时，动作方法必须挂 `@work`（见 `action_handoff` / `action_search_content`），否则 Textual 直接抛 `NoActiveWorker`。这条在单测里才会暴露，静态看代码看不出来。
+- **AI 易错点**【全文搜索索引在后台线程建，且要等首屏画完】`ConversationIndex.refresh()` 要解析对话历史，只能跑在 `@work(thread=True)` 里（`_warm_search_index`），并且要经 `_schedule_search_index_warm` 延后到首屏渲染之后——后台线程也吃 GIL，直接在首屏那一秒开跑会让首次出卡片慢 110～165 ms。弹窗打开时若未就绪，由弹窗自己再建一次并显示进度。`refresh()` 内部有锁做串行，两条路同时触发也不会把同一批会话解析两遍。搜索结果里的会话字段一律从调用方传入的当前列表取，索引只存正文——否则标题补全、运行中状态会停在建索引那一刻。
+- **AI 易错点**【弹窗每次打开都要增量刷索引】`FullTextSearchModal.on_mount` 不能写成「`ready` 就跳过刷新」：那样首屏预热之后新产生的会话、新追加的消息永远搜不到，pickup 开着不动几小时就明显不对。正确做法是就绪时先用现有索引立刻出结果，同时照样起一次后台增量刷新（签名全命中时只要 0.5～1.2 ms，等于白捡），刷完再重跑一次查询。
+- **AI 易错点**【"回车打开谁"必须取自高亮控件本身】`_selected_key()` 从 `ListView.highlighted_child` 里那个 `SearchResultRow` 拿会话键，**不要**改成「用 `ListView.index` 去索引 `self._matches`」。后者是两份可能不同步的数据：`ListView.clear()` 是投递 Prune 消息异步移除的，重建期间 DOM 里可能还留着上一批结果而 `_matches` 已经换新，同一个下标就指向两个不同会话，用户看到高亮在 A、回车却打开 B。结果列表重建同样要 `await clear()` / `await extend()` 并用 `_results_lock` + 序号让位串行（原因同 `SessionListView.rebuild()`：请求来自 Screen 泵的防抖定时器和 App 泵的建索引完成回调两条路）。回归：`test_highlighted_row_always_matches_what_enter_would_open`、`test_concurrent_rebuilds_do_not_stack_duplicate_rows`。
+- **AI 易错点**【命中行只对要展示的那几条提取】`ConversationIndex.search()` 先用 blob 判定命中并排序，再只对前 `top` 条调 `_collect_lines`。对全部命中会话都提取命中行会把界面线程卡住（461 个会话搜单字母 305 ms → 只算前 60 条后 35 ms）。`SearchOutcome.total` 保留命中总数，状态行必须如实说明还有多少条没显示。
+- **AI 易错点**【Ctrl+F 属于列表侧动作】`search_content` 必须留在 `_LIST_ONLY_ACTIONS` 里：Ctrl+F 在助手里是常用键（readline 前移光标、翻页搜索），右栏实时格持有输入时必须原样转发给会话，不能被弹窗截胡。这点和 `Ctrl+B` 显隐侧栏那类壳层开关刻意不同。回归：`test_ctrl_f_yields_to_the_assistant_when_a_live_pane_has_focus`。
 - **AI 易错点**【右栏刷新线程边界】Textual 后台 worker 不得直接读写 Widget/DOM；扫描、读取对话和托管启动等阻塞工作在后台进行，结果通过 `call_from_thread()` 回到主线程。退出时 worker 必须可取消，不能用不可打断的无限等待或长 `sleep`。
 - **AI 易错点**【列表刷新策略】会话键的成员与顺序不变时，`SessionListView.rebuild()` 必须原地替换卡片数据，只刷新有变化的卡片；仅新增、删除或重排才清空重建。后台重扫、标题轮询和交互动作可能在同一帧要求重建，并发执行 `clear()` / `extend()` 会重复挂载固定 ID 的「新建会话」条目，Textual 直接抛 `DuplicateIds` 打崩整个 TUI。**串行闸门必须在 `SessionListView.rebuild()` 内部（`_rebuild_lock`），不能只放在主屏**：调用方分布在两条互不相让的消息泵上——后台重扫经 `app.call_from_thread(_rebuild_list)` 跑在 App 泵，搜索框输入经 `on_input_changed` 直接调 `rebuild()` 跑在 Screen 泵，`MainScreen._rebuild_lock` 只挡得住同泵重入。真机崩溃（2026-07-26）：连续退格清空搜索词，命中数 50→57→71 连做全量重建（单次已到 2s 量级），与后台重扫交错必崩。同一把锁顺带做请求合并——排队期间来了更新的请求且本次不带 `select_key` 时直接让位，避免每个中间筛选态都全量重建一遍。标题生成中不在侧边栏画任何加载动画，标题只在缓存轮询命中变化时原地刷新。回归：`test_list_rebuild_serialized_across_message_pumps`、`test_screen_serializes_concurrent_list_rebuilds`。
 - **AI 易错点**【推导原选中会话必须以 DOM 为准】后台重扫是先 `store.refresh()` 再 `call_from_thread` 触发 `rebuild()`，这一刻 store 已经变了（新会话按 mtime 置顶插入）但 DOM 卡片还是旧的。`rebuild()` 推导「重建前选中的是哪条会话」必须用 `_displayed_selected_key()`（按已渲染的 `_session_cards()` 索引 `self.index`），不能用 `selected_session()`——它是按**刚重算过的** `visible_sessions()` 索引同一个 `self.index`，新会话已经把顺序打乱后，同一下标会指向别的会话。真实复现过：聚焦第三条时后台刷出一条新会话，高亮和右栏跟着串位跳到第二条。`selected_session()` 仍可安全用于用户交互期（回车/删除/结束会话等），那些时刻 DOM 与 store 本就同步。
@@ -260,6 +272,8 @@ python3 docs/screenshots/capture.py
 ```
 
 检查 `docs/screenshots/list.png`：左栏搜索框、新建会话、会话卡的末行间隔是否连续可点击；右栏是否为完整对话；Footer 是否存在；中英文、宽字符与截断是否错乱；不得出现“最近提问 / 最近回复”或“连接中”。
+
+检查 `docs/screenshots/search.png`（全文搜索弹窗）：输入框是**单行、无边框**（Textual 的 `Input:focus` 会自带一圈边，压不住就会出现「外框套内框」两层边）；状态行的英文单复数正确（`1 session matched` 而不是 `1 sessions matched`）；每条结果是「项目: 标题 / 运行时 · 时间 · N 处命中 / 命中行」，关键词按 `$warning` 高亮；Footer 出现 `^f Search`。**PNG 里中文命中行的关键词两侧会出现明显空隙，这是 Rich SVG → cairosvg 对「同一行里换了样式的 CJK 文本」算错字符前进宽度的导出伪影，不是产品回归**——判定方法是直接断言 `SearchResultRow.render().plain`，真实终端和 `.plain` 里都没有多余空格。
 
 3. 真实终端冒烟：为避免标题生成消耗账号额度，在临时目录放置指向本机 `true` 的 `claude`、`codex`，并置于 `PATH` 最前，再运行：
 

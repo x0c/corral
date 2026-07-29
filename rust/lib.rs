@@ -1,55 +1,17 @@
-use pyo3::exceptions::PyValueError;
+//! pickup 原生加速层。
+//!
+//! 只做「大量输入压缩成少量结果」的活：把一屏带 ANSI 转义的文本直接解析成
+//! 若干紧凑的行元组，全程不构建深层 Python 对象树（实测约 27 倍于纯 Python）。
+//!
+//! 这里曾经还有一个 serde_json + PyO3 的 `loads`，实测比标准库 C 实现的 json
+//! **慢约 2.5 倍**，已于 v0.24.22 移除：产出物是一大棵 Python dict 时，
+//! Rust 侧要先解析成中间对象树再逐节点转换，等于把同一份数据构建两遍。
+//! 不要再加回来，详见 docs/PERFORMANCE_KNOWLEDGE_BASE.md。
+
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
-use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use unicode_width::UnicodeWidthChar;
-
-fn value_to_python(py: Python<'_>, value: Value) -> PyResult<PyObject> {
-    Ok(match value {
-        Value::Null => py.None(),
-        Value::Bool(value) => value.into_pyobject(py)?.to_owned().unbind().into(),
-        Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                value.into_pyobject(py)?.to_owned().unbind().into()
-            } else if let Some(value) = value.as_u64() {
-                value.into_pyobject(py)?.to_owned().unbind().into()
-            } else {
-                value
-                    .as_f64()
-                    .unwrap_or_default()
-                    .into_pyobject(py)?
-                    .to_owned()
-                    .unbind()
-                    .into()
-            }
-        }
-        Value::String(value) => value.into_pyobject(py)?.unbind().into(),
-        Value::Array(values) => {
-            let list = PyList::empty(py);
-            for value in values {
-                list.append(value_to_python(py, value)?)?;
-            }
-            list.unbind().into()
-        }
-        Value::Object(values) => {
-            let dict = PyDict::new(py);
-            for (key, value) in values {
-                dict.set_item(key, value_to_python(py, value)?)?;
-            }
-            dict.unbind().into()
-        }
-    })
-}
-
-#[pyfunction]
-fn loads(py: Python<'_>, data: &[u8]) -> PyResult<PyObject> {
-    let value: Value = py
-        .allow_threads(|| serde_json::from_slice(data))
-        .map_err(|error| PyValueError::new_err(format!("JSON 解析失败：{error}")))?;
-    value_to_python(py, value)
-}
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 enum Colour {
@@ -337,7 +299,6 @@ fn parse_ansi_rows(py: Python<'_>, text: &str, width: usize, height: usize) -> V
 
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_function(wrap_pyfunction!(loads, module)?)?;
     module.add_function(wrap_pyfunction!(parse_ansi_rows, module)?)?;
     module.add("ACCELERATOR_VERSION", env!("CARGO_PKG_VERSION"))?;
     Ok(())

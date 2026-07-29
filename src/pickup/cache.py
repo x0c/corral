@@ -62,6 +62,11 @@ class PerformanceCache:
         self._local = threading.local()
         self._pending_lock = threading.Lock()
         self._pending_sessions: list[tuple] = []
+        # 一轮扫描内的元数据快照：runtime -> {path: (dev, ino, size, mtime_ns,
+        # parser_version, payload)}。None 表示当前不在扫描期间，走逐条查询老路。
+        # 见 begin_scan()／_session_snapshot() 的说明。
+        self._snapshot_lock = threading.Lock()
+        self._snapshots: dict[str, dict[str, tuple]] | None = None
 
     @contextmanager
     def _connect(self, *, create: bool = True) -> Iterator[sqlite3.Connection | None]:
@@ -69,6 +74,18 @@ class PerformanceCache:
             yield None
             return
         conn = getattr(self._local, "connection", None)
+        if conn is not None and create:
+            # 连接已经建好，就说明目录当时已创建成功，热路径上不必再 mkdir + chmod
+            # 一遍：一次 Codex 扫描原本要为此白做约 1900 次系统调用。create=False
+            # 的冷路径（status/clear）保持原样，它还要靠 path.exists() 判断库在不在。
+            try:
+                yield conn
+            except sqlite3.Error:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+            return
         try:
             if create:
                 self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -142,12 +159,70 @@ class PerformanceCache:
         )
         conn.commit()
 
+    def begin_scan(self) -> None:
+        """标记一轮扫描开始：本轮内每个运行时的元数据只查一次库。
+
+        扫描要在上千个候选文件里筛出最近的几十条（大量候选会被子代理线程、空
+        会话、目录已删等规则过滤掉），逐条查库意味着一次 Codex 扫描要发起约
+        950 次独立查询。快照必须严格限定在一轮扫描内，否则同一进程里后续扫描
+        看不到本轮新写入的会话。
+        """
+        with self._snapshot_lock:
+            self._snapshots = {}
+
+    def end_scan(self) -> None:
+        with self._snapshot_lock:
+            self._snapshots = None
+
+    def _session_snapshot(self, runtime: str) -> dict[str, tuple] | None:
+        """取（必要时建）本轮扫描的元数据快照；不在扫描期间或取数失败时返回 None。"""
+        with self._snapshot_lock:
+            if self._snapshots is None:
+                return None
+            cached = self._snapshots.get(runtime)
+            if cached is not None:
+                return cached
+        # 建快照时不持锁，避免阻塞其它运行时的扫描线程；_connect 会把 sqlite 异常
+        # 吞成"未命中"，所以用 rows is None 判断有没有真正取到数，取不到就回退逐条查。
+        rows = None
+        with self._connect() as conn:
+            if conn is not None:
+                rows = conn.execute(
+                    "SELECT path, dev, ino, size, mtime_ns, parser_version, payload "
+                    "FROM session_meta WHERE runtime=?",
+                    (runtime,),
+                ).fetchall()
+        if rows is None:
+            return None
+        loaded = {row[0]: tuple(row[1:]) for row in rows}
+        with self._snapshot_lock:
+            if self._snapshots is None:
+                return loaded  # 扫描已经结束，这份仍可用但不入册
+            return self._snapshots.setdefault(runtime, loaded)
+
+    @staticmethod
+    def _decode_session_row(row, signature: tuple, version: str) -> dict | None:
+        """校验签名与解析器版本，通过了才解码 payload。
+
+        解码必须保持惰性：快照里装着该运行时的全部条目，本轮只会用到其中一小
+        部分，提前解码等于白做大量无用功，收益会被吃光。
+        """
+        if row is None or tuple(row[:4]) != signature or row[4] != version:
+            return None
+        try:
+            payload = json.loads(row[5])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def get_session(self, runtime: str, path: str, extra_version: str = "") -> dict | None:
         signature = file_signature(path)
         if signature is None:
             return None
         version = _PARSER_VERSION + extra_version
-        row = None
+        snapshot = self._session_snapshot(runtime)
+        if snapshot is not None:
+            return self._decode_session_row(snapshot.get(path), signature, version)
         with self._connect() as conn:
             if conn is None:
                 return None
@@ -156,13 +231,7 @@ class PerformanceCache:
                 "FROM session_meta WHERE runtime=? AND path=?",
                 (runtime, path),
             ).fetchone()
-            if row is None or tuple(row[:4]) != signature or row[4] != version:
-                return None
-            try:
-                payload = json.loads(row[5])
-            except (TypeError, json.JSONDecodeError):
-                return None
-            return payload if isinstance(payload, dict) else None
+            return self._decode_session_row(row, signature, version)
 
     def put_session(self, runtime: str, path: str, payload: dict, extra_version: str = "") -> None:
         signature = file_signature(path)

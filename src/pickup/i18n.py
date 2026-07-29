@@ -95,25 +95,81 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Preview page down",
         "zh": "预览下翻",
     },
+    # 筛选框一直就同时匹配项目名、路径和会话标题，文案照实写；搜对话正文是
+    # 另一条路（Ctrl+F 全文搜索弹窗），不在这个框里。
     "filter.placeholder": {
-        "en": "Filter projects…",
-        "zh": "筛选项目…",
+        "en": "Filter projects / titles…",
+        "zh": "筛选项目 / 标题…",
     },
     "filter.placeholder_count": {
-        "en": "Filter projects ({count})",
-        "zh": "筛选项目 ({count})",
+        "en": "Filter projects / titles ({count})",
+        "zh": "筛选项目 / 标题 ({count})",
     },
     "filter.placeholder_count_active": {
-        "en": "Filter projects… ({count})",
-        "zh": "筛选项目… ({count})",
+        "en": "Filter projects / titles… ({count})",
+        "zh": "筛选项目 / 标题… ({count})",
     },
     "filter.load_error": {
-        "en": "Filter projects… — {error}; retrying",
-        "zh": "筛选项目… — {error}；正在自动重试",
+        "en": "Filter projects / titles… — {error}; retrying",
+        "zh": "筛选项目 / 标题… — {error}；正在自动重试",
     },
     "filter.no_sessions": {
-        "en": "Filter projects… — no {names} sessions found",
-        "zh": "筛选项目… — 未找到任何 {names} 会话记录",
+        "en": "Filter projects / titles… — no {names} sessions found",
+        "zh": "筛选项目 / 标题… — 未找到任何 {names} 会话记录",
+    },
+    "action.search": {
+        "en": "Search",
+        "zh": "全文搜索",
+    },
+    "search.placeholder": {
+        "en": "Search everything said in your sessions…",
+        "zh": "搜索会话里说过的话…",
+    },
+    "search.hint": {
+        "en": "↑↓ Select   Enter Open   Esc Back",
+        "zh": "↑↓ 选择   Enter 打开   Esc 返回",
+    },
+    "search.indexing": {
+        "en": "Reading conversations… {done}/{total}",
+        "zh": "正在读取对话内容… {done}/{total}",
+    },
+    "search.idle": {
+        "en": "{count} sessions searchable — type to search titles and conversations",
+        "zh": "{count} 个会话可搜 — 输入关键词，同时搜标题和对话内容",
+    },
+    # 英文单复数：中文没有这个问题，但 zh 也必须给同名 key，否则 t() 会回退到
+    # 英文模板，中文界面上冒出一句英文。
+    "search.idle_one": {
+        "en": "1 session searchable — type to search titles and conversations",
+        "zh": "1 个会话可搜 — 输入关键词，同时搜标题和对话内容",
+    },
+    "search.result_count": {
+        "en": "{count} sessions matched",
+        "zh": "命中 {count} 个会话",
+    },
+    "search.result_count_one": {
+        "en": "1 session matched",
+        "zh": "命中 1 个会话",
+    },
+    "search.result_count_zero": {
+        "en": "Nothing matched",
+        "zh": "没有命中任何会话",
+    },
+    "search.truncated": {
+        "en": "Showing the {shown} most recent of {total} matched sessions",
+        "zh": "命中 {total} 个会话，按时间只显示最近 {shown} 个",
+    },
+    "search.hit_count": {
+        "en": "{count} hits",
+        "zh": "{count} 处命中",
+    },
+    "search.hit_count_one": {
+        "en": "1 hit",
+        "zh": "1 处命中",
+    },
+    "search.title_only": {
+        "en": "matched title / project",
+        "zh": "标题或项目命中",
     },
     "list.new_session": {
         "en": "+ New session",

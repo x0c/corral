@@ -210,9 +210,25 @@ def _scan_runtimes(runtimes: list, limit: int) -> dict[str, list[dict]]:
         except Exception:
             return []
 
-    with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
-        scanned = pool.map(_scan_one, runtimes)
-    return {runtime.id: result for runtime, result in zip(runtimes, scanned)}
+    # 与 scan_all 一样开一轮扫描期，让每个运行时的派生缓存元数据只查一次库。
+    try:
+        from pickup.cache import get_cache
+
+        get_cache().begin_scan()
+    except Exception:
+        pass  # 派生缓存永远不能影响原始会话扫描结果
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
+            scanned = pool.map(_scan_one, runtimes)
+        return {runtime.id: result for runtime, result in zip(runtimes, scanned)}
+    finally:
+        try:
+            from pickup.cache import get_cache
+
+            get_cache().end_scan()
+            get_cache().flush_pending()
+        except Exception:
+            pass  # 派生缓存永远不能影响原始会话扫描结果
 
 
 def resolve_ref(registry, ref: str, limit: int) -> dict:

@@ -40,11 +40,12 @@ from pickup.models import LaunchPlan
 from textual import events
 from textual.color import Color
 from textual.geometry import Offset, Size
-from textual.widgets import Footer, Input, ListItem
+from textual.widgets import Footer, Input, ListItem, ListView
 from pickup.ui.app import PickupApp
 from pickup.ui.embed_pane import EmbedPane
 from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.modals import ConfirmModal, PickMenuModal, RuntimePickerModal
+from pickup.ui.search_modal import FullTextSearchModal, SearchResultRow
 from pickup.ui.session_list import NEW_SESSION_ID, SessionCard, SessionListView
 from pickup.ui.terminal_theme import TerminalBackgroundReport, TerminalThemeParser
 from pickup.ui.runtime_top_bar import _SidebarToggleChip
@@ -3840,6 +3841,299 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.3)
             self.assertNotIsInstance(app.screen, ConfirmModal)
         self.assertIsNotNone(app.return_value)
+
+
+class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
+    """Ctrl+F 全文搜索弹窗：搜对话正文、展示命中行、选中后跳回侧边栏定位。"""
+
+    def _store(self):
+        sessions = [
+            {
+                "source": "claude", "id": "a", "short_id": "a",
+                "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "侧边栏改造",
+                "cwd": "/Users/x/pickup", "live": False,
+            },
+            {
+                "source": "claude", "id": "b", "short_id": "b",
+                "mtime": time.time() - 10, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "字幕优化",
+                "cwd": "/Users/x/LiveCaption", "live": False,
+            },
+        ]
+        conversations = {
+            "a": [pickup.ConversationMessage("user", "第一行\n这里聊到了红烧肉的做法\n第三行")],
+            "b": [pickup.ConversationMessage("assistant", "字幕断句改好了")],
+        }
+        store, registry = _make_store(sessions=sessions)
+        runtime = registry.get("claude")
+        runtime.load_conversation.side_effect = lambda s: list(conversations[s["id"]])
+        return store
+
+    async def _open_search(self, pilot, app):
+        await pilot.press("ctrl+f")
+        await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))
+        modal = app.screen
+        await _wait_until(lambda: not modal._indexing)
+        return modal
+
+    async def _type(self, pilot, modal, text: str) -> None:
+        modal.query_one("#search-query", Input).value = text
+        # 先 pause 一次让 Input.Changed 落地、把防抖定时器挂上，再等它跑完。
+        # 少了这一步会在定时器还没建起来时就判定「已完成」，查询其实一次没跑。
+        await pilot.pause()
+        await _wait_until(lambda: modal._debounce_timer is None)
+        await pilot.pause()
+
+    async def test_search_matches_conversation_body_and_shows_the_hit_line(self) -> None:
+        app = PickupApp(self._store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = await self._open_search(pilot, app)
+            await self._type(pilot, modal, "红烧肉")
+
+            self.assertEqual([m.session["id"] for m in modal._matches], ["a"])
+            rows = modal.query(SearchResultRow)
+            self.assertEqual(len(rows), 1)
+            rendered = rows.first().render().plain
+            self.assertIn("pickup: 侧边栏改造", rendered)
+            self.assertIn("这里聊到了红烧肉的做法", rendered)
+            # 只展示命中的那一行，不把整条消息倒出来
+            self.assertNotIn("第三行", rendered)
+            await pilot.press("escape")
+
+    async def test_hit_keyword_is_highlighted(self) -> None:
+        app = PickupApp(self._store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = await self._open_search(pilot, app)
+            await self._type(pilot, modal, "红烧肉")
+
+            row = modal.query(SearchResultRow).first()
+            hit_style = row.get_component_rich_style("search-result--hit")
+            highlighted = "".join(
+                span_text
+                for span_text, style in [
+                    (row.render().plain[span.start:span.end], span.style)
+                    for span in row.render().spans
+                ]
+                if style == hit_style
+            )
+            self.assertIn("红烧肉", highlighted)
+            await pilot.press("escape")
+
+    async def test_enter_reveals_session_and_clears_blocking_filter(self) -> None:
+        """搜到的会话被侧边栏筛选词挡在外面时，选中它必须先把筛选清掉。"""
+        app = PickupApp(self._store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            search = app.screen.query_one("#project-search", Input)
+            search.value = "LiveCaption"
+            await pilot.pause(delay=0.2)
+            self.assertEqual([s["id"] for s in list_view.visible_sessions()], ["b"])
+
+            modal = await self._open_search(pilot, app)
+            # 侧边栏筛选词会被带进弹窗当初始查询，先清掉再搜别的
+            await self._type(pilot, modal, "红烧肉")
+            await pilot.press("enter")
+            await _wait_until(lambda: not isinstance(app.screen, FullTextSearchModal))
+            await pilot.pause(delay=0.2)
+
+            self.assertEqual(list_view.nav.project_query, "")
+            self.assertEqual(search.value, "")
+            selected = list_view.selected_session()
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected["id"], "a")
+
+    async def test_escape_closes_without_touching_the_sidebar(self) -> None:
+        app = PickupApp(self._store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            await pilot.press("down")
+            await pilot.pause()
+            before = list_view.index
+
+            modal = await self._open_search(pilot, app)
+            await self._type(pilot, modal, "红烧肉")
+            await pilot.press("escape")
+            await _wait_until(lambda: not isinstance(app.screen, FullTextSearchModal))
+            await pilot.pause()
+
+            self.assertEqual(list_view.index, before)
+            self.assertIsNone(app.return_value)  # Esc 关弹窗不能顺手把程序也退了
+
+    async def test_sidebar_filter_is_carried_into_the_modal(self) -> None:
+        app = PickupApp(self._store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            app.screen.query_one("#project-search", Input).value = "字幕"
+            await pilot.pause(delay=0.2)
+
+            modal = await self._open_search(pilot, app)
+            self.assertEqual(modal.query_one("#search-query", Input).value, "字幕")
+            await _wait_until(lambda: modal._debounce_timer is None)
+            self.assertEqual([m.session["id"] for m in modal._matches], ["b"])
+            await pilot.press("escape")
+
+    async def test_results_are_sorted_newest_first(self) -> None:
+        app = PickupApp(self._store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = await self._open_search(pilot, app)
+            # 两个会话的项目路径都在 /Users/x 下，用它把两条都搜出来
+            await self._type(pilot, modal, "/users/x")
+            self.assertEqual([m.session["id"] for m in modal._matches], ["a", "b"])
+            await pilot.press("escape")
+
+    async def test_arrow_keys_move_results_while_input_keeps_focus(self) -> None:
+        """输入框全程持有焦点，↑↓ 只挪结果高亮——用户不用在两个控件间切焦点。"""
+        app = PickupApp(self._store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = await self._open_search(pilot, app)
+            await self._type(pilot, modal, "/users/x")
+            results = modal.query_one("#search-results", ListView)
+            query_input = modal.query_one("#search-query", Input)
+            self.assertTrue(query_input.has_focus)
+            self.assertEqual(results.index, 0)
+
+            await pilot.press("down")
+            await pilot.pause()
+            self.assertEqual(results.index, 1)
+            self.assertTrue(query_input.has_focus)  # 焦点没被抢走
+
+            await pilot.press("enter")
+            await _wait_until(lambda: not isinstance(app.screen, FullTextSearchModal))
+            await pilot.pause(delay=0.2)
+            selected = app.screen.query_one(SessionListView).selected_session()
+            self.assertEqual(selected["id"], "b")
+
+    def _bulk_store(self, count: int = 80):
+        """结果多到一次重建挂不完的规模——只有这样才复现得了下面那个竞态。"""
+        now = time.time()
+        sessions = [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": now - i, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/Users/x/pickup", "live": False,
+            }
+            for i in range(count)
+        ]
+        store, registry = _make_store(sessions=sessions)
+        registry.get("claude").load_conversation.side_effect = lambda s: [
+            pickup.ConversationMessage("user", f"甲词 {s['id']}"),
+            pickup.ConversationMessage("assistant", f"乙词 {s['id']}"),
+        ]
+        return store
+
+    async def test_concurrent_rebuilds_do_not_stack_duplicate_rows(self) -> None:
+        """两条消息泵同时要求重建时，结果列表不能把同一批结果叠着挂两遍。
+
+        重建请求确实来自两条互不相让的泵：防抖定时器在 Screen 泵，建索引完成经
+        `call_from_thread` 在 App 泵。`ListView.clear()` 是投递 Prune 消息异步移除、
+        挂载却是同步进 DOM——不 await 且不串行就会新旧共存，`index` 指向旧子项，
+        用户打完字立刻回车会打开一个他没在看的会话。这里直接并发调重建来锁住
+        `_results_lock` + `await clear/extend` 这套约定。
+        """
+        app = PickupApp(self._bulk_store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = await self._open_search(pilot, app)
+            await self._type(pilot, modal, "甲词")
+            results = modal.query_one("#search-results", ListView)
+            expected = len(modal._matches)
+            self.assertGreater(expected, 1)
+
+            await asyncio.gather(*(modal._rebuild_results() for _ in range(4)))
+            await pilot.pause()
+
+            rows = list(results.query(SearchResultRow))
+            self.assertEqual(len(rows), expected, "并发重建把结果重复挂上去了")
+            self.assertLess(results.index, len(rows))
+            self.assertEqual(modal._selected_key(), rows[0].match.key)
+            await pilot.press("escape")
+
+    async def test_highlighted_row_always_matches_what_enter_would_open(self) -> None:
+        """连续换查询词的整个过程中，高亮项和回车会打开的会话必须始终一致。
+
+        `_selected_key()` 现在就是从高亮控件本身取的，所以这条在实现上是结构性
+        成立的；用例的价值在于把这个约定钉死——将来谁把它改回「用 `index` 索引
+        `_matches`」（两份可能不同步的数据），这里的采样就会在重建中间态上炸。
+        """
+        app = PickupApp(self._bulk_store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = await self._open_search(pilot, app)
+            query = modal.query_one("#search-query", Input)
+            results = modal.query_one("#search-results", ListView)
+
+            checked = 0
+            for text in ("甲词", "乙词", "甲词 s1", "乙词", "甲词"):
+                query.value = text
+                # 不等收敛：在重建正在进行的中间态上反复核对不变式
+                for _ in range(8):
+                    await pilot.pause()
+                    rows = list(results.query(SearchResultRow))
+                    index = results.index
+                    if index is None or not rows:
+                        continue
+                    checked += 1
+                    self.assertLess(index, len(rows), f"高亮下标越过了实际子项（{text}）")
+                    self.assertEqual(
+                        modal._selected_key(),
+                        rows[index].match.key,
+                        f"高亮的会话与回车会打开的会话不一致（{text}）",
+                    )
+            self.assertGreater(checked, 10, "没有真正采样到重建中的状态，用例是空的")
+            await pilot.press("escape")
+
+    async def test_reopening_the_modal_picks_up_sessions_added_since_warmup(self) -> None:
+        """索引不能建一次就不管了：开着不动期间新产生的会话必须搜得到。"""
+        store = self._store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            screen = app.screen
+            screen.search_index().refresh(store)  # 模拟首屏预热已经跑完
+
+            new_session = {
+                "source": "claude", "id": "c", "short_id": "c",
+                "mtime": time.time() + 10, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "新会话",
+                "cwd": "/Users/x/pickup", "live": False,
+            }
+            runtime = store.registry.get("claude")
+            previous = runtime.load_conversation.side_effect
+            runtime.load_conversation.side_effect = (
+                lambda s: [pickup.ConversationMessage("user", "刚聊到的秘密暗号")]
+                if s["id"] == "c"
+                else previous(s)
+            )
+            with store.lock:
+                store.sessions["claude"].insert(0, new_session)
+
+            modal = await self._open_search(pilot, app)
+            await self._type(pilot, modal, "秘密暗号")
+            self.assertEqual([m.session["id"] for m in modal._matches], ["c"])
+            await pilot.press("escape")
+
+    async def test_ctrl_f_yields_to_the_assistant_when_a_live_pane_has_focus(self) -> None:
+        """右栏实时终端持有输入时 Ctrl+F 必须原样转发给助手，不能被弹窗截胡。
+
+        Ctrl+F 在助手里是常用键（readline 前移光标、翻页搜索），所以它和显隐侧栏
+        那种壳层开关不同，属于「只在列表侧成立」的动作。
+        """
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            screen = app.screen
+            self.assertTrue(screen.check_action("search_content", ()))
+            with mock.patch.object(type(screen), "_live_embed_focused", return_value=True):
+                self.assertFalse(screen.check_action("search_content", ()))
 
 
 if __name__ == "__main__":

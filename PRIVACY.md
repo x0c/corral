@@ -31,6 +31,12 @@ The tool reads these files to build a recent-session list, extract a compact pre
   is uploaded. Inspect it with `pickup cache status`, preview deletion with
   `pickup cache clear --dry-run`, clear it with `pickup cache clear`, or disable it with
   `PICKUP_CACHE=0`.
+  Note: since the full-text search feature (`Ctrl+F`), the TUI warms a search index in the
+  background shortly after startup, which parses the conversation text of every scanned session
+  rather than only the ones you open. This does not read anything your OS user could not already
+  read and still uploads nothing, but it does mean the derived-performance database above fills up
+  with conversation text sooner and more broadly than before. The search index itself lives only in
+  memory and is never written to disk. `PICKUP_CACHE=0` still disables the on-disk part.
 
 It does not write to Claude Code, Codex CLI, OpenCode, or Kimi Code CLI history.
 

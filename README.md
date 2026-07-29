@@ -11,11 +11,16 @@ Keywords: Claude Code session manager, Codex CLI resume, OpenCode session manage
 
 ![Session list with right-pane conversation preview](docs/screenshots/list.png)
 
+Press `Ctrl+F` to search the conversation bodies of every session and jump straight to the matching line:
+
+![Full-text search across session conversations, with matching lines highlighted](docs/screenshots/search.png)
+
 ## Why Use It
 
 - Browse recent Claude Code, Codex CLI, OpenCode, Kimi Code CLI, and Cursor Agent CLI sessions from one terminal screen.
 - Resume with the original runtime using native commands such as `claude --resume`, `codex resume`, `opencode -s <id>`, and `kimi -S <id>`, and `agent --resume`.
 - Select a finished session to preview the full conversation in the right pane (live/hosted sessions show embedded terminals instead), or keep up to three active sessions side by side.
+- Full-text search everything you ever said: `Ctrl+F` searches conversation bodies across every runtime and shows the matching lines, so you can find a session by what was discussed instead of remembering which project it was in.
 - Hand off unfinished work between runtimes without rewriting or faking session files.
 - Reuse a bounded local cache and native hot-path accelerator so repeat launches, previews, and live panes stay fast.
 - Use JSON output for scripts and launchers.
@@ -253,7 +258,8 @@ agent workflows.
 | Key | Action |
 | --- | --- |
 | `Up` / `Down` / `j` / `k` | Move selection |
-| `/` | Focus the project search box (case-insensitive fuzzy match on project name and session title) |
+| `/` | Focus the sidebar filter box (case-insensitive fuzzy match on project name, path and session title) |
+| `Ctrl+F` | Full-text search across session conversations; results show the matching lines, newest session first. `Enter` opens the selected session in the sidebar |
 | `Enter` | Resume selected session with the native runtime (reattach if it's already running in the background); on the pinned first row `+ New session` (Chinese: `＋ 新建会话`), start the new-session flow instead |
 | `a` | Open advanced handoff actions |
 | `q` | End a backgrounded / in-progress (keep-alive) session; press `q` again in the confirm dialog |

@@ -54,6 +54,8 @@ _ALIVE_EVIDENCE_TTL = 3.0
 # 选择跟随的节流窗口（秒）。单次方向键立即生效（无额外延迟），连按时窗口内只
 # 保留最后一次——否则连按 N 下就实打实重建 N 次右栏，每次约 180ms。
 _FOLLOW_THROTTLE = 0.12
+# 首屏画完到开始预热全文搜索索引的间隔（秒）。见 _schedule_search_index_warm。
+_SEARCH_INDEX_WARM_DELAY = 1.5
 
 
 def is_external_running(session: dict) -> bool:
@@ -88,6 +90,7 @@ def _filter_looks_like_osc_leak(value: str) -> bool:
 
 # 动作名 → 文案 key；实例化时只改 description，不能整表替换（会丢掉 ListView/Screen 继承绑键）
 _ACTION_I18N = {
+    "search_content": "action.search",
     "handoff": "action.advanced",
     "kill_keepalive": "action.kill_session",
     "delete_session": "action.delete_session",
@@ -107,6 +110,10 @@ _ACTION_I18N = {
 # 本就到不了（EmbedPane 先 stop 掉），要么会把用户想打给助手的内容截胡。
 _LIST_ONLY_ACTIONS = frozenset(
     {
+        # 全文搜索是列表侧的检索动作，不是壳层开关：Ctrl+F 在助手里是常用键
+        # （readline 前移光标、翻页搜索），右栏持有输入时必须原样转发给会话，
+        # 想搜就先 Ctrl+\ 回列表。这一点与 Ctrl+B 显隐侧栏刻意不同。
+        "search_content",
         "handoff",
         "kill_keepalive",
         "delete_session",
@@ -123,6 +130,7 @@ _LIST_ONLY_ACTIONS = frozenset(
 def _main_bindings() -> list[Binding]:
     """按当前语言生成底部快捷键说明。"""
     return [
+        Binding("ctrl+f", "search_content", t("action.search")),
         Binding("a", "handoff", t("action.advanced")),
         Binding("q", "kill_keepalive", t("action.kill_session")),
         Binding("x", "delete_session", t("action.delete_session")),
@@ -189,6 +197,8 @@ class MainScreen(Screen):
         self._follow_last_run = 0.0
         self._update_channel: str | None = None
         self._update_latest: str | None = None
+        # 全文搜索索引：首屏扫描完成后在后台预热，Ctrl+F 打开弹窗时通常已就绪。
+        self._search_index = None
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -226,6 +236,7 @@ class MainScreen(Screen):
         # registry.scan_all()（RuntimeRegistry 的廉价预检缓存不是线程安全的）。
         if self.store.loaded:
             self._start_background_refresh()
+            self._schedule_search_index_warm()
         else:
             self._await_initial_load()
         self.set_interval(CACHE_POLL_INTERVAL, self._poll_cache)
@@ -465,6 +476,7 @@ class MainScreen(Screen):
                 self.nav.source = alt
         self.call_next(self._rebuild_and_follow)
         self._start_background_refresh()
+        self._schedule_search_index_warm()
 
     async def _rebuild_and_follow(self) -> None:
         await self._rebuild_list()
@@ -1256,6 +1268,74 @@ class MainScreen(Screen):
         if not self.sidebar_visible:
             return
         self.query_one("#project-search", Input).focus()
+
+    # ---- 全文搜索：侧边栏筛选框只收窄当前列表，这条路才是搜对话正文 ----
+
+    def search_index(self):
+        """惰性创建全文搜索索引；正文解析走 store 的对话缓存，不重复读盘。"""
+        if self._search_index is None:
+            from pickup.search import ConversationIndex
+
+            self._search_index = ConversationIndex()
+        return self._search_index
+
+    def _schedule_search_index_warm(self) -> None:
+        """把索引预热排到首屏画完之后，不要和首帧抢 CPU。
+
+        预热跑在后台线程，但 Python 有 GIL：解析正文期间实测会让界面每帧多滞后
+        4~5ms（p95 9~14ms），首屏出卡片因此慢了 110~165ms——而首屏目标本来就只有
+        1 秒。延后一小会儿再开始，用户完全无感，首屏回归也回到噪声水平。
+        """
+        self.set_timer(_SEARCH_INDEX_WARM_DELAY, self._warm_search_index)
+
+    @work(thread=True, group="search-index")
+    def _warm_search_index(self) -> None:
+        """在后台把对话正文读进索引。
+
+        放后台线程是硬要求：首次要解析没缓存过的会话（本机实测约 1 秒），第二次
+        起命中 SQLite 派生缓存只剩几十毫秒。失败不影响主流程——弹窗打开时发现
+        索引没就绪会自己再建一次，那条路带进度显示。
+        """
+        import pickup
+
+        try:
+            self.search_index().refresh(self.store)
+        except Exception as exc:
+            pickup._log_embed_error("全文搜索索引预热", exc)
+
+    # @work 是硬要求，不是可选优化：`push_screen_wait` 只能在 worker 里调用
+    # （Textual 会直接抛 NoActiveWorker），与 action_handoff 同一个模式。
+    @work
+    async def action_search_content(self) -> None:
+        from pickup.ui.search_modal import FullTextSearchModal
+
+        # 侧边栏当前的筛选词大概率就是用户想搜的东西，带进弹窗省得重敲一遍。
+        initial = self.nav.project_query.strip()
+        key = await self.app.push_screen_wait(
+            FullTextSearchModal(self.store, self.search_index(), initial)
+        )
+        if key:
+            await self._reveal_session(key)
+
+    async def _reveal_session(self, key: str) -> None:
+        """把搜索结果选中的会话定位到侧边栏。
+
+        选中的会话可能正被筛选词挡在列表外——那就先把筛选清掉，否则用户会看到
+        「搜到了却跳不过去」。清空输入框本身也会触发一次重建（不带 select_key），
+        它走的是"保持当前选中"分支，不会把这里定位好的选中项挤掉。
+        """
+        import pickup
+
+        session_list = self.query_one(SessionListView)
+        visible = {pickup.session_key(s) for s in session_list.visible_sessions()}
+        if key not in visible:
+            self.nav.project_query = ""
+            self.query_one("#project-search", Input).value = ""
+            session_list.clear_multi()
+        await self._rebuild_list(key)
+        self._update_header()
+        if self.sidebar_visible:
+            session_list.focus()
 
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "project-search":
