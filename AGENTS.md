@@ -80,7 +80,9 @@
 
 ## 发版要求
 
-**功能/修复改完后必须发布新版本**（补丁位递增），不要只提交代码就结束。同步 bump `pyproject.toml` / `Cargo.toml` / `Cargo.lock` / `src/pickup/__init__.py`，提交 `release: vX.Y.Z …`，打 annotated tag，推送 `github` 与 `origin`，再 `gh release create`；收尾核对 `releases/latest` 的 `tag_name`。细则见 `docs/MAINTAINER_GUIDE.md`「开源发布」。纯文档/规则整理且无产品行为变化时可不发版；有疑义时默认发版。
+**功能/修复改完后必须发布新版本**（补丁位递增），不要只提交代码就结束。同步 bump `pyproject.toml` / `Cargo.toml` / `Cargo.lock` / `src/pickup/__init__.py`，提交 `release: vX.Y.Z …`，打 annotated tag，推送 `github` 与 `origin`，**再跑 `bash scripts/publish-release.sh`**（建 Release、本机构建并上传安装包、更新 Homebrew 配方，一步到位；脚本自带收尾核对输出）。纯文档/规则整理且无产品行为变化时可不发版；有疑义时默认发版。
+
+**不要把「推了 tag」当成发布完成。** GitHub Actions 的免费并发额度经常让整批任务排队几十分钟（真实发生过 45 分钟仍未开始），期间用户 `brew upgrade` 拿到的还是几个版本前的配方、一键安装脚本找不到预编译包。`scripts/publish-release.sh` 就是为此存在的：它在本机做完 CI 那两件真正决定「用户能不能升级」的事，CI 退化成补齐本机出不了的那部分平台包。细则与历史见 `docs/MAINTAINER_GUIDE.md`「开源发布」。
 
 ## 验证要求
 
