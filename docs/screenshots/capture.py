@@ -48,7 +48,16 @@ from pickup.ui.app import PickupApp
 OUT_DIR = Path(__file__).resolve().parent
 
 # Rich/Textual SVG 默认 Fira Code，本机常无 CJK；换成 mono+CJK 本地字体，避免豆腐块。
+# CJK 字体必须排在最前：cairosvg 不做逐字形回退，整个文本段只用第一个可用
+# 字体族，把非 CJK 的 "Noto Sans Mono" 前置会让全部中文变成豆腐块（实测）。
 _FONT_CSS = '"Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Droid Sans Fallback", monospace'
+# 代价：`●`（U+25CF）的 East Asian Width 是 Ambiguous，CJK 字体按两格宽画，会
+# 盖掉后面的分隔空格，出图看着像「●项目」。真实终端按一格推进（已实测），所以
+# 这是纯出图字体现象；用 _NARROW_GLYPH_FONT 只给这个字形单独换族来修，不要去改
+# 产品侧的圆点字符或间距。
+# 单引号故意的：这串会写进 SVG 的 style="…" 属性里，用双引号会把属性提前闭合。
+_NARROW_GLYPH_FONT = "'Noto Sans Mono', 'DejaVu Sans Mono', monospace"
+_NARROW_GLYPHS = "●"
 
 # 演示用外层终端底色：对齐左栏列表空区实测色 (#1e242b)，避免右栏垫成
 # pickup-dark $background (#0d1117) 后出现「半边深半边浅」的割裂感。
@@ -304,6 +313,14 @@ def _prepare_svg(svg_text: str) -> str:
     svg_text = re.sub(
         r'font-family:\s*"Fira Code"',
         f"font-family: {_FONT_CSS}",
+        svg_text,
+    )
+    # 侧边栏关注圆点在 SVG 里是独立 `<text>`（内容就一个字形、不含中文），只给
+    # 这类元素换成非 CJK 等宽族，圆点就按一格宽画、不再吃掉后面的分隔空格。必须
+    # 限定「内容恰为该字形」：右栏对话里的 `●` 与中文同段，换族会整段变豆腐块。
+    svg_text = re.sub(
+        rf"(<text\b[^>]*)(>[{_NARROW_GLYPHS}]</text>)",
+        rf'\1 style="font-family: {_NARROW_GLYPH_FONT}"\2',
         svg_text,
     )
     svg_text = re.sub(r'\s+textLength="[^"]*"', "", svg_text)

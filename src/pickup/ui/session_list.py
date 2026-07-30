@@ -3,7 +3,8 @@
 侧边栏布局硬约定（凡往左栏加控件都必须遵守，见 AGENTS.md / MAINTAINER_GUIDE）：
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
 或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、会话卡高 3（标题 / 运行时 /
-时间；第二行左侧关注状态圆点、右侧运行时，无末行空行）。
+时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
+无末行空行）。
 
 业务格式化逻辑（相对时间、宽字符对齐、标题兜底）直接复用 pickup.py 里已测试的
 纯函数，这里只负责「怎么在 Textual 里画卡片、怎么响应选择」。
@@ -65,7 +66,7 @@ class SessionMultiToggleRequested(Message):
 
 
 class SessionCard(Widget):
-    """会话卡片：三行正文（总高 3）——标题 / 关注状态+运行时 / 时间。"""
+    """会话卡片：三行正文（总高 3）——关注圆点+项目+标题 / 运行时 / 时间。"""
 
     # Textual 默认所有 Widget 都允许鼠标拖拽文本选择（ALLOW_SELECT=True）；这类
     # 卡片是"点击=选中该会话"的列表项，不是可选文本内容，必须关掉——否则鼠标
@@ -80,8 +81,8 @@ class SessionCard(Widget):
         height: 3;
         width: 1fr;
         /* 标题行统一吃这里的基础色：满亮前景整栏铺开太扎眼，压到 8 成
-           （alpha 与当前背景混合，深浅色主题各自成立）。关注状态只由第二行
-           左侧圆点表达，避免整行标题变色压过真正需要用户处理的状态。 */
+           （alpha 与当前背景混合，深浅色主题各自成立）。关注状态只由首行最左
+           的圆点表达，避免整行标题变色压过真正需要用户处理的状态。 */
         color: $foreground 80%;
     }
     """
@@ -156,39 +157,41 @@ class SessionCard(Widget):
             else str(session.get("cwd_display") or t("project.unknown"))
         )
         multi_prefix = "▸ " if self._multi_selected else ""
-        title_prefix = f"{multi_prefix}{project}: "
+        title_prefix = f"{multi_prefix}{project} "
         width = max(10, self.size.width or 40)
 
         runtime = store.registry.get(str(session.get("source") or ""))
         runtime_name = runtime.display_name
         runtime_id = getattr(runtime, "id", None) or str(session.get("source") or "")
 
-        # 放不下就直接截断，不留 `...`：省略号本身要占 3 格，等于把最后几个
-        # 有效字符换成没有信息量的符号，宁可多显示几个字。
-        title_cell = pickup._fit_cell(title_prefix + title, width)
         attention_kind = str(session.get("attention_kind") or "none")
         dot_style = {
             "waiting": "bold yellow",
             "working": "bold green",
             "unread": "bold red",
         }.get(attention_kind)
-        runtime_cell = pickup._fit_cell_right(runtime_name, max(1, width - 2))
+        # 有圆点才让出「圆点 + 空格」这两列；没有圆点的卡片不留占位空格，标题
+        # 直接顶到最左并吃满整行宽度。
+        dot_width = 0 if dot_style is None else 2
+        # 放不下就直接截断，不留 `...`：省略号本身要占 3 格，等于把最后几个
+        # 有效字符换成没有信息量的符号，宁可多显示几个字。
+        title_cell = pickup._fit_cell(title_prefix + title, max(1, width - dot_width))
+        runtime_cell = pickup._fit_cell_right(runtime_name, width)
 
         relative_time = pickup._format_relative_time(session.get("mtime") or 0)
         time_cell = pickup._fit_cell_right(relative_time, width)
 
-        # 项目名与标题同一视觉层级：整行统一 bold。进行状态只在第二行用一个
-        # 圆点表达，标题本身不再随运行状态变色。
-        out = Text(title_cell)
-        content_len = len(title_cell.rstrip(" "))
-        if content_len > 0:
-            out.stylize("bold", 0, content_len)
-        out.append("\n")
-        if dot_style is None:
-            out.append("  ")
-        else:
+        # 项目名与标题同一视觉层级：整行统一 bold。进行状态只由首行最左的圆点
+        # 表达，标题本身不随运行状态变色。
+        out = Text()
+        if dot_style is not None:
             out.append("●", style=dot_style)
             out.append(" ")
+        content_len = len(title_cell.rstrip(" "))
+        out.append(title_cell)
+        if content_len > 0:
+            out.stylize("bold", dot_width, dot_width + content_len)
+        out.append("\n")
         out.append(runtime_cell, style=pickup.runtime_label_style(runtime_id))
         out.append("\n")
         out.append(time_cell, style="dim")

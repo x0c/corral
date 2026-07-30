@@ -129,7 +129,7 @@ The derived cache defaults to 256 MiB and invalidates entries whenever the sourc
 
 `pickup` is a unified, time-ordered session timeline: Claude Code, Codex CLI, OpenCode, Kimi Code,
 and Cursor Agent sessions appear in one list rather than separate runtime tabs. Each card uses three
-rows for `project: title`, attention dot plus runtime, and update time. While a title is being generated the
+rows for `<dot> project title`, runtime, and update time. While a title is being generated the
 card just shows its fallback title with no loading animation, then updates in place once the generated
 title lands. The right side follows the selection: finished sessions show their full
 conversation pinned to the newest message, while hosted sessions render live terminals. The runtime
@@ -137,7 +137,7 @@ buttons above the right side can add another agent in the same project, up to th
 the active pane combination is remembered. Once the list is shown its order is stable — cards never jump
 around when their content updates; only genuinely new sessions appear, always prepended at the top.
 
-The small dot on the left of row two is intentionally simple:
+The small dot at the very start of row one is intentionally simple:
 
 - yellow — the agent asked a structured question and is waiting for your answer;
 - green — the current turn is still running and is not waiting for an answer;

@@ -1122,8 +1122,8 @@ class SessionCardVisualTests(unittest.TestCase):
         )
 
     def test_sidebar_shows_no_generating_spinner(self) -> None:
-        """标题生成期间侧边栏不再显示任何「加载中」转圈动画：首行直接以
-        项目名开头，不出现 braille spinner 帧或任何转圈占位字符。"""
+        """标题生成期间侧边栏不再显示任何「加载中」转圈动画：无关注圆点时首行
+        直接以项目名开头，不出现 braille spinner 帧或任何转圈占位字符。"""
         card = self._card()
         with mock.patch.object(
             SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
@@ -1131,7 +1131,7 @@ class SessionCardVisualTests(unittest.TestCase):
             rendered = card.render()
 
         first_line = rendered.plain.splitlines()[0]
-        self.assertTrue(first_line.startswith("pickup: "))
+        self.assertTrue(first_line.startswith("pickup "))
         for frame in pickup.SPINNER_FRAMES:
             self.assertNotIn(frame, first_line)
 

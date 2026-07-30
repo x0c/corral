@@ -112,7 +112,7 @@ class SessionAttentionCardTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 rendered = self._render(kind)
                 lines = rendered.plain.splitlines()
-                self.assertEqual(lines[1].count("●"), 1)
+                self.assertEqual(lines[0].count("●"), 1)
                 dot = rendered.plain.index("●")
                 dot_spans = [span for span in rendered.spans if span.start <= dot < span.end]
                 self.assertTrue(
@@ -127,13 +127,29 @@ class SessionAttentionCardTests(unittest.TestCase):
         lines = rendered.plain.splitlines()
         self.assertEqual(len(lines), 3)
         self.assertEqual([pickup._text_width(line) for line in lines], [39, 39, 39])
-        self.assertTrue(lines[1].startswith("● "))
+        # 圆点在首行最左，紧跟一个空格再接「项目 标题」；运行时独占第二行靠右。
+        self.assertTrue(lines[0].startswith("● "))
         self.assertTrue(lines[1].endswith("Claude"))
+
+    def test_dotless_card_starts_title_at_leftmost_column(self) -> None:
+        """无圆点时不留占位空格：标题顶到最左，并吃满整行宽度。"""
+        plain = self._render("none").plain.splitlines()[0]
+        self.assertFalse(plain.startswith(" "))
+        self.assertTrue(plain.startswith("pickup "))
+        self.assertEqual(pickup._text_width(plain), 39)
+
+        # 有圆点的卡片才让出两列，标题可用宽度相应少 2。
+        dotted = self._render("waiting").plain.splitlines()[0]
+        self.assertTrue(dotted.startswith("● pickup "))
+        self.assertEqual(pickup._text_width(dotted), 39)
 
     def test_title_style_is_uniform_even_when_session_is_live(self) -> None:
         rendered = self._render("working", live=True)
         title_end = rendered.plain.index("\n")
-        title_spans = [span for span in rendered.spans if span.start < title_end]
+        # 首行前两列是圆点本身，它就该是绿的；这里只看圆点之后的标题文字。
+        title_spans = [
+            span for span in rendered.spans if 2 <= span.start < title_end
+        ]
         self.assertTrue(any("bold" in str(span.style).lower() for span in title_spans))
         self.assertFalse(any("green" in str(span.style).lower() for span in title_spans))
         self.assertFalse(any("#3f9a6a" in str(span.style).lower() for span in title_spans))
