@@ -58,7 +58,7 @@
 - `docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md`：跨助手接力、高级操作、原生恢复、空白新建、启动计划与接力提示词
 - `docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md`：新增一种 AI 助手、补扫描/预览/恢复/接力/空白新建与注册验收
 - `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：事件日志、诊断、F12 截图观测、界面异常排查
-- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、会话关注状态与 Cursor 观察器、会话保活、直启、Agent 只读接口、开源发布、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）
+- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、会话关注状态与 Cursor 观察器、会话保活、直启、Agent 只读接口、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、要不要上 PyPI）、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）
 - `docs/SKILL.md`：修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）；这是 Agent 侧唯一的使用文档，改命令行为必须同步这里
 - `PRIVACY.md`：修改、评审或排查历史文件读取、会话关注状态库、Cursor 用户级观察配置、缓存写入、标题生成、跨运行时接力和开源隐私边界
 - `CONTRIBUTING.md`：修改开源贡献流程、验证命令、设计边界或 PR 要求

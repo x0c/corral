@@ -397,6 +397,8 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - **`install.sh` 依赖 GitHub Release 对象（`GET /repos/{owner}/{repo}/releases/latest`），不是纯靠 tag。** `release.yml` 从来只负责 Homebrew 配方同步，从未有过创建 Release 的步骤——早期版本（`v0.2.x` ~ `v0.11.1`）的 Release 是每次发布时顺手手动 `gh release create` 出来的，v0.13.0 发布前有一段时间这一步被漏掉，导致 `releases/latest` 停留在 `v0.11.1` 不再更新：`install.sh` 会静默装出落后好几个版本的旧代码（不报错，只是版本不对），比 Homebrew 配方的哈希校验更容易被漏查。发布新 tag 时必须同时跑 `gh release create <tag> --title <tag> --notes <说明>`（或等价的 Release 创建动作），发布收尾检查清单里要加一条「`curl -fsSL https://api.github.com/repos/x0c/pickup/releases/latest` 返回的 `tag_name` 等于刚发的版本」，不能只看 Homebrew Actions 是否绿。
 - 在 suzhou 上验证 `install.sh` 时，`pip install git+https://github.com/x0c/pickup.git@<tag>` 可能卡在 GitHub clone 并超时（2026-07-06 实测约 130 秒后 `Failed to connect to github.com port 443`）。这属于该节点直连 GitHub 出口不稳定，不等于安装脚本或 tag 有问题；先原样重试，仍失败时换到 GitHub 出口稳定的环境验证，并在发布记录里明确写出阻塞输出。
 - 三条安装路径（Homebrew、一键脚本、源码安装）在 `README.md` 里必须保持同步；新增或调整任一路径都要回头检查其余两条描述是否还准确。
+- **PyPI 这条路暂时走不通**：`pickup` 这个分发名在 PyPI 已被一个无关项目占用（`pickup 1.4`，Modular backup script），要上只能改成别的分发名（如 `pickup-cli`），安装命令会和 README / Homebrew / 一键脚本里写的不一致。2026-07-30 评估过一次，结论是不值得为此制造第四种叫法；真要上，先想清楚分发名与命令名的对外说法怎么统一。
+- **已知缺口（未修）**：用一键脚本装的用户属于 `pip` 渠道，应用内点更新执行的是 `pip install --upgrade git+https://github.com/x0c/pickup.git@v<tag>`——**从源码构建，需要用户本机有 Rust 工具链**，而他们当初装的是预编译包、多半没有。安装脚本本身会优先下预编译包，所以「装得上、却升不动」。要修就让 `update_command` 的 pip 分支也去 Release 里挑匹配当前平台的预编译包（与 `install.sh` 同一套匹配规则），失败再退回源码。
 
 ## 真实路径验证
 
