@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 import sys as sys
 
-__version__ = "0.24.26"
+__version__ = "0.24.27"
 
 _MODULE_EXPORTS = {
     "embed", "keepalive", "titles", "updater", "split_layout", "observe", "theme", "search",

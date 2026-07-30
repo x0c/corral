@@ -175,7 +175,7 @@ stateDiagram-v2
 | 选中会话后决定右栏 | `ui/main_screen.py` | `_follow_current_selection()`、`_render_detail()`、`_warm_conversation()` | 非进行中显示完整对话；托管会话挂到右栏实时画面；「运行中(其他窗口)」也只有完整对话，详情头额外写明拿不到实时画面的原因（`_status_key()` / `is_external_running()`） |
 | 侧边栏筛选项目 | `ui/main_screen.py`、`ui/nav.py`、`pickup.py` | `on_input_changed()`、`NavState.project_query`、`_filter_sessions_by_query()` | 查询只有一份状态；按项目名、路径、标题进行大小写无关模糊匹配 |
 | 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
-| 会话卡片、关注状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 固定三行：首行「圆点 项目 标题」/ 运行时靠右 / 时间靠右；圆点优先级黄 > 绿 > 红；首行按有无圆点取 `width - 2` / `width` 硬截断、不写省略号 |
+| 会话卡片、关注状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 固定三行：首行「圆点 项目 标题」/ 运行时靠右 / 时间靠右；圆点优先级黄 > 绿 > 红；首行按有无圆点取 `width - 2` / `width` 硬截断、不写省略号；首行整体 bold，项目名再叠一层 `dim` 比标题淡一档（标题不 dim），回归 `test_project_name_is_one_shade_lighter_than_title` |
 | 状态详情与已读确认 | `ui/main_screen.py`、`store.py` | 详情头状态、稳定可见计时、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；只有红点在右侧成功稳定可见 0.5 秒后清除，切换、失败或失焦取消 |
 | 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`NewSessionModal`、`_on_runtime_pick()` | 侧边栏「＋ 新建」弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径）、右栏运行时；←→ 换栏、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |

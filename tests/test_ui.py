@@ -1091,8 +1091,11 @@ class SessionCardVisualTests(unittest.TestCase):
                 f"{source} runtime label should be bold, spans={runtime_spans}",
             )
 
-    def test_title_matches_project_name_style(self) -> None:
-        """「项目名: 标题」同一视觉层级：标题与项目名同为 bold，且标题不再 dim。"""
+    def test_project_name_is_one_shade_lighter_than_title(self) -> None:
+        """首行两段的分工：同为 bold 拉开与下面两行的层级，但项目名 dim 一档。
+
+        项目名是定位用的前缀，同亮度时会和标题抢视线；标题本身必须保持不 dim。
+        """
         card = self._card(cwd="/tmp/pickup", display_title="修复侧边栏展示")
         with mock.patch.object(
             SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
@@ -1112,6 +1115,10 @@ class SessionCardVisualTests(unittest.TestCase):
         self.assertTrue(
             any("bold" in str(span.style).lower() for span in project_spans),
             f"project name should be bold, spans={project_spans}",
+        )
+        self.assertTrue(
+            any("dim" in str(span.style).lower() for span in project_spans),
+            f"project name should be one shade lighter than the title, spans={project_spans}",
         )
         title_spans = [
             span for span in rendered.spans

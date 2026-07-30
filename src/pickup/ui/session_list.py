@@ -181,8 +181,10 @@ class SessionCard(Widget):
         relative_time = pickup._format_relative_time(session.get("mtime") or 0)
         time_cell = pickup._fit_cell_right(relative_time, width)
 
-        # 项目名与标题同一视觉层级：整行统一 bold。进行状态只由首行最左的圆点
-        # 表达，标题本身不随运行状态变色。
+        # 首行整体 bold（与下面两行拉开层级），但项目名比标题淡一档：项目名是
+        # 定位用的前缀，同亮度时会和标题抢视线。用 dim 而不是具体颜色，深浅色
+        # 主题下都成立，也和运行时未知色、时间行用的是同一套弱化语汇。
+        # 进行状态只由首行最左的圆点表达，标题本身不随运行状态变色。
         out = Text()
         if dot_style is not None:
             out.append("●", style=dot_style)
@@ -191,6 +193,11 @@ class SessionCard(Widget):
         out.append(title_cell)
         if content_len > 0:
             out.stylize("bold", dot_width, dot_width + content_len)
+            # 窄栏时截断可能吃掉部分项目名，取两者较小值，别把 dim 涂到标题上。
+            project_end = min(len(title_prefix), content_len)
+            project_start = min(len(multi_prefix), project_end)
+            if project_end > project_start:
+                out.stylize("dim", dot_width + project_start, dot_width + project_end)
         out.append("\n")
         out.append(runtime_cell, style=pickup.runtime_label_style(runtime_id))
         out.append("\n")
