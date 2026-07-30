@@ -5,8 +5,10 @@
 无法把自己右对齐——`align` 只作用于容器的子节点，所以外层必须是容器）。不挂进
 `#list-pane`，不受侧边栏末行间隔的硬约定牵连。
 
-状态机：hidden → available(version) → updating → done(version) / failed。
-点击主体按当前状态触发不同回调；仅 available 状态下额外露出一个"忽略"命中区。
+状态机：hidden → available(version) → updating → done(version) / failed(reason)。
+点击主体按当前状态触发不同回调；除 updating（正在跑子进程，关掉会让用户以为
+取消了）外都露出"忽略"命中区——**失败态尤其必须能关**：升级失败又关不掉的浮层
+会一直横在界面底部，是真机上被用户直接骂过的体验事故。
 
 真机调试踩坑记录：本文件早期版本把状态刷新方法命名为 `_render`，与 Textual
 `Widget` 基类自身用来计算可绘制内容的内部方法 `_render()` 同名，被悄悄覆盖后
@@ -29,6 +31,23 @@ from pickup.display import SPINNER_FRAMES
 from pickup.i18n import t
 
 _SPIN_INTERVAL = 0.08  # 秒，与列表转圈圈一致的观感
+_REASON_MAX = 80  # 字符；浮层最宽 60 列，原因最多占两行
+
+
+def _short_reason(output: str) -> str:
+    """把升级命令的整段输出压成一行可读原因：取最后一条非空行并截断。
+
+    子进程输出常有几十行（pip 的下载进度、brew 的 tap 刷新），真正的失败信息
+    几乎总在末尾；全量输出留在事件日志里，浮层只负责让用户看懂发生了什么。
+
+    超长时**保留末尾**：这类行往往形如「<很长的解释器路径>: No module named pip」，
+    砍掉尾巴恰好砍掉唯一有用的那半句。
+    """
+    lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    reason = lines[-1]
+    return reason if len(reason) <= _REASON_MAX else "…" + reason[-(_REASON_MAX - 1):]
 
 
 class _ToastBody(Static):
@@ -116,7 +135,7 @@ class UpdateToast(Container):
     UpdateToast #toast-close {
         display: none;
     }
-    UpdateToast.-available #toast-close {
+    UpdateToast.-closable #toast-close {
         display: block;
     }
     """
@@ -137,6 +156,7 @@ class UpdateToast(Container):
         self._on_dismiss = on_dismiss
         self._state = "hidden"  # hidden | available | updating | done | failed
         self._version = ""
+        self._reason = ""
         self._spin_index = 0
         self._spin_timer = None
 
@@ -160,7 +180,8 @@ class UpdateToast(Container):
         self._stop_spin()
         self._set_state("done")
 
-    def show_failed(self) -> None:
+    def show_failed(self, reason: str = "") -> None:
+        self._reason = _short_reason(reason)
         self._stop_spin()
         self._set_state("failed")
 
@@ -180,7 +201,7 @@ class UpdateToast(Container):
 
     def _sync_display(self) -> None:
         self.set_class(self._state != "hidden", "-visible")
-        self.set_class(self._state == "available", "-available")
+        self.set_class(self._state in ("available", "failed", "done"), "-closable")
         body = self.query_one("#toast-body", _ToastBody)
         body.remove_class("-failed", "-done")
         if self._state == "available":
@@ -193,7 +214,11 @@ class UpdateToast(Container):
             body.update(Text(t("update.done_restart", version=self._version)))
         elif self._state == "failed":
             body.add_class("-failed")
-            body.update(Text(t("update.failed_retry")))
+            text = Text(t("update.failed_retry"))
+            if self._reason:
+                # 失败原因单独一行且淡一档：主行是可点的动作，原因只是佐证
+                text.append("\n" + self._reason, style="dim")
+            body.update(text)
 
     def _start_spin(self) -> None:
         self._stop_spin()
@@ -220,5 +245,10 @@ class UpdateToast(Container):
         # updating 状态点击无动作，避免重复触发
 
     def _handle_close_click(self) -> None:
-        if self._state == "available":
+        if self._state in ("available", "failed"):
+            # 失败后关闭同样记为「今天不再提醒这个版本」：升不上去还每次开都弹
+            # 才是骚扰；次日仍会重新提醒，不会让用户永远错过新版本。
             self._on_dismiss(self._version)
+        elif self._state == "done":
+            # 已经装好了，用户只是不想立刻重启；下次启动版本已是最新，不会再弹
+            self.hide()

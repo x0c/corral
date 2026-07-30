@@ -73,16 +73,32 @@ class ChannelDetectionTests(unittest.TestCase):
                 self.assertIn("dev-install.sh", warn)
                 self.assertIn(root, warn)
 
+    def test_detects_pipx_by_venv_metadata(self) -> None:
+        # pipx 装的包路径同样含 site-packages，必须靠 venv 根的 pipx_metadata.json
+        # 先于 pip 命中——那个 venv 里没有 pip，走 python -m pip 升级必然失败
+        with tempfile.TemporaryDirectory() as td:
+            with open(os.path.join(td, "pipx_metadata.json"), "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            with mock.patch.object(updater.sys, "prefix", td), \
+                 self._with_pkg_file(os.path.join(td, "lib", "python3.14", "site-packages", "pickup")):
+                self.assertEqual(updater.detect_channel(), "pipx")
+
+    def test_detects_pipx_by_path_marker(self) -> None:
+        with mock.patch.object(updater.sys, "prefix", "/usr"), \
+             self._with_pkg_file("/home/u/.local/share/pipx/venvs/pickup/lib/python3.12/site-packages/pickup"):
+            self.assertEqual(updater.detect_channel(), "pipx")
+
     def test_install_report_includes_paths(self) -> None:
         report = updater.install_report()
         self.assertIn("version", report)
         self.assertTrue(os.path.isabs(report["package_file"]))
-        self.assertIn(report["channel"], ("brew", "pip", "dev"))
+        self.assertIn(report["channel"], ("brew", "pipx", "pip", "dev"))
         self.assertIn("loaded_from_checkout", report)
         self.assertIn("stale_source_warning", report)
 
-    def test_is_updatable_only_for_brew_and_pip(self) -> None:
+    def test_is_updatable_for_managed_channels_only(self) -> None:
         self.assertTrue(updater.is_updatable("brew"))
+        self.assertTrue(updater.is_updatable("pipx"))
         self.assertTrue(updater.is_updatable("pip"))
         self.assertFalse(updater.is_updatable("dev"))
 
@@ -92,12 +108,80 @@ class ChannelDetectionTests(unittest.TestCase):
     def test_update_command_pip_user_site(self) -> None:
         with mock.patch.object(updater.site, "getusersitepackages", return_value="/home/user/.local/lib/python3.12/site-packages"):
             with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/pickup"):
-                cmd = updater.update_command("0.21.0", "pip")
+                cmd = updater.update_command("0.21.0", "pip", spec="WHEEL_URL")
         self.assertIn("--user", cmd)
-        self.assertIn("git+https://github.com/x0c/pickup.git@v0.21.0", cmd)
+        self.assertEqual(cmd[-1], "WHEEL_URL")
+
+    def test_update_command_pipx_uses_pipx_not_pip(self) -> None:
+        # pipx venv 里没有 pip：命令必须交给 pipx 自己，且带 --force 才能覆盖已装应用
+        cmd = updater.update_command("0.21.0", "pipx", spec="WHEEL_URL")
+        assert cmd is not None
+        self.assertIn("pipx", os.path.basename(cmd[0]))
+        self.assertEqual(cmd[1:], ["install", "--force", "WHEEL_URL"])
+        self.assertNotIn("pip", cmd[1:])
 
     def test_update_command_dev_returns_none(self) -> None:
         self.assertIsNone(updater.update_command("0.21.0", "dev"))
+
+
+class InstallSpecTests(unittest.TestCase):
+    """安装源解析：优先 Release 里适配本机的预编译包，查不到才退回源码。"""
+
+    def _release_payload(self, names: list[str]) -> bytes:
+        return json.dumps({
+            "assets": [
+                {"name": n, "browser_download_url": f"https://example.test/{n}"} for n in names
+            ]
+        }).encode("utf-8")
+
+    def _urlopen(self, payload: bytes):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return payload
+
+        return mock.patch.object(updater.urllib.request, "urlopen", return_value=_Resp())
+
+    def test_picks_matching_wheel_for_current_platform(self) -> None:
+        names = [
+            "pickup-0.21.0-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl",
+            "pickup-0.21.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+            "pickup-0.21.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+            "pickup-0.21.0-cp310-abi3-musllinux_1_2_x86_64.whl",
+            "pickup-0.21.0-cp310-abi3-musllinux_1_2_aarch64.whl",
+            "pickup-0.21.0.tar.gz",
+        ]
+        with self._urlopen(self._release_payload(names)):
+            url = updater.release_asset_url("0.21.0")
+        if updater.platform.system() in ("Darwin", "Linux"):
+            self.assertIsNotNone(url)
+            assert url is not None
+            self.assertTrue(url.endswith(".whl"))
+            self.assertIn("0.21.0", url)
+        else:
+            self.assertIsNone(url)
+
+    def test_falls_back_to_source_when_no_matching_asset(self) -> None:
+        with self._urlopen(self._release_payload(["pickup-0.21.0.tar.gz"])):
+            self.assertEqual(
+                updater.install_spec("0.21.0"),
+                "git+https://github.com/x0c/pickup.git@v0.21.0",
+            )
+
+    def test_network_failure_falls_back_to_source(self) -> None:
+        with mock.patch.object(
+            updater.urllib.request, "urlopen",
+            side_effect=updater.urllib.error.URLError("boom"),
+        ):
+            self.assertEqual(
+                updater.install_spec("0.21.0"),
+                "git+https://github.com/x0c/pickup.git@v0.21.0",
+            )
 
 
 class RunUpdateTests(unittest.TestCase):
@@ -146,6 +230,26 @@ class RunUpdateTests(unittest.TestCase):
             ok, out = updater.run_update("0.21.0", "brew")
         self.assertFalse(ok)
         self.assertIn("boom", out)
+
+    def test_pipx_missing_reports_actionable_reason(self) -> None:
+        with mock.patch.object(updater.shutil, "which", return_value=None):
+            ok, out = updater.run_update("0.21.0", "pipx")
+        self.assertFalse(ok)
+        self.assertIn("pipx", out)
+
+    def test_pipx_success_runs_pipx_install_force(self) -> None:
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return self._completed(0, "installed package pickup 0.21.0")
+
+        with mock.patch.object(updater.shutil, "which", return_value="/usr/local/bin/pipx"), \
+             mock.patch.object(updater, "install_spec", return_value="WHEEL_URL"), \
+             mock.patch.object(updater.subprocess, "run", side_effect=fake_run):
+            ok, _ = updater.run_update("0.21.0", "pipx")
+        self.assertTrue(ok)
+        self.assertEqual(captured["cmd"][1:], ["install", "--force", "WHEEL_URL"])
 
 
 class FetchLatestTests(unittest.TestCase):

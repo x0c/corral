@@ -25,13 +25,15 @@
 | 领域 | 入口锚点 |
 |------|---------|
 | 终端界面 | cli/src/pickup/ui/ · cli/src/pickup/cli.py · cli/src/pickup/display.py · cli/src/pickup/theme.py · cli/src/pickup/store.py · cli/src/pickup/i18n.py · cli/src/pickup/split_layout.py |
+| 会话关注状态 | cli/src/pickup/attention.py · cli/src/pickup/attention_signals.py · cli/src/pickup/cursor_observer.py · cli/src/pickup/store.py · cli/src/pickup/ui/ |
+| 会话全文搜索 | cli/src/pickup/search.py · cli/src/pickup/ui/search_modal.py |
 | 内嵌实时终端 | cli/src/pickup/embed.py · cli/src/pickup/ui/embed_pane.py |
 | 会话扫描与对话内容 | cli/src/pickup/scan/ · cli/src/pickup/models.py · cli/src/pickup/runtime/ |
 | 跨助手接力与启动 | cli/src/pickup/runtime/ · cli/src/pickup/models.py |
 | 新助手接入 | cli/src/pickup/runtime/ · cli/src/pickup/scan/ |
 | 可观测与诊断 | cli/src/pickup/observe.py · cli/src/pickup/agent_api.py |
 | 会话保活 | cli/src/pickup/keepalive.py |
-| 直启子命令 | cli/src/pickup/cli.py |
+| 直启子命令 | cli/src/pickup/cli.py · cli/src/pickup/projects.py |
 | 标题补全 | cli/src/pickup/titles.py · cli/src/pickup/titlegen.py |
 | Agent 只读查询 | cli/src/pickup/agent_api.py |
 | 开源发布与一键安装 | cli/install.sh · cli/.github/workflows/ |

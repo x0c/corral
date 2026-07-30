@@ -70,7 +70,7 @@ class UpdateToastTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(calls, [("dismiss", "0.22.0")])
 
-    async def test_close_hitbox_hidden_outside_available_state(self) -> None:
+    async def test_close_hitbox_hidden_only_while_updating(self) -> None:
         calls: list = []
         app = _make_app(calls)
         async with app.run_test(size=(80, 24)) as pilot:
@@ -79,6 +79,44 @@ class UpdateToastTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             close = toast.query_one("#toast-close")
             self.assertFalse(close.display)
+
+    async def test_failed_state_can_be_closed(self) -> None:
+        # 真机事故复现：升级失败后浮层关不掉，一直横在界面底部
+        calls: list = []
+        app = _make_app(calls)
+        async with app.run_test(size=(80, 24)) as pilot:
+            toast = app.query_one(UpdateToast)
+            toast.show_available("0.22.0")
+            await pilot.pause()
+            toast.show_failed("boom")
+            await pilot.pause()
+            self.assertTrue(toast.query_one("#toast-close").display)
+            await pilot.click("#toast-close")
+            await pilot.pause()
+            self.assertEqual(calls, [("dismiss", "0.22.0")])
+
+    async def test_done_state_can_be_closed_without_restarting(self) -> None:
+        calls: list = []
+        app = _make_app(calls)
+        async with app.run_test(size=(80, 24)) as pilot:
+            toast = app.query_one(UpdateToast)
+            toast.show_done("0.22.0")
+            await pilot.pause()
+            self.assertTrue(toast.query_one("#toast-close").display)
+            await pilot.click("#toast-close")
+            await pilot.pause()
+            self.assertEqual(calls, [])
+            self.assertFalse(toast.has_class("-visible"))
+
+    async def test_failed_state_shows_reason_summary(self) -> None:
+        calls: list = []
+        app = _make_app(calls)
+        async with app.run_test(size=(80, 24)) as pilot:
+            toast = app.query_one(UpdateToast)
+            toast.show_failed("Downloading...\n/path/python: No module named pip")
+            await pilot.pause()
+            body_text = toast.query_one("#toast-body").render().plain
+            self.assertIn("No module named pip", body_text)
 
     async def test_click_body_while_done_triggers_restart(self) -> None:
         calls: list = []

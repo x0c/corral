@@ -1732,7 +1732,7 @@ class MainScreen(Screen):
         if ok:
             self.app.call_from_thread(lambda: toast.show_done(latest))
         else:
-            self.app.call_from_thread(toast.show_failed)
+            self.app.call_from_thread(lambda: toast.show_failed(output))
 
     def _on_update_toast_restart(self) -> None:
         # 交给 cli.main()：用新装好的磁盘代码 re-exec 一个全新 pickup 进程。

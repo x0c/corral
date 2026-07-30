@@ -7,9 +7,12 @@ None/False，绝不能让检查或升级本身的故障拖死 TUI 或后台线�
 
 from __future__ import annotations
 
+import glob
 import json
 import os
+import platform
 import re
+import shutil
 import site
 import subprocess
 import sys
@@ -21,12 +24,14 @@ from typing import Literal
 
 REPO = "x0c/pickup"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
+TAG_RELEASE_URL = f"https://api.github.com/repos/{REPO}/releases/tags/{{tag}}"
 _FETCH_TIMEOUT = 3.0  # 秒；慢网络/无网不能拖住后台 worker
+_ASSET_TIMEOUT = 8.0  # 秒；查 Release 资产列表比查最新版稍宽松，但仍不能挂住升级
 
 CACHE_DIR = os.path.expanduser("~/.cache/pickup")
 STATE_FILE = os.path.join(CACHE_DIR, "update.json")
 
-Channel = Literal["brew", "pip", "dev"]
+Channel = Literal["brew", "pipx", "pip", "dev"]
 
 
 @dataclass(frozen=True)
@@ -84,16 +89,34 @@ def fetch_latest(timeout: float = _FETCH_TIMEOUT) -> str | None:
 
 
 _BREW_MARKERS = ("/Cellar/", "/homebrew/", "linuxbrew")
+_PIPX_PATH_MARKER = os.path.join("pipx", "venvs")
+
+
+def _is_pipx_install(pkg_dir: str) -> bool:
+    """当前 pickup 是否装在 pipx 管理的隔离环境里。
+
+    判据一是解释器所在 venv 根下的 `pipx_metadata.json`（与 PIPX_HOME 具体位置
+    无关：macOS 在 ~/Library/Application Support/pipx，Linux 在 ~/.local/share/pipx）；
+    判据二是包路径里出现 `pipx/venvs`，兜住从别处解释器 import 到该包的情形。
+
+    必须先于 pip 判定：pipx venv 里的包路径同样含 site-packages，但那个 venv
+    **默认不装 pip**，走 `python -m pip` 升级必然报 "No module named pip"。
+    """
+    if os.path.isfile(os.path.join(os.path.abspath(sys.prefix), "pipx_metadata.json")):
+        return True
+    return _PIPX_PATH_MARKER in pkg_dir
 
 
 def detect_channel() -> Channel:
-    """按 pickup 包自身安装路径判定发布渠道：brew（Homebrew tap）/ pip（用户或系统
-    site-packages）/ dev（源码检出或 editable 安装，无法一键升级）。"""
+    """按 pickup 包自身安装路径判定发布渠道：brew（Homebrew tap）/ pipx（隔离环境）/
+    pip（用户或系统 site-packages）/ dev（源码检出或 editable 安装，无法一键升级）。"""
     import pickup
 
     pkg_dir = os.path.dirname(os.path.abspath(pickup.__file__))
     if any(marker in pkg_dir for marker in _BREW_MARKERS):
         return "brew"
+    if _is_pipx_install(pkg_dir):
+        return "pipx"
     site_dirs = [os.path.abspath(p) for p in _site_packages_dirs()]
     if any(pkg_dir.startswith(d) for d in site_dirs) or "site-packages" in pkg_dir:
         return "pip"
@@ -174,7 +197,7 @@ def install_report(cwd: str | None = None) -> dict:
         hints.append(
             f"开发安装请运行: bash {os.path.join(root, 'scripts', 'dev-install.sh')}"
         )
-    elif not editable_like and channel == "pip":
+    elif not editable_like and channel in ("pip", "pipx"):
         hints.append(
             "若在改仓库源码，请用 scripts/dev-install.sh 做 editable 安装，"
             "不要只 force-reinstall 非 -e 副本"
@@ -215,22 +238,83 @@ def _is_user_site(pkg_dir: str) -> bool:
 
 def is_updatable(channel: Channel | None = None) -> bool:
     channel = channel or detect_channel()
-    return channel in ("brew", "pip")
+    return channel in ("brew", "pipx", "pip")
 
 
-def update_command(latest_tag: str, channel: Channel | None = None) -> list[str] | None:
+# ---- 安装源：优先 Release 里的预编译包，源码兜底 ----
+# pickup 带 Rust 扩展，从源码装要求本机有完整 Rust 工具链，绝大多数用户没有。
+# Release 已按平台附了 cp310-abi3 预编译包（与 install.sh 同一套匹配规则），
+# 自动更新必须走同一条路，否则一键更新在干净机器上必然编译失败。
+
+def _wheel_patterns(version: str) -> list[re.Pattern]:
+    """按当前系统 / 架构给出候选包名正则，越靠前越优先。"""
+    ver = re.escape(version)
+    system = platform.system()
+    machine = platform.machine().lower()
+    arch = {
+        "x86_64": "x86_64", "amd64": "x86_64",
+        "arm64": "aarch64", "aarch64": "aarch64",
+    }.get(machine)
+    if system == "Darwin":
+        # macOS 侧发的是 universal2，一份同时覆盖 Intel 与 Apple Silicon
+        return [re.compile(rf"^pickup-{ver}-cp310-abi3-macosx_.*universal2\.whl$")]
+    if system == "Linux" and arch:
+        musl = platform.libc_ver()[0] != "glibc" and bool(glob.glob("/lib/ld-musl-*.so.1"))
+        family = "musllinux_1_2" if musl else "manylinux_2_17"
+        # auditwheel 会同时附加新旧兼容标签，如 manylinux_2_17_x86_64.manylinux2014_x86_64
+        return [re.compile(rf"^pickup-{ver}-cp310-abi3-{family}_{arch}(\.\w+)?\.whl$")]
+    return []
+
+
+def release_asset_url(latest_tag: str, timeout: float = _ASSET_TIMEOUT) -> str | None:
+    """查该 tag 的 Release 里适配本机的预编译包下载地址；查不到一律返回 None。"""
+    patterns = _wheel_patterns(latest_tag.lstrip("vV"))
+    if not patterns:
+        return None
+    try:
+        req = urllib.request.Request(
+            TAG_RELEASE_URL.format(tag=f"v{latest_tag.lstrip('vV')}"),
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "pickup-updater"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        assets = payload.get("assets") or []
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError):
+        return None
+    for pattern in patterns:
+        for asset in assets:
+            name = str(asset.get("name") or "")
+            url = asset.get("browser_download_url")
+            if url and pattern.match(name):
+                return str(url)
+    return None
+
+
+def install_spec(latest_tag: str) -> str:
+    """pip / pipx 要安装的目标：优先预编译包，没有匹配时退回源码（需 Rust 工具链）。"""
+    return release_asset_url(latest_tag) or f"git+https://github.com/{REPO}.git@v{latest_tag}"
+
+
+def update_command(
+    latest_tag: str, channel: Channel | None = None, *, spec: str | None = None
+) -> list[str] | None:
     """返回执行就地升级的命令；dev 渠道无法自动升级，返回 None。"""
     channel = channel or detect_channel()
     if channel == "brew":
         return ["brew", "upgrade", "pickup"]
-    if channel == "pip":
+    if channel in ("pipx", "pip"):
+        target = spec or install_spec(latest_tag)
+        if channel == "pipx":
+            # pipx 隔离环境里没有 pip，只能让 pipx 自己覆盖安装；--force 是覆盖
+            # 已有同名应用的必需参数，pipx 会从包名推断应用名并重建 venv。
+            return [shutil.which("pipx") or "pipx", "install", "--force", target]
         import pickup
 
         pkg_dir = os.path.dirname(os.path.abspath(pickup.__file__))
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
         if _is_user_site(pkg_dir):
             cmd.append("--user")
-        cmd.append(f"git+https://github.com/{REPO}.git@v{latest_tag}")
+        cmd.append(target)
         return cmd
     return None
 
@@ -256,6 +340,9 @@ def _brew_installed_version() -> tuple[int, ...] | None:
 def run_update(latest_tag: str, channel: Channel | None = None) -> tuple[bool, str]:
     """跑升级命令；返回 (是否成功, 合并输出摘要)。dev 渠道直接失败。
 
+    pipx 渠道的坑：pipx venv 里没有 pip，任何 `python -m pip` 路线都会以
+    "No module named pip" 失败，必须交给 pipx 自己覆盖安装。
+
     brew 渠道的两个坑都在这里兜住：
     1. 用户 shell 里常设 `HOMEBREW_NO_AUTO_UPDATE=1` 提速；子进程继承后
        `brew upgrade` 不刷新 tap，永远看不到刚发布的新配方 → 空跑退出 0（假成功）。
@@ -264,6 +351,11 @@ def run_update(latest_tag: str, channel: Channel | None = None) -> tuple[bool, s
        到位，否则会误报「更新完成」，用户重启后仍是旧版本。
     """
     channel = channel or detect_channel()
+    if channel == "pipx" and shutil.which("pipx") is None:
+        return False, (
+            "找不到 pipx 命令：pickup 装在 pipx 隔离环境里，只能由 pipx 自己升级。"
+            "请确认 pipx 在 PATH 中后重试，或手动执行：pipx upgrade pickup"
+        )
     cmd = update_command(latest_tag, channel)
     if cmd is None:
         return False, "当前安装方式（源码/开发安装）不支持一键更新"

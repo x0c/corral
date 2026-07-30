@@ -338,10 +338,12 @@ session picker still works.
 
 Each time the TUI starts, it checks in the background whether a newer release is available (one
 HTTPS request to the public GitHub API, see [Privacy Model](#privacy-model)). If your install can be
-upgraded in place (Homebrew tap or `pip`-based install), a small notice appears in the bottom-right
-corner; click it to update, then optionally restart `pickup` right there. Dismissing it for the day
-is one click; it comes back the next day if you're still out of date. Source/dev checkouts are never
-nagged — the check is skipped entirely for that install path.
+upgraded in place (Homebrew tap, `pipx`, or `pip`-based install), a small notice appears in the
+bottom-right corner; click it to update, then optionally restart `pickup` right there. The upgrade
+installs the prebuilt wheel published with the release, so no Rust toolchain is needed. Dismissing
+it for the day is one click — that works in the failed state too, where the notice also shows a
+short reason. Source/dev checkouts are never nagged — the check is skipped entirely for that
+install path.
 
 You can also trigger the same check manually at any time, without opening the TUI:
 
