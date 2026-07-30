@@ -17,7 +17,7 @@ from dataclasses import dataclass
 # 关掉 Textual 默认开启的 Kitty 键盘协议。必须在任何 `import textual` 之前设置。
 os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
 
-from pickup import agent_api, embed, keepalive, observe, titles, updater
+from pickup import agent_api, cursor_observer, embed, keepalive, observe, titles, updater
 from pickup.models import LaunchPlan, LaunchRequest, NewSessionRequest
 from pickup.observe import log_embed_error as _log_embed_error
 from pickup.runtime import LaunchError, RuntimeRegistry, default_registry, execute_launch, usable_cwd
@@ -306,6 +306,24 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
 
 
 def main() -> None:
+    # Cursor hook 是最轻量、最保守的入口：只消费 stdin 中的一次 JSON 事件。
+    # 任何格式或落盘异常都只返回一行空 JSON 对象和退出码 0，既满足 Cursor 的
+    # hook 响应契约，也绝不回显事件正文或阻断 Cursor 自身。
+    if len(sys.argv) > 1 and sys.argv[1] == "_cursor-hook":
+        try:
+            payload = json.load(sys.stdin)
+            if isinstance(payload, dict):
+                cursor_observer.ingest(payload.get("hook_event_name"), payload)
+        except Exception:
+            pass
+        print("{}")
+        sys.exit(0)
+
+    # 观察器管理命令有独立的结构化输出、退出码与 dry-run 契约，不进入 TUI、
+    # tmux 或只读会话数据接口。
+    if len(sys.argv) > 1 and sys.argv[1] == "observer":
+        sys.exit(cursor_observer.cli_main(sys.argv[2:]))
+
     # 尽早挂崩溃钩子：TUI 闪退后 stderr 常被清掉，必须先落盘才能事后 diagnose。
     observe.install_crash_hooks()
 

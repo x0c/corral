@@ -191,6 +191,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Ended",
         "zh": "已结束",
     },
+    "attention.waiting": {
+        "en": "Waiting for your answer",
+        "zh": "等待你的回答",
+    },
+    "attention.working": {
+        "en": "Working",
+        "zh": "执行中",
+    },
+    "attention.unread": {
+        "en": "New result",
+        "zh": "有新结果",
+    },
+    "attention.none": {
+        "en": "No attention status",
+        "zh": "无关注状态",
+    },
     "project.unknown": {
         "en": "Unknown project",
         "zh": "未知项目",

@@ -104,10 +104,10 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **搜索框连续退格打崩 TUI（2026-07-26，真机 `DuplicateIds`）**：症状是 pickup 整个界面闪退，`~/.cache/pickup/embed-error.log` 里留下 `Tried to insert a widget with ID '__new_session__'`，`events.log` 崩溃前是一串 `mode=full` 的 `list_rebuild`（`card_count` 50→57→71，单次已达 2s）。根因：全量重建的 `clear()`/`extend()` 都会 await 让出，而调用方跨两条 Textual 消息泵——后台重扫经 `app.call_from_thread(_rebuild_list)` 在 App 泵，搜索框输入经 `on_input_changed` 直接调 `SessionListView.rebuild()` 在 Screen 泵——`MainScreen._rebuild_lock` 只挡同泵重入，两泵交错时前一次的 `extend` 把新建项挂到后一次已填好的列表上。修法：闸门下沉到 `SessionListView.rebuild()` 自己的 `_rebuild_lock`，并用请求序号做合并（排队期间有更新请求且本次无 `select_key` 就让位，连续输入只重建最后一个筛选态）。**任何新增的列表刷新入口都必须走 `rebuild()`，禁止另写路径直接改 ListView 子项结构。** 回归：`test_list_rebuild_serialized_across_message_pumps`（临时去锁验证过必崩，测试确实盯住了这条竞态）。
 - **会话列表刷新开销优化（2026-07-19）**：会话键序列不变时 `rebuild()` 走原地更新；变了才 `clear()`+`extend()`。`SessionCard` 的标题由外部注入，禁止每卡 `snapshot()`。标题生成中不在侧边栏画 spinner。完整对话只由右栏 `EmbedPane.show_detail` 承担，禁止再加全屏预览页。回归：`test_ui.py` 相关 rebuild 用例。
 - **Textual 后台 worker 必须可取消**：用 `get_current_worker().is_cancelled` / `cancelled_event.wait(interval)`；worker 内不得直接读写 Widget/DOM，结果经 `call_from_thread` 回写。托管启动同样走单飞 worker。
-- **侧边栏末行间隔（硬约定）**：搜索框、新建项的最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin/兄弟空隙/`ListItem` padding。会话卡是三行正文（标题 / 运行时 / 时间），不再另加末行空行；进行中绿色标题、无状态文案。基准：搜索框高 2、新建项高 2、会话卡高 3。
+- **侧边栏末行间隔（硬约定）**：搜索框、新建项的最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin/兄弟空隙/`ListItem` padding。会话卡固定三行正文（统一基础标题 / 第二行左侧关注圆点且运行时靠右 / 时间靠右），不再另加末行空行；单圆点优先级为黄 > 绿 > 红，详情头有文字状态。基准：搜索框高 2、新建项高 2、会话卡高 3。
 - **筛选状态只认 `nav` 一份**：顶部搜索框写 `nav.project_query`；测试必须断言渲染结果。
 - 卡片列宽按终端显示宽度计算（`pickup._text_width` / `_fit_cell`），不要用字符数 `ljust`。
-- 主界面「状态」是进程活性（进行中/已结束）；`titles.status_tag` 与 `agent_api` 的英文枚举是另一套语义，不要混用。
+- 主界面同时消费进程活性与会话关注状态，但两者不同：`live` 只表示进程在不在；关注圆点表示等待回答/执行中/新结果未读；`titles.status_tag` 与 `agent_api` 英文枚举又是已发布的第三套语义。三者不要混用或互相覆盖。
 - 判活只做「进程在/不在」两档；Claude / Codex / OpenCode 各自判活细节见对应扫描节。
 - 聊天预览按需读取，只展示真实用户消息与最终答复；消息可选带 `timestamp`，有则由 `_preview_lines` 追加时间后缀。
 - **会话缓存按 mtime 失效**：`get_conversation` 命中时比对文件 mtime，变了才重读。
@@ -117,7 +117,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - `SessionStore.all_sessions()` 合并全部运行时后按 `_order` 稳定顺序：首次按 mtime 倒序；之后已有项位置固定。新出现且 mtime 在约 2 天内的插最前；更旧的「复活」会话追加末尾（避免 `/tmp/oc-manager-*` 目录重建时几天前的会话整批顶栏）。扫描侧丢弃路径含 `oc-manager-*` 段的临时 cwd。
 - 列表虚拟索引 0 是顶部固定「＋ 新建会话」；默认选中最近会话。该项回车走 `new_session_flow`；底栏不再提供 `n` 快捷新建（改走侧边栏项或右栏顶栏加格）。
 - **踩坑：空白新建闪退**——托管成功回调必须区分 `LaunchRequest` / `NewSessionRequest`，空白新建禁止读 `.session`。回归：`test_new_session_request_hosts_without_reading_session`。
-- 会话卡三行正文（标题 / 运行时 / 时间）；进行中绿色标题、已结束默认配色；侧边栏不展示状态文案；标题生成中不画 spinner。
+- 会话卡固定三行正文：统一基础标题 / 第二行左侧关注圆点且运行时靠右 / 时间靠右；圆点优先级为等待回答黄 > 执行中绿 > 未读新结果红 > 无，标题不再因运行中整行变绿；标题生成中不画 spinner。
 - **项目搜索**：`#project-search` + `nav.project_query`；`/` 聚焦搜索；Down/Enter 回列表；Esc 先清空再回列表。
 - 右栏随选择变化：托管显示现场；未托管/已结束显示完整对话预览（选中即加载，默认钉在最新）。面板聚焦时列表→右栏跟随暂停；**右栏→列表**仍要同步高亮（`_on_pane_focused`）。长对话用 Home/End/PgUp/PgDn 或滚轮（`detail_offset` / `_detail_stick_bottom`）。
 - 点击会话卡等价 Enter（真的会拉起 / 接管会话，并把输入交给右栏那一格）；再点当前持有输入的那张卡则把焦点撤回侧边栏，与 `Ctrl-\` 等价，点开 / 收回对称。
@@ -177,7 +177,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 > **界面层迁移说明（2026-07）**：界面已从手写 curses 整体换成 [Textual](https://github.com/Textualize/textual)，`embed.py` 的 tmux 抓帧/输入转发/控制通道仍保持 UI 框架无关的架构边界，但其性能与生命周期实现会继续演进。旧版入口模块的 `_run` 主循环 + `_draw_embed_pane` 被 `ui/main_screen.py` 的 `MainScreen` + `ui/embed_pane.py` 的 `EmbedPane` widget 取代；`PairPool`（curses 颜色对池）被框架中立的 `embed.cell_style(cell) -> rich.style.Style` 取代；`translate_key(curses键码)` 被 `translate_textual_key(key字符串)` 取代。下文凡是描述 curses/ncurses 内部行为的部分仅作历史存档；tmux/协议层结论仍适用，但以同节较新的 ControlChannel、Line API 和滚动约束为准。**鼠标拖拽跨行选词 + 复制**直接复用 Textual 文本选择：拖动高亮，抬起时 Screen 发 `TextSelected`，`MainScreen.on_text_selected` 有选区则 `copy_to_clipboard`（OSC 52）；`Ctrl+C` 仍可再复制。无选区时 `Ctrl+C` 由 `EmbedPane._on_key` 转发给托管会话中断（widget `event.stop()` 后 Screen BINDINGS 不会再执行，故中断判断必须留在 `_on_key`）。
 
 - **定位**：与 `keepalive.py` 平级的运行时无关层。keepalive 管「把启动计划包进 tmux 保活」，embed 管「不 attach——用 `capture-pane` 拿画面、`send-keys` 送按键」，让 TUI 回车后退化成左侧会话列表（固定 ~39 列，`ui/main_screen.py` 的 `LIST_PANE_WIDTH`）+ 右侧会话现场（`EmbedPane`）。与保活共用 `tmux -L pickup-keepalive` socket 和 `pickup-*`/`sc-*` 命名空间：`keepalive.annotate()` 状态标注、`reap_idle()` 空闲回收、`q` 结束进行中会话，对内嵌会话全部照旧生效。适配器不感知本模块。键盘焦点跟随明确意图：回车打开 / 新建 / 直启托管成功后自动交给右栏对应格，浏览列表不抢；`Ctrl+\` 交回列表，焦点在侧边栏时活着的实时格压暗提示输入未接管。滚轮与焦点无关。
-- **窄栏是卡片式多行布局**：搜索框/新建项遵守「末行间隔」硬约定（见 AGENTS.md / 上文）。`SessionListView` 里每个会话是高度 3 的 `SessionCard`（三行正文：标题 / 运行时靠右 / 时间靠右）；`NewSessionCard` 高 2；`#project-search` 高 2。搜索框与新建项的间隔画在控件自身内并算进命中区，不要用 `ListItem` 的 margin/padding。进行中用绿色标题区分，已结束保持默认配色，侧边栏不展示「运行中 / 已结束」文案；标题生成中不画 spinner。左栏 `LIST_PANE_WIDTH=39`；`SessionListView` 把滚动条占位收成 0；长标题按显示宽度截断并加 `...`。
+- **窄栏是卡片式多行布局**：搜索框/新建项遵守「末行间隔」硬约定（见 AGENTS.md / 上文）。`SessionListView` 里每个会话是高度 3 的 `SessionCard`（三行正文：统一基础标题 / 第二行左侧关注圆点且运行时靠右 / 时间靠右）；`NewSessionCard` 高 2；`#project-search` 高 2。搜索框与新建项的间隔画在控件自身内并算进命中区，不要用 `ListItem` 的 margin/padding。状态仅用黄/绿/红单圆点与详情头文字表达，禁止恢复整行绿色标题；标题生成中不画 spinner。左栏 `LIST_PANE_WIDTH=39`；`SessionListView` 把滚动条占位收成 0；长标题按显示宽度截断并加 `...`。
 - **runtime 名配色（单一来源）**：色表与样式串在 `theme.py` 的 `RUNTIME_LABEL_STYLES` / `runtime_label_style(runtime_id)`（按 runtime **id**，不是 display_name）。左栏 `SessionCard`、右栏详情头、对话预览里 assistant 整段（`◆ Runtime: 正文` 及续行）必须共用这一处，禁止再在 `ui/` 里另写一份 hex。配色优先一眼可辨、不强制品牌色复刻——Cursor 品牌橙与 Claude 撞色，故 Cursor 用紫：`claude=#D97757`、`codex=#60A5FA`、`cursor=#A78BFA`、`kimi=#F472B6`、`opencode=#34D399`，未知回退 `dim`；展示用 `bold <color>`。新增 runtime 只加色表一行。用户消息整段用 `bold cyan`。
 - **踩坑（2026-07-19 / 2026-07-21 / 2026-07-22）：改了源码但 `pickup` 仍是旧行为**——`~/.local/bin/pickup` 常见 shebang 指向 **pipx venv**，加载的是该 venv 的 site-packages **副本**，不随 `cli/` 源码自动更新。Cursor / 系统 `python3 -c "import pickup"` 往往能 import 到仓库 `cli/src/pickup`，单测「看起来已改好」，用户敲 `pickup` 却仍是旧包。**根治（开发机）**：`bash scripts/dev-install.sh`（对入口解释器 / pipx 做 `-e` editable）；之后改 `src/` 立刻生效。核对：`pickup --version` / `pickup diagnose` 看 `package_file`、`loaded_from_checkout`、`stale_source_warning`；在仓库目录内启动 TUI 若加载了别处副本，stderr 会告警。仍须**重启**已打开的 TUI。`pip show pickup` 的 Version 跨 Python / pipx 还可能误导。夹具截图若整图灰阶，先查 `NO_COLOR`（Textual Monochrome）；`docs/screenshots/capture.py` 会在创建 App 前清除它。配色也可用真机 TUI 或 Pilot 下 `SessionCard.render_line(0)` 的 segment style 核对。命令清单见 `AGENTS.md`「本机入口」。
 - **踩坑（2026-07-21）：SSH 上 pickup 颜色「变丑」不是为了省带宽**——Rich/Textual 按环境协商 `color_system`：`COLORTERM=truecolor|24bit` → 真彩；否则 `TERM` 以 `-256color` 结尾 → 256 色（hex 主题被量化，看起来发脏）；再否则 → 约 16 色。OpenSSH 默认 `AcceptEnv` 常只有 `LANG LC_*`，**不转发 `COLORTERM`**，远端因此掉到 256。这与网络负载无关，pickup 主题/内嵌画面本身发的是真彩 hex，也禁止再做 `_rgb_to_256`。排查：远端 `echo $TERM $COLORTERM`；本机兜底可 `export COLORTERM=truecolor`、`/etc/profile.d/truecolor.sh`，或 sshd `AcceptEnv ... COLORTERM` + 客户端 `SendEnv`。强制真彩在现代终端（iTerm2/Ghostty/kitty）经 SSH 通常安全，带宽开销可忽略。
@@ -221,6 +221,19 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **端到端自测脚本（`selftest.sh`，仓库根，58 项断言；以下记录写于 curses 时代，内置拖拽选词相关断言随该功能移除已不成立，改动或重新核对该脚本时先确认哪些断言仍对应 Textual 版本的真实行为）**：在独立外层 tmux socket 里跑真实 TUI（隔离 fake HOME + fake `claude` 夹具——注册 pid 文件、免疫心跳、按行回显、OSC 11 主题探测模拟、按 SID 决定是否申请鼠标），send-keys 驱动按键/粘贴/鼠标序列（`\e[<64;x;yM` 滚轮、`\e[<0;x;yM/m` 按下/抬起、`\e[<32;x;yM` 拖动），capture-pane 抓屏断言；外层 tmux 开 `set-clipboard on` 后可用 `show-buffer` 断言内置选词的复制结果。滚轮回归必须断言外层回滚状态：先滚入历史，再发送向下或未知非左键 `KEY_MOUSE` 事件，确认偏移下降并恢复直播；**不得**把“内层 fake 收到 SGR 滚轮序列”当作通过条件，因为内嵌模式的滚轮本就不再转发。写断言的坑（全部实踩过）：① `wait_for` 的 grep 必须加 `--`（模式以 `-` 开头会被当选项）；② 等输出特征别等「命令名」（如等 `RESP b'` 而非 `RESP`——命令行回显里就含 `RESP` 字样会提前命中）；③ fake 按行 `read`，无换行的控制序列要和后续输入凑满一行才落日志，断言控制序列前先补一行普通输入触发；④ tmux attach 到**小于终端的窗口**时会自画右缘边框竖线 `│` 和点阵填充——「竖线消失」不能当全屏判据，要用 pickup 自己的列表/提示文案消失；⑤ `--no-keepalive` 全屏 execvp 的 fake REPL 对 EOF 不退出（busy loop），后续步骤前必须整个外层 session 销毁重建；⑥ fake 的 OSC 11 探测要放在「就绪标志」输出**之前**，否则探测窗口内到达的按键会被探测进程的 os.read 吃掉；⑦ 屏幕文本读取用 `stdscr.instr`（不是 inchnstr/innstr——Python curses 只有 `instr`/`inch`），其 n **按字节截断**，宽字符区域要按格数 ×4 过读再 `_fit_cell` 按格截回。
 
 
+
+## 会话关注状态（attention.py / attention_signals.py / cursor_observer.py）
+
+- **产品边界**：侧边栏只显示一个小圆点，优先级固定为「等待回答黄 > 执行中绿 > 未读新结果红 > 无」。圆点不参与排序、筛选、计数，不触发声音或系统通知；详情头同步写出文字状态，避免把颜色当唯一信息。标题始终用基础标题样式，不再整行变绿。
+- **黄绿不会高度重叠**：黄点只在运行时留下明确的结构化提问、且尚未出现对应结果时出现；普通自然语言问句不算。多数正常执行阶段显示绿点，真正停下来等用户输入时黄点才临时覆盖绿点。不要把 `live` 直接等同于黄/绿，也不要用问号或关键词猜测待回答。
+- **各运行时证据**：Claude Code、Codex CLI、OpenCode、Kimi Code 从本地历史中的明确开始、完成、中止、结构化问题及结果事件推导；Cursor 的结果/问题可以读本地历史，实时开始/结束优先由用户级 hook 提供。历史证据的 `observed_at` 必须来自真实事件或源文件/数据库时间，禁止用每次扫描的当前时间制造“新变化”。
+- **状态裁决与本地库**：`AttentionStore` 默认写 `~/.cache/pickup/session-attention.sqlite3`，唯一键仍是运行时 + 会话 ID。只保存阶段、活动/问题的不透明令牌、时间、当前裁决和已读基线，不保存标题、提示词、回答或工具正文。临时占位会话转为正式会话时必须按同一托管身份迁移状态；彻底删除会话时同步清理。
+- **首升级基线**：首次见到既有历史时把已有结果视为已读，防止升级后所有旧会话批量亮红；当下仍在执行或等待回答的会话照常显示绿/黄。以后只有新的助手结果、完成或中止令牌产生红点。
+- **已读不是“选中过”**：红点只有在该会话对应的右侧内容已成功加载并稳定可见 0.5 秒后清除。切换选择、快速掠过、预览失败或应用失焦都要取消计时；查看不能清掉黄点或绿点。多分屏时只对实际可见且内容就绪的会话执行同一规则。
+- **刷新与性能**：关注字段进入列表卡片的轻量刷新签名，但绝不进入排序键。Cursor `store.db` 默认只在该会话 live 或相关文件签名变化时探测；冷会话的每轮后台刷新不得重复打开数据库。关注状态写入、读取或观察失败一律降级为无状态，不能拖垮首屏或 TUI。
+- **Cursor 自动观察**：TUI 挂载后在后台幂等检查用户级 `~/.cursor/hooks.json`，只管理 pickup 自己在 `beforeSubmitPrompt`、`afterAgentResponse`、`stop`、`sessionEnd` 下的条目；保留其他工具条目。写前把原文件备份到 pickup 缓存目录，临时文件落盘并同步后再原子替换。JSON 损坏、版本未知、权限不足时停止修改；隐藏 hook 接收入口无论输入损坏还是状态库写失败都静默返回成功，绝不能阻断 Cursor。
+- **公开维护命令**：`pickup observer status cursor` 只读检查；`pickup observer install cursor` 安装/修复；`pickup observer uninstall cursor` 只移除 pickup 管理条目。三者支持 `--json` 结构化信封；安装和卸载支持 `--dry-run` 严格预演且不创建配置、备份或目录，`status --dry-run` 是用法错误。非 TTY 自动输出 JSON；重复安装必须返回无需变更。
+- **与既有状态消歧**：关注圆点不得改写标题模块 `status_tag`、机器接口英文 `status` 或进程判活 `live`，也不进入机器接口默认字段。这三套状态服务不同消费方，保持已发布语义不变。
 
 ## Cursor 扫描（scan_cursor.py / runtime/cursor.py）
 

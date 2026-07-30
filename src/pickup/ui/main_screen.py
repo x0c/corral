@@ -54,6 +54,10 @@ _ALIVE_EVIDENCE_TTL = 3.0
 # 选择跟随的节流窗口（秒）。单次方向键立即生效（无额外延迟），连按时窗口内只
 # 保留最后一次——否则连按 N 下就实打实重建 N 次右栏，每次约 180ms。
 _FOLLOW_THROTTLE = 0.12
+# 红点只有在右侧内容真实可见并连续稳定一段时间后才算已读；等待首帧或对话缓存
+# 时做轻量轮询，不能把「选中过」误当成「看过了」。
+_ATTENTION_READ_DELAY = 0.5
+_ATTENTION_READY_POLL = 0.1
 # 首屏画完到开始预热全文搜索索引的间隔（秒）。见 _schedule_search_index_warm。
 _SEARCH_INDEX_WARM_DELAY = 1.5
 
@@ -75,6 +79,14 @@ def _status_key(session: dict) -> str:
     if session.get("live"):
         return "status.running_external"
     return "status.ended"
+
+
+def _attention_key(session: dict) -> str:
+    """详情头的可访问关注状态文案键；颜色圆点不是唯一信息来源。"""
+    kind = str(session.get("attention_kind") or "none")
+    if kind in {"waiting", "working", "unread"}:
+        return f"attention.{kind}"
+    return "attention.none"
 
 
 def _filter_looks_like_osc_leak(value: str) -> bool:
@@ -195,6 +207,13 @@ class MainScreen(Screen):
         # 选择跟随的节流状态，见 _schedule_follow_selection
         self._follow_timer = None
         self._follow_last_run = 0.0
+        # 稳定查看判定：只跟踪当前主选择的红点；切换、失焦或内容未就绪都会
+        # 取消连续计时，重新看到后必须再完整停留 0.5 秒。
+        self._attention_read_timer = None
+        self._attention_read_key: str | None = None
+        self._attention_read_token: str | None = None
+        self._attention_visible_since: float | None = None
+        self._app_focused = True
         self._update_channel: str | None = None
         self._update_latest: str | None = None
         # 全文搜索索引：首屏扫描完成后在后台预热，Ctrl+F 打开弹窗时通常已就绪。
@@ -226,6 +245,8 @@ class MainScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
+        self._app_focused = bool(self.app.app_focus)
+        self.watch(self.app, "app_focus", self._on_app_focus_changed, init=False)
         if self.embed_ok:
             self._apply_sidebar_visible(persist=False)
         self._update_header()
@@ -258,6 +279,20 @@ class MainScreen(Screen):
             # `_rebuild_and_follow` 末尾，避免扫描完成前 prune+save 清空磁盘记忆。
             if self.store.loaded:
                 self.call_after_refresh(self._try_restore_startup_layout)
+        # 真实终端启动后静默补齐 Cursor 观察配置。Pilot/截图等无终端测试不应
+        # 改写运行测试者的用户配置；测试可直接调用该后台 worker 验证接线。
+        if not self.app.is_headless:
+            self._install_cursor_observer()
+
+    @work(thread=True, exclusive=True, group="cursor-observer-install")
+    def _install_cursor_observer(self) -> None:
+        """后台幂等安装 Cursor 观察条目；失败不影响首屏与会话操作。"""
+        try:
+            from pickup import cursor_observer
+
+            cursor_observer.install()
+        except Exception:
+            return
 
     def _split_area(self) -> SplitPaneArea:
         return self.query_one(SplitPaneArea)
@@ -427,6 +462,7 @@ class MainScreen(Screen):
             project, entries, focus_key=focus_key, focus_pane=focus_pane and self._can_autofocus(),
         )
         self._save_split_layout()
+        self._begin_attention_read(focus_key)
 
     def _build_hosted_entries(
         self, keys: list[str],
@@ -583,6 +619,9 @@ class MainScreen(Screen):
     # ---- 选择跟随：右栏默认展示左栏当前选中项 ----
 
     def on_list_view_highlighted(self, event) -> None:
+        # 高亮一变就立刻终止上一条会话的稳定查看计时，不能等 120ms 的右栏跟随
+        # 节流结束，否则快速掠过时旧红点可能在这段空窗里被误清。
+        self._cancel_attention_read()
         self._schedule_follow_selection()
 
     def _schedule_follow_selection(self) -> None:
@@ -616,6 +655,123 @@ class MainScreen(Screen):
         if self._follow_timer is not None:
             self._follow_timer.stop()
             self._follow_timer = None
+        self._cancel_attention_read()
+
+    def _on_app_focus_changed(self, focused: bool) -> None:
+        """终端应用失焦即作废连续查看；重新聚焦后从零开始计算。"""
+        self._app_focused = bool(focused)
+        self._cancel_attention_read()
+        if focused:
+            self.call_next(self._begin_selected_attention_read)
+
+    def _cancel_attention_read(self) -> None:
+        timer = self._attention_read_timer
+        self._attention_read_timer = None
+        if timer is not None:
+            timer.stop()
+        self._attention_read_key = None
+        self._attention_read_token = None
+        self._attention_visible_since = None
+
+    def _begin_selected_attention_read(self) -> None:
+        if not self.embed_ok:
+            return
+        key = self.query_one(SessionListView)._displayed_selected_key()
+        if key is None:
+            return
+        self._begin_attention_read(key)
+
+    def _begin_attention_read(self, key: str) -> None:
+        """开始观察一条红点会话；此时不等于已读，先等右侧内容真实就绪。"""
+        self._cancel_attention_read()
+        if not self.embed_ok or not self._app_focused:
+            return
+        session = self.store.find_session(key)
+        if session is None or session.get("attention_kind") != "unread":
+            return
+        self._attention_read_key = key
+        self._attention_read_token = session.get("attention_token")
+        self._attention_read_timer = self.set_timer(
+            _ATTENTION_READY_POLL, self._check_attention_read,
+        )
+
+    def _attention_view_ready(self, key: str) -> bool:
+        """目标会话是否仍被选中，且右侧已画出可读的预览或真实终端首帧。"""
+        if not self.embed_ok or not self._app_focused:
+            return False
+        if self.query_one(SessionListView)._displayed_selected_key() != key:
+            return False
+        session = self.store.find_session(key)
+        if session is None or session.get("attention_kind") != "unread":
+            return False
+        area = self._split_area()
+        for cell in area.cells():
+            if cell.spec.session_key != key:
+                continue
+            pane = cell.embed_pane()
+            if pane is None or pane.size.width <= 0 or pane.size.height <= 0:
+                return False
+            keepalive_name = cell.spec.keepalive_name
+            if keepalive_name:
+                # 仅挂上控件或正在显示静态回退都不算；首帧成功写入网格后，用户
+                # 才真正看到了这个托管终端。
+                return (
+                    pane.session_name == keepalive_name
+                    and not pane.dead
+                    and pane._grid is not None  # noqa: SLF001
+                )
+            # 静态详情只有对话缓存已成功填充后才算就绪；加载异常会一直保持 None，
+            # 因而不会因为右栏只出现标题或空白回退而误清红点。
+            return pane.session_name is None and self.store.peek_conversation(session) is not None
+        return False
+
+    def _check_attention_read(self) -> None:
+        """轮询首帧/预览就绪，并在连续可见 0.5 秒后清除红点。"""
+        import time as _time
+
+        self._attention_read_timer = None
+        key = self._attention_read_key
+        if key is None:
+            return
+        session = self.store.find_session(key)
+        if session is None or session.get("attention_kind") != "unread":
+            self._cancel_attention_read()
+            return
+        token = session.get("attention_token")
+        if token != self._attention_read_token:
+            # 正在看的 0.5 秒内又到了一条新结果：旧计时不能顺手把新结果也标成
+            # 已读，必须从新内容真实可见的时刻重新完整计算。
+            self._attention_read_token = token
+            self._attention_visible_since = None
+        if not self._attention_view_ready(key):
+            self._attention_visible_since = None
+            if self._app_focused:
+                self._attention_read_timer = self.set_timer(
+                    _ATTENTION_READY_POLL, self._check_attention_read,
+                )
+            return
+        now = _time.monotonic()
+        if self._attention_visible_since is None:
+            self._attention_visible_since = now
+            self._attention_read_timer = self.set_timer(
+                _ATTENTION_READ_DELAY, self._check_attention_read,
+            )
+            return
+        remaining = _ATTENTION_READ_DELAY - (now - self._attention_visible_since)
+        if remaining > 0:
+            self._attention_read_timer = self.set_timer(
+                remaining, self._check_attention_read,
+            )
+            return
+
+        self._attention_read_key = None
+        self._attention_read_token = None
+        self._attention_visible_since = None
+        state = self.store.mark_session_read(key)
+        if state.kind == "none":
+            # mark_session_read 已原地更新会话快照；重建只会刷新发生变化的卡片，
+            # 同时让详情头的可访问文字与红点一起消失。
+            self.call_next(self._rebuild_list, key)
 
     def _follow_current_selection(self) -> None:
         if not self.embed_ok:
@@ -665,9 +821,11 @@ class MainScreen(Screen):
                 and key in {k for k, _ in target_identity}
             ):
                 area.show_hosted_group(project, entries, focus_key=key)
+                self._begin_attention_read(key)
                 return
             area.show_hosted_group(project, entries, focus_key=key)
             self._save_split_layout()
+            self._begin_attention_read(key)
             return
         # 已在单格预览同一会话：只失效缓存并重新暖加载，避免 remount 抢焦点
         if area.ordered_session_keys() == [key] and not any(
@@ -676,10 +834,12 @@ class MainScreen(Screen):
             self._preview_gen += 1
             self._warm_conversation(session, self._preview_gen)
             area.invalidate_all_details()
+            self._begin_attention_read(key)
             return
         self._preview_gen += 1
         self._warm_conversation(session, self._preview_gen)
         area.show_single_preview(session, lambda s=session: self._render_detail(s))
+        self._begin_attention_read(key)
 
     def _detail_header(self, session: dict) -> Text:
         import pickup
@@ -687,6 +847,7 @@ class MainScreen(Screen):
         title = self.store.get_title(session)
         runtime = self.store.registry.get(str(session.get("source") or ""))
         status = t(_status_key(session))
+        attention = t(_attention_key(session))
         project = str(
             session.get("cwd") or session.get("cwd_display") or t("project.unknown")
         )
@@ -694,6 +855,7 @@ class MainScreen(Screen):
         out.append("\n")
         out.append(runtime.display_name, style=pickup.runtime_label_style(runtime.id))
         out.append(f" · {status}", style="dim")
+        out.append(f" · {attention}", style="dim")
         out.append("\n" + project, style="dim")
         # 在别的窗口跑的会话右栏永远只有静态对话，不说明原因就会被当成"会话已断"。
         if is_external_running(session):
@@ -775,6 +937,7 @@ class MainScreen(Screen):
         area.show_hosted_group(
             project, entries, focus_key=focus_key, focus_pane=self._can_autofocus(),
         )
+        self._begin_attention_read(focus_key)
         active_keys = [k for k in keys if self._is_session_active(k)]
         if len(active_keys) >= 2:
             self._split_store.set_group(project, active_keys, focus_key=focus_key)
@@ -1042,6 +1205,7 @@ class MainScreen(Screen):
                 focus_pane=autofocus,
             )
         self._save_split_layout()
+        self._begin_attention_read(pickup.session_key(current))
         self.call_next(self._rebuild_list, select_key)
 
     def _host_direct_launch(self) -> None:
@@ -1206,6 +1370,9 @@ class MainScreen(Screen):
         if not list_view.select_session_key(session_key):
             return
         self._save_split_layout()
+        # 选择事件与焦点事件可能同帧到达；放到下一轮，确保高亮变更的取消逻辑
+        # 先执行，再以实际持有焦点的可见格重新开始完整 0.5 秒计时。
+        self.call_next(self._begin_attention_read, session_key)
 
     # ---- 动作 ----
 

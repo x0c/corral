@@ -13,6 +13,8 @@
   The tool never writes to this database.
 - Kimi Code CLI history under `~/.kimi-code/sessions/` (per-session `state.json` metadata and the
   `agents/main/wire.jsonl` conversation log).
+- Cursor's user-level hook configuration at `~/.cursor/hooks.json`, solely to inspect and preserve
+  existing entries while managing pickup's own live-state observer entries.
 
 The tool reads these files to build a recent-session list, extract a compact preview, and prepare native resume or cross-runtime handoff commands.
 
@@ -24,6 +26,16 @@ The tool reads these files to build a recent-session list, extract a compact pre
   sessions were last shown side-by-side in the right pane; session keys and project paths only).
 - Update-check state under `~/.cache/pickup/update.json` (which version you last dismissed, and on
   which day) — only written when you click "dismiss" on the update notification or run `pickup update`.
+- Content-free session attention state under `~/.cache/pickup/session-attention.sqlite3`. It stores
+  runtime/session identifiers, opaque activity/question tokens, timestamps, the current attention
+  kind, and read baselines. It does not store prompts, answers, titles, tool output, or conversation text.
+- Pickup-managed Cursor observer entries in `~/.cursor/hooks.json`. The TUI installs or repairs these
+  entries idempotently in the background; unrelated hook entries are preserved. Before changing an
+  existing file, pickup writes a user-only backup under
+  `~/.cache/pickup/cursor-hooks-backups/`, then replaces the config atomically. You can inspect,
+  preview, repair, or remove this integration with `pickup observer status cursor`,
+  `pickup observer install cursor --dry-run`, `pickup observer install cursor`, and
+  `pickup observer uninstall cursor`. Uninstall removes only pickup-managed entries.
 - A bounded derived-performance database under `~/.cache/pickup/performance-cache.sqlite3`. It may
   contain parsed session metadata and conversation preview text copied from history files that your
   OS user can already read. Entries are keyed by exact source-file signatures and rebuilt when those
@@ -38,7 +50,8 @@ The tool reads these files to build a recent-session list, extract a compact pre
   with conversation text sooner and more broadly than before. The search index itself lives only in
   memory and is never written to disk. `PICKUP_CACHE=0` still disables the on-disk part.
 
-It does not write to Claude Code, Codex CLI, OpenCode, or Kimi Code CLI history.
+It does not write attention state into Claude Code, Codex CLI, OpenCode, Kimi Code CLI, or Cursor
+conversation history. The Cursor write described above changes only the user-level hook configuration.
 
 ## Network And Account Usage
 
@@ -60,6 +73,24 @@ Title generation uses each supported CLI's non-persistent one-shot mode (`claude
 Failed, timed-out, invalid, or incomplete title results are recorded locally for the current cache
 version. Later launches do not automatically submit those sessions again, preventing repeated quota
 usage; a future cache-version upgrade may retry them under updated rules.
+
+## Attention Status And Cursor Observer
+
+The yellow/green/red attention dots are derived locally. Claude Code, Codex CLI, OpenCode, and Kimi
+Code use explicit events in their existing local history. Cursor history is probed only when a session
+is live or its relevant files changed, avoiding repeated database reads for cold sessions. Existing
+history is treated as read on the first upgraded launch, so installing the feature does not create a
+wall of unread alerts.
+
+Cursor's live turn boundaries are delivered to a short-lived local pickup hook process. It uses only
+the hook event name, conversation/session identifier, and generation identifier, then records the
+local receipt time needed to update attention state; prompt and response bodies are neither stored in
+the attention database nor logged by the hook. Malformed input, configuration errors, permission errors, or local database
+failures are fail-open: the hook exits successfully and never blocks Cursor from continuing.
+
+Attention state never triggers network requests, sounds, system notifications, or remote telemetry.
+The observer management commands support JSON output; install/uninstall also support strict
+`--dry-run`, which makes no configuration, backup, or directory changes.
 
 When you resume or hand off a session, the selected runtime process takes over the terminal. From that point on, Claude Code or Codex CLI behaves according to its own configuration.
 

@@ -22,7 +22,7 @@ pickup 的会话扫描负责从本机已安装助手的私有历史中读取可�
 
 本域服务两个用户可见目标：
 
-1. 主界面能尽快显示跨助手、按最近活动排序的会话列表，并给出工作目录、标题、时间和“运行中”状态。
+1. 主界面能尽快显示跨助手、按最近活动排序的会话列表，并给出工作目录、标题、时间、进程活性和会话关注状态。
 2. 用户选中已结束或未托管会话时，按需读取完整历史，将其转换为**完整对话**（`ConversationMessage`）供右栏预览；列表扫描本身不能为了预览而全量读大文件。
 
 核心概念统一如下：
@@ -37,10 +37,12 @@ pickup 的会话扫描负责从本机已安装助手的私有历史中读取可�
 | 原生标题 | `native_title` | 助手历史已有的标题；可为空，不能替代完整标题补全策略 |
 | 兜底标题 | `fallback_title` | 扫描期从首尾真实对话提取的无需模型调用的标题 |
 | 运行中 | `live` / `pid` | 进程活性探测的结果，用于判断会话是否仍有本地进程 |
+| 关注状态证据 | `AttentionEvidence` | 从本地历史或 Cursor 观察事件中提取的执行、等待、结束变化；不等于机器接口状态 |
+| 关注状态 | `AttentionState` | 面向侧边栏的单一裁决：等待回答黄 > 执行中绿 > 未读新结果红 > 无 |
 
 本域边界：
 
-- 包含：五种助手的历史格式解析、统一会话列表项、轻量排序与过滤、判活、完整对话按需加载、扫描签名跳过、预览缓存失效。
+- 包含：五种助手的历史格式解析、统一会话列表项、轻量排序与过滤、判活、关注状态证据、完整对话按需加载、扫描签名跳过、预览缓存失效。
 - 不包含：终端界面布局与交互、托管会话实时画面、标题生成算法、跨助手接力提示词的渲染规则、机器接口 JSON 契约全文。
 - 接力只消费本域导出的历史入口和对话预览数据；接力如何生成或执行目标命令属于“跨助手接力与启动”域。
 
@@ -50,11 +52,14 @@ pickup 的会话扫描负责从本机已安装助手的私有历史中读取可�
 graph TD
     A[本地助手历史<br/>JSONL / SQLite / JSON] --> B[scan_*.py<br/>运行时私有格式解析]
     B --> C[SessionInfo<br/>统一会话列表项]
+    B --> Q[attention_signals<br/>关注状态证据]
     D[scan_common.py<br/>纯函数与按 cwd 判活] --> B
     C --> E[runtime/*.py<br/>运行时适配器]
     E --> F[RuntimeRegistry.scan_all]
     F --> G[SessionStore.load / refresh<br/>异步加载与合并]
     G --> H[会话列表]
+    Q --> N[AttentionStore<br/>本地状态裁决与已读基线]
+    N --> H
     H --> I[SessionStore.get_conversation]
     I --> E
     E --> J[load_conversation]
@@ -146,6 +151,16 @@ flowchart TD
 5. Kimi 按主事件流文件精确签名复用元数据；Cursor 按元数据文件签名，并额外绑定提示历史与正文数据库签名。缓存写意图在全部运行时扫描完成后一次事务提交，避免逐条同步写盘。
 6. 这些缓存是可删除的本地派生数据；损坏、锁竞争或禁用时必须按未命中处理，不能改变扫描结果。完整边界见 `PERFORMANCE_KNOWLEDGE_BASE.md`。
 
+### 2.6 关注状态证据与裁决
+
+1. Claude Code、Codex CLI、OpenCode 和 Kimi Code 从各自本地历史的明确事件推导执行阶段与结果变化；只有对应运行时的结构化提问记录仍未得到结果时才标记「等待回答」，禁止对自然语言问句做关键词猜测。
+2. Cursor 的历史数据库可提供结果变化和结构化提问信号；实时执行边界优先来自用户级 hook 观察事件。观察器在 TUI 后台幂等安装，故障时直接放行，不得阻断 Cursor。
+3. 状态库按“运行时 + 会话 ID”保存活动令牌、问题令牌、观察时间、当前裁决与已读基线，不保存标题、提示词、回答或工具正文。占位会话转为正式会话时状态必须随会话身份迁移。
+4. 裁决优先级固定为等待回答 > 执行中 > 未读新结果 > 无。黄点覆盖绿点只表示用户输入成为更高优先级，不能把执行状态和等待状态合并；绿点仍覆盖所有未等待回答的正常工作阶段。
+5. 首次升级把既有历史结果设为已读基线，避免旧内容批量产生红点；当下仍在执行或等待回答的会话不受基线抑制。新的助手结果、完成或中止令牌才产生红点。
+6. Cursor `store.db` 的关注信号探测默认只在会话 live 或相关文件签名变化时执行，禁止每轮后台刷新为全部 Cursor 会话打开数据库；重复历史扫描使用真实事件或文件时间，不能把扫描时刻伪装成新事件时间。
+7. 关注状态不得改动会话稳定排序、筛选和机器接口既有 `status` / `status_tag` 语义。
+
 ## §2.5 物理路径速查
 
 | 目录（相对 cli） | 内容 | 关键文件 |
@@ -156,6 +171,7 @@ flowchart TD
 | `./` | Kimi 元数据与主事件流扫描、预览解析 | `scan_kimi.py` |
 | `./` | Cursor CLI 元数据扫描、SQLite blob 预览 | `scan_cursor.py` |
 | `./` | 跨扫描器纯函数、按 cwd 判活 | `scan_common.py` |
+| `src/pickup/` | 关注状态裁决、各运行时证据解析与 Cursor 用户级观察器 | `attention.py`、`attention_signals.py`、`cursor_observer.py` |
 | `runtime/` | 统一适配抽象、注册表与各助手委托 | `runtime/base.py`、`runtime/registry.py`、`runtime/*.py` |
 | `./` | 会话列表合并、异步加载、预览缓存 | `src/pickup/cli.py` 等 |
 | `./` | 统一会话与完整对话的数据结构 | `models.py` |
@@ -178,6 +194,9 @@ flowchart TD
 | 修改共用路径、时间、cwd 判活 | 共享 helper | `scan_common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`is_cursor_agent_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`） |
 | 修改跨运行时并发或扫描复用 | 注册表 | `runtime.registry.RuntimeRegistry.scan_all()` | 各运行时并发、异常隔离、结果副本隔离、签名命中跳过 |
 | 修改异步首屏、列表合并或预览缓存 | 会话存储 | `pickup.SessionStore.load()`、`refresh()`、`get_conversation()` | `store.load` 在后台线程，预览缓存按 mtime 失效 |
+| 修改会话关注状态裁决或已读基线 | 关注状态存储 | `attention.AttentionStore`、`store.SessionStore` | 单圆点优先级、首升级基线、占位键迁移和删除清理收敛在此；不得改变排序或机器接口状态 |
+| 修改各助手关注信号 | 状态证据解析 | `attention_signals.inspect_session()` | 只解析明确事件；结构化问题才产生等待回答，历史证据必须使用稳定时间 |
+| 修改 Cursor 实时状态接入 | 用户级观察器 | `cursor_observer` | 增量维护 hook 配置，备份并原子写；事件接收始终故障开放；公开命令支持状态、安装、卸载、结构化输出和写入预演 |
 | 修改运行时委托边界 | 运行时适配 | `runtime.base.BaseRuntime` 与 `runtime/*.py` | 适配器只把统一调用委托给私有扫描器，不在界面层写运行时分支 |
 | 修改任一助手的彻底删除逻辑 | 各扫描器 | `scan_<助手>.delete_session(...)` | Claude/Codex 单文件 `os.unlink`；Kimi/Cursor 每会话一目录、`shutil.rmtree` 整个会话目录；OpenCode 所有会话共享一个库，必须按会话 ID 在可写连接里精确删 `part`/`message`/`session` 三表对应行，一次事务提交，不能删文件本身（见 §4 与 `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` 的 `x` 删除会话流程） |
 
@@ -192,6 +211,7 @@ flowchart TD
 | OpenCode | `~/.local/share/opencode/opencode.db` | SQLite，可能 WAL | `session`、`message`、`part` 三表的只读 SQL | 同三表、按消息与分片合并 | `OPENCODE_DATA_DIR` 或 `XDG_DATA_HOME` 可改入口；只读打开失败不能伪装为空历史；删除会话是唯一写入例外，见下方「外部数据读取原则」 |
 | Kimi Code | `~/.kimi-code/sessions/<workspace>/<session>/` | `state.json` + `agents/main/wire.jsonl` | state + wire 头尾 | 主 `wire.jsonl` | 忽略 `agents/<other>/wire.jsonl`；事件流含大系统行 |
 | Cursor Agent CLI | `~/.cursor/chats/<workspace>/<chatId>/` | `meta.json`、`prompt_history.json`、`store.db` | meta + prompt history | SQLite `blobs` JSON blob | 只扫 CLI 历史，不扫 IDE 的 agent transcripts；二进制 DAG blob 跳过 |
+| Cursor 状态观察 | `~/.cursor/hooks.json` | 用户级 JSON 配置 + hook 标准输入事件 | 只读检查并增量维护 pickup 管理的条目 | 不读取提示词正文，只取会话标识、事件名和生成标识 | 保留其他工具条目；配置损坏或版本未知时停止写入；hook 失败不能阻断 Cursor |
 
 外部数据读取原则：
 
@@ -224,6 +244,11 @@ flowchart TD
 - **AI 易错点**【禁止】以 `dict.get(key, 默认值)` 单独防范历史字段缺失 → 嵌套 JSON 取值统一使用 `value or 默认值` 并先验类型（原因：key 存在但值可能是 JSON `null`；否则会崩溃或把 `None` 显示成字面量 `"None"`）。
 - **AI 易错点**【禁止】将对话预览按会话键永久缓存 → 必须将历史入口 mtime 与缓存中的 mtime 比较，变化时重新调用 `load_conversation`（原因：会话可在 pickup 打开期间继续写入）。
 - **AI 易错点**【消歧】主界面的“运行中” vs `titles.status_tag` / 机器接口英文状态：前者只表示关联进程当前是否活着（`live`），后两者描述最后一轮对话的完成、待回复或中断语义；两者不能相互推导或互相替换。
+- **AI 易错点**【消歧】关注状态圆点是第三套面向注意力的本地状态：黄=结构化问题待回答、绿=当前轮执行、红=新结果未读。它不得覆盖或改写 `live`、`status`、`status_tag`，也不得参与会话排序。
+- **AI 易错点**【必须】等待回答只认运行时的结构化问题及其未配对结果；普通文本里有问号、询问语气或“请确认”都不能推导黄点（原因：误报会让黄点与绿点几乎重叠，失去提醒价值）。
+- **AI 易错点**【必须】历史证据的观察时间取真实事件或源文件/数据库时间；禁止每次扫描都填当前时间（原因：重复读取旧历史会被误判成刚产生的新结果，并压过更准确的观察事件）。
+- **AI 易错点**【性能】Cursor 关注信号默认只在 live 或相关文件签名变化时打开 `store.db`；冷会话不得随每轮刷新重复打开数据库。
+- **AI 易错点**【隐私与可靠性】关注状态库只存标识、令牌、时间和状态，不存正文；Cursor hook 配置必须增量保存、先备份再原子替换，任何接收失败都故障开放。
 - **AI 易错点**【禁止】为 Claude/Codex 用父目录 mtime 实现 `scan_signature` → 保持返回 `None`，每次正常扫描（原因：深层 JSONL 写入不会可靠冒泡到祖先目录，错误缓存会让新会话或活性变化冻结）。
 - **AI 易错点**【必须】OpenCode 的扫描签名同时包含 `opencode.db`、可选 `opencode.db-wal` 的 mtime 与按 cwd 排序的 pid 快照（原因：只看数据库文件会漏掉进程退出后的运行中状态变更）。
 - **AI 易错点**【禁止】把 OpenCode 当作 JSONL，或在只读失败时静默返回“没有会话” → 它是 SQLite；发现数据库但全部只读连接/查询失败时抛出错误，让注册表保留上一份成功结果。
@@ -259,6 +284,8 @@ python3 -m unittest -v
 ```
 
 重点覆盖：JSON `null`、系统 `origin.kind` 过滤、Claude `stop_reason` 文本保留、Codex 子代理过滤、OpenCode 只读失败回退、预览 mtime 失效、Cursor blob 解析与启动延迟；`DeleteSessionScanTests` 覆盖各助手 `delete_session()`，重点断言删对了、没删多（尤其 OpenCode 共享库不能连带删掉其他会话）。
+
+涉及关注状态时还要覆盖：黄 > 绿 > 红优先级、仅结构化问题变黄、重复扫描不制造新令牌、首次历史基线不批量亮红、占位会话转正迁移、删除清理、Cursor 冷会话不打开数据库，以及 observer 安装两次不重复、`--dry-run` 零写入、卸载只移除 pickup 条目、损坏配置与 hook 写入失败均不阻断调用方。
 
 ### 7.2 真实抽查 5 条会话
 

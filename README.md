@@ -22,6 +22,7 @@ Press `Ctrl+F` to search the conversation bodies of every session and jump strai
 - Browse recent Claude Code, Codex CLI, OpenCode, Kimi Code CLI, and Cursor Agent CLI sessions from one terminal screen.
 - Resume with the original runtime using native commands such as `claude --resume`, `codex resume`, `opencode -s <id>`, and `kimi -S <id>`, and `agent --resume`.
 - Select a finished session to preview the full conversation in the right pane (live/hosted sessions show embedded terminals instead), or keep up to three active sessions side by side.
+- See which session needs attention without opening it: yellow means the agent is waiting for an answer, green means it is working, and red means a new result is unread. The same state is written in the detail header, so color is not the only cue.
 - Full-text search everything you ever said: `Ctrl+F` searches conversation bodies across every runtime and shows the matching lines, so you can find a session by what was discussed instead of remembering which project it was in.
 - Hand off unfinished work between runtimes without rewriting or faking session files.
 - Reuse a bounded local cache and native hot-path accelerator so repeat launches, previews, and live panes stay fast.
@@ -36,6 +37,7 @@ The tool is local-first.
 - Cross-runtime handoff passes the original history file path to the target runtime instead of copying the whole conversation into command-line arguments.
 - Optional title generation calls the preferred installed agent CLI (Claude Code first, then Codex) and may consume its account quota.
 - Title and derived performance caches are stored under `~/.cache/pickup/`; they can be inspected or cleared locally.
+- Attention state is local and content-free: it stores only runtime/session identifiers, opaque change tokens, timestamps, and read state. Cursor live-state support adds pickup-managed entries to your user-level hooks file without replacing existing hooks.
 
 See [PRIVACY.md](PRIVACY.md) for the detailed privacy and data-flow notes.
 
@@ -108,6 +110,10 @@ pickup --no-color       # disable colors (also respects NO_COLOR)
 pickup update           # manually check for and install the latest version
 pickup cache status     # inspect the bounded local performance cache
 pickup cache clear      # clear derived metadata and conversation cache
+pickup observer status cursor                    # inspect Cursor live-state integration
+pickup observer install cursor --dry-run --json  # preview its user-level hook changes
+pickup observer install cursor                   # repair/install it explicitly
+pickup observer uninstall cursor                 # remove only pickup-managed hooks
 ```
 
 Common aliases are supported: `-h` / `--help`, `-v` / `-V` / `--version`,
@@ -123,13 +129,32 @@ The derived cache defaults to 256 MiB and invalidates entries whenever the sourc
 
 `pickup` is a unified, time-ordered session timeline: Claude Code, Codex CLI, OpenCode, Kimi Code,
 and Cursor Agent sessions appear in one list rather than separate runtime tabs. Each card uses three
-rows for `project: title`, state plus runtime, and update time. While a title is being generated the
+rows for `project: title`, attention dot plus runtime, and update time. While a title is being generated the
 card just shows its fallback title with no loading animation, then updates in place once the generated
 title lands. The right side follows the selection: finished sessions show their full
 conversation pinned to the newest message, while hosted sessions render live terminals. The runtime
 buttons above the right side can add another agent in the same project, up to three side-by-side panes;
 the active pane combination is remembered. Once the list is shown its order is stable — cards never jump
 around when their content updates; only genuinely new sessions appear, always prepended at the top.
+
+The small dot on the left of row two is intentionally simple:
+
+- yellow — the agent asked a structured question and is waiting for your answer;
+- green — the current turn is still running and is not waiting for an answer;
+- red — the agent produced a new result or terminal state you have not read yet;
+- no dot — the session is idle and read.
+
+Only one dot is shown, with `yellow > green > red` priority. Yellow and green therefore never overlap:
+a waiting question temporarily takes precedence, while ordinary work still shows green. Dots never reorder,
+filter, or count sessions, and they do not trigger sounds or system notifications. A red dot clears only after
+the right-pane content has remained visibly loaded for 0.5 seconds; quickly moving past a card, a failed preview,
+or switching away from pickup does not mark it read. Existing history is baselined as read on the first upgraded
+launch, so old sessions do not all light up at once.
+
+Claude Code, Codex CLI, OpenCode, and Kimi Code derive these signals from local history. Cursor also exposes
+live turn boundaries through user-level hooks; pickup installs its entries idempotently in the background,
+preserves unrelated entries, backs up changed files, writes atomically, and fails open so observer problems never
+block Cursor. Use the `pickup observer ... cursor` commands above to audit, preview, repair, or remove that integration.
 
 - The first row is a pinned `+ New session` item (Chinese locale: `＋ 新建会话`) that never scrolls away: press
   `Enter` on it to pick a project directory and an agent runtime, and the blank session starts

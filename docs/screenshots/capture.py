@@ -70,7 +70,7 @@ def _demo_store():
             "fallback_title": "Fix login flake",
             "cwd": "/Users/demo/Codes/webapp",
             "cwd_display": "~/Codes/webapp",
-            "live": False,
+            "live": True,
             "path": "/tmp/demo-claude-1.jsonl",
             "first_user_msg": "登录偶发失败，帮我定位",
             "last_user_msg": "再补一组回归测试",
@@ -87,7 +87,7 @@ def _demo_store():
             "fallback_title": "Add Cursor runtime",
             "cwd": "/Users/demo/Codes/pickup",
             "cwd_display": "~/Codes/pickup",
-            "live": False,
+            "live": True,
             "path": "/tmp/demo-cursor-1",
             "first_user_msg": "帮我加上 cursor-cli 支持",
             "last_user_msg": "右栏统一完整预览",
@@ -140,6 +140,7 @@ def _demo_store():
     }
 
     from unittest import mock
+    from pickup.attention import AttentionState
     from pickup.runtime import RuntimeRegistry
 
     runtimes = []
@@ -157,8 +158,15 @@ def _demo_store():
         runtimes.append(rt)
 
     registry = RuntimeRegistry(tuple(runtimes))
+    # 截图夹具不得读写真实用户的关注状态库；用内存 mock 固定三种演示状态。
+    attention_store = mock.Mock()
+    attention_store.reconcile.return_value = {}
     with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-        store = pickup.SessionStore(limit=20, registry=registry)
+        store = pickup.SessionStore(
+            limit=20,
+            registry=registry,
+            attention_store=attention_store,
+        )
         store.load()
     # 注意：all_sessions() 自己会拿 store.lock；不可在持锁时再调，否则死锁。
     sessions_now = store.all_sessions()
@@ -167,6 +175,24 @@ def _demo_store():
         for session in sessions_now:
             key = session_key(session)
             store.display_titles[key] = demo_titles[key]
+        # 三张卡分别覆盖：黄点等待回答、绿点执行中、红点新结果。
+        attention_kinds = {
+            "claude:demo-claude-1": "waiting",
+            "cursor:demo-cursor-1": "working",
+            "codex:demo-codex-1": "unread",
+        }
+        for session in sessions_now:
+            key = session_key(session)
+            kind = attention_kinds[key]
+            token = f"demo-{kind}-token"
+            session["attention_kind"] = kind
+            session["attention_token"] = token
+            session["attention_updated_at"] = session["mtime"]
+            store.attention_states[key] = AttentionState(
+                kind=kind,
+                activity_token=token,
+                updated_at=session["mtime"],
+            )
     for session in sessions_now:
         store.get_conversation(session)
     return store

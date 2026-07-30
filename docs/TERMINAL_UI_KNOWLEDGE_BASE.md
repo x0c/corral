@@ -35,7 +35,7 @@ pickup 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 高级操作 | 对当前会话选择同运行时恢复或跨运行时接力 | `a` → `choose_target_runtime()` |
 | 删除会话 | 彻底抹掉选中会话的本地历史，不可恢复；运行中/托管会话先结束再删 | `x` → `ConfirmModal(confirm_key="x")` → `action_delete_session()` |
 | 对话预览 | 右栏展示非进行中会话的完整对话 | 不是旧的“最近提问 / 最近回复”摘要，也不是 Space 全屏页 |
-| 进行中 / 已结束 | 左栏用标题颜色区分进程活性 | 进行中（`live` 或 `keepalive_name`）标题绿色；已结束保持默认配色；侧边栏不再展示「运行中 / 已结束」文案；不等于标题模块或机器接口的业务状态标签 |
+| 会话关注状态 | 左栏第二行左侧用单个圆点提示下一步是否需要用户关注 | 等待回答黄 > 执行中绿 > 未读新结果红 > 无；详情头同步写出状态，不只靠颜色；不等于标题模块或机器接口的业务状态标签 |
 | 内嵌实时终端 | 右栏展示**已托管**会话的实时画面 | 本域只负责挂接 `EmbedPane`；tmux 抓帧与控制通道属于“内嵌实时终端”域 |
 | 运行中(其他窗口) | 在本机跑着、但不在保活 socket 里的会话（用户自己开窗口起的） | 右栏只能给静态对话预览 + 详情头明示原因；拿不到实时画面，打开它等于另起恢复进程，见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md) §1 |
 | Footer 操作 | 页面底部可发现的快捷操作提示 | Textual `Footer` 从 `MainScreen.BINDINGS` 读取文案 |
@@ -122,6 +122,21 @@ stateDiagram-v2
 
 “预览加载中”不是用户可见的“连接中”页面：已有历史时立即显示已有详情；刚新建且还没首帧时显示空白终端画布。任何改动都不得重新引入“连接中…”中间文案。
 
+### 侧边栏关注状态
+
+会话卡固定三行：第一行是统一基础样式的「项目: 标题」，第二行左侧是关注圆点、右侧是运行时，第三行右侧是时间。标题不再因会话运行中而整行变绿；状态只由圆点和详情头文字表达。
+
+| 优先级 | 圆点 | 业务语义 | 产生条件 |
+|---|---|---|---|
+| 1 | 黄 | 等待回答 | 助手提出仍未得到结果的结构化问题；普通文本问句不算 |
+| 2 | 绿 | 执行中 | 当前轮仍在运行，且没有更高优先级的待回答问题 |
+| 3 | 红 | 未读新结果 | 助手出现新的结果、完成或中止状态，用户尚未稳定查看 |
+| 4 | 无 | 空闲且已读 | 没有以上关注事项 |
+
+黄色和绿色不会同时出现，也不会高度重叠到让绿点失去意义：大多数普通执行阶段显示绿点，只有助手真正停下来等结构化回答时才由黄点临时覆盖。圆点只做提醒，不改变现有稳定排序，不新增筛选、计数、声音或系统通知。
+
+红点的已读条件是「对应右侧内容成功加载并稳定可见 0.5 秒」。快速掠过列表、预览失败、切换选择或应用失焦都要取消计时；黄点、绿点绝不能因查看而清除。首次升级时把已有历史结果作为已读基线，只显示当下仍在执行或等待回答的状态，避免全部旧会话突然亮红。
+
 ### 新建、恢复与高级操作
 
 | 用户动作 | 前置条件 | 流程 | 结果 |
@@ -145,7 +160,7 @@ stateDiagram-v2
 | 项目根 | 分屏组合记忆 | `split_layout.py` → `~/.cache/pickup/split-layout.json` |
 | `docs/screenshots/` | 虚构演示数据的截图验收脚本与产物位置 | `capture.py` |
 | `docs/` | 维护约束、相邻领域知识库与截图说明 | `MAINTAINER_GUIDE.md`、本文件 |
-| 项目根 | 启动、会话展示状态、宽度计算与可观测入口 | `pickup.py`、`i18n.py`、`observe.py` |
+| `src/pickup/` | 启动、会话关注状态、状态证据、Cursor 观察器、宽度计算与可观测入口 | `cli.py`、`attention.py`、`attention_signals.py`、`cursor_observer.py`、`i18n.py`、`observe.py` |
 | 项目根 | Textual Pilot 界面测试与语言测试 | `test_ui.py`、`test_i18n.py` |
 
 ## §3 本域代码入口索引
@@ -160,7 +175,8 @@ stateDiagram-v2
 | 选中会话后决定右栏 | `ui/main_screen.py` | `_follow_current_selection()`、`_render_detail()`、`_warm_conversation()` | 非进行中显示完整对话；托管会话挂到右栏实时画面；「运行中(其他窗口)」也只有完整对话，详情头额外写明拿不到实时画面的原因（`_status_key()` / `is_external_running()`） |
 | 侧边栏筛选项目 | `ui/main_screen.py`、`ui/nav.py`、`pickup.py` | `on_input_changed()`、`NavState.project_query`、`_filter_sessions_by_query()` | 查询只有一份状态；按项目名、路径、标题进行大小写无关模糊匹配 |
 | 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
-| 会话卡片、状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 三行：标题 / 运行时靠右 / 时间靠右；首行「项目名: 标题」整体同一样式（统一 bold；已结束吃卡片基础色 `$foreground 80%`，进行中叠成功绿），首行放不下时按显示宽度硬截断、不写省略号 |
+| 会话卡片、关注状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 固定三行：统一基础标题 / 第二行左侧单圆点且运行时靠右 / 时间靠右；圆点优先级黄 > 绿 > 红；首行放不下时按显示宽度硬截断、不写省略号 |
+| 状态详情与已读确认 | `ui/main_screen.py`、`store.py` | 详情头状态、稳定可见计时、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；只有红点在右侧成功稳定可见 0.5 秒后清除，切换、失败或失焦取消 |
 | 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`pick_project()`、`pick_runtime_for_new_session()`、`_on_runtime_pick()` | 侧边栏「＋ 新建」走项目→运行时；右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |
 | 删除会话（不可恢复） | `ui/main_screen.py`、`ui/modals.py`、`store.py`、`runtime/base.py` | `action_delete_session()`、`ConfirmModal(confirm_key="x")`、`SessionStore.remove_session()`、`BaseRuntime.delete_session()` | `ConfirmModal` 的确认键已参数化（结束会话仍是 `q`，删除会话是 `x`）；实际删除逻辑收敛在各运行时适配器，见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`/`docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md` 各存储形态的删除方式 |
@@ -185,6 +201,8 @@ stateDiagram-v2
 | `~/.cache/pickup/events.log` | `observe.EVENTS_LOG` | 扫描、列表重建、托管、慢抓帧、截图和错误事件 | 仅本地诊断，文件上限 256KB，写失败必须不影响界面 |
 | `~/.cache/pickup/embed-error.log` | `observe.EMBED_ERROR_LOG` | 后台刷新或右栏相关异常的 traceback | TUI 占用终端时 stderr 不可见，异常不能只打印 |
 | `~/.cache/pickup/screenshots/` | `observe.save_tui_screenshot()` | F12 用户主动导出的真实界面 SVG | 可能含真实对话，禁止提交仓库或自动收集 |
+| `~/.cache/pickup/session-attention.sqlite3` | `attention.AttentionStore` | 会话关注状态、事件令牌、观察时间、已读基线 | 只存运行时/会话标识、不透明令牌、时间与状态，不存标题或对话正文；写失败不得阻断界面 |
+| `~/.cursor/hooks.json` | `cursor_observer` | Cursor 实时轮次边界的用户级观察配置 | 仅增量维护 pickup 自己的条目；保留其他条目，变更前备份、原子写入，配置异常时停止修改并故障开放 |
 
 ## §5 本域流程 / 组件 / 任务 / MQ 入口索引
 
@@ -195,6 +213,8 @@ stateDiagram-v2
 | Textual 后台 worker | 首屏加载 | `MainScreen._await_initial_load()` | 先显示界面骨架，等待后台扫描完成，支持退出取消 |
 | Textual 后台 worker | 会话刷新 | `MainScreen._background_refresh_worker()` | 每 3 秒起步，连续空闲后最多退避到 10 秒；扫描变化才重建 |
 | Textual 定时器 | 标题缓存轮询 | `MainScreen._poll_cache()`，0.5 秒 | 后台标题生成完成后原地刷新标题，不重扫完整历史；侧边栏不画生成中动画 |
+| Textual 定时器 | 红点已读确认 | 主屏稳定可见计时，0.5 秒 | 只在右侧内容已成功显示时启动；选择变化、预览失败或应用失焦时取消 |
+| Textual 后台 worker | Cursor 观察器自检 | 主屏挂载后的后台安装 | 幂等补齐用户级观察条目；任何失败都不得延迟首屏或阻断 Cursor/TUI |
 | Textual 定时器 | 终端背景复查 | `PickupApp._query_runtime_theme()`，2 秒 | iTerm2 等无主动通知的终端运行中换色时，无阻塞查询 OSC 11；支持 DEC 2031 的终端也可主动通知 |
 | 按键绑定 | 主操作 | `MainScreen.BINDINGS`、`_main_bindings()` | `a` 高级操作、`q` 结束、`x` 删除、`Esc` 退出、`Ctrl+\` 回列表、`Ctrl+B` 显隐侧栏、F12 截图；新建不走底栏快捷键 |
 | 快捷键随焦点裁剪 | Footer 与按键派发 | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 实时格持有输入时列表侧动作既不显示也不派发，翻页键透传给助手；`toggle_sidebar` / `focus_list` 属壳层键，右栏持焦时仍可用 |
@@ -212,7 +232,10 @@ stateDiagram-v2
 ## §6 核心业务规则与隐性约束
 
 - **AI 易错点**【禁止】恢复旧的全屏预览或纯列表第二套界面。非进行中会话在右栏直接展示完整对话，已托管会话在右栏挂接内嵌实时终端；「运行中(其他窗口)」走完整对话那一路（它不在任何 tmux 里，抓不到画面）。Space 全屏预览已经退役。原因：双入口会使按键、滚动、选择和展示语义重新分叉。
-- **AI 易错点**【侧边栏末行间隔】搜索框、新建会话项和未来新增的左栏控件，最后一行必须是控件自身高度内的间隔空行；搜索框高 2、新建项高 2。会话卡高 3，三行正文（标题 / 运行时靠右 / 时间靠右），不再另加末行空行；进行中用绿色标题区分，不展示状态文案。禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔，因为点击空隙不会命中本项，选中高亮也不完整。
+- **AI 易错点**【侧边栏末行间隔与关注圆点】搜索框、新建会话项和未来新增的左栏控件，最后一行必须是控件自身高度内的间隔空行；搜索框高 2、新建项高 2。会话卡固定高 3，三行正文（统一基础标题 / 第二行左侧单圆点且运行时靠右 / 时间靠右），不再另加末行空行；禁止恢复整行绿色标题。禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔，因为点击空隙不会命中本项，选中高亮也不完整。
+- **AI 易错点**【关注状态优先级固定】只显示一个圆点，必须按等待回答黄 > 执行中绿 > 未读新结果红 > 无裁决；等待回答必须来自结构化问题，不可用普通问号或自然语言关键词猜测。黄绿不重叠：黄点只在真正等待用户输入时覆盖绿点，普通执行过程仍显示绿点。
+- **AI 易错点**【红点不是选中即已读】只有右侧对应内容成功加载且稳定可见 0.5 秒才清红；快速掠过、加载失败、选择变化和应用失焦都必须取消计时。查看不能清黄点/绿点。首次升级的历史结果按已读基线处理，但当前执行/等待仍照常显示。
+- **AI 易错点**【圆点不干预时间线】关注状态不得参与排序、筛选、计数或机器接口既有状态字段，也不派生声音/系统通知。列表仍遵守原有稳定顺序；详情头提供文字状态以避免只靠颜色。
 - **AI 易错点**【状态消抖】用户结束托管会话后，必须同时清掉托管标记并立即把 `live` / `pid` 标为结束，且保留强制结束状态直到扫描确认进程真的结束。否则列表会从“运行中(托管)”短暂闪成“运行中”，再延迟变“已结束”。
 - **AI 易错点**【新建回调】`NewSessionRequest` 没有关联历史会话；托管成功回调只能对 `LaunchRequest` 读取 `.session`。空白新建路径曾因未区分两种请求而闪退，回归：`test_new_session_request_hosts_without_reading_session`。
 - **AI 易错点**【占位卡转正】空白新建或直启后会先用临时会话键显示托管卡，助手写出首条真实历史后再替换为正式会话键。替换时必须按同一托管身份同时迁移分屏记忆、右栏格和侧边栏当前选中键；只迁移右栏会让列表找不到旧键并退回顶部「＋ 新建会话」，随后 `_follow_current_selection()` 会用新建提示覆盖仍在运行的右栏。回归：`test_reconcile_split_keys_after_provisional_becomes_real`。
@@ -242,7 +265,7 @@ stateDiagram-v2
 - 【隐性依赖】`Footer` 展示的是 `MainScreen.BINDINGS` 的本地化 description。验证时中文环境必须看到 `a 高级操作`，英文环境必须看到 `a Advanced`；不要再手绘底部帮助行。
 - 【隐性依赖】真实终端冒烟必须跑「`pickup` 入口实际加载的包」：`python3 -m pickup`、或对 **pipx / site-packages 同一解释器** 覆盖安装后再敲 `pickup`。系统 `python3 -c "import pickup"` 与 `pickup` CLI 可能不是同一份代码（2026-07-21：源码已钉底、pipx 旧包仍顶对齐）。布局、配色、预览滚动改动后也必须重启已打开的 TUI。命令见 `AGENTS.md`「本机入口」。
 - 【隐性依赖】截图验收分两类：`docs/screenshots/capture.py` 使用虚构数据，适合提交和回归；F12 截图反映真实 TUI，可能含私密对话，只能本地诊断。夹具图灰阶的常见根因是环境 `NO_COLOR=1`（Textual Monochrome），不是 cairosvg；`capture.py` 会在创建 App 前清除 `NO_COLOR` 并去掉 Rich 假窗口铬。仍可用真机或 `SessionCard.render_line` segment 交叉确认配色。
-- 【消歧】侧边栏用绿色标题表示进行中（含托管），用默认配色表示已结束；这与标题模块的状态标签及机器接口英文 `status` 不是同一套语义，不能互相替换。侧边栏**不区分**「托管中」和「在别的窗口跑」（都是绿标题）；这个区分只在右栏详情头做，三态为 `status.running_hosted` / `status.running_external` / `status.ended`。
+- 【消歧】侧边栏关注圆点表示「此刻最需要用户知道的状态」，与标题模块状态标签、机器接口英文 `status` 以及单纯进程判活都不是同一套语义，不能互相替换。标题始终使用基础样式；「托管中」和「在别的窗口跑」的区别仍由右栏详情头说明。
 - 【消歧】“对话预览”固定在右栏，旧 Space 全屏预览入口不得复活；`e` 全屏接管已删除。默认展示最新消息（底部），不是会话开头。
 - 【焦点归属】焦点跟随**明确意图**：回车或单击会话卡打开、新建 / 顶栏加格 / 直启托管成功、关掉持有输入的那格 → 输入交给右栏；上下浏览（含方向键选择跟随）、后台重扫一律不抢焦点。自动聚焦只认活着的实时会话，且弹窗或筛选框正持有输入时不抢（`MainScreen._can_autofocus()`）。右栏滚轮与焦点无关。
 - **AI 易错点**【禁止】把自动聚焦挂到 `_follow_current_selection()` 上 -> 浏览必须留在列表（原因：一抢焦点方向键就全发给助手，列表没法继续用）。单击会话卡不属于浏览：Textual 的 `ListView` 点击就发 `Selected`，与回车同一条打开路径（真的会拉起 / 接管会话），必须一样自动聚焦。
@@ -271,7 +294,7 @@ python3 -m unittest discover -s tests -p 'test_ui.py' -v
 python3 docs/screenshots/capture.py
 ```
 
-检查 `docs/screenshots/list.png`：左栏搜索框、新建会话、会话卡的末行间隔是否连续可点击；右栏是否为完整对话；Footer 是否存在；中英文、宽字符与截断是否错乱；不得出现“最近提问 / 最近回复”或“连接中”。
+检查 `docs/screenshots/list.png`：左栏搜索框、新建会话、会话卡的末行间隔是否连续可点击；会话卡是否固定三行、第二行圆点与运行时左右对齐、标题未整行变绿；右栏是否为完整对话且详情头有文字状态；Footer 是否存在；中英文、宽字符与截断是否错乱；不得出现“最近提问 / 最近回复”或“连接中”。
 
 检查 `docs/screenshots/search.png`（全文搜索弹窗）：输入框是**单行、无边框**（Textual 的 `Input:focus` 会自带一圈边，压不住就会出现「外框套内框」两层边）；状态行的英文单复数正确（`1 session matched` 而不是 `1 sessions matched`）；每条结果是「项目: 标题 / 运行时 · 时间 · N 处命中 / 命中行」，关键词按 `$warning` 高亮；Footer 出现 `^f Search`。**PNG 里中文命中行的关键词两侧会出现明显空隙，这是 Rich SVG → cairosvg 对「同一行里换了样式的 CJK 文本」算错字符前进宽度的导出伪影，不是产品回归**——判定方法是直接断言 `SearchResultRow.render().plain`，真实终端和 `.plain` 里都没有多余空格。
 

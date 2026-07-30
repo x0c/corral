@@ -50,17 +50,17 @@
 
 > 以下文档在涉及对应领域的开发、评审或排查时先读取。
 
-- `README.md`：使用、修改、评审或扩展会话扫描、终端界面、标题生成、运行时适配和跨运行时接力
-- `docs/TERMINAL_UI_KNOWLEDGE_BASE.md`：开发、评审、优化或排查终端界面、侧边栏筛选/会话全文搜索弹窗（`Ctrl+F`）/新建会话、对话预览（含默认钉底滚动）、右侧多分屏顶栏、分屏组合记忆、高级操作弹窗、Footer 按键、多语言文案、运行中系统/终端深浅色跟随、截图验收；**设计或修改「键盘输入归属谁」相关行为（自动聚焦、鼠标点击语义、回列表出口、输入蒙版、快捷键随焦点裁剪）前必读 §6 焦点契约**；排查 SSH 下 TUI 颜色失真 / 真彩降级时也读
+- `README.md`：使用、修改、评审或扩展会话扫描、会话关注圆点、Cursor 状态观察、终端界面、标题生成、运行时适配和跨运行时接力
+- `docs/TERMINAL_UI_KNOWLEDGE_BASE.md`：开发、评审、优化或排查终端界面、侧边栏会话关注圆点/已读判定、筛选/会话全文搜索弹窗（`Ctrl+F`）/新建会话、对话预览（含默认钉底滚动）、右侧多分屏顶栏、分屏组合记忆、高级操作弹窗、Footer 按键、多语言文案、运行中系统/终端深浅色跟随、截图验收；**设计或修改「键盘输入归属谁」相关行为（自动聚焦、鼠标点击语义、回列表出口、输入蒙版、快捷键随焦点裁剪）前必读 §6 焦点契约**；排查 SSH 下 TUI 颜色失真 / 真彩降级时也读
 - `docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md`：内嵌实时终端、右栏托管画面（最多三格）、控制通道池、抓帧与按键转发、焦点边界/结束会话、连接中卡死；排查或修改**内嵌助手深浅色主题识别错误**（外层终端背景色探测与注入）也从这里进
-- `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`：会话扫描、对话预览数据、判活、扫描性能、各助手历史格式
+- `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`：开发、评审、优化或排查会话扫描、关注状态证据、Cursor 状态观察、对话预览数据、判活、扫描性能和各助手历史格式
 - `docs/PERFORMANCE_KNOWLEDGE_BASE.md`：启动、扫描、预览、终端渲染、派生缓存、原生加速、性能基准与预编译包
 - `docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md`：跨助手接力、高级操作、原生恢复、空白新建、启动计划与接力提示词
 - `docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md`：新增一种 AI 助手、补扫描/预览/恢复/接力/空白新建与注册验收
 - `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：事件日志、诊断、F12 截图观测、界面异常排查
-- `docs/MAINTAINER_GUIDE.md`：标题生成、会话保活、直启、Agent 只读接口、开源发布、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）
+- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、会话关注状态与 Cursor 观察器、会话保活、直启、Agent 只读接口、开源发布、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）
 - `docs/SKILL.md`：修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）；这是 Agent 侧唯一的使用文档，改命令行为必须同步这里
-- `PRIVACY.md`：修改、评审或排查历史文件读取、缓存写入、标题生成、跨运行时接力和开源隐私边界
+- `PRIVACY.md`：修改、评审或排查历史文件读取、会话关注状态库、Cursor 用户级观察配置、缓存写入、标题生成、跨运行时接力和开源隐私边界
 - `CONTRIBUTING.md`：修改开源贡献流程、验证命令、设计边界或 PR 要求
 
 ## 架构约束
@@ -71,7 +71,7 @@
 - 同运行时使用原生恢复；跨运行时必须新建目标会话、让目标 Agent 按需读取原始 JSONL，不能改写或伪造原会话。
 - 标题生成是独立服务，不属于任何运行时适配器。生成后端统一走 `titlegen.py` 的 `TitleGenerator` 抽象，`titles.py` 不得直接拼接任何 CLI 命令；`titlegen.py` 与 `runtime/` 互不 import——运行时适配器管「怎么恢复/接力会话」，标题生成器管「怎么无头问一次模型」，两者后端恰好重名但职责不同，不要合并。标题和界面状态使用“运行时 + 会话 ID”作为唯一键，新增运行时不得退回纯会话 ID。新增标题生成后端时，若该 CLI 会把生成调用落盘成会话历史，对应扫描器必须加 `titles.PROMPT_MARKER` 前缀过滤。
 - 会话预览：选中非进行中会话时，右栏直接展示完整对话（**默认钉在最新消息**，上滚看更早；用户离开底部后列表刷新不得强行钉回）；已托管会话右栏展示内嵌实时终端。**在别的终端窗口里跑、没被 pickup 托管的会话（`live` 且无 `keepalive_name`）拿不到实时画面**——右栏走完整对话那一路并在详情头写明原因，打开它必须先确认（那是对同一份历史另起恢复进程，不是接管），细则见 `docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` §1。唯一界面是左栏会话列表 + 右栏（可最多三格均分内嵌终端），禁止再加回全屏预览或纯列表第二套入口。右侧顶栏可点选已安装助手在当前项目下加格；活跃会话的分屏组合记忆见 `split_layout.py`（`~/.cache/pickup/split-layout.json`）。细则与 `_detail_stick_bottom` 见 `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` / `docs/MAINTAINER_GUIDE.md`。
-- **侧边栏末行间隔（硬约定）**：凡往左栏加控件（搜索框、新建项、未来任何块），**最后一行必须是间隔空行**，画在该控件自身高度内并算进命中区与选中高亮；禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔（点在空隙上不会落到本项）。会话卡例外：三行正文（标题 / 运行时 / 时间），高度 3，不再另加末行空行；进行中绿色标题、无状态文案。当前基准：搜索框高 2、新建项高 2、会话卡高 3。细则见 `docs/MAINTAINER_GUIDE.md`「界面」节。
+- **侧边栏末行间隔与关注圆点（硬约定）**：凡往左栏加控件（搜索框、新建项、未来任何块），**最后一行必须是间隔空行**，画在该控件自身高度内并算进命中区与选中高亮；禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔（点在空隙上不会落到本项）。会话卡例外：固定三行正文、高度 3，不再另加末行空行；标题统一使用基础标题样式，不因运行中整行变绿；第二行左侧只放一个关注圆点（等待回答黄 > 执行中绿 > 未读新结果红 > 无），运行时仍靠右；第三行时间靠右。圆点不得参与排序、筛选或计数。当前基准：搜索框高 2、新建项高 2、会话卡高 3。细则见 `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` / `docs/MAINTAINER_GUIDE.md`「界面」节。
 - `agent_api.py`（`pickup list`/`search`/`show`/`export`/`context`/`describe`）是只读数据接口，禁止新增任何执行/拉起副作用命令——pickup 只负责把会话数据交出来，怎么用是调用方的事。暴露更多可见性字段（如运行中会话的 `live`/`pid`）不违反这条约束，只要新字段本身来自扫描/只读探测、不触发任何拉起或写操作；真正"接管/下发指令给运行中会话"的能力不属于 pickup，留给调用方基于这些数据自行实现。命令参数与 `pickup describe` 的输出必须共用同一份 `COMMANDS` 定义，不能各写一份导致漂移。新增或修改子命令时同步 `docs/SKILL.md`。
 - Agent 接口里 `list`/`search` 的 `--limit` 固定表示每个运行时的扫描深度，`--top` 才表示最终返回条数；`--compact` 必须同时做到紧凑 JSON 和精简默认字段。改这三个参数或 `show --out` 大结果落盘行为时，同步 `pickup describe`、`docs/SKILL.md` 和 `docs/MAINTAINER_GUIDE.md`。
 - 会话保活（`keepalive.py`）是运行时无关的启动包装层，只在 `registry` 生成 `LaunchPlan` 之后、`execute_launch` 之前介入，禁止塞进 `runtime/` 某个具体适配器，也禁止让适配器感知 tmux 的存在。改保活匹配/回收逻辑前先读 `docs/MAINTAINER_GUIDE.md`「会话保活」节。`pickup claude`/`pickup codex` 直启子命令默认带 `_DirectLaunch` 进 TUI、经 `embed.host_session` 托管（与界面内「新建会话」同一路径），托管成功后必须立即登记侧边栏占位卡，禁止等待运行时写出首条历史；扫描器随后发现真实历史、占位卡转正时，侧边栏选中态与右栏分屏键必须一起迁移，不能退回「＋ 新建会话」空态；仅非真实终端 / `--no-keepalive` / 内嵌不可用时退回 `keepalive.enabled`/`wrap_plan` + `execute_launch` 旧路径（保活的第三个调用点，与 TUI 的 `_launch()` 复用同一套开关语义）。
@@ -174,6 +174,7 @@ head -1 "$(command -v pickup)"   # 若 #!.../pipx/venvs/pickup/bin/python → �
 | 领域 | 入口锚点 |
 |------|---------|
 | 终端界面 | src/pickup/ui/ · src/pickup/cli.py · src/pickup/display.py · src/pickup/theme.py · src/pickup/store.py · src/pickup/i18n.py |
+| 会话关注状态 | src/pickup/attention.py · src/pickup/attention_signals.py · src/pickup/cursor_observer.py · src/pickup/store.py · src/pickup/ui/ |
 | 会话全文搜索 | src/pickup/search.py · src/pickup/ui/search_modal.py |
 | 内嵌实时终端 | src/pickup/embed.py · src/pickup/ui/embed_pane.py |
 | 会话扫描与对话内容 | src/pickup/scan/ · src/pickup/models.py · src/pickup/runtime/ |

@@ -8,6 +8,8 @@ import time
 from typing import Callable
 
 from pickup import embed, keepalive, titles
+from pickup.attention import AttentionEvidence, AttentionState, AttentionStore
+from pickup.attention_signals import inspect_session
 from pickup.cache import get_cache
 from pickup.display import (
     _filter_sessions_by_query,
@@ -30,11 +32,25 @@ class SessionStore:
     不调用 claude，避免与后台进程重复花额度或竞争缓存文件。
     """
 
-    def __init__(self, limit: int, registry: RuntimeRegistry | None = None):
+    def __init__(
+        self,
+        limit: int,
+        registry: RuntimeRegistry | None = None,
+        attention_store: AttentionStore | None = None,
+    ):
         self.limit = limit
         self.registry = registry or default_registry()
         self.lock = threading.Lock()
         self.sessions: dict[str, list[dict]] = {runtime_id: [] for runtime_id in self.registry.ids}
+        self.attention_store = attention_store or AttentionStore()
+        self.attention_states: dict[str, AttentionState] = {}
+        # Cursor 正文库只在会话存活或轻量 stat 签名变化后探测。首轮仅登记签名，
+        # 禁止为所有历史会话打开 store.db，避免状态圆点拖慢首屏。
+        self._cursor_attention_signatures: dict[str, tuple] = {}
+        # 会话扫描签名未变化时复用上轮结构化证据，避免每次后台刷新都重新解析
+        # 全部 JSONL/SQLite。值为 (失效签名, evidence)，只保留当前仍存在的会话。
+        self._attention_evidence_cache: dict[str, tuple[tuple, AttentionEvidence]] = {}
+        self._attention_lock = threading.Lock()
         self.display_titles: dict[str, str] = {}  # 跨运行时会话键 -> 当前展示标题
         self.dirty = threading.Event()
         self.cache = titles.load_cache()
@@ -178,12 +194,112 @@ class SessionStore:
                             session.get("first_user_msg"),
                             session.get("last_user_msg"),
                             session.get("last_agent_msg"),
+                            session.get("attention_kind"),
+                            session.get("attention_token"),
+                            session.get("attention_updated_at"),
                         )
                         for session in bucket
                     ),
                 )
                 for runtime_id, bucket in sorted(self.sessions.items())
             )
+
+    @staticmethod
+    def _cursor_attention_signature(session: dict) -> tuple:
+        """只用 stat 构造 Cursor 状态探测签名，不打开正文数据库。"""
+        path = str(session.get("path") or "")
+        if os.path.isdir(path):
+            chat_dir = path
+            store_path = os.path.join(path, "store.db")
+        else:
+            store_path = path
+            chat_dir = os.path.dirname(path)
+        candidates = (
+            store_path,
+            f"{store_path}-wal" if store_path else "",
+            os.path.join(chat_dir, "prompt_history.json") if chat_dir else "",
+        )
+        signature = []
+        for candidate in candidates:
+            if not candidate:
+                signature.append(("", None, None))
+                continue
+            try:
+                info = os.stat(candidate)
+                signature.append((os.path.basename(candidate), info.st_size, info.st_mtime_ns))
+            except OSError:
+                signature.append((os.path.basename(candidate), None, None))
+        return tuple(signature)
+
+    def _reconcile_attention(self, sessions: list[dict]) -> dict[str, AttentionState]:
+        """在仓库锁外提取证据并持久化，再由调用方把结果注入展示字典。"""
+        with self._attention_lock:
+            prepared: list[tuple[dict, tuple]] = []
+            current_cursor_signatures: dict[str, tuple] = {}
+            for session in sessions:
+                candidate = dict(session)
+                key = session_key(candidate)
+                base_signature = (
+                    candidate.get("source"),
+                    candidate.get("path"),
+                    candidate.get("mtime"),
+                    candidate.get("size_bytes"),
+                    bool(candidate.get("live")),
+                )
+                if candidate.get("source") == "cursor":
+                    cursor_signature = self._cursor_attention_signature(candidate)
+                    first_seen = key not in self._cursor_attention_signatures
+                    changed = (
+                        not first_seen
+                        and self._cursor_attention_signatures.get(key) != cursor_signature
+                    )
+                    current_cursor_signatures[key] = cursor_signature
+                    if candidate.get("live") or changed:
+                        candidate["signal_probe"] = True
+                    else:
+                        candidate.pop("signal_probe", None)
+                    evidence_signature = base_signature + (cursor_signature,)
+                else:
+                    evidence_signature = base_signature
+                prepared.append((candidate, evidence_signature))
+            self._cursor_attention_signatures = current_cursor_signatures
+
+            evidence_by_key: dict[str, AttentionEvidence] = {}
+            next_evidence_cache: dict[str, tuple[tuple, AttentionEvidence]] = {}
+            for session, evidence_signature in prepared:
+                key = session_key(session)
+                cached = self._attention_evidence_cache.get(key)
+                if cached is not None and cached[0] == evidence_signature:
+                    evidence_by_key[key] = cached[1]
+                    next_evidence_cache[key] = cached
+                    continue
+                try:
+                    evidence = inspect_session(session)
+                except Exception:
+                    # 状态圆点是派生能力，任何运行时格式异常都不能阻断主扫描。
+                    continue
+                evidence_by_key[key] = evidence
+                next_evidence_cache[key] = (evidence_signature, evidence)
+            self._attention_evidence_cache = next_evidence_cache
+            prepared_sessions = [session for session, _signature in prepared]
+            try:
+                return self.attention_store.reconcile(prepared_sessions, evidence_by_key)
+            except Exception:
+                return {
+                    session_key(session): AttentionState()
+                    for session in prepared_sessions
+                }
+
+    @staticmethod
+    def _inject_attention(session: dict, state: AttentionState) -> None:
+        if state.kind == "none":
+            session.pop("attention_kind", None)
+            session.pop("attention_token", None)
+            session.pop("attention_updated_at", None)
+            return
+        session["attention_kind"] = state.kind
+        session["attention_token"] = state.activity_token
+        session["attention_updated_at"] = state.updated_at
 
     def _merge_scanned(self, scanned: dict[str, list[dict]]) -> None:
         # 每个适配器负责按时间倒序返回，无需在界面层二次排序
@@ -200,18 +316,30 @@ class SessionStore:
             }
         keepalive.annotate([session for bucket in scanned.values() for session in bucket])
 
+        attention_migrations: list[tuple[str, str, str]] = []
         with self.lock:
             self.sessions.update(scanned)
             claimed_keepalive = {
-                session.get("keepalive_name")
+                str(session.get("keepalive_name")): session
                 for bucket in self.sessions.values()
                 for session in bucket
-                if session.get("keepalive_name")
+                if session.get("keepalive_name") and not session.get("provisional")
             }
             for key, provisional in list(self._provisional.items()):
                 name = self.hosted.get(key) or provisional.get("keepalive_name")
                 if name and name in claimed_keepalive:
                     # 真实会话已挂上同一托管名：占位卡退役，避免双卡。
+                    real_session = claimed_keepalive[str(name)]
+                    runtime_id = str(provisional.get("source") or "")
+                    real_runtime_id = str(real_session.get("source") or "")
+                    if runtime_id and runtime_id == real_runtime_id:
+                        attention_migrations.append(
+                            (
+                                runtime_id,
+                                str(provisional.get("id") or ""),
+                                str(real_session.get("id") or ""),
+                            )
+                        )
                     self._provisional.pop(key, None)
                     self.hosted.pop(key, None)
                     continue
@@ -284,6 +412,40 @@ class SessionStore:
                     self.generating.discard(key)
             self._projects = None
 
+            attention_sessions = [
+                dict(session)
+                for bucket in self.sessions.values()
+                for session in bucket
+            ]
+
+        # SQLite 与运行时历史探测均放在 SessionStore 锁外，避免界面读取被磁盘 I/O
+        # 卡住。迁移必须先于真实会话 reconcile，确保占位状态无缝接到正式标识。
+        for runtime_id, old_session_id, new_session_id in attention_migrations:
+            if not old_session_id or not new_session_id:
+                continue
+            try:
+                self.attention_store.migrate_session(
+                    runtime_id, old_session_id, new_session_id,
+                )
+            except Exception:
+                continue
+        states = self._reconcile_attention(attention_sessions)
+        with self.lock:
+            current_keys = {
+                session_key(session)
+                for bucket in self.sessions.values()
+                for session in bucket
+            }
+            self.attention_states = {
+                key: state for key, state in states.items() if key in current_keys
+            }
+            for bucket in self.sessions.values():
+                for session in bucket:
+                    self._inject_attention(
+                        session,
+                        self.attention_states.get(session_key(session), AttentionState()),
+                    )
+
     def projects(self) -> list[dict]:
         """跨所有来源聚合的项目文件夹列表（新建会话 / 侧边栏用），惰性计算并缓存。
 
@@ -321,6 +483,31 @@ class SessionStore:
                         return session
         return None
 
+    def attention_for(self, key: str) -> AttentionState:
+        """读取当前内存快照中的关注状态，不在界面热路径访问磁盘。"""
+        with self.lock:
+            return self.attention_states.get(key, AttentionState())
+
+    def mark_session_read(self, key: str) -> AttentionState:
+        """把会话最新活动标为已读；执行中和等待回答阶段保持不变。"""
+        runtime_id, separator, session_id = key.partition(":")
+        if not separator or not runtime_id or not session_id:
+            return AttentionState()
+        try:
+            state = self.attention_store.mark_read(runtime_id, session_id)
+        except Exception:
+            state = AttentionState()
+        with self.lock:
+            previous = self.attention_states.get(key)
+            self.attention_states[key] = state
+            for bucket in self.sessions.values():
+                for session in bucket:
+                    if session_key(session) == key:
+                        self._inject_attention(session, state)
+            if state != previous:
+                self.dirty.set()
+        return state
+
     def mark_pending_delete(self, key: str) -> None:
         """x 确认后立刻摘除内存状态并打上 tombstone，卡片不必等磁盘 delete 完成。"""
         with self.lock:
@@ -355,7 +542,16 @@ class SessionStore:
             self.hosted.pop(key, None)
             self._provisional.pop(key, None)
             self._force_ended.discard(key)
+            self.attention_states.pop(key, None)
+            self._cursor_attention_signatures.pop(key, None)
+            self._attention_evidence_cache.pop(key, None)
             self._projects = None
+        runtime_id, separator, session_id = key.partition(":")
+        if separator and runtime_id and session_id:
+            try:
+                self.attention_store.remove_session(runtime_id, session_id)
+            except Exception:
+                pass
 
     def register_hosted_session(
         self,
@@ -402,6 +598,11 @@ class SessionStore:
             "provisional": True,
         }
         key = session_key(session)
+        try:
+            attention_state = self.attention_store.get(runtime_id, session_id)
+        except Exception:
+            attention_state = AttentionState()
+        self._inject_attention(session, attention_state)
         with self.lock:
             self.hosted[key] = keepalive_name
             self._force_ended.discard(key)
@@ -412,6 +613,7 @@ class SessionStore:
             self._order = [key] + [item for item in self._order if item != key]
             self.display_titles[key] = session["fallback_title"]
             self.generating.discard(key)
+            self.attention_states[key] = attention_state
         return session
 
     def mark_hosted(self, key: str, name: str | None) -> dict | None:

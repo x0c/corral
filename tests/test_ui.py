@@ -1135,14 +1135,14 @@ class SessionCardVisualTests(unittest.TestCase):
         for frame in pickup.SPINNER_FRAMES:
             self.assertNotIn(frame, first_line)
 
-    def test_running_title_is_green_but_ended_title_is_not(self) -> None:
-        """进行中用绿色标题区分；侧边栏不再展示 Running / Ended 文案。"""
+    def test_title_color_is_uniform_across_lifecycle_states(self) -> None:
+        """运行阶段由第二行圆点表达；标题不再整行变绿，也不展示状态文案。"""
         cases = (
-            (self._card(live=True), "live", True),
-            (self._card(keepalive_name="pickup-opencode-visual"), "hosted", True),
-            (self._card(), "ended", False),
+            (self._card(live=True), "live"),
+            (self._card(keepalive_name="pickup-opencode-visual"), "hosted"),
+            (self._card(), "ended"),
         )
-        for card, label, expected_green in cases:
+        for card, label in cases:
             with self.subTest(status=label), mock.patch.object(
                 SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
             ):
@@ -1158,7 +1158,7 @@ class SessionCardVisualTests(unittest.TestCase):
                 if "#3f9a6a" in str(span.style).lower()
                 and span.start < title_end
             ]
-            self.assertEqual(bool(green_spans), expected_green)
+            self.assertFalse(green_spans)
 
 
 class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
@@ -1523,8 +1523,8 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 "会话集合没变时不应该重新 mount 任何 SessionCard 实例",
             )
             self.assertIs(cards_after[0].session, new_session)
-            # live 翻到 True 后，进行中会话标题应原地变为绿色
-            self.assertTrue(
+            # live 翻到 True 后标题仍保持统一基础色，关注状态只由圆点表达。
+            self.assertFalse(
                 any("#3F9A6A" in str(span.style) for span in cards_after[0].render().spans),
             )
 
@@ -3609,8 +3609,8 @@ class KillKeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("down")
                 list_view = app.screen.query_one(SessionListView)
                 card = list_view._session_cards()[0]
-                # 托管运行中：标题为进行中绿色
-                self.assertTrue(
+                # 托管运行中也不再整行染绿，关注状态只由圆点表达。
+                self.assertFalse(
                     any("#3F9A6A" in str(span.style) for span in card.render().spans),
                 )
                 await pilot.press("q")
@@ -3618,7 +3618,7 @@ class KillKeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsInstance(app.screen, ConfirmModal)
                 await pilot.press("q")
                 await pilot.pause(delay=0.2)
-                # 确认后立刻应是已结束，不能先闪一帧「运行中」（标题不再是绿色）
+                # 确认后立刻应是已结束；标题生命周期前后都保持统一基础色。
                 card = list_view._session_cards()[0]
                 self.assertFalse(
                     any("#3F9A6A" in str(span.style) for span in card.render().spans),
