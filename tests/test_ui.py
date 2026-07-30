@@ -44,7 +44,12 @@ from textual.widgets import Footer, Input, ListItem, ListView
 from pickup.ui.app import PickupApp
 from pickup.ui.embed_pane import EmbedPane
 from pickup.ui.split_pane_area import SplitPaneArea
-from pickup.ui.modals import ConfirmModal, PickMenuModal, RuntimePickerModal
+from pickup.ui.modals import (
+    ConfirmModal,
+    NewSessionModal,
+    RuntimeChoice,
+    RuntimePickerModal,
+)
 from pickup.ui.search_modal import FullTextSearchModal, SearchResultRow
 from pickup.ui.session_list import NEW_SESSION_ID, SessionCard, SessionListView
 from pickup.ui.terminal_theme import TerminalBackgroundReport, TerminalThemeParser
@@ -3484,7 +3489,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ModalTests(unittest.IsolatedAsyncioTestCase):
-    async def test_pick_menu_modal_escape_cancels(self) -> None:
+    async def test_new_session_modal_escape_cancels(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
@@ -3493,7 +3498,10 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
 
             async def _open():
                 result_holder["result"] = await app.push_screen_wait(
-                    PickMenuModal("标题", [("甲", "提示甲"), ("乙", "提示乙")])
+                    NewSessionModal(
+                        [("/tmp/alpha", "alpha", "/tmp/alpha")],
+                        [RuntimeChoice("claude", "Claude", "", True)],
+                    )
                 )
 
             app.run_worker(_open())
@@ -3501,6 +3509,112 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
             await pilot.pause(delay=0.2)
         self.assertIsNone(result_holder.get("result"))
+
+    async def test_new_session_modal_picks_project_then_runtime(self) -> None:
+        """一个弹窗内选完：左栏回车换到右栏，右栏回车才确认。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            result_holder = {}
+
+            async def _open():
+                result_holder["result"] = await app.push_screen_wait(
+                    NewSessionModal(
+                        [("/tmp/alpha", "alpha", "/tmp/alpha"), ("/tmp/beta", "beta", "/tmp/beta")],
+                        [
+                            RuntimeChoice("claude", "Claude", "", True),
+                            RuntimeChoice("codex", "Codex", "", True),
+                        ],
+                    )
+                )
+
+            app.run_worker(_open())
+            await pilot.pause(delay=0.2)
+            modal = app.screen
+            self.assertIsInstance(modal, NewSessionModal)
+            await pilot.press("down")  # alpha -> beta
+            await pilot.press("enter")  # 项目定了，焦点交给运行时栏
+            await pilot.pause()
+            self.assertIsInstance(app.screen, NewSessionModal)  # 左栏回车不得关闭弹窗
+            self.assertEqual(modal.query_one("#ns-runtimes").has_focus, True)
+            await pilot.press("down")  # Claude -> Codex
+            await pilot.press("enter")
+            await pilot.pause(delay=0.2)
+        self.assertEqual(result_holder.get("result"), ("/tmp/beta", "codex"))
+
+    async def test_new_session_modal_arrow_keys_switch_columns(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+
+            async def _open():
+                await app.push_screen_wait(
+                    NewSessionModal(
+                        [("/tmp/alpha", "alpha", "/tmp/alpha")],
+                        [RuntimeChoice("claude", "Claude", "", True)],
+                    )
+                )
+
+            app.run_worker(_open())
+            await pilot.pause(delay=0.2)
+            modal = app.screen
+            self.assertTrue(modal.query_one("#ns-projects").has_focus)
+            await pilot.press("right")
+            await pilot.pause()
+            self.assertTrue(modal.query_one("#ns-runtimes").has_focus)
+            await pilot.press("left")
+            await pilot.pause()
+            self.assertTrue(modal.query_one("#ns-projects").has_focus)
+
+    async def test_new_session_modal_bells_on_unavailable_runtime(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+
+            async def _open():
+                await app.push_screen_wait(
+                    NewSessionModal(
+                        [("/tmp/alpha", "alpha", "/tmp/alpha")],
+                        [RuntimeChoice("kimi", "Kimi", "", False)],
+                    )
+                )
+
+            app.run_worker(_open())
+            await pilot.pause(delay=0.2)
+            await pilot.press("right")
+            with mock.patch.object(app, "bell") as bell:
+                await pilot.press("enter")
+                await pilot.pause()
+            bell.assert_called_once()
+            self.assertIsInstance(app.screen, NewSessionModal)  # 未安装项不应关闭弹窗
+
+    async def test_sidebar_new_session_opens_single_modal(self) -> None:
+        """回归：侧边栏「＋ 新建会话」只弹一个窗，项目与运行时在同一屏选完。"""
+        codex = mock.Mock()
+        codex.id = "codex"
+        codex.display_name = "Codex"
+        codex.is_available.return_value = True
+        codex.scan_sessions.return_value = []
+        store, _ = _make_store(extra_runtimes=(codex,))
+        app = PickupApp(store, embed_ok=False)
+        projects = [{"cwd_key": "/tmp", "label": "tmp", "count": 3, "latest_mtime": 0.0}]
+        with mock.patch.object(store, "projects", return_value=projects):
+            async with app.run_test(size=(110, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                app.screen.query_one(SessionListView).index = 0  # ＋ 新建会话
+                await pilot.press("enter")
+                await pilot.pause(delay=0.2)
+                self.assertIsInstance(app.screen, NewSessionModal)
+                await pilot.press("enter")  # 项目栏 -> 运行时栏
+                await pilot.press("down")  # Claude -> Codex
+                await pilot.press("enter")
+                await pilot.pause(delay=0.3)
+        self.assertIsInstance(app.return_value, pickup.NewSessionRequest)
+        self.assertEqual(app.return_value.target_runtime_id, "codex")
+        self.assertEqual(app.return_value.cwd, "/tmp")
 
     async def test_runtime_picker_modal_bells_on_unavailable_choice(self) -> None:
         kimi = mock.Mock()

@@ -278,6 +278,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "{action} (not installed)",
         "zh": "{action}［未安装］",
     },
+    "modal.not_installed_tag": {
+        "en": "not installed",
+        "zh": "未安装",
+    },
     "modal.native_resume": {
         "en": "Native resume (full context)",
         "zh": "原生恢复（保留完整上下文）",
@@ -286,21 +290,25 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Read {source} history, then start a new session",
         "zh": "读取 {source} 历史后新建会话",
     },
-    "modal.blank_in_dir": {
-        "en": "Start a blank session in this directory",
-        "zh": "在该目录下新建空白会话",
-    },
     "modal.handoff_title": {
         "en": "Advanced: choose handoff runtime",
         "zh": "高级操作：选择接力运行时",
     },
-    "modal.new_runtime_title": {
-        "en": "New session: choose runtime",
-        "zh": "新建会话：选择运行时",
+    "modal.new_session_title": {
+        "en": "New session",
+        "zh": "新建会话",
     },
-    "modal.new_project_title": {
-        "en": "New session: choose project",
-        "zh": "新建会话：选择项目",
+    "modal.column_project": {
+        "en": "Project",
+        "zh": "项目",
+    },
+    "modal.column_runtime": {
+        "en": "Runtime",
+        "zh": "运行时",
+    },
+    "modal.two_column_hint": {
+        "en": "↑↓ Select   ←→ Switch column   Enter Confirm   Esc Back",
+        "zh": "↑↓ 选择   ←→ 切换栏   Enter 确认   Esc 返回",
     },
     "confirm.kill_session": {
         "en": "End session “{title}”? Unsaved progress in the current task will be lost",

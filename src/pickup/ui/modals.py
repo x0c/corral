@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Callable
 
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView, Static
+
+from pickup.i18n import t
 
 
 class _ChoiceItem(Static):
@@ -31,14 +33,11 @@ class _ChoiceItem(Static):
         self.available = available
 
 
-class PickMenuModal(ModalScreen[int | None]):
-    """居中单选弹窗：entries 为 (主文案, 副文案[, 是否可选=True])。返回选中下标或 None。"""
-
-    DEFAULT_CSS = """
-    PickMenuModal {
+_MENU_CSS = """
+    RuntimePickerModal {
         align: center middle;
     }
-    PickMenuModal > Vertical {
+    RuntimePickerModal > Vertical {
         width: auto;
         max-width: 90%;
         height: auto;
@@ -46,41 +45,11 @@ class PickMenuModal(ModalScreen[int | None]):
         border: round $primary;
         padding: 0 1;
     }
-    PickMenuModal ListView {
+    RuntimePickerModal ListView {
         height: auto;
         max-height: 20;
     }
     """
-
-    def __init__(self, title: str, entries: list[tuple], default_index: int = 0) -> None:
-        super().__init__()
-        self._title = title
-        self._entries = entries
-        self._default_index = default_index
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Label(f" {self._title} ", classes="title")
-            items = []
-            for entry in self._entries:
-                main, hint = entry[0], entry[1]
-                available = entry[2] if len(entry) > 2 else True
-                items.append(ListItem(_ChoiceItem(main, hint, available)))
-            yield ListView(*items, initial_index=self._default_index)
-            yield Label("↑↓ 选择   Enter 确认   Esc 返回", classes="hint")
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        choice = event.item.children[0]
-        if isinstance(choice, _ChoiceItem) and not choice.available:
-            self.app.bell()
-            return
-        list_view = self.query_one(ListView)
-        self.dismiss(list_view.index)
-
-    def _on_key(self, event: events.Key) -> None:
-        if event.key == "escape":
-            event.stop()
-            self.dismiss(None)
 
 
 @dataclass
@@ -92,9 +61,9 @@ class RuntimeChoice:
 
 
 class RuntimePickerModal(ModalScreen[str | None]):
-    """运行时选择弹窗（高级操作接力 / 新建会话选运行时共用）。返回 runtime id 或 None。"""
+    """运行时选择弹窗（高级操作接力用）。返回 runtime id 或 None。"""
 
-    DEFAULT_CSS = PickMenuModal.DEFAULT_CSS.replace("PickMenuModal", "RuntimePickerModal")
+    DEFAULT_CSS = _MENU_CSS
 
     def __init__(self, title: str, choices: list[RuntimeChoice], default_index: int = 0) -> None:
         super().__init__()
@@ -107,10 +76,14 @@ class RuntimePickerModal(ModalScreen[str | None]):
             yield Label(f" {self._title} ", classes="title")
             items = []
             for choice in self._choices:
-                action = choice.action_text if choice.available else f"{choice.action_text}［未安装］"
+                action = (
+                    choice.action_text
+                    if choice.available
+                    else t("modal.not_installed", action=choice.action_text)
+                )
                 items.append(ListItem(_ChoiceItem(f"{choice.label:<10}", action, choice.available)))
             yield ListView(*items, initial_index=self._default_index)
-            yield Label("↑↓ 选择   Enter 确认   Esc 返回", classes="hint")
+            yield Label(t("modal.menu_hint"), classes="hint")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         list_view = self.query_one(ListView)
@@ -127,6 +100,200 @@ class RuntimePickerModal(ModalScreen[str | None]):
         if event.key == "escape":
             event.stop()
             self.dismiss(None)
+
+
+def _tail(text: str, width: int) -> str:
+    """路径这类「越靠后越关键」的文案：放不下时砍开头，保住结尾那几级目录。"""
+    import pickup
+
+    if pickup._text_width(text) <= width or width <= 1:
+        return text
+    body = text
+    while body and pickup._text_width(body) > width - 1:
+        body = body[1:]
+    return "…" + body
+
+
+def _short_path(path: str) -> str:
+    home = os.path.expanduser("~")
+    if home and (path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home):]
+    return path
+
+
+class _ColumnRow(Widget):
+    """分栏弹窗里的一行：主文案 + 灰色补充说明，按当前栏宽截成单行。
+
+    行高写死 1：`Static` 默认按内容折行，项目路径一长就把行撑成两行，整列的
+    高度和滚动位置跟着抖；这里自己按栏宽截断（与会话卡、搜索结果同一套做法）。
+    """
+
+    ALLOW_SELECT = False  # 同 SessionCard：点击是选中动作，不是选文本
+
+    DEFAULT_CSS = """
+    _ColumnRow {
+        width: 1fr;
+        height: 1;
+    }
+    """
+
+    def __init__(self, value: str, main: str, hint: str = "", available: bool = True) -> None:
+        super().__init__()
+        self.value = value
+        self.main = main
+        self.hint = hint
+        self.available = available
+
+    def render(self) -> Text:
+        import pickup
+
+        width = max(4, self.size.width or 24)
+        main_width = min(pickup._text_width(self.main), width)
+        text = Text(
+            pickup._fit_cell(self.main, main_width, ellipsis=True),
+            style="" if self.available else "dim",
+        )
+        rest = width - main_width - 2
+        if self.hint and rest >= 4:
+            text.append("  " + _tail(self.hint, rest), style="dim")
+        return text
+
+
+class NewSessionModal(ModalScreen[tuple[str, str] | None]):
+    """新建会话：左栏选项目、右栏选运行时，一个弹窗里一次选完。
+
+    左栏更宽——项目名后面还要跟路径，信息量远大于右栏的助手名。交互上
+    ←→ 换栏、↑↓ 选行；左栏回车表示「项目定了，去选助手」，右栏回车才真正
+    确认。原来这是两个前后串起来的弹窗，选完项目会整屏一闪再弹一次，回头
+    改项目还得 Esc 退出重来。
+
+    返回 (项目目录, 运行时 id)；Esc 返回 None。
+    """
+
+    DEFAULT_CSS = """
+    NewSessionModal {
+        align: center middle;
+    }
+    NewSessionModal > Vertical {
+        width: 92;
+        max-width: 94%;
+        height: 22;
+        max-height: 86%;
+        border: round $primary;
+        background: $surface;
+        padding: 0 1;
+    }
+    NewSessionModal .title {
+        height: 1;
+    }
+    NewSessionModal #ns-columns {
+        height: 1fr;
+    }
+    NewSessionModal #ns-projects {
+        width: 2fr;
+    }
+    NewSessionModal #ns-runtimes {
+        width: 1fr;
+    }
+    NewSessionModal ListView {
+        height: 1fr;
+        background: $surface;
+        border: round $foreground 20%;
+        padding: 0 1;
+        scrollbar-size-vertical: 0;
+    }
+    /* 哪一栏正在接受方向键，只能靠边框颜色告诉用户；未聚焦那栏的高亮行仍要
+       看得见（Textual 默认就会画成较淡的一档），不要整栏压暗。 */
+    NewSessionModal ListView:focus {
+        border: round $primary;
+    }
+    NewSessionModal .hint {
+        height: 1;
+        color: $foreground 60%;
+    }
+    """
+
+    def __init__(
+        self,
+        projects: list[tuple[str, str, str]],
+        runtimes: list[RuntimeChoice],
+        project_index: int = 0,
+        runtime_index: int = 0,
+    ) -> None:
+        super().__init__()
+        self._projects = projects
+        self._runtimes = runtimes
+        self._project_index = project_index
+        self._runtime_index = runtime_index
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f" {t('modal.new_session_title')} ", classes="title")
+            with Horizontal(id="ns-columns"):
+                yield ListView(
+                    *[
+                        ListItem(_ColumnRow(cwd_key, label, _short_path(hint)))
+                        for cwd_key, label, hint in self._projects
+                    ],
+                    id="ns-projects",
+                    initial_index=self._project_index,
+                )
+                yield ListView(
+                    *[
+                        ListItem(
+                            _ColumnRow(
+                                choice.id,
+                                choice.label,
+                                "" if choice.available else t("modal.not_installed_tag"),
+                                choice.available,
+                            )
+                        )
+                        for choice in self._runtimes
+                    ],
+                    id="ns-runtimes",
+                    initial_index=self._runtime_index,
+                )
+            yield Label(t("modal.two_column_hint"), classes="hint")
+
+    def on_mount(self) -> None:
+        projects = self.query_one("#ns-projects", ListView)
+        projects.border_title = t("modal.column_project")
+        self.query_one("#ns-runtimes", ListView).border_title = t("modal.column_runtime")
+        projects.focus()
+
+    # ---- 选择 ----
+
+    def _row(self, list_id: str) -> _ColumnRow | None:
+        item = self.query_one(list_id, ListView).highlighted_child
+        if item is None:
+            return None
+        rows = item.query(_ColumnRow)
+        return rows.first() if rows else None
+
+    def _confirm(self) -> None:
+        project = self._row("#ns-projects")
+        runtime = self._row("#ns-runtimes")
+        if project is None or runtime is None or not runtime.available:
+            self.app.bell()
+            return
+        self.dismiss((project.value, runtime.value))
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """回车 / 点击：在项目栏是「选好了，去挑助手」，在运行时栏才是确认。"""
+        if event.list_view.id == "ns-projects":
+            self.query_one("#ns-runtimes", ListView).focus()
+            return
+        self._confirm()
+
+    def _on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss(None)
+        elif event.key in ("left", "right"):
+            event.stop()
+            event.prevent_default()
+            target = "#ns-projects" if event.key == "left" else "#ns-runtimes"
+            self.query_one(target, ListView).focus()
 
 
 class ConfirmModal(ModalScreen[bool]):
@@ -192,37 +359,21 @@ async def choose_target_runtime(app, store, source: str) -> str | None:
     choices = []
     for runtime in runtimes:
         if runtime.id == source:
-            action = "原生恢复（保留完整上下文）"
+            action = t("modal.native_resume")
         else:
-            action = f"读取 {source_name} 历史后新建会话"
+            action = t("modal.read_history_new", source=source_name)
         choices.append(RuntimeChoice(runtime.id, runtime.display_name, action, runtime.is_available()))
     default_index = next(
         (i for i, runtime in enumerate(runtimes) if runtime.id != source and runtime.is_available()),
         next((i for i, runtime in enumerate(runtimes) if runtime.id == source), 0),
     )
     return await app.push_screen_wait(
-        RuntimePickerModal("高级操作：选择接力运行时", choices, default_index)
+        RuntimePickerModal(t("modal.handoff_title"), choices, default_index)
     )
 
 
-async def pick_runtime_for_new_session(app, store, default_id: str) -> str | None:
-    runtimes = list(store.registry)
-    choices = [
-        RuntimeChoice(runtime.id, runtime.display_name, "在该目录下新建空白会话", runtime.is_available())
-        for runtime in runtimes
-    ]
-    default_index = next(
-        (i for i, runtime in enumerate(runtimes) if runtime.id == default_id and runtime.is_available()),
-        next((i for i, runtime in enumerate(runtimes) if runtime.is_available()), 0),
-    )
-    return await app.push_screen_wait(
-        RuntimePickerModal("新建会话：选择运行时", choices, default_index)
-    )
-
-
-async def pick_project(app, store, nav, session: dict | None) -> str | None:
-    import pickup
-
+def _project_entries(store) -> list[tuple[str, str, str]]:
+    """新建会话可选的项目：(目录, 项目名, 目录)，当前目录不在列表里时补到最前。"""
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     for project in store.projects():
@@ -233,28 +384,40 @@ async def pick_project(app, store, nav, session: dict | None) -> str | None:
         entries.append((cwd_key, project["label"], cwd_key))
     current = os.getcwd()
     if current not in seen:
-        entries.insert(0, (current, "当前目录", current))
-    if not entries:
-        return None
-    preferred = pickup._new_session_cwd(store, nav, session)
-    default_index = next(
-        (i for i, (cwd, _, _) in enumerate(entries) if preferred and cwd == preferred), 0
-    )
-    picked = await app.push_screen_wait(
-        PickMenuModal("新建会话：选择项目", [(label, hint) for _, label, hint in entries], default_index)
-    )
-    if picked is None:
-        return None
-    return pickup.usable_cwd(entries[picked][0])
+        entries.insert(0, (current, t("project.current_dir"), current))
+    return entries
 
 
 async def new_session_flow(app, store, nav, session: dict | None):
     import pickup
 
-    cwd = await pick_project(app, store, nav, session)
-    if cwd is None:
+    entries = _project_entries(store)
+    if not entries:
         return None
-    target = await pick_runtime_for_new_session(app, store, nav.source)
-    if target is None:
+    preferred = pickup._new_session_cwd(store, nav, session)
+    project_index = next(
+        (i for i, (cwd, _, _) in enumerate(entries) if preferred and cwd == preferred), 0
+    )
+
+    runtimes = list(store.registry)
+    choices = [
+        RuntimeChoice(runtime.id, runtime.display_name, "", runtime.is_available())
+        for runtime in runtimes
+    ]
+    runtime_index = next(
+        (i for i, runtime in enumerate(runtimes) if runtime.id == nav.source and runtime.is_available()),
+        next((i for i, runtime in enumerate(runtimes) if runtime.is_available()), 0),
+    )
+
+    picked = await app.push_screen_wait(
+        NewSessionModal(entries, choices, project_index, runtime_index)
+    )
+    if picked is None:
+        return None
+    cwd_key, target = picked
+    cwd = pickup.usable_cwd(cwd_key)
+    if cwd is None:
+        # 项目目录已经不在这台机器上（换机 / 被删）——新建会话没有落脚点。
+        app.bell()
         return None
     return pickup.NewSessionRequest(target, cwd)

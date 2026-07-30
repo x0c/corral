@@ -126,9 +126,9 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 ### 会话级快捷键
 
 - `a`/`q`/`x` 等会话动作集中在 `MainScreen` 与 `ui/modals.py`；不要再拆第二套「预览页专用」按键分发。侧边栏选中/托管不抢右栏焦点；滚轮按命中区处理。
-- 新建：侧边栏「＋」走 `new_session_flow`（项目→运行时）；顶栏点助手走 `_on_runtime_pick`（当前项目加格）。cwd 仍由 `_new_session_cwd` / `area.current_project` 解析。
+- 新建：侧边栏「＋」走 `new_session_flow` → `NewSessionModal`（**一个弹窗**，左栏项目 / 右栏运行时，左宽右窄 2fr:1fr）；顶栏点助手走 `_on_runtime_pick`（当前项目加格）。cwd 仍由 `_new_session_cwd` / `area.current_project` 解析；选中项目目录已不存在时 beep 并放弃，不静默返回。
 - `a`：无具体会话时只 beep。
-- 运行时/项目选择走 `RuntimePickerModal` / `PickMenuModal`。
+- 接力运行时选择走 `RuntimePickerModal`；新建会话走 `NewSessionModal`。
 
 ## 运行时边界
 

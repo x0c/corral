@@ -177,7 +177,7 @@ stateDiagram-v2
 | 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
 | 会话卡片、关注状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 固定三行：首行「圆点 项目 标题」/ 运行时靠右 / 时间靠右；圆点优先级黄 > 绿 > 红；首行按有无圆点取 `width - 2` / `width` 硬截断、不写省略号 |
 | 状态详情与已读确认 | `ui/main_screen.py`、`store.py` | 详情头状态、稳定可见计时、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；只有红点在右侧成功稳定可见 0.5 秒后清除，切换、失败或失焦取消 |
-| 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`pick_project()`、`pick_runtime_for_new_session()`、`_on_runtime_pick()` | 侧边栏「＋ 新建」走项目→运行时；右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
+| 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`NewSessionModal`、`_on_runtime_pick()` | 侧边栏「＋ 新建」弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径）、右栏运行时；←→ 换栏、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |
 | 删除会话（不可恢复） | `ui/main_screen.py`、`ui/modals.py`、`store.py`、`runtime/base.py` | `action_delete_session()`、`ConfirmModal(confirm_key="x")`、`SessionStore.remove_session()`、`BaseRuntime.delete_session()` | `ConfirmModal` 的确认键已参数化（结束会话仍是 `q`，删除会话是 `x`）；实际删除逻辑收敛在各运行时适配器，见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`/`docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md` 各存储形态的删除方式 |
 | 右栏静态预览和实时画面挂接 | `ui/embed_pane.py` | `show_detail()`、`focus_session()`、`scroll_detail()` | 本域仅管理呈现切换、焦点与详情滚动；不描述 tmux 实现 |
@@ -224,7 +224,7 @@ stateDiagram-v2
 | 分屏焦点同步 | 右栏 → 侧边栏 | `PaneCell._notify_pane_focused`、`MainScreen._on_pane_focused`、`SessionListView.select_session_key` | 聚焦某一分屏时侧边栏高亮切到对应会话；不得因此 remount 右栏 |
 | 按键路由 | 搜索与焦点 | `MainScreen.on_key()`、`on_input_submitted()` | `/` 聚焦筛选项目；`Ctrl+F` 打开全文搜索弹窗（右栏实时格持焦时让位给助手）；Down/Enter 回列表；Esc 先清空查询再退出 |
 | 选择事件 | 会话操作 | `MainScreen.on_list_view_selected()` | 回车针对新建项或当前会话分流 |
-| 模态流程 | 高级操作 / 新建 / 确认 | `ui/modals.py` | 运行时选择、项目选择和结束确认；未安装运行时不可确认 |
+| 模态流程 | 高级操作 / 新建 / 确认 | `ui/modals.py` | 接力运行时选择（`RuntimePickerModal`）、新建会话双栏选择（`NewSessionModal`）和结束确认；未安装运行时不可确认 |
 | 右栏流程 | 静态预览 / 实时画面 | `EmbedPane.show_detail()`、`EmbedPane.focus_session()` | 根据会话是否托管选择展示模式 |
 | 截图脚本 | 演示截图 | `docs/screenshots/capture.py` | 生成可提交的虚构数据截图 `docs/screenshots/list.png`（主界面）与 `search.png`（全文搜索弹窗） |
 | 用户触发截图 | 真机截图 | F12 → `MainScreen.action_save_screenshot()` | 排查用户真实界面；产物只能留在本地缓存 |
