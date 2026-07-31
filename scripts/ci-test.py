@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""CI 用的单测入口：跑全量 unittest，并解决两个只在 CI 上要命的问题。
+
+**一、挂死要能自曝位置，不能干等到作业上限。**
+2026-07-30 macOS runner 上真实发生过：单测跑到一半卡住，GitHub 作业没有配
+timeout，于是整整占着 runner 6 小时直到被平台按上限杀掉。免费额度的 macOS
+并发本来就少，两个这样的僵尸作业能把后面所有排队任务拖到十几小时，连带一片
+「cancelled」。这里到点用 faulthandler 把**所有线程的栈**打出来再退出——日志
+里直接能看到卡在哪个用例的哪一行，而不是只剩一句「The operation was canceled」。
+
+**二、已知的 Textual Pilot 偶发不该变成失败邮件。**
+`AGENTS.md` 与 `docs/MAINTAINER_GUIDE.md` 早就写明：涉及真实 tmux 回显与 Pilot
+等待的用例在负载高的机器上会假失败，判定方法是**把失败用例单独重跑**。这段
+判断以前只写在文档里靠人执行，CI 仍旧一失败就发邮件。这里把它固化下来：失败
+用例自动单独重跑一次，两次都失败才算真回归。真回归是确定性的，重跑照样挂，
+不会被这层重试掩盖；而单次偶发（实测 `test_focusing_split_pane_highlights_
+matching_sidebar_session` 约十次一遇）不再污染 CI 结论。
+
+用法与 `python -m unittest discover -s tests` 等价，退出码同语义。
+"""
+from __future__ import annotations
+
+import faulthandler
+import os
+import sys
+import unittest
+
+# 单个作业的硬上限（秒）。取值要明显小于 CI 作业自身的 timeout-minutes，
+# 才能保证「先由我们打出栈」而不是「先被平台静默杀掉」。
+HANG_DUMP_SECONDS = int(os.environ.get("PICKUP_TEST_HANG_SECONDS", "1500"))
+
+
+def _collect_ids(result: unittest.TestResult) -> list[str]:
+    """取出本轮失败/出错的用例 id，用于精确重跑。"""
+    ids: list[str] = []
+    for test, _ in list(result.failures) + list(result.errors):
+        test_id = getattr(test, "id", None)
+        if test_id is None:
+            return []  # 拿不到 id（如加载期错误）就别重跑，直接判失败
+        ids.append(test_id())
+    return ids
+
+
+def main() -> int:
+    faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
+
+    loader = unittest.TestLoader()
+    suite = loader.discover(start_dir="tests")
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
+    if result.wasSuccessful():
+        return 0
+
+    flaky = _collect_ids(result)
+    if not flaky:
+        return 1
+
+    print(f"\n=== 首轮 {len(flaky)} 个用例失败，按既定判定路径单独重跑一次 ===")
+    for test_id in flaky:
+        print(f"  - {test_id}")
+    retry = runner.run(loader.loadTestsFromNames(flaky))
+    if retry.wasSuccessful():
+        print("\n=== 重跑全部通过，判定为已知偶发（非回归） ===")
+        return 0
+    print("\n=== 重跑仍失败，判定为真回归 ===")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

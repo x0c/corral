@@ -88,7 +88,9 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 
 - **TUI 多语言（`i18n.py`）**：界面默认英文；系统 locale 主语言为 `zh*`（`LANG`/`LC_ALL`/`LC_MESSAGES`/`LANGUAGE`）时自动中文。`PICKUP_LANG=en|zh` 可强制覆盖。机器接口（`pickup list` 等 JSON）不走翻译。新增用户可见文案必须进 `_MESSAGES` 并同时写 en/zh；测试固定 `i18n.set_lang("en")` 再断言，中文覆盖用 `test_i18n.py`。Textual 的 `BINDINGS` 在类创建时会冻结：`MainScreen` 在 `__init__` 里用 `dataclasses.replace` **只改 description**，禁止整表替换 `_bindings`（会丢掉 ListView 继承的 up/down/enter，表现为方向键失灵）。
 
-- **判定 Textual Pilot 用例是真回归还是既有偶发（2026-07-30）**：`AGENTS.md` 说「失败用例单独重跑一遍确认」，但**单跑一次不够**——`test_focusing_split_pane_highlights_matching_sidebar_session` 会在单跑时也失败（`_wait_until` 等满 5s），连续跑 5～8 次才出现 1 次，改动前后的偶发率一样。正确判定路径：① 同一用例在仓库目录内**重复采样 5 次以上**统计失败率；② 用 `git archive HEAD | tar -x -C <临时目录>` 拉出改动前的源码，**并显式 `PYTHONPATH=<临时目录>/src`** 再跑同样次数对比。注意第 ② 步不加 `PYTHONPATH` 会因 editable 安装的 `.pth` 仍指回工作区 `cli/src`，实际测的还是改动后的代码，得出「改动前能过」的错误结论。两边失败率相当即为既有偶发，可照常发版。
+- **判定 Textual Pilot 用例是真回归还是既有偶发（2026-07-30）**：`AGENTS.md` 说「失败用例单独重跑一遍确认」，但**单跑一次不够**——`test_focusing_split_pane_highlights_matching_sidebar_session` 会在单跑时也失败（`_wait_until` 等满 5s），连续跑 5～8 次才出现 1 次，改动前后的偶发率一样。正确判定路径：① 同一用例在仓库目录内**重复采样 5 次以上**统计失败率；② 用 `git archive HEAD | tar -x -C <临时目录>` 拉出改动前的源码，**并显式 `PYTHONPATH=<临时目录>/src`** 再跑同样次数对比。注意第 ② 步不加 `PYTHONPATH` 会因 editable 安装的 `.pth` 仍指回工作区 `cli/src`，实际测的还是改动后的代码，得出「改动前能过」的错误结论。两边失败率相当即为既有偶发，可照常发版。**该偶发的机制已于 2026-07-31 查清（尚未修）**：插桩 `PaneCell._on_descendant_focus` 可见事件本身每次都正常送达、携带正确的 `EmbedPane`，但它用 `call_after_refresh` 延后执行的 `_notify_pane_focused` 在回调时刻读到 `has_focus_within=False`、`screen.focused` 已经变回 `SessionListView`——焦点在「pane 拿到」与「延后回调执行」之间被抢回了侧边栏，通知被静默丢弃且**没有任何重试**，侧边栏高亮因此永远不同步。根因是 Textual 的 `Widget.focus()` 走 `call_later` 异步生效（见「界面」节同类记录），与 `_schedule_follow_selection` 的 120ms 节流定时器互相插队，谁先落地由时序抖动决定。注意**插桩会改变时序**：给 `Screen.set_focus` 加 `traceback.format_stack` 后连跑 40 轮一次都不复现，想抓抢占方必须用不影响时序的手段（如只记录轻量标记）。
+- **CI 上的判定已经自动化，不要再让偶发变成失败邮件（2026-07-31）**：上面那条「失败用例单独重跑」以前只写在文档里靠人执行，GitHub Actions 仍旧一失败就发邮件。现在 CI 走 `scripts/ci-test.py` 而不是裸 `python -m unittest discover`：首轮失败的用例会被自动单独重跑一次，两次都失败才判真回归（真回归是确定性的，重跑照样挂，不会被这层重试掩盖）。该脚本同时用 `faulthandler.dump_traceback_later` 兜挂死，见下方「CI 工作流」节。
+
 - **点击崩溃（2026-07 真机实报，已修复）**：Textual 默认给所有 Widget 开启内置的鼠标拖拽文本选择（`ALLOW_SELECT = True`）。`SessionCard`/`NewSessionCard` 这类会被后台重扫线程动态增删的列表项 Widget 被点击时触发该逻辑，选择过程中控件被移除会导致 `container` 解析为 `None`，访问 `.region` 直接 `AttributeError` 崩溃整个应用。修法：`PickupApp`/`SessionCard`/`NewSessionCard`/弹窗菜单项 `_ChoiceItem` 设 `ALLOW_SELECT = False`；`EmbedPane` 保留默认值用于划词选中+复制（见「内嵌面板」节）。回归：`test_ui.py` 的 `test_clicking_session_card_selects_and_launches_without_crashing`。
 - **分屏标题挂载竞态（2026-07-22，用户实报闪退）**：分屏外框进入父节点后，标题栏自身的 `compose()` 仍可能未完成；这时后台重扫或侧边栏高亮变化会走同身份原地更新，若再用 `query_one(".title")` 查尚未挂载的后代，会抛 `NoMatches` 并退出整个 TUI。修法：需要在挂载前更新的子控件应在父控件构造时创建并保存直接引用，`compose()` 只产出该实例，更新方法直接改引用；不要把“父控件已能从父级 children 找到”误当作“它的后代已完成挂载”。回归：`test_pane_header_title_update_before_compose`。
 - **窗口缩放花屏（2026-07-20，iTerm2 真机实报）**：拖动终端窗口时备用屏幕会被终端自行 reflow，Textual 默认只差分重绘布局变化区域，两边对不上就整屏残影/错位。修法分两层且**必须防抖**：① `PickupApp._check_resize` 不立刻全量刷，只重置约 120–200ms 计时器，尺寸停稳后 `_force_full_repaint` 把整屏标脏走 compositor 全量路径一次；② 右栏 `EmbedPane` 的 `tmux resize-window` + 唤醒抓帧同样防抖，拖动期 `render_line` 只按当前宽度裁补旧缓存行，不在主线程狂刷 tmux。禁止改成「每次 Resize 都整屏全量重绘」——拖动会卡顿闪烁。回归：`test_resize_full_repaint_is_debounced`、`EmbedPaneResizeTests`。
@@ -405,6 +407,27 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - 三条安装路径（Homebrew、一键脚本、源码安装）在 `README.md` 里必须保持同步；新增或调整任一路径都要回头检查其余两条描述是否还准确。
 - **PyPI 这条路暂时走不通**：`pickup` 这个分发名在 PyPI 已被一个无关项目占用（`pickup 1.4`，Modular backup script），要上只能改成别的分发名（如 `pickup-cli`），安装命令会和 README / Homebrew / 一键脚本里写的不一致。2026-07-30 评估过一次，结论是不值得为此制造第四种叫法；真要上，先想清楚分发名与命令名的对外说法怎么统一。
 - **已知缺口（未修）**：用一键脚本装的用户属于 `pip` 渠道，应用内点更新执行的是 `pip install --upgrade git+https://github.com/x0c/pickup.git@v<tag>`——**从源码构建，需要用户本机有 Rust 工具链**，而他们当初装的是预编译包、多半没有。安装脚本本身会优先下预编译包，所以「装得上、却升不动」。要修就让 `update_command` 的 pip 分支也去 Release 里挑匹配当前平台的预编译包（与 `install.sh` 同一套匹配规则），失败再退回源码。
+
+## CI 工作流（`.github/workflows/test.yml`）
+
+2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：
+
+- **Kitty 键盘协议回归用例在 5 个 Python 版本上全挂（确定性，非偶发）。** `TEXTUAL_DISABLE_KITTY_KEY` 原先只在 `cli.py` 顶部 `setdefault`，而 `textual.constants` 是**导入时一次性读环境变量定死**的：任何先 `import textual` 再碰 `pickup.cli` 的路径（测试套件、只 `import pickup` 的脚本、第三方嵌入）都会让这道保护整个失效。本机之所以一直看不出来，是因为开发环境的 shell 里已经导出了 `TEXTUAL_DISABLE_KITTY_KEY=1`，把问题掩盖掉了——**复现必须 `env -u TEXTUAL_DISABLE_KITTY_KEY` 清掉再跑**。已修：开关上移到 `pickup/__init__.py`（包顶层是唯一「任何用法必经」的位置），`cli.py` 不再重复设置。
+- **macOS 作业挂死并空烧 6 小时，进而拖垮整个队列。** 作业没有配 `timeout-minutes`，单测跑到 `test_ui` 后半段卡住后一直占着 runner 直到平台 6 小时上限才被杀。免费额度的 macOS 并发本就少，两个这样的僵尸作业把后续排队拖到 **14 小时以上**（实测：11:48 推送的作业次日 02:22 才开始跑），连带一大片 `cancelled`。已加 `timeout-minutes: 40`，并让 `scripts/ci-test.py` 用 `faulthandler.dump_traceback_later` 在 1500 秒时打印**全部线程栈**再退出——下次再挂，日志里直接能看到卡在哪个用例，而不是只剩一句 `The operation was canceled`。**挂死点尚未定位**（macOS 专有，Linux 上不复现；日志显示最后完成的是 `ModalTests.test_sidebar_new_session_opens_single_modal`，按 unittest 的字母序，嫌疑落在紧随其后的 `OscProbeFlushTests` 那两个 pty 用例）。
+- **已知 Pilot 偶发污染结论。** 见「界面」节的分屏聚焦竞态那条。CI 现在走 `scripts/ci-test.py`，首轮失败的用例自动单独重跑一次，两次都失败才算真回归。
+
+另外两处工作流层面的浪费也一并修了：`on: push` 不带过滤时，tag 推送会和同一提交在 `main` 上的推送产生**完全重复的一轮矩阵**（每次发版凭空多 7 个作业），已收窄为 `branches: ["**"]`；并加了 `concurrency` + `cancel-in-progress`，同分支后推的提交自动作废前一轮排队。
+
+改这个工作流或 `scripts/ci-test.py` 后，本机至少验证：`env -u TEXTUAL_DISABLE_KITTY_KEY python scripts/ci-test.py` 全绿，且用临时目录造一个「首轮失败、重跑通过」和一个「两轮都失败」的假用例，确认退出码分别是 0 和 1。
+
+### 排查 CI 失败的取证手法（有个反直觉的坑）
+
+- **`gh run view --log-failed` 在整轮 run 还没结束时会直接拒绝**（`run … is still in progress; logs will be available when it is complete`）。而「有作业挂死」恰恰意味着整轮永远不结束——最需要看日志的时候正好看不到，是这次排查最先撞上的墙。绕法是走 API 拿**作业级**信息，它不受整轮状态限制：
+  - `gh api repos/x0c/pickup/actions/runs/<id>/jobs --jq '.jobs[]|"\(.name) \(.conclusion) \(.started_at) \(.completed_at)"'` —— 排队时长和空烧时长全在这两个时间戳的差里；本次「作业显示跑了 6 小时但一步没动」「推送后 14 小时才开始」都是这么看出来的。
+  - 同一接口的 `.steps[]` 能看到**卡在哪一步**（挂死作业的 `Test` 步只有 `started_at` 没有正常结束）。
+  - 已经结束的单个作业可以用 `gh run view --log --job <job_id>` 单独取日志，**不必等整轮结束**；看日志尾部最后一个跑完的用例名就能定位挂死位置。
+- 判断「是确定性失败还是偶发」不要只看一轮：`for r in <多个 run id>; do …; done` 把每轮各作业的 `FAIL:` 行汇总去重后统计——**5/5 作业每轮都挂 = 确定性根因，1~2/5 作业零星挂 = 偶发**。本次正是靠这个把 Kitty 用例（确定性）和分屏聚焦用例（偶发）区分开，两者修法完全不同。
+- 排队已经积压时，先把注定失败的在跑 / 排队任务 `gh run cancel <id>` 掉再推修复，否则新提交还得排在僵尸作业后面。
 
 ## 真实路径验证
 

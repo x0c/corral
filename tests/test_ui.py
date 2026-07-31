@@ -1222,6 +1222,123 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             resolved = card.rich_style.color.triplet
             self.assertLess(sum(resolved), theme_fg.r + theme_fg.g + theme_fg.b)
 
+    async def test_time_line_brightness_steps_down_with_age(self) -> None:
+        """第三行时间按新鲜度分四档亮度：半小时内与标题同亮，越旧越暗。"""
+        now = time.time()
+        ages = [60, 3600, 7 * 3600, 3 * 86400]  # fresh / recent / today / old
+        sessions = [
+            {
+                "source": "claude", "id": f"t{i}", "short_id": f"t{i}",
+                "mtime": now - age, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp", "live": False,
+            }
+            for i, age in enumerate(ages)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            cards = list(app.screen.query(SessionCard))
+            self.assertEqual(len(cards), len(ages))
+            brightness = []
+            for card in cards:
+                tier = card._time_tier()
+                style = card._time_style(tier)
+                self.assertIsNotNone(style.color, "挂载后必须解析出真实档位色")
+                self.assertIsNone(
+                    style.bgcolor,
+                    "时间行不能自带背景色，否则会盖掉整行的选中/分屏底色",
+                )
+                brightness.append(sum(style.color.triplet))
+            self.assertEqual(
+                [card._time_tier() for card in cards],
+                ["fresh", "recent", "today", "old"],
+            )
+            # 严格递减：四档必须肉眼可分，不能两档撞成同一个颜色
+            self.assertEqual(sorted(brightness, reverse=True), brightness)
+            self.assertEqual(len(set(brightness)), len(ages))
+            # 最新一档与标题同色（都吃卡片基础色 $foreground 80%）
+            self.assertEqual(
+                cards[0]._time_style("fresh").color.triplet,
+                cards[0].rich_style.color.triplet,
+            )
+
+
+class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
+    """右栏分屏时，侧边栏要标出「组合里有哪些会话、哪一格正激活」。"""
+
+    @staticmethod
+    def _items(app):
+        list_view = app.screen.query_one(SessionListView)
+        return list_view, list_view._session_items()
+
+    async def test_split_marks_group_and_active_session(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view, items = self._items(app)
+            keys = [pickup.session_key(card.session) for _, card in items]
+            self.assertGreaterEqual(len(keys), 3)
+
+            list_view.set_split_marks(keys[:2], keys[1])
+            await pilot.pause()
+            rows = [item for item, _ in items]
+            self.assertTrue(rows[1].has_class("-split-active"))
+            self.assertFalse(rows[1].has_class("-in-split"))
+            self.assertTrue(rows[0].has_class("-in-split"))
+            self.assertFalse(rows[2].has_class("-in-split"))
+            # 激活格底色与右栏分栏激活条同源，且比同组的其它格更显著
+            active_bg = rows[1].styles.background
+            listed_bg = rows[0].styles.background
+            self.assertEqual(active_bg, Color.parse("#31475E"))
+            self.assertEqual(listed_bg, Color.parse("#212E3C"))
+            self.assertGreater(
+                active_bg.r + active_bg.g + active_bg.b,
+                listed_bg.r + listed_bg.g + listed_bg.b,
+            )
+            # 组合外的会话保持透明，不铺任何底色
+            self.assertEqual(rows[2].styles.background.a, 0)
+
+    async def test_single_pane_and_placeholder_keys_are_not_marked(self) -> None:
+        """单格不标（列表光标本身就指着它），新建提示这类占位键也不参与。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view, items = self._items(app)
+            keys = [pickup.session_key(card.session) for _, card in items]
+
+            list_view.set_split_marks([keys[0]], keys[0])
+            await pilot.pause()
+            self.assertEqual(list_view.split_marks(), ([], None))
+            self.assertFalse(any(item.has_class("-split-active") for item, _ in items))
+
+            list_view.set_split_marks(["__hint__", keys[0]], keys[0])
+            await pilot.pause()
+            self.assertEqual(list_view.split_marks(), ([], None))
+
+    async def test_marks_survive_list_rebuild(self) -> None:
+        """后台重扫会重建全部列表项，分屏底色必须跟着重新贴上。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view, items = self._items(app)
+            keys = [pickup.session_key(card.session) for _, card in items]
+            list_view.set_split_marks(keys[:2], keys[0])
+            await pilot.pause()
+
+            # 制造一次真正的全量重建：会话集合变了（少一条）
+            store.sessions["claude"] = store.sessions["claude"][:-1]
+            await list_view.rebuild()
+            await pilot.pause()
+
+            rows = [item for item, _ in list_view._session_items()]
+            self.assertTrue(rows[0].has_class("-split-active"))
+            self.assertTrue(rows[1].has_class("-in-split"))
+
 
 class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_initial_selection_and_project_search_filter(self) -> None:
@@ -4255,6 +4372,286 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(screen.check_action("search_content", ()))
             with mock.patch.object(type(screen), "_live_embed_focused", return_value=True):
                 self.assertFalse(screen.check_action("search_content", ()))
+
+
+class SessionHudSummaryTests(unittest.TestCase):
+    """会话小窗的摘要提取：只取真人提问，从旧到新，多行压成一行。"""
+
+    def _messages(self, count: int):
+        out = []
+        for i in range(count):
+            out.append(pickup.ConversationMessage("user", f"问题{i}"))
+            out.append(pickup.ConversationMessage("assistant", f"回复{i}"))
+        return out
+
+    def test_only_user_messages_oldest_first(self) -> None:
+        from pickup.ui.session_hud import summarize_user_messages
+
+        data = summarize_user_messages(self._messages(3))
+        self.assertEqual(data.count, 3)
+        self.assertEqual([body for _stamp, body in data.entries], ["问题0", "问题1", "问题2"])
+        self.assertEqual(data.oldest[1], "问题0")
+        self.assertEqual(data.latest[1], "问题2")
+        self.assertEqual(data.omitted, 0)
+
+    def test_long_session_keeps_both_ends_and_drops_the_middle(self) -> None:
+        """最早那条决定「这个会话本来要干嘛」，不能跟着中间那段一起被砍掉。"""
+        from pickup.ui.session_hud import MAX_ENTRIES, summarize_user_messages
+
+        data = summarize_user_messages(self._messages(20))
+        self.assertEqual(data.count, 20)
+        self.assertEqual(len(data.entries), MAX_ENTRIES)
+        self.assertEqual(data.oldest[1], "问题0")
+        self.assertEqual(data.latest[1], "问题19")
+        # 被省略的是中间那段：总数 - 最早一条 - 展示的最近几条
+        self.assertEqual(data.omitted, 20 - 1 - (MAX_ENTRIES - 1))
+        bodies = [body for _stamp, body in data.entries]
+        self.assertEqual(bodies, ["问题0", "问题15", "问题16", "问题17", "问题18", "问题19"])
+
+    def test_multiline_prompt_collapsed_to_single_line(self) -> None:
+        from pickup.ui.session_hud import summarize_user_messages
+
+        data = summarize_user_messages(
+            [pickup.ConversationMessage("user", "第一行\n\n  第二行\t第三行  ")],
+        )
+        self.assertEqual(data.entries[0][1], "第一行 第二行 第三行")
+
+    def test_no_user_messages_means_no_hud(self) -> None:
+        from pickup.ui.session_hud import summarize_user_messages
+
+        data = summarize_user_messages([pickup.ConversationMessage("assistant", "只有回复")])
+        self.assertFalse(data)
+        self.assertEqual(data.count, 0)
+
+
+class SessionHudRenderTests(unittest.TestCase):
+    """小窗两种形态的内容：收起态给两头，展开态补上中间并如实说明省略了多少条。"""
+
+    def _hud(self, count: int, *, expanded: bool):
+        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+
+        messages = []
+        for i in range(count):
+            messages.append(pickup.ConversationMessage("user", f"问题{i}"))
+        hud = SessionHud()
+        hud.update_data(summarize_user_messages(messages), expanded=expanded)
+        return hud
+
+    def test_collapsed_shows_both_ends_oldest_above_latest(self) -> None:
+        """最初一条看出会话本来要干嘛，最近一条看出现在做到哪；顺序从上到下由旧到新。"""
+        hud = self._hud(4, expanded=False)
+        lines = [line.plain for line in hud.lines(40)]
+        self.assertEqual(len(lines), 3)
+        self.assertIn("4 prompts", lines[0])
+        self.assertIn("First", lines[1])
+        self.assertIn("问题0", lines[1])
+        self.assertIn("Latest", lines[2])
+        self.assertIn("问题3", lines[2])
+
+    def test_collapsed_single_prompt_has_no_duplicate_row(self) -> None:
+        hud = self._hud(1, expanded=False)
+        lines = [line.plain for line in hud.lines(40)]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("1 prompt", lines[0])
+        self.assertIn("问题0", lines[1])
+
+    def test_expanded_is_oldest_to_newest_with_the_middle_reported(self) -> None:
+        from pickup.ui.session_hud import MAX_ENTRIES
+
+        hud = self._hud(10, expanded=True)
+        lines = [line.plain for line in hud.lines(40)]
+        # 标题 + 最早一条 + "中间省略 N 条" + 最近 (MAX_ENTRIES-1) 条 + 收起提示
+        self.assertEqual(len(lines), MAX_ENTRIES + 3)
+        self.assertIn("Your prompts (10)", lines[0])
+        self.assertIn("问题0", lines[1], "最早那条必须排在最上面")
+        self.assertIn(f"{10 - MAX_ENTRIES} more in between", lines[2])
+        self.assertIn("问题9", lines[-2], "最新那条必须排在最下面")
+        self.assertIn("Click to collapse", lines[-1])
+
+    def test_expanded_without_truncation_lists_everything_in_order(self) -> None:
+        hud = self._hud(3, expanded=True)
+        lines = [line.plain for line in hud.lines(40)]
+        self.assertEqual(len(lines), 5)  # 标题 + 3 条 + 收起提示
+        self.assertNotIn("in between", " ".join(lines))
+        self.assertIn("问题0", lines[1])
+        self.assertIn("问题1", lines[2])
+        self.assertIn("问题2", lines[3])
+
+    def test_long_prompt_truncated_to_width(self) -> None:
+        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+
+        hud = SessionHud()
+        hud.update_data(
+            summarize_user_messages([pickup.ConversationMessage("user", "长" * 200)]),
+            expanded=True,
+        )
+        for line in hud.lines(30):
+            self.assertLessEqual(pickup._text_width(line.plain), 30)
+
+    def test_hide_clears_data(self) -> None:
+        hud = self._hud(3, expanded=False)
+        self.assertTrue(hud.data)
+        hud.hide()
+        self.assertFalse(hud.data)
+        self.assertEqual(hud.lines(40), [])
+
+
+class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
+    """小窗贴在实时格右上角：只盖一行、不压标题栏，且命中区只有胶囊自己。
+
+    命中区是重点回归：写成「整行宽的容器里右对齐」会让托管画面顶部整条横带都吃掉
+    鼠标事件，用户在那一行滚不动、划不了词。
+    """
+
+    def _live_sessions(self, count: int = 2):
+        return [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": f"pickup-claude-s{i}",
+            }
+            for i in range(count)
+        ]
+
+    async def _hosted_app(self, sessions):
+        store, registry = _make_store(sessions=sessions)
+        # 收起态要同时给出最初和最近，夹具至少得有两条真人提问
+        registry.get("claude").load_conversation.return_value = [
+            pickup.ConversationMessage("user", "最初的问题"),
+            pickup.ConversationMessage("assistant", "测试回复"),
+            pickup.ConversationMessage("user", "最近的问题"),
+        ]
+        app = PickupApp(store, embed_ok=True)
+        return store, app
+
+    async def test_collapsed_hud_sits_top_right_and_stays_small(self) -> None:
+        from pickup.ui.session_hud import SessionHud
+
+        sessions = self._live_sessions(1)
+        store, app = await self._hosted_app(sessions)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            area = app.screen.query_one(SplitPaneArea)
+            key = pickup.session_key(sessions[0])
+            area.show_hosted_group(
+                "/tmp", [(sessions[0], sessions[0]["keepalive_name"], lambda: "")],
+                focus_key=key,
+            )
+            await _wait_until(lambda: len(area._cells()) == 1)  # noqa: SLF001
+            app.screen._sync_hud()  # noqa: SLF001
+            hud = area._cells()[0].session_hud()  # noqa: SLF001
+            self.assertIsInstance(hud, SessionHud)
+            await _wait_until(lambda: hud.display and hud.region.height > 0)
+            cell = area._cells()[0]  # noqa: SLF001
+            header = cell.region.y
+            # 收起态固定三行：条数 + 最初 + 最近
+            self.assertEqual(hud.region.height, 3, "收起态只能是「条数 + 最初 + 最近」三行")
+            self.assertEqual(hud.region.y, header + 1, "不得压住分栏标题栏")
+            self.assertEqual(hud.region.right, cell.region.right - 1, "右边留一列")
+            self.assertLess(
+                hud.region.width, cell.region.width // 2,
+                "命中区必须只有小窗本身，不能是整行宽的容器",
+            )
+            rendered = hud.render().plain
+            self.assertIn("最初的问题", rendered)
+            self.assertIn("最近的问题", rendered)
+            self.assertLess(
+                rendered.index("最初的问题"), rendered.index("最近的问题"),
+                "从上到下必须是由旧到新",
+            )
+
+    async def test_expanded_hud_grows_and_collapses_back(self) -> None:
+        sessions = self._live_sessions(1)
+        store, app = await self._hosted_app(sessions)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            area = app.screen.query_one(SplitPaneArea)
+            key = pickup.session_key(sessions[0])
+            area.show_hosted_group(
+                "/tmp", [(sessions[0], sessions[0]["keepalive_name"], lambda: "")],
+                focus_key=key,
+            )
+            await _wait_until(lambda: len(area._cells()) == 1)  # noqa: SLF001
+            hud = area._cells()[0].session_hud()  # noqa: SLF001
+            app.screen._sync_hud()  # noqa: SLF001
+            await _wait_until(lambda: hud.display and hud.region.height == 3)
+
+            app.screen.action_toggle_hud()
+            await _wait_until(lambda: hud.expanded and hud.region.height > 3)
+            self.assertIn("Your prompts", hud.render().plain)
+            self.assertEqual(hud.region.right, area._cells()[0].region.right - 1)  # noqa: SLF001
+
+            app.screen.action_toggle_hud()
+            await _wait_until(lambda: not hud.expanded and hud.region.height == 3)
+
+    async def test_only_the_active_pane_draws_the_hud(self) -> None:
+        sessions = self._live_sessions(2)
+        store, app = await self._hosted_app(sessions)
+        async with app.run_test(size=(160, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            area = app.screen.query_one(SplitPaneArea)
+            key0 = pickup.session_key(sessions[0])
+            key1 = pickup.session_key(sessions[1])
+            app.screen._split_store.set_group("/tmp", [key0, key1], focus_key=key0)  # noqa: SLF001
+            area.show_hosted_group(
+                "/tmp",
+                [(s, s["keepalive_name"], lambda: "") for s in sessions],
+                focus_key=key0,
+            )
+            await _wait_until(lambda: len(area._cells()) == 2)  # noqa: SLF001
+            app.screen._sync_hud()  # noqa: SLF001
+            huds = [cell.session_hud() for cell in area._cells()]  # noqa: SLF001
+            await _wait_until(lambda: huds[0].display)
+            self.assertTrue(huds[0].display)
+            self.assertFalse(huds[1].display, "非激活格不画小窗，避免多格刷屏")
+
+            # 焦点切到第二格后，小窗必须跟着搬过去
+            area._cells()[1].embed_pane().focus()  # noqa: SLF001
+            await pilot.pause()
+            app.screen._sync_hud()  # noqa: SLF001
+            await _wait_until(lambda: huds[1].display and not huds[0].display)
+
+    async def test_static_preview_pane_has_no_hud(self) -> None:
+        """已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            await pilot.press("down")
+            await pilot.pause(delay=0.3)
+            area = app.screen.query_one(SplitPaneArea)
+            app.screen._sync_hud()  # noqa: SLF001
+            await pilot.pause()
+            for cell in area._cells():  # noqa: SLF001
+                hud = cell.session_hud()
+                self.assertIsNotNone(hud)
+                self.assertFalse(hud.display)
+
+
+class SessionHudGatingTests(unittest.TestCase):
+    """小窗的快捷键归属：右栏实时格持有输入时让路给助手，纯列表模式整体不可用。"""
+
+    def test_toggle_hud_yields_to_the_assistant(self) -> None:
+        from pickup.ui.main_screen import MainScreen
+
+        store, _ = _make_store()
+        screen = MainScreen(store, embed_ok=True)
+        screen._live_embed_focused = lambda: True  # noqa: SLF001
+        screen._any_embed_focused = lambda: True  # noqa: SLF001
+        self.assertIs(screen.check_action("toggle_hud", ()), False)
+        screen._live_embed_focused = lambda: False  # noqa: SLF001
+        self.assertTrue(screen.check_action("toggle_hud", ()))
+
+    def test_toggle_hud_disabled_without_embed(self) -> None:
+        from pickup.ui.main_screen import MainScreen
+
+        store, _ = _make_store()
+        screen = MainScreen(store, embed_ok=False)
+        self.assertIs(screen.check_action("toggle_hud", ()), False)
+        screen.action_toggle_hud()  # 纯列表模式下调用也不能崩
+        self.assertFalse(screen._hud_expanded)  # noqa: SLF001
 
 
 if __name__ == "__main__":

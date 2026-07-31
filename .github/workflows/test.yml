@@ -1,12 +1,24 @@
 name: test
 
 on:
+  # 只跑分支推送。tag 推送会与发布同一个提交在 main 上的推送产生完全重复的一轮
+  # 矩阵（每次发版凭空多出 7 个作业），在免费并发额度下直接翻倍排队时间。
   push:
+    branches: ["**"]
   pull_request:
+
+# 同一分支上后推的提交作废前一轮：连续发版时旧提交的矩阵还在排队就已经没有意义，
+# 继续占着 runner 只会让新提交等更久。
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   python:
     runs-on: ${{ matrix.os }}
+    # 单测正常十分钟量级。没有这行时，挂死的作业会一直占着 runner 到平台 6 小时
+    # 上限——macOS 免费并发少，两个僵尸作业就能把后面的排队拖到十几小时。
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +44,8 @@ jobs:
       - name: Compile
         run: python -m compileall -q src/pickup tests
       - name: Test
-        run: python -m unittest discover -s tests -v
+        # 走 scripts/ci-test.py 而不是裸 unittest：挂死时自动打印全部线程栈，
+        # 已知 Pilot 偶发自动重跑一次再判定。说明见该脚本头部注释。
+        run: python scripts/ci-test.py
       - name: Verify native accelerator
         run: python -c "from pickup.native import available; assert available()"

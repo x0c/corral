@@ -7,9 +7,17 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys as sys
 
-__version__ = "0.24.28"
+# 关掉 Textual 默认开启的 Kitty 键盘协议，必须在任何 `import textual` 之前生效。
+# 放在包顶层而不是 `cli.py`：`textual.constants` 是在导入时一次性读环境变量定死的，
+# 只要有任何一条路径先 import textual 再 import pickup.cli（测试套件、第三方嵌入、
+# 只 `import pickup` 的脚本都会），这道保护就整个失效——CI 上 5 个 Python 版本的
+# 回归用例全挂正是这么来的。包顶层是唯一「任何用法都必经」的位置。
+os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
+
+__version__ = "0.24.29"
 
 _MODULE_EXPORTS = {
     "embed", "keepalive", "titles", "updater", "split_layout", "observe", "theme", "search",
@@ -33,6 +41,8 @@ _SYMBOL_EXPORTS = {
     "_fit_cell_right": ("pickup.display", "_fit_cell_right"),
     "_format_relative_time": ("pickup.display", "_format_relative_time"),
     "_fuzzy_match": ("pickup.display", "_fuzzy_match"),
+    "_time_brightness_tier": ("pickup.display", "_time_brightness_tier"),
+    "TIME_BRIGHTNESS_TIERS": ("pickup.display", "TIME_BRIGHTNESS_TIERS"),
     "_normalize_cwd": ("pickup.display", "_normalize_cwd"),
     "_preview_lines": ("pickup.display", "_preview_lines"),
     "_project_groups": ("pickup.display", "_project_groups"),

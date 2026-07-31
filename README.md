@@ -161,6 +161,16 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
   hosted in the right-hand pane.
 - Click a runtime button above the right side to add that agent as another pane in the current project.
   Up to three panes may run together; click a pane to focus it and sync the sidebar selection.
+- A small **session card floats in the top-right corner of the live pane**, so switching to a session
+  tells you at a glance what it is about and how far along it is. Collapsed (the default) it shows the
+  two ends — `▶ 12 prompts`, then `First <your very first prompt>` and `Latest <your newest one>`:
+  the first prompt says what this session set out to do, the latest says where it is now. Click it
+  (or press `Ctrl+G`) to expand it into up to six prompts with timestamps, always ordered oldest to
+  newest; when there are more, the middle is dropped (never the first one) and the card says how many
+  it left out. It is drawn only on the pane you are working in, and only for live hosted terminals —
+  a finished session already shows its full conversation there. Note that whatever it covers is hidden
+  from the agent's screen and the mouse wheel cannot reach through it, which is why it stays small
+  until you ask for more.
 - `Ctrl`/`Cmd`-click (or `Space`) toggles multi-select on sidebar cards; with two or three selected,
   `Enter` opens them as a split (ended sessions show conversation preview; live/hosted sessions
   embed). `Esc` clears multi-select first. Plain click or arrow keys exit multi-select.
@@ -293,6 +303,7 @@ agent workflows.
 | `x` | Permanently delete the selected local session; press `x` again in the confirm dialog |
 | `c` | Close the focused right-side pane without ending its hosted session |
 | `Ctrl+B` | Show / hide the sidebar (also the ◀/▶ control on the runtime top bar) |
+| `Ctrl+G` | Expand / collapse the session card floating in the top-right corner of a live pane (clicking it does the same) |
 | `Home` / `End` / `PgUp` / `PgDn` | Scroll the right-pane conversation preview (also mouse wheel over the pane) |
 | `F12` | Save a local diagnostic screenshot under `~/.cache/pickup/screenshots/` |
 | `Esc` | Clear search / close dialog, or quit |

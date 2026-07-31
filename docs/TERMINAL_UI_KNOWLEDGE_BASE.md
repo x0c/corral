@@ -31,6 +31,7 @@ pickup 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 侧边栏会话列表 | 左栏的搜索框、新建会话入口及会话卡片 | `SessionListView`、`SessionCard`、`NewSessionCard` |
 | 筛选项目 | 顶部输入框按项目名、路径和标题筛选会话 | `NavState.project_query`；不是独立项目列表页；**不搜对话正文** |
 | 全文搜索 | `Ctrl+F` 弹窗，在所有会话的对话正文里找关键词并展示命中行 | `ui/search_modal.py` + `search.py` 的 `ConversationIndex`；与筛选项目是两条路，不是同一个输入框的两种模式 |
+| 会话小窗 | 实时画面右上角的悬浮摘要：收起给"最初 + 最近"两头，展开列出中间 | `ui/session_hud.py` 的 `SessionHud`；只画在当前激活的实时托管格；不是弹窗、不抢焦点 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或右栏顶栏点助手加格；无底栏 `n` 快捷键 |
 | 高级操作 | 对当前会话选择同运行时恢复或跨运行时接力 | `a` → `choose_target_runtime()` |
 | 删除会话 | 彻底抹掉选中会话的本地历史，不可恢复；运行中/托管会话先结束再删 | `x` → `ConfirmModal(confirm_key="x")` → `action_delete_session()` |
@@ -122,6 +123,17 @@ stateDiagram-v2
 
 “预览加载中”不是用户可见的“连接中”页面：已有历史时立即显示已有详情；刚新建且还没首帧时显示空白终端画布。任何改动都不得重新引入“连接中…”中间文案。
 
+### 会话小窗（内嵌画面右上角浮层）
+
+内嵌实时画面的右上角浮着一个会话小窗（`ui/session_hud.py`），用来"扫一眼就知道这个会话在干啥、进行到哪"：
+
+- **两种形态都是从上到下、由旧到新**，与右栏完整对话方向一致。
+- **收起态（默认）**：固定三行 —— `▶ N 条提问` / `最初  <本会话第一条提问>` / `最近  <最新一条提问>`。这两头各自回答一个问题：最初那条说明"这个会话本来是要干嘛"，最近那条说明"现在做到哪"。只有一条提问时省掉"最初"那行。
+- **展开态**：最多 6 条（时间 + 单行正文）。超出时**砍中间、留两头**：最早那条恒在最上，被省掉的条数用"中间省略 N 条"画在它下面，再接最近几条；末行是收起提示。
+- **触发**：点击浮层任意位置切换；`Ctrl+G` 是同一动作，但属于列表侧按键，右栏实时格持有输入时让路给助手（见 §6）。
+- **只画在当前激活格、且只对实时托管画面画**：已结束会话的右栏本身就是完整对话，浮层只会挡住它自己的正文；多格同时画会刷屏。
+- **数据来源**：`SessionStore.get_conversation()` 里 `role == "user"` 的消息，与右栏完整对话共用同一份内存缓存，不另开解析路径。
+
 ### 侧边栏关注状态
 
 会话卡固定三行：第一行最左是关注圆点，之后隔一个空格接统一基础样式、空格分隔且不带冒号的「项目 标题」；无圆点时不留占位空格，标题顶到最左并吃满整行；第二行右侧是运行时，第三行右侧是时间。标题不再因会话运行中而整行变绿；状态只由圆点和详情头文字表达。
@@ -176,11 +188,14 @@ stateDiagram-v2
 | 侧边栏筛选项目 | `ui/main_screen.py`、`ui/nav.py`、`pickup.py` | `on_input_changed()`、`NavState.project_query`、`_filter_sessions_by_query()` | 查询只有一份状态；按项目名、路径、标题进行大小写无关模糊匹配 |
 | 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
 | 会话卡片、关注状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 固定三行：首行「圆点 项目 标题」/ 运行时靠右 / 时间靠右；圆点优先级黄 > 绿 > 红；首行按有无圆点取 `width - 2` / `width` 硬截断、不写省略号；首行整体 bold，项目名再叠一层 `dim` 比标题淡一档（标题不 dim），回归 `test_project_name_is_one_shade_lighter_than_title` |
+| 时间行的新鲜度亮度梯度 | `ui/session_list.py`、`display.py` | `SessionCard._time_tier()` / `_time_style()`、`_time_brightness_tier()`、`TIME_BRIGHTNESS_TIERS` | 半小时 / 三小时 / 一天为界分四档，最新一档与标题同色（着重）、越旧越暗；档位色走 `SessionCard` 的组件样式（`$foreground` + 透明度，深浅色主题各自与背景混合），渲染时只取混色后的前景、丢掉背景，回归 `test_time_line_brightness_steps_down_with_age` |
+| 分屏组合在侧边栏的投影 | `ui/session_list.py`、`ui/main_screen.py` | `SessionListView.set_split_marks()`、`MainScreen._sync_split_marks()` | ≥2 格才标：组合内会话贴 `-in-split`、激活格贴 `-split-active`（`$pane-inactive-background` / `$pane-active-background`），单格与 `__hint__` 占位键不标；同步以显式调用为主（`_save_split_layout()` / 跟随选择 / 关格 / 开分屏），另有 1s 兜底轮询，全量重建列表后由 `rebuild()` 重新贴标；回归 `SidebarSplitHighlightTests` |
 | 状态详情与已读确认 | `ui/main_screen.py`、`store.py` | 详情头状态、稳定可见计时、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；只有红点在右侧成功稳定可见 0.5 秒后清除，切换、失败或失焦取消 |
 | 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`NewSessionModal`、`_on_runtime_pick()` | 侧边栏「＋ 新建」弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径）、右栏运行时；←→ 换栏、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |
 | 删除会话（不可恢复） | `ui/main_screen.py`、`ui/modals.py`、`store.py`、`runtime/base.py` | `action_delete_session()`、`ConfirmModal(confirm_key="x")`、`SessionStore.remove_session()`、`BaseRuntime.delete_session()` | `ConfirmModal` 的确认键已参数化（结束会话仍是 `q`，删除会话是 `x`）；实际删除逻辑收敛在各运行时适配器，见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`/`docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md` 各存储形态的删除方式 |
 | 右栏静态预览和实时画面挂接 | `ui/embed_pane.py` | `show_detail()`、`focus_session()`、`scroll_detail()` | 本域仅管理呈现切换、焦点与详情滚动；不描述 tmux 实现 |
+| 会话小窗（右上角浮层） | `ui/session_hud.py`、`ui/split_pane_area.py`、`ui/main_screen.py` | `SessionHud`、`summarize_user_messages()`、`PaneCell.update_hud()`、`SplitPaneArea.sync_hud()`、`MainScreen._sync_hud()` / `_hud_target()` / `action_toggle_hud()` | 浮层只负责画，数据与展开状态统一由主屏喂；`PaneCell` 的 `layers: default hud` + `dock: right` 决定它贴在标题栏下一行、命中区只有胶囊本身 |
 | 多语言文案 | `i18n.py` | `_MESSAGES`、`detect_lang()`、`t()` | 新增用户可见文案必须同时给 en / zh；环境优先级在此定义 |
 | 宽字符与预览正文格式 | `src/pickup/display.py` 等 | `_text_width()`、`_fit_cell()`、`_preview_lines()` | 中文、emoji 和组合字符按终端显示宽度处理；预览为「角色: 正文」同行，角色与正文同色，可选时间后缀 |
 | 本地截图与界面观测 | `observe.py`、`ui/main_screen.py` | `save_tui_screenshot()`、`action_save_screenshot()` | F12 导出当前真实 TUI；对话内容仅由用户主动截图，不能提交 |
@@ -213,10 +228,11 @@ stateDiagram-v2
 | Textual 后台 worker | 首屏加载 | `MainScreen._await_initial_load()` | 先显示界面骨架，等待后台扫描完成，支持退出取消 |
 | Textual 后台 worker | 会话刷新 | `MainScreen._background_refresh_worker()` | 每 3 秒起步，连续空闲后最多退避到 10 秒；扫描变化才重建 |
 | Textual 定时器 | 标题缓存轮询 | `MainScreen._poll_cache()`，0.5 秒 | 后台标题生成完成后原地刷新标题，不重扫完整历史；侧边栏不画生成中动画 |
+| Textual 定时器 | 会话小窗同步 | `MainScreen._sync_hud()`，1 秒 | 只做一次 `stat` + 内存缓存判定；缓存按 mtime 失效时才按 `HUD_WARM_INTERVAL`（3 秒）起一次后台解析（`_warm_hud`），并在解析期间继续显示上一版摘要 |
 | Textual 定时器 | 红点已读确认 | 主屏稳定可见计时，0.5 秒 | 只在右侧内容已成功显示时启动；选择变化、预览失败或应用失焦时取消 |
 | Textual 后台 worker | Cursor 观察器自检 | 主屏挂载后的后台安装 | 幂等补齐用户级观察条目；任何失败都不得延迟首屏或阻断 Cursor/TUI |
 | Textual 定时器 | 终端背景复查 | `PickupApp._query_runtime_theme()`，2 秒 | iTerm2 等无主动通知的终端运行中换色时，无阻塞查询 OSC 11；支持 DEC 2031 的终端也可主动通知 |
-| 按键绑定 | 主操作 | `MainScreen.BINDINGS`、`_main_bindings()` | `a` 高级操作、`q` 结束、`x` 删除、`Esc` 退出、`Ctrl+\` 回列表、`Ctrl+B` 显隐侧栏、F12 截图；新建不走底栏快捷键 |
+| 按键绑定 | 主操作 | `MainScreen.BINDINGS`、`_main_bindings()` | `a` 高级操作、`q` 结束、`x` 删除、`Esc` 退出、`Ctrl+\` 回列表、`Ctrl+B` 显隐侧栏、`Ctrl+G` 展开/收起会话小窗（不上 Footer）、F12 截图；新建不走底栏快捷键 |
 | 快捷键随焦点裁剪 | Footer 与按键派发 | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 实时格持有输入时列表侧动作既不显示也不派发，翻页键透传给助手；`toggle_sidebar` / `focus_list` 属壳层键，右栏持焦时仍可用 |
 | 侧栏显隐 | 壳层 | `MainScreen.action_toggle_sidebar()`、`ui_prefs.py`、`RuntimeTopBar` 左侧 `#sidebar-toggle` | `Ctrl+B` 与顶栏 ◀/▶；`embed_ok=False` 时禁用；偏好 `~/.cache/pickup/ui-prefs.json`；藏起时若焦点在左栏须先挪走 |
 | 自动聚焦与输入蒙版 | 右栏 | `MainScreen._can_autofocus()`、`SplitPaneArea._request_pane_focus()` / `_settle_focus_intent()` / `focus_session_key(only_live=True)`、`sync_input_mask()` | 明确意图（回车 / 单击会话卡 / 托管成功）才交焦点，且意图跨异步 remount 存活；焦点在侧边栏时活着的实时格压暗 |
@@ -233,6 +249,9 @@ stateDiagram-v2
 
 - **AI 易错点**【禁止】恢复旧的全屏预览或纯列表第二套界面。非进行中会话在右栏直接展示完整对话，已托管会话在右栏挂接内嵌实时终端；「运行中(其他窗口)」走完整对话那一路（它不在任何 tmux 里，抓不到画面）。Space 全屏预览已经退役。原因：双入口会使按键、滚动、选择和展示语义重新分叉。
 - **AI 易错点**【侧边栏末行间隔与关注圆点】搜索框、新建会话项和未来新增的左栏控件，最后一行必须是控件自身高度内的间隔空行；搜索框高 2、新建项高 2。会话卡固定高 3，三行正文（首行「圆点 项目 标题」，无圆点时标题顶到最左、不留占位空格 / 运行时靠右 / 时间靠右），不再另加末行空行；禁止恢复整行绿色标题。禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔，因为点击空隙不会命中本项，选中高亮也不完整。
+- **AI 易错点**【时间行是四档亮度，不是二值 dim】第三行时间按「多久以前」分四档（半小时 / 三小时 / 一天为界），最新一档与标题同色以示着重，越旧越暗。档位色必须用 `$foreground` + 透明度经组件样式解析（深浅色主题各自与背景混合），不要写死灰值、也不要退回单级 `dim`；`SessionCard._time_style()` 只取混色后的**前景**，带上背景色会把整行的选中/分屏底色盖出一块缺口。档位本身要进 `_compute_signature()`：`mtime` 不变但会话「变旧」跨档时，原地更新路径不重绘就会一直亮着。
+- **AI 易错点**【分屏组合要在侧边栏看得见】右栏 ≥2 格时，组合内的会话整行铺 `$pane-inactive-background`、当前激活格铺 `$pane-active-background`（与分栏顶/底条同源，把侧边栏和右栏那一格连起来）；单格不标，`__hint__` 这类占位键不参与。底色标在 `ListItem` 上（整行铺满、不盖卡片文字样式），并且要让 Textual 的 `ListView:focus > ListItem.-highlight` 依然压过这层——列表自己有焦点时，键盘光标必须还看得见。全量重建会换掉全部 `ListItem`，`rebuild()` 末尾必须重新贴标。
+- **AI 易错点**【改会话卡文案要同步 selftest】`selftest.sh` 用 `grep` 匹配侧边栏卡片原文来判定首屏、筛选和退出（`workA 修复切换体验` 等）。卡片格式一变（2026-07-31 发现：首行去掉冒号后，脚本仍在等 `workA: …`），第一条断言就卡死 60 秒然后整个冒烟脚本失败——更坏的是 `grep -q "workB:"` 那种**否定**判断会永远成立，变成一条静默假通过。改卡片首行格式、分隔符或字段顺序时，必须回头改这几处断言并真跑一遍 `bash selftest.sh`。
 - **AI 易错点**【关注状态优先级固定】只显示一个圆点，必须按等待回答黄 > 执行中绿 > 未读新结果红 > 无裁决；等待回答必须来自结构化问题，不可用普通问号或自然语言关键词猜测。黄绿不重叠：黄点只在真正等待用户输入时覆盖绿点，普通执行过程仍显示绿点。
 - **AI 易错点**【红点不是选中即已读】只有右侧对应内容成功加载且稳定可见 0.5 秒才清红；快速掠过、加载失败、选择变化和应用失焦都必须取消计时。查看不能清黄点/绿点。首次升级的历史结果按已读基线处理，但当前执行/等待仍照常显示。
 - **AI 易错点**【圆点不干预时间线】关注状态不得参与排序、筛选、计数或机器接口既有状态字段，也不派生声音/系统通知。列表仍遵守原有稳定顺序；详情头提供文字状态以避免只靠颜色。
@@ -260,6 +279,12 @@ stateDiagram-v2
 - **AI 易错点**【点击选择】会动态增删的会话卡、新建项和弹窗菜单项必须关闭 Textual 文本拖选；它们的点击语义是选择/确认。右栏内嵌实时终端保留文本选择（划词抬起自动 OSC 52 复制；Ctrl+C 可再复制），不能全局关闭。
 - **AI 易错点**【窗口缩放必须防抖 + 冻结重排】拖动期禁止每次 Resize 都 `resize-window`/抓帧；停稳后再改托管窗。改窗后助手常会整屏重排数秒，**禁止把重排中间帧刷到右栏**——已有 live 画面时开启 capture hold，稳定或超时后再一次跳到最新（见 `EmbedPane._begin_resize_capture_hold`）。
 - **AI 易错点**【右栏顶栏与分栏标题】助手顶栏按钮靠右排列，左侧为侧栏显隐开关（`#sidebar-toggle`），背景必须与底部操作栏共用 `$footer-background`，避免出现割裂的纯黑色条。侧边栏与右栏之间、右栏各分栏之间统一保留一列空白间隔：`SplitPaneArea` 左侧 `margin-left: 1`，第二格及后续 `PaneCell` 左侧 `margin-left: 1`；不画任何分隔线或边框，避免终端字体把线条字符渲成连续方块。每格上下各有一条高亮条：标题栏（有标题/关闭）+ 无文字底条（`_PaneFooter`）；默认 `$surface`，聚焦时同步切到主题变量 `$pane-active-background`（`$primary-muted` 再提亮约 10%，便于分辨当前激活格，仍避免高饱和蓝条抢过内嵌内容），标题文字用 `auto 90%` 保证深浅主题下的对比度。禁止再用整圈边框或标题前圆点表示焦点。`PaneCell._sync_active_marker` / `set_title` 必须容忍标题栏/底条尚未挂上或已卸下（双击顶栏快速加格时焦点回调会落在中间态），禁止对 `_PaneHeader` / `_PaneFooter` 裸 `query_one`。
+- **AI 易错点**【会话小窗是浮层，遮挡与鼠标都是真实代价】小窗盖住的行，助手输出就看不见；Textual **没有点击穿透**，被盖住的区域滚轮不会再转发给托管会话、也划不了词。由此三条硬约束：①**默认收起，收起态固定为「条数 + 最初 + 最近」三行**，不得改成默认展开、也不得为了省行数砍掉"最初"那行（少了它就只剩一串近期动作，看不出这个会话本来要干嘛）；②必须用 `dock: right` + `width/height: auto` 让浮层的命中区**只有胶囊本身**，禁止改写成「整行宽容器 + 右对齐」（`UpdateToast` 那种写法会让托管画面顶部整条横带都吃掉鼠标事件）；③**不加边框**——托管画面底色跟着用户终端走，线条字符在部分终端字体下会连成实心方块（分栏分隔线就是为此不画的），整块实底已经足够"浮起来"，还省掉边框那两行两列的遮挡。回归：`SessionHudPlacementTests`。
+- **AI 易错点**【小窗顺序恒为由旧到新，超长时砍中间】两种形态都按时间从上到下排，不得改成"最新在最前"——那和右栏完整对话、和人读聊天记录的方向都相反。条数超上限时**留两头砍中间**（`summarize_user_messages` 保证 `entries[0]` 恒为本会话最早那条），被砍掉的条数由 `omitted` 如实说明，不做静默截断。回归：`test_long_session_keeps_both_ends_and_drops_the_middle`、`test_expanded_is_oldest_to_newest_with_the_middle_reported`。
+- **AI 易错点**【小窗只画在激活格、只对实时托管画面画】已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文；多格同时画会刷屏。判定入口是 `MainScreen._hud_target()`（`SplitPaneArea.focus_key` + `PaneSpec.keepalive_name` 两个条件缺一不可），不要下放到 `SplitPaneArea` 或 `PaneCell` 里各判一次。占位卡（直启/空白新建后还没写出真实历史）在扫描快照里找不到会话，此时不画。
+- **AI 易错点**【小窗的快捷键必须让路】`toggle_hud`（`Ctrl+G`）留在 `_LIST_ONLY_ACTIONS` 里：小窗是"扫一眼"用的，不值得从助手手里抢一个组合键。右栏实时格持有输入时该键原样转发给助手，用户想展开就点小窗本身——点浮层不会改变键盘焦点（浮层与其祖先都不可聚焦，Textual 只会把焦点给命中点位上可聚焦的控件）。这点与 `Ctrl+B` 显隐侧栏那类壳层键刻意不同。回归：`SessionHudGatingTests`。
+- **AI 易错点**【运行中会话的对话不落盘缓存】`SessionStore.get_conversation()` 对 `live` 会话跳过 `put_conversation`：助手每写一次历史签名就变一次，落盘必然立刻失效。小窗和「在别的窗口跑」的对话都会每隔几秒重读一次运行中会话，真落盘就变成几秒一次的整份 JSON 写库 + `prune()`（缓存到上限后还要删行 + WAL checkpoint）。内存缓存照常按 mtime 更新，会话结束后第一次读取补上落盘。回归：`test_live_session_conversation_is_not_written_to_disk_cache`。
+- **AI 易错点**【小窗刷新不能每秒重解析】1 秒定时器只做 `stat` + 内存缓存判定（`peek_conversation`）；缓存失效才按 `HUD_WARM_INTERVAL` 节流起一次后台线程解析。解析期间必须继续显示上一版摘要（`MainScreen._hud_cache`），否则助手一边写历史小窗就一秒空一下再闪回来。本机实测：最近 15 个真实会话解析中位 4ms，最大的 18MB 会话 203ms——正因为尾部这么重，才必须节流且放后台。
 - **AI 易错点**【侧栏显隐是壳层开关】`Ctrl+B` 与顶栏左侧 ◀/▶ 共用 `action_toggle_sidebar`；不得放进 `_LIST_ONLY_ACTIONS`。实时格持焦时 `EmbedPane` 必须先拦截 `ctrl+b`（同 `ctrl+backslash`），否则键会进托管会话。无右栏（`embed_ok=False`）时 `check_action` 禁用。藏起左栏用 `display: none`；若焦点仍在列表/搜索须先挪到右栏格。偏好写入 `ui_prefs.py`（`~/.cache/pickup/ui-prefs.json`）。`Ctrl+\` 回列表时若侧栏已藏，先展开再聚焦列表。- **AI 易错点**【壳层配色层级】pickup 自有主题是 `pickup-dark` / `pickup-light`（冷静工作台），不是 Textual 默认主题。筛选框用 `$panel` / 聚焦 `$primary-muted`，禁止再铺 `$primary-darken-*` 大色块；列表选中只靠主题 `block-cursor-*` 抬一层冷灰蓝底，**禁止**再给 `ListItem.-highlight` 加 `border-left`——`tall`/`solid` 边框在终端里会和选中底拼成「双蓝条」。分栏激活条用主题变量 `$pane-active-background`（muted 提亮约 10%），不要直接写死 hex 进 widget CSS。饱和色只留给助手标签、运行中状态、警告/错误。
 - **AI 易错点**【运行中主题不是启动主题的重复判断】启动前探测只决定首帧；日落、系统设置或终端 profile 在进程运行中换色时，必须由 `terminal_theme.py` 继续接收 DEC 2031 通知或每 2 秒查询 OSC 11。应答要在 Textual 输入解析入口提取成专用消息，禁止另起线程直接读 tty（会与框架抢键盘输入），也禁止把 OSC 尾巴当普通按键放进搜索框。背景变化后要同时更新 `PickupApp.theme`、`MainScreen` 保存的报告、现有 `EmbedPane` 底色和后续 `host_session` 使用的报告；只换壳层会让右栏继续留在旧底色。
 - 【隐性依赖】`Footer` 展示的是 `MainScreen.BINDINGS` 的本地化 description。验证时中文环境必须看到 `a 高级操作`，英文环境必须看到 `a Advanced`；不要再手绘底部帮助行。
@@ -294,7 +319,9 @@ python3 -m unittest discover -s tests -p 'test_ui.py' -v
 python3 docs/screenshots/capture.py
 ```
 
-检查 `docs/screenshots/list.png`：左栏搜索框、新建会话、会话卡的末行间隔是否连续可点击；会话卡是否固定三行、首行圆点在最左、无圆点的卡片标题顶到最左不留空格、运行时与时间靠右、标题未整行变绿；右栏是否为完整对话且详情头有文字状态；Footer 是否存在；中英文、宽字符与截断是否错乱；不得出现“最近提问 / 最近回复”或“连接中”。
+检查 `docs/screenshots/list.png`：左栏搜索框、新建会话、会话卡的末行间隔是否连续可点击；会话卡是否固定三行、首行圆点在最左、无圆点的卡片标题顶到最左不留空格、运行时与时间靠右、标题未整行变绿；三条演示会话的时间是否呈现由亮到暗的梯度（夹具刻意铺成「刚刚 / 快一小时前 / 大半天前」，见 `capture.py` 的 `_DEMO_AGES`）；右栏是否为完整对话且详情头有文字状态；Footer 是否存在；中英文、宽字符与截断是否错乱；不得出现“最近提问 / 最近回复”或“连接中”。此图**不应出现会话小窗**（夹具里没有托管会话，浮层只画在实时托管格）。
+
+改动会话小窗时，`capture.py` 覆盖不到它（夹具没有真实 tmux 托管会话），必须另跑一次带真实 tmux 的出图：把 `keepalive._BASE_ARGV` 指到一个临时 socket、在上面建一个会话、用 `SplitPaneArea.show_hosted_group()` 挂进右栏，再 `app.save_screenshot()` + 复用 `capture.py` 的 `_svg_to_png()`，深浅两种底色（`osc_report`）各出一张肉眼看。重点看：收起态是否恰好三行（条数 / 最初 / 最近）且贴在标题栏下一行、右侧留一列；上下顺序是否由旧到新；展开态的时间列与正文是否对齐、超过 6 条时"中间省略 N 条"是否画在最早那条的下面、末行“点击收起”是否在；`▶` / `▼` 是否被渲成豆腐块（换字形前先确认是出图字体问题还是产品问题——同块的 `◀` / `▶` 覆盖面最广，`▸` / `▾` 实测会缺字形）。
 
 检查 `docs/screenshots/search.png`（全文搜索弹窗）：输入框是**单行、无边框**（Textual 的 `Input:focus` 会自带一圈边，压不住就会出现「外框套内框」两层边）；状态行的英文单复数正确（`1 session matched` 而不是 `1 sessions matched`）；每条结果是「项目: 标题 / 运行时 · 时间 · N 处命中 / 命中行」，关键词按 `$warning` 高亮；Footer 出现 `^f Search`。**PNG 里中文命中行的关键词两侧会出现明显空隙，这是 Rich SVG → cairosvg 对「同一行里换了样式的 CJK 文本」算错字符前进宽度的导出伪影，不是产品回归**——判定方法是直接断言 `SearchResultRow.render().plain`，真实终端和 `.plain` 里都没有多余空格。
 

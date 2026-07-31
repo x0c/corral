@@ -14,8 +14,8 @@ import time
 import traceback
 from dataclasses import dataclass
 
-# 关掉 Textual 默认开启的 Kitty 键盘协议。必须在任何 `import textual` 之前设置。
-os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
+# Kitty 键盘协议的关闭开关已上移到 `pickup/__init__.py`（包顶层，任何用法必经），
+# 这里不再重复设置：本模块的 `from pickup import ...` 一定先执行包初始化。
 
 from pickup import agent_api, cursor_observer, embed, keepalive, observe, titles, updater
 from pickup.models import LaunchPlan, LaunchRequest, NewSessionRequest

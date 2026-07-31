@@ -55,6 +55,45 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Not receiving input — press Enter or click here",
         "zh": "当前输入不会进入这里 · 回车或点击接管",
     },
+    "action.toggle_hud": {
+        "en": "Session card",
+        "zh": "会话小窗",
+    },
+    # 右上角会话小窗（收起态一行，展开态列最近提问）
+    # ▶ / ▼ 与顶栏侧边开关的 ◀ / ▶ 同属一个字形块，字体覆盖面广；不要换成 ▸ / ▾
+    # 这类少见的小三角，实测出图与部分终端字体会渲成豆腐块。
+    "hud.count": {
+        "en": "▶ {count} prompts",
+        "zh": "▶ {count} 条提问",
+    },
+    "hud.count_one": {
+        "en": "▶ 1 prompt",
+        "zh": "▶ 1 条提问",
+    },
+    "hud.label_first": {
+        "en": "First",
+        "zh": "最初",
+    },
+    "hud.label_latest": {
+        "en": "Latest",
+        "zh": "最近",
+    },
+    "hud.title": {
+        "en": "▼ Your prompts ({count})",
+        "zh": "▼ 本会话提问（{count}）",
+    },
+    "hud.omitted": {
+        "en": "… {count} more in between",
+        "zh": "… 中间省略 {count} 条",
+    },
+    "hud.omitted_one": {
+        "en": "… 1 more in between",
+        "zh": "… 中间省略 1 条",
+    },
+    "hud.collapse_hint": {
+        "en": "Click to collapse",
+        "zh": "点击收起",
+    },
     "action.quit": {
         "en": "Quit",
         "zh": "退出",

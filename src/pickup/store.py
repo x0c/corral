@@ -704,7 +704,11 @@ class SessionStore:
         messages = runtime.load_conversation(session)
         with self.lock:
             self.conversations[key] = (mtime, list(messages))
-        if path:
+        # 还在写的会话不落盘：助手每写一次历史，签名就变一次、缓存必然失效，落盘
+        # 只是白写。右栏小窗和"在别的窗口跑"的对话都会每隔几秒重读一次，真按 mtime
+        # 落盘就变成几秒一次的整份 JSON 写库 + prune（缓存到上限后还要删行、
+        # checkpoint）。内存缓存照常更新，会话结束后的第一次读取会补上落盘。
+        if path and not session.get("live"):
             get_cache().put_conversation(runtime_id, key, path, list(messages))
         return messages
 

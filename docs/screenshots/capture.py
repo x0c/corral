@@ -66,13 +66,22 @@ _DEMO_BG_HEX = "#1e242b"
 _DEMO_OSC_REPORT = b"\x1b]11;rgb:1e1e/2424/2b2b\x07"
 
 
+# 演示会话的时间：按「刚刚 / 快一小时前 / 大半天前」铺开，让侧边栏时间行的
+# 亮度梯度（越新越亮）在截图里能看出来。取相对时间而不是写死时间戳，否则三条
+# 会话永远落在最旧那一档，改动验收时看不出差别。
+_DEMO_AGES = (90.0, 55 * 60.0, 7 * 3600.0)
+
+
 def _demo_store():
+    import time as _time
+
+    now = _time.time()
     sessions = [
         {
             "source": "claude",
             "id": "demo-claude-1",
             "short_id": "demo1",
-            "mtime": 1_700_000_100.0,
+            "mtime": now - _DEMO_AGES[0],
             "size_bytes": 4096,
             "size_kb": 4.0,
             "native_title": "Fix login flake",
@@ -89,7 +98,7 @@ def _demo_store():
             "source": "cursor",
             "id": "demo-cursor-1",
             "short_id": "democ1",
-            "mtime": 1_700_000_050.0,
+            "mtime": now - _DEMO_AGES[1],
             "size_bytes": 2048,
             "size_kb": 2.0,
             "native_title": "Add Cursor runtime",
@@ -106,7 +115,7 @@ def _demo_store():
             "source": "codex",
             "id": "demo-codex-1",
             "short_id": "demox1",
-            "mtime": 1_700_000_000.0,
+            "mtime": now - _DEMO_AGES[2],
             "size_bytes": 1024,
             "size_kb": 1.0,
             "native_title": "Tighten handoff prompt",

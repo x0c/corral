@@ -17,6 +17,7 @@ import os
 import time
 from typing import TYPE_CHECKING
 
+from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.binding import Binding
@@ -31,6 +32,15 @@ from pickup.i18n import t
 
 
 NEW_SESSION_ID = "__new_session__"
+
+# 时间行档位在「控件还没挂载」时的兜底样式：单测会直接构造 SessionCard 调
+# render()，此时主题变量尚未解析，退回旧的二值 dim 表现，不让渲染整体失败。
+_TIME_FALLBACK_STYLES = {
+    "fresh": Style(),
+    "recent": Style(dim=True),
+    "today": Style(dim=True),
+    "old": Style(dim=True),
+}
 
 
 def _focused_live_session_key(focused) -> str | None:
@@ -68,6 +78,13 @@ class SessionMultiToggleRequested(Message):
 class SessionCard(Widget):
     """会话卡片：三行正文（总高 3）——关注圆点+项目+标题 / 运行时 / 时间。"""
 
+    COMPONENT_CLASSES = {
+        "session-card--time-fresh",
+        "session-card--time-recent",
+        "session-card--time-today",
+        "session-card--time-old",
+    }
+
     # Textual 默认所有 Widget 都允许鼠标拖拽文本选择（ALLOW_SELECT=True）；这类
     # 卡片是"点击=选中该会话"的列表项，不是可选文本内容，必须关掉——否则鼠标
     # 点击会触发 Textual 内置的 SelectStart 逻辑，在 ListView 卡片这种没有常规
@@ -84,6 +101,21 @@ class SessionCard(Widget):
            （alpha 与当前背景混合，深浅色主题各自成立）。关注状态只由首行最左
            的圆点表达，避免整行标题变色压过真正需要用户处理的状态。 */
         color: $foreground 80%;
+    }
+    /* 第三行时间按新鲜度分档着色：半小时内与标题同亮（=卡片基础色，着重显示），
+       之后逐级压暗到几乎只剩轮廓。全部用 $foreground + alpha 表达，深浅色主题
+       各自与背景混合成立，不写死具体颜色。 */
+    SessionCard > .session-card--time-fresh {
+        color: $foreground 80%;
+    }
+    SessionCard > .session-card--time-recent {
+        color: $foreground 58%;
+    }
+    SessionCard > .session-card--time-today {
+        color: $foreground 42%;
+    }
+    SessionCard > .session-card--time-old {
+        color: $foreground 30%;
     }
     """
 
@@ -118,6 +150,25 @@ class SessionCard(Widget):
         event.stop()
         self.post_message(SessionMultiToggleRequested(pickup.session_key(self.session)))
 
+    def _time_tier(self) -> str:
+        import pickup
+
+        return pickup._time_brightness_tier(self.session.get("mtime") or 0)
+
+    def _time_style(self, tier: str) -> Style:
+        """时间行的档位配色；未挂载（单测直接调 render）时退回 dim 兜底。
+
+        只取组件样式里混色后的**前景**，丢掉它带出来的背景色——否则时间那一行
+        会用卡片自己的底色盖住列表选中高亮/分屏底色，整行看着缺一块。
+        """
+        fallback = _TIME_FALLBACK_STYLES[tier]
+        style = self.get_component_rich_style(
+            f"session-card--time-{tier}", default=fallback
+        )
+        if style is fallback or style.color is None:
+            return fallback
+        return Style.from_color(style.color)
+
     def _compute_signature(self) -> tuple:
         """渲染相关字段的轻量快照，用来判定"内容是否真的变了"、要不要 refresh()。"""
         session = self.session
@@ -128,6 +179,9 @@ class SessionCard(Widget):
             session.get("attention_token"),
             session.get("attention_updated_at"),
             session.get("mtime"),
+            # mtime 不变但会话「变旧」跨过档位线时，时间行要跟着压暗，所以档位
+            # 本身也得进签名，否则原地更新路径不会重绘。
+            self._time_tier(),
         )
 
     def apply_update(self, session: dict, display_title: str) -> bool:
@@ -180,6 +234,9 @@ class SessionCard(Widget):
 
         relative_time = pickup._format_relative_time(session.get("mtime") or 0)
         time_cell = pickup._fit_cell_right(relative_time, width)
+        # 时间按新鲜度取一档亮度：半小时内与标题同亮，越旧越暗，让「刚刚还在动」
+        # 的会话在一列时间里一眼可见。
+        time_style = self._time_style(self._time_tier())
 
         # 首行整体 bold（与下面两行拉开层级），但项目名比标题淡一档：项目名是
         # 定位用的前缀，同亮度时会和标题抢视线。用 dim 而不是具体颜色，深浅色
@@ -201,7 +258,7 @@ class SessionCard(Widget):
         out.append("\n")
         out.append(runtime_cell, style=pickup.runtime_label_style(runtime_id))
         out.append("\n")
-        out.append(time_cell, style="dim")
+        out.append(time_cell, style=time_style)
         return out
 
 
@@ -233,6 +290,17 @@ class SessionListView(ListView):
         scrollbar-size-vertical: 0;
         scrollbar-size-horizontal: 0;
     }
+    /* 右栏分屏时给「组合里的会话」整行铺底：当前激活的那格用与分栏顶/底条同
+       一个 $pane-active-background，视觉上把侧边栏和右栏那一格连起来；其余格
+       用弱一档的底色，表示「也在这组里，但输入不在它身上」。
+       列表自己有焦点时，Textual 的 `ListView:focus > ListItem.-highlight` 多带
+       一个伪类、优先级更高，光标高亮仍然压在这层之上，键盘导航不会被埋掉。 */
+    SessionListView > ListItem.-in-split {
+        background: $pane-inactive-background;
+    }
+    SessionListView > ListItem.-split-active {
+        background: $pane-active-background;
+    }
     """
 
     BINDINGS = [
@@ -251,6 +319,9 @@ class SessionListView(ListView):
         # 页头占位文案 / 新建会话目录解析共用，禁止在本类另开一份状态。
         self.nav = nav
         self._multi_keys: list[str] = []
+        # 右栏分屏组合在侧边栏的投影：组合内全部会话键 + 当前激活格的会话键。
+        self._split_keys: list[str] = []
+        self._split_active_key: str | None = None
         # 鼠标按下前，右栏哪一格正持有输入（会话键），见 focus_on_click()。
         self.focus_before_click = None
         # rebuild() 的并发闸门：见该方法注释，多条 pump 上的调用方必须串行进 DOM。
@@ -280,16 +351,24 @@ class SessionListView(ListView):
     async def on_mount(self) -> None:
         await self.rebuild()
 
-    def _session_cards(self) -> list[SessionCard]:
-        """按当前显示顺序返回全部 SessionCard（跳过顶部固定的新建会话项）。"""
-        cards = []
+    def _session_items(self) -> list[tuple[ListItem, SessionCard]]:
+        """按当前显示顺序返回 (列表项, 会话卡)（跳过顶部固定的新建会话项）。
+
+        底色类标在 ListItem 上而不是卡片上：整行铺满、且不会盖掉卡片自身的文字
+        样式，也才能和 Textual 内置的选中高亮按 CSS 优先级正常分胜负。
+        """
+        items = []
         for item in self.children:
             if item.id == NEW_SESSION_ID:
                 continue
             card = item.children[0] if item.children else None
             if isinstance(card, SessionCard):
-                cards.append(card)
-        return cards
+                items.append((item, card))
+        return items
+
+    def _session_cards(self) -> list[SessionCard]:
+        """按当前显示顺序返回全部 SessionCard（跳过顶部固定的新建会话项）。"""
+        return [card for _, card in self._session_items()]
 
     def _current_session_keys(self) -> list[str]:
         import pickup
@@ -347,6 +426,37 @@ class SessionListView(ListView):
             return
         self._multi_keys = [key for key in self._multi_keys if key in valid_keys]
         self._apply_multi_markers()
+
+    def set_split_marks(self, pane_keys: list[str], active_key: str | None) -> None:
+        """把右栏分屏组合投影到侧边栏：组合内会话整行高亮，激活格更显著。
+
+        只有真正分屏（≥2 格）才标。单格时列表光标本身就指着那一格，再叠一层
+        底色只会和光标高亮互相打架，反而看不出焦点在哪。
+        """
+        keys = [key for key in pane_keys if not key.startswith("__")]
+        if len(keys) < 2:
+            keys = []
+        active = active_key if active_key in keys else None
+        if keys == self._split_keys and active == self._split_active_key:
+            return
+        self._split_keys = keys
+        self._split_active_key = active
+        self._apply_split_marks()
+
+    def split_marks(self) -> tuple[list[str], str | None]:
+        """当前生效的分屏标记（组合内会话键，激活会话键），供测试与同步比对。"""
+        return list(self._split_keys), self._split_active_key
+
+    def _apply_split_marks(self) -> None:
+        import pickup
+
+        keys = set(self._split_keys)
+        active = self._split_active_key
+        for item, card in self._session_items():
+            key = pickup.session_key(card.session)
+            is_active = active is not None and key == active
+            item.set_class(key in keys and not is_active, "-in-split")
+            item.set_class(is_active, "-split-active")
 
     def _apply_multi_markers(self) -> None:
         import pickup
@@ -542,6 +652,9 @@ class SessionListView(ListView):
         elif not had_session_cards:
             # 初次填充：默认选最近一条会话（进 pickup 回车即恢复）
             self.index = 1 if sessions else 0
+        # 全量重建换掉了全部 ListItem，分屏底色标记要重新贴一遍（原地更新那条
+        # 路径不动列表项结构，标记还在，不必重贴）。
+        self._apply_split_marks()
         # Textual 已知问题（issue #6300）：clear()+extend() 后紧接着设置 index，
         # 高亮理论上可能只在内部状态里正确、要等用户交互才真正刷新到屏幕。在当前
         # 锁定版本（8.2.8）下用 Pilot 直接探查过 compositor 的增量重绘路径，没有

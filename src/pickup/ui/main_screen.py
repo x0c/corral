@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 from rich.text import Text
 from textual import events, work
@@ -33,6 +34,7 @@ from pickup.i18n import t
 from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.modals import ConfirmModal, choose_target_runtime, new_session_flow
 from pickup.ui.nav import NavState
+from pickup.ui.session_hud import summarize_user_messages
 from pickup.ui.session_list import SessionListView
 from pickup.ui.update_toast import UpdateToast
 from pickup.ui.runtime_top_bar import RuntimeTopBar
@@ -46,6 +48,11 @@ REFRESH_INTERVAL = 3.0  # 秒，后台重扫会话列表的最短间隔，与旧
 REFRESH_INTERVAL_MAX = 10.0  # 秒，连续空闲多轮后退避到的最长间隔
 _IDLE_ROUNDS_BEFORE_BACKOFF = 3  # 连续几轮扫描都没变化才开始拉长间隔，避免偶发抖动误判空闲
 CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重扫轻得多，保持高频）
+
+# 秒，右上角会话小窗的同步间隔。每次只做一次 stat + 内存缓存命中判断（`peek_conversation`），
+# 真正解析历史另有节流（HUD_WARM_INTERVAL），不会因为助手在狂写历史就每秒重解析一遍。
+HUD_POLL_INTERVAL = 1.0
+HUD_WARM_INTERVAL = 3.0  # 秒，同一会话两次重新解析对话之间的最小间隔
 LIST_PANE_WIDTH = 39  # 分栏时左栏固定宽度，对应旧版 EMBED_LEFT_BAND
 # 活跃判定可接受的存活证据陈旧上限（秒）。右栏在显示的会话每轮抓帧都会刷新证据，
 # 所以这条路几乎永远命中缓存；只有久未露面的会话才真去 fork 一次 has-session。
@@ -109,6 +116,7 @@ _ACTION_I18N = {
     "close_pane": "action.close_pane",
     "focus_list": "action.focus_list",
     "toggle_sidebar": "action.toggle_sidebar",
+    "toggle_hud": "action.toggle_hud",
     "save_screenshot": "action.screenshot",
     "preview_home": "action.preview_home",
     "preview_end": "action.preview_end",
@@ -126,6 +134,10 @@ _LIST_ONLY_ACTIONS = frozenset(
         # （readline 前移光标、翻页搜索），右栏持有输入时必须原样转发给会话，
         # 想搜就先 Ctrl+\ 回列表。这一点与 Ctrl+B 显隐侧栏刻意不同。
         "search_content",
+        # 会话小窗的展开/收起：右栏实时格持有输入时让路给助手。小窗本来就是"扫一眼"
+        # 用的，不值得为它从助手手里抢一个组合键；那种场景下点一下小窗本身即可
+        # （点浮层不改焦点，见 `SessionHud`）。
+        "toggle_hud",
         "handoff",
         "kill_keepalive",
         "delete_session",
@@ -154,6 +166,8 @@ def _main_bindings() -> list[Binding]:
         # 与 Ctrl+\ 同级的壳层键：右栏持焦时仍可用，不得进 _LIST_ONLY_ACTIONS。
         # EmbedPane 实时路径会先拦截 ctrl+b，避免键被转发给托管会话。
         Binding("ctrl+b", "toggle_sidebar", t("action.toggle_sidebar")),
+        # 会话小窗展开/收起。Footer 已经很挤，这个键不展示；小窗自身可点。
+        Binding("ctrl+g", "toggle_hud", t("action.toggle_hud"), show=False),
         Binding("f12", "save_screenshot", t("action.screenshot"), show=False),
         # 右栏静态对话预览滚动（列表聚焦时也生效；优先级高于 ListView 的同名键）
         Binding("home", "preview_home", t("action.preview_home"), show=False, priority=True),
@@ -218,6 +232,13 @@ class MainScreen(Screen):
         self._update_latest: str | None = None
         # 全文搜索索引：首屏扫描完成后在后台预热，Ctrl+F 打开弹窗时通常已就绪。
         self._search_index = None
+        # 右上角会话小窗：展开状态全局共用一份（切格不该让它一会儿开一会儿关），
+        # 最近一次算好的摘要按会话键留着，历史文件正在被写、缓存暂时失效时继续
+        # 显示旧摘要，避免小窗一秒一闪。
+        self._hud_expanded = False
+        self._hud_cache: dict[str, object] = {}
+        self._hud_warm_at = 0.0
+        self._hud_warm_key: str | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -231,6 +252,7 @@ class MainScreen(Screen):
                     on_pane_close=self._on_pane_close,
                     on_focus_list=self._focus_list,
                     on_pane_focused=self._on_pane_focused,
+                    on_hud_toggle=self.action_toggle_hud,
                     osc_report=self.osc_report,
                     sidebar_visible=self.sidebar_visible,
                     id="split-pane-area",
@@ -261,6 +283,11 @@ class MainScreen(Screen):
         else:
             self._await_initial_load()
         self.set_interval(CACHE_POLL_INTERVAL, self._poll_cache)
+        if self.embed_ok:
+            self.set_interval(HUD_POLL_INTERVAL, self._sync_hud)
+            # 分屏标记以显式调用为主（关格/换焦点/重建列表即时生效），这条定时
+            # 同步只做兜底：任何没覆盖到的右栏变动，最迟一秒后也会对齐。
+            self.set_interval(HUD_POLL_INTERVAL, self._sync_split_marks)
         self._check_for_update()
         if self.direct is not None:
             # 直启子命令：焦点最终要落在内嵌面板上（用户就是来操作新会话的）。
@@ -374,11 +401,29 @@ class MainScreen(Screen):
         area.reconcile_session_keys(key_by_keepalive)
         return migrated
 
+    def _sync_split_marks(self) -> None:
+        """把右栏当前分屏组合与激活格投影到侧边栏底色。
+
+        右栏格数、格内绑定的会话、激活格都可能变；这里统一取一次现状交给列表，
+        列表内部会跟上次比对，没变就不动 DOM。
+        """
+        if not self.embed_ok:
+            return
+        try:
+            area = self._split_area()
+            session_list = self.query_one(SessionListView)
+        except Exception:  # noqa: BLE001 分栏/列表重建中间态查不到，下一轮兜底同步会补上
+            return
+        session_list.set_split_marks(area.ordered_session_keys(), area.focus_key)
+
     def _save_split_layout(self) -> None:
         from pickup import split_layout
 
         if not self.embed_ok:
             return
+        # 右栏格数/绑定/焦点变了才会走到这里，顺手把侧边栏的分屏底色对齐；写盘
+        # 记忆只认活跃会话、下面还会提前 return，标记同步必须放在它前面。
+        self._sync_split_marks()
         area = self._split_area()
         keys = [
             k for k in area.ordered_session_keys()
@@ -395,6 +440,7 @@ class MainScreen(Screen):
 
         self._split_store.remove_session(session_key)
         split_layout.save_layout(self._split_store)
+        self._sync_split_marks()
         # 焦点由 SplitPaneArea 收尾：还有剩余实时格就接着用，最后一格被关掉才
         # 回列表。这里再调一次 _focus_list() 会把焦点提前抢走，让接力落空。
 
@@ -649,6 +695,8 @@ class MainScreen(Screen):
         self._follow_timer = None
         self._follow_last_run = _time.monotonic()
         self._follow_current_selection()
+        # 跟随可能把右栏从分屏换成单格预览（反之亦然），底色标记跟着走一遍。
+        self._sync_split_marks()
 
     def on_unmount(self) -> None:
         # 待触发的节流定时器不能活过屏幕本身，否则回调会打到已卸载的控件树上。
@@ -917,6 +965,77 @@ class MainScreen(Screen):
             return
         area.invalidate_all_details()
 
+    # ---- 右上角会话小窗：只画在激活格、只对实时托管画面画 ----
+
+    def _hud_target(self) -> tuple[str | None, dict | None]:
+        """返回该画小窗的 (会话键, 会话)；不该画时返回 (None, None)。
+
+        条件有两条：这一格是当前激活格，且它是**实时托管画面**。已结束会话的
+        右栏本来就是完整对话，浮层只会挡住它自己的正文。
+        """
+        if not self.embed_ok:
+            return None, None
+        try:
+            area = self._split_area()
+        except Exception:
+            # 内嵌不可用时右栏根本不在 DOM 里（纯列表模式），不能裸 query_one。
+            return None, None
+        key = area.focus_key
+        if not key:
+            return None, None
+        spec = next((s for s in area.pane_specs() if s.session_key == key), None)
+        if spec is None or not spec.keepalive_name:
+            return None, None
+        # 占位卡（直启/空白新建后尚未写出真实历史）在快照里找不到，先不画。
+        return key, self.store.find_session(key)
+
+    def _sync_hud(self) -> None:
+        """把小窗刷成当前激活格的最新摘要。主线程调用，只做 stat + 内存缓存判定。"""
+        if not self.embed_ok:
+            return
+        try:
+            area = self._split_area()
+        except Exception:
+            return
+        key, session = self._hud_target()
+        if key is None or session is None:
+            area.sync_hud(None, None, expanded=False)
+            return
+        messages = self.store.peek_conversation(session)
+        if messages is None:
+            # 助手正在写历史，内存缓存已按 mtime 失效：继续显示上一次的摘要，
+            # 同时按节流去后台重解析，避免小窗每秒空一下再闪回来。
+            data = self._hud_cache.get(key)
+            self._schedule_hud_warm(session, key)
+        else:
+            data = summarize_user_messages(messages)
+            self._hud_cache[key] = data
+        area.sync_hud(key, data or None, expanded=self._hud_expanded)
+
+    def _schedule_hud_warm(self, session: dict, key: str) -> None:
+        now = time.monotonic()
+        if key == self._hud_warm_key and now - self._hud_warm_at < HUD_WARM_INTERVAL:
+            return
+        self._hud_warm_key = key
+        self._hud_warm_at = now
+        self._warm_hud(session, key)
+
+    @work(thread=True, exclusive=True, group="hud-warm")
+    def _warm_hud(self, session: dict, key: str) -> None:
+        """后台解析对话（超大会话可到 200ms 量级），完成后回主线程刷小窗。"""
+        try:
+            self.store.get_conversation(session)
+        except Exception:
+            return
+        self.app.call_from_thread(self._sync_hud)
+
+    def action_toggle_hud(self) -> None:
+        """展开/收起会话小窗；展开状态所有格共用一份。"""
+        if not self.embed_ok:
+            return
+        self._hud_expanded = not self._hud_expanded
+        self._sync_hud()
+
     def _open_split_from_selection(self, keys: list[str]) -> None:
         """按侧边栏多选组合开分屏（活跃会话内嵌，已结束会话预览）。"""
         if not self.embed_ok or len(keys) < 2:
@@ -938,6 +1057,7 @@ class MainScreen(Screen):
             project, entries, focus_key=focus_key, focus_pane=self._can_autofocus(),
         )
         self._begin_attention_read(focus_key)
+        self._sync_split_marks()
         active_keys = [k for k in keys if self._is_session_active(k)]
         if len(active_keys) >= 2:
             self._split_store.set_group(project, active_keys, focus_key=focus_key)
@@ -1359,6 +1479,9 @@ class MainScreen(Screen):
         if action == "toggle_sidebar":
             # 无右栏时藏侧栏没有工作区可扩大，顶栏开关也不存在。
             return self.embed_ok
+        if action == "toggle_hud" and not self.embed_ok:
+            # 纯列表模式没有右栏，也就没有小窗可展开。
+            return False
         if action in _LIST_ONLY_ACTIONS and self._live_embed_focused():
             return False
         return True

@@ -95,8 +95,8 @@ tmux -L "$OUTER" new-session -d -s tui -x 180 -y 42
 tmux -L "$OUTER" set-option -t tui mouse on
 tmux -L "$OUTER" send-keys -t tui "cd $REPO && env $ENVV python3 -m pickup --limit 5" Enter
 
-wait_for "workA: 修复切换体验" 60
-wait_for "workB: 第二个会话" 60
+wait_for "workA 修复切换体验" 60
+wait_for "workB 第二个会话" 60
 ok "首屏是跨运行时统一时间线"
 
 # 下移到第一张会话卡，右栏应展示完整对话预览（选中即预览，不再依赖 Space）。
@@ -127,11 +127,11 @@ sleep 0.8
 tmux -L "$OUTER" send-keys -t tui /
 sleep 0.3
 tmux -L "$OUTER" send-keys -t tui -l "workA"
-# 注意：不能 wait_for "workA"——列表里本来就有「workA: …」标题，会立刻假阳性。
+# 注意：不能 wait_for "workA"——列表里本来就有「workA …」标题，会立刻假阳性。
 # 以 workB 卡片消失为准，证明搜索过滤已生效（也就证明焦点已回到列表）。
 filtered=0
 for _ in {1..40}; do
-  if ! cap | grep -q "workB:"; then
+  if ! cap | grep -q "workB 第二个会话"; then
     filtered=1
     break
   fi
@@ -146,7 +146,7 @@ ok "Ctrl+\\ 把键盘焦点交回列表（/ 搜索过滤生效证明焦点确实
 # Esc 清空搜索，恢复全部项目可见；再 Down 把焦点交回列表，避免后续快捷键被搜索框吞掉
 tmux -L "$OUTER" send-keys -t tui Escape
 sleep 0.4
-wait_for "workB:" 20
+wait_for "workB 第二个会话" 20
 tmux -L "$OUTER" send-keys -t tui Down
 sleep 0.2
 

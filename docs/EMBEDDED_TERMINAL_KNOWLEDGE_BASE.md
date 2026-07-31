@@ -235,6 +235,9 @@ stateDiagram-v2
 - **AI 易错点**【隐性依赖】实时格持有输入时，Screen 上 `priority=True` 的翻页 / Home / End 绑定会**先于**面板拿到按键。必须靠 `MainScreen.check_action` 返回 `False` 让路，`run_action` 才会跳过派发、把键透传给托管会话。
 - **AI 易错点**【隐性依赖】`_mount_panes_async` 默认会把焦点还给原先持有焦点的列表；带着 `focus_pane=True` 的调用必须绕开这段，否则自动聚焦会在挂载后被立刻撤销。
 - **AI 易错点**【隐性依赖】剪贴板图片粘贴走的哨兵协议（`␞PICKUP_IMG_BEGIN␞<base64>␞PICKUP_IMG_END␞`，`embed.py` 的 `_IMG_SENTINEL_BEGIN`/`_IMG_SENTINEL_END`）是与远程网页终端网关 `shell-gate`（另一仓库，`internal/server/web/enhance.js`）之间的跨仓库约定 —— 改任一侧的哨兵字符串都必须同步另一侧，否则粘贴的图片会被当成普通文本整段发给 agent，不会报错也不会落盘，只能靠肉眼发现。本域看不到 `shell-gate` 侧代码，改动前先确认对方现状。
+- **AI 易错点**【上游限制】右栏 Cursor 画面**概率性地跳回更早的对话、再一路滚回最新**（2026-07-31 真机定位）：这不是抓帧采样抓到了中间态，而是 Cursor CLI 自己把已经滚走的历史整段重新打印了一遍——tmux 屏幕内容真的变了，任何 attach 的终端看到的都一样。实测证据：托管一个 Cursor 会话让它输出 400 行，回答收尾时画面在 8 秒内从最早内容一路重画回最新，中间每屏稳定停约 200ms；`pipe-pane` 抓原始字节确认它**不发同步输出**（DECSET 2026 `\e[?2026h/l` 零次），全靠 570 次 `ESC[<n>A` 光标上移重写。Cursor 官方已确认这是「CLI + tmux」已知问题并在修（触发条件：tmux 窗口重连、切 pane、终端尺寸变化，以及无明显诱因的自发重绘；历史越长重绘量越大），见 [Cursor 论坛 158881](https://forum.cursor.com/t/cursor-cli-should-limit-history-retention-to-reduce-tmux-refresh-churn/158881)。
+  - 【已验证无效，别再试】给抓帧加「整屏大变化时延迟重抓确认，两帧一致才上屏」的中间态过滤：真机对照实测**没有任何改善**（不过滤 50.2% 中间态上屏 → 过滤后 54.2%）。因为重绘出来的每一屏本身就稳定停留 ~200ms，任何「等稳定」判据都会把它判成合法新画面；而真正只存在几毫秒的重写中途，25Hz 抓帧本来就几乎抓不到（同一探针实测命中 0%）。
+  - 可选缓解方向（都有代价，需产品决策后再动）：调小保活 socket 的 `history-limit` 减少重绘体量（代价：右栏能往上翻的历史变少）；把 `_RESIZE_CAPTURE_HOLD_MAX` 放长到覆盖整段重绘（代价：那几秒右栏不更新，且只挡得住 resize 这一类触发）；长会话定期新开（Cursor 官方认为最有效）。
 - 【消歧】**关闭分栏**只隐藏内嵌实时终端并让会话继续运行；**结束会话**才会停止运行中的助手。二者不能互相替代。
 - 【叫法统一】正文使用“内嵌实时终端”；实现中可见 `embed`、`EmbedPane`、`capture-pane`。正文使用“运行中(托管)”；实现中可见 `host_session`、hosted、保活会话名。
 
@@ -288,7 +291,7 @@ stateDiagram-v2
 ## §8 关联文档
 
 - `docs/MAINTAINER_GUIDE.md`：改、评审或排查内嵌面板、会话保活、控制通道、输入延迟、滚动、主题、IME、tmux 冒烟时联读；这是会话保活策略和真实踩坑的权威维护说明。
-- `docs/TERMINAL_UI_KNOWLEDGE_BASE.md`：涉及右栏与列表焦点、静态对话预览、界面事件路由时联读；该文档覆盖终端界面布局与交互边界，本知识库不重复其内容。
+- `docs/TERMINAL_UI_KNOWLEDGE_BASE.md`：涉及右栏与列表焦点、静态对话预览、界面事件路由时联读；该文档覆盖终端界面布局与交互边界，本知识库不重复其内容。**画在实时画面右上角的会话小窗也归那边**（浮层不参与抓帧与输入转发，只是盖在画面上；它盖住的区域滚轮到不了托管会话，这条约束写在那边的 §6）。
 - `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：涉及 embed-error 日志、事件落盘或托管画面异常排查时联读。
 - `AGENTS.md`：改动内嵌 / 保活 / 直启时先读，尤其是 tmux 硬依赖、旧 `SC_*` 兼容和 `selftest.sh` 验收要求。
 - `keepalive.py`：需要变更会话命名、环境注入、状态标注、pid 祖先链匹配或回收时联读实现与维护指南；本知识库仅说明内嵌实时终端如何复用其命名空间。

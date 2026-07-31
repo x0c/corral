@@ -16,6 +16,7 @@ from pickup.models import session_key as make_session_key
 from pickup.split_layout import MAX_PANES
 from pickup.ui.embed_pane import EmbedPane
 from pickup.ui.runtime_top_bar import RuntimeTopBar
+from pickup.ui.session_hud import SessionHud
 
 
 @dataclass
@@ -148,12 +149,13 @@ class _PaneFooter(Static):
 
 
 class PaneCell(Vertical):
-    """单格：标题栏 + EmbedPane + 底条高亮。"""
+    """单格：标题栏 + EmbedPane + 底条高亮，右上角可浮一个会话小窗。"""
 
     ALLOW_SELECT = False
 
     DEFAULT_CSS = """
     PaneCell {
+        layers: default hud;
         width: 1fr;
         height: 1fr;
         border: none;
@@ -183,6 +185,7 @@ class PaneCell(Vertical):
         detail_renderer: Callable[[], Text | str] | None = None,
         on_pane_focused: Callable[[str], None] | None = None,
         on_sync_mask: Callable[[], None] | None = None,
+        on_hud_toggle: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -191,6 +194,7 @@ class PaneCell(Vertical):
         self._on_focus_list = on_focus_list
         self._on_pane_focused = on_pane_focused
         self._on_sync_mask = on_sync_mask
+        self._on_hud_toggle = on_hud_toggle
         self._osc_report = osc_report
         self._title = title
         self._detail_renderer = detail_renderer
@@ -207,6 +211,8 @@ class PaneCell(Vertical):
             id=f"embed-{self.spec.cell_id}",
         )
         yield _PaneFooter(classes="footer")
+        # 浮层放在最后：同层内单独排版，dock 到右上角，不参与上面三个的纵向堆叠。
+        yield SessionHud(self._on_hud_toggle, classes="hud")
 
     def on_mount(self) -> None:
         self.call_after_refresh(self._start_session)
@@ -254,6 +260,22 @@ class PaneCell(Vertical):
             if isinstance(child, EmbedPane):
                 return child
         return None
+
+    def session_hud(self) -> SessionHud | None:
+        """与标题栏同：分栏重建的中间态里浮层可能尚未挂上或已卸下。"""
+        for child in self.children:
+            if isinstance(child, SessionHud):
+                return child
+        return None
+
+    def update_hud(self, data, *, expanded: bool) -> None:
+        hud = self.session_hud()
+        if hud is None:
+            return
+        if data is None:
+            hud.hide()
+        else:
+            hud.update_data(data, expanded=expanded)
 
     def update_terminal_background(self, osc_report: bytes) -> None:
         self._osc_report = osc_report
@@ -347,6 +369,7 @@ class SplitPaneArea(Vertical):
         on_pane_close: Callable[[str], None],
         on_focus_list: Callable[[], None],
         on_pane_focused: Callable[[str], None] | None = None,
+        on_hud_toggle: Callable[[], None] | None = None,
         osc_report: bytes | None = None,
         render_detail: Callable[[dict], Text] | None = None,
         sidebar_visible: bool = True,
@@ -358,6 +381,7 @@ class SplitPaneArea(Vertical):
         self._on_pane_close = on_pane_close
         self._on_focus_list = on_focus_list
         self._on_pane_focused = on_pane_focused
+        self._on_hud_toggle = on_hud_toggle
         self._osc_report = osc_report
         self._render_detail = render_detail
         self._sidebar_visible = sidebar_visible
@@ -452,6 +476,18 @@ class SplitPaneArea(Vertical):
         w = max(1, (row.size.width or 120) // count)
         h = max(1, row.size.height or 24)
         return embed_mod.normalize_host_size(w, h - 1)
+
+    def sync_hud(self, key: str | None, data, *, expanded: bool) -> None:
+        """只在指定的那一格画会话小窗，其余格一律收掉。
+
+        key 为 None（没有激活格 / 该格不该显示）时全部收掉。数据来源与展开状态都
+        由 `MainScreen` 决定，本类不查 store，也不判断会话是不是实时托管的。
+        """
+        for cell in self._cells():
+            if key is not None and cell.spec.session_key == key:
+                cell.update_hud(data, expanded=expanded)
+            else:
+                cell.update_hud(None, expanded=False)
 
     def invalidate_all_details(self) -> None:
         for cell in self._cells():
@@ -840,6 +876,7 @@ class SplitPaneArea(Vertical):
                 on_focus_list=self._on_focus_list,
                 on_pane_focused=self._handle_pane_focused,
                 on_sync_mask=self.sync_input_mask,
+                on_hud_toggle=self._on_hud_toggle,
                 osc_report=self._osc_report,
                 detail_renderer=renderer,
             )

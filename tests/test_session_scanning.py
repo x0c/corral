@@ -2238,6 +2238,45 @@ class TuiLayoutTests(unittest.TestCase):
             self.assertEqual(store.get_conversation(session)[0].text, "新内容")
             self.assertEqual(runtime.load_conversation.call_count, 2)
 
+    def test_live_session_conversation_is_not_written_to_disk_cache(self) -> None:
+        """还在写的会话不落盘：签名每写一次就变，落盘只是白写。
+
+        右上角会话小窗和「在别的窗口跑」的对话都会每隔几秒重读一次运行中会话，真按
+        mtime 落盘就变成几秒一次的整份 JSON 写库 + prune（缓存到上限还要删行 +
+        checkpoint）。内存缓存照常更新，会话结束后第一次读取再补上落盘。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            path.write_text("{}\n", encoding="utf-8")
+            session = {
+                "source": "claude", "id": "abc", "short_id": "abc", "path": str(path),
+                "mtime": 1, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "测试会话", "live": True,
+            }
+            runtime = mock.Mock()
+            runtime.id = "claude"
+            runtime.display_name = "Claude"
+            runtime.scan_sessions.return_value = [session]
+            runtime.load_conversation.return_value = [
+                pickup.ConversationMessage("user", "运行中的提问"),
+            ]
+            registry = pickup.RuntimeRegistry((runtime,))
+            with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+                store = pickup.SessionStore(limit=20, registry=registry)
+                store.load()
+
+            # store 模块里是 `from pickup.cache import get_cache`，必须打在 store 上
+            with mock.patch("pickup.store.get_cache") as get_cache:
+                get_cache.return_value.get_conversation.return_value = None
+                store.get_conversation(session)
+                get_cache.return_value.put_conversation.assert_not_called()
+
+                # 会话结束后同一份历史必须恢复落盘
+                store.conversations.clear()
+                session["live"] = False
+                store.get_conversation(session)
+                get_cache.return_value.put_conversation.assert_called_once()
+
     def test_format_relative_time_thresholds(self) -> None:
         now = 1_000_000.0
         self.assertEqual(pickup._format_relative_time(now - 5, now), "just now")
@@ -2250,6 +2289,17 @@ class TuiLayoutTests(unittest.TestCase):
             pickup._format_relative_time(old, now),
             pickup.datetime.fromtimestamp(old).strftime("%m-%d %H:%M"),
         )
+
+    def test_time_brightness_tier_steps_by_age(self) -> None:
+        """侧边栏时间行的亮度分档：半小时 / 三小时 / 一天为界，越旧越暗。"""
+        now = 1_000_000.0
+        self.assertEqual(pickup._time_brightness_tier(now - 5, now), "fresh")
+        self.assertEqual(pickup._time_brightness_tier(now + 100, now), "fresh")  # 时钟漂移/未来
+        self.assertEqual(pickup._time_brightness_tier(now - 1799, now), "fresh")
+        self.assertEqual(pickup._time_brightness_tier(now - 1801, now), "recent")
+        self.assertEqual(pickup._time_brightness_tier(now - 4 * 3600, now), "today")
+        self.assertEqual(pickup._time_brightness_tier(now - 3 * 86400, now), "old")
+        self.assertEqual(pickup._time_brightness_tier(0, now), "old")  # 缺时间戳按最旧
 
     def test_fit_cell_uses_terminal_display_width(self) -> None:
         self.assertEqual(pickup._text_width("标题"), 4)

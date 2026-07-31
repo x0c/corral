@@ -10,6 +10,35 @@ from rich.cells import cell_len as _rich_cell_len, chop_cells as _rich_chop_cell
 
 from pickup.models import ConversationMessage, format_message_time, session_key
 
+# 侧边栏时间行的亮度梯度：越新越亮，用「多久以前」分档而不是二值 dim。
+# 首档（半小时内）与标题同亮，其余逐级压暗；具体颜色由 ui/session_list.py 的
+# 组件样式按主题解析，这里只定义分档语义与边界。
+RECENT_HIGHLIGHT_SECONDS = 1800  # 首档上界：半小时内算「刚刚还在动」
+TIME_BRIGHTNESS_TIERS: tuple[tuple[float | None, str], ...] = (
+    (RECENT_HIGHLIGHT_SECONDS, "fresh"),  # 半小时内：与标题同色
+    (3 * 3600, "recent"),                 # 三小时内
+    (86400, "today"),                     # 一天内
+    (None, "old"),                        # 更早（显示绝对日期）
+)
+
+
+def _time_brightness_tier(mtime: float, now: float | None = None) -> str:
+    """会话时间落在哪一档亮度上（`TIME_BRIGHTNESS_TIERS` 的档位名）。
+
+    未来时间 / 时钟漂移导致的负差值算最新一档，与 `_format_relative_time` 把
+    负值渲染成「刚刚」保持一致；缺时间戳则按最旧一档处理。
+    """
+    if not mtime:
+        return TIME_BRIGHTNESS_TIERS[-1][1]
+    if now is None:
+        now = datetime.now().timestamp()
+    delta = now - mtime
+    for upper, tier in TIME_BRIGHTNESS_TIERS:
+        if upper is None or delta < upper:
+            return tier
+    return TIME_BRIGHTNESS_TIERS[-1][1]
+
+
 def _format_relative_time(mtime: float, now: float | None = None) -> str:
     """把时间戳渲染成人性化相对时间；超过一天退回绝对日期时间。
 

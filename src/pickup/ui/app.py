@@ -45,6 +45,9 @@ _PICKUP_DARK = Theme(
         "block-cursor-blurred-background": "#24344766",
         # 分栏激活顶/底条：$primary-muted 再提亮约 10%
         "pane-active-background": "#31475E",
+        # 侧边栏里「在当前分屏组合内、但输入不在它身上」的会话行：比 surface
+        # 抬一档、又明显低于激活底色，保证一眼能分出哪格是激活格。
+        "pane-inactive-background": "#212E3C",
     },
 )
 _PICKUP_LIGHT = Theme(
@@ -65,6 +68,8 @@ _PICKUP_LIGHT = Theme(
         "block-cursor-blurred-background": "#C5D6E880",
         # 分栏激活顶/底条：$primary-muted 再提亮约 10%
         "pane-active-background": "#D1E7F7",
+        # 侧边栏里「在当前分屏组合内、但输入不在它身上」的会话行，见深色注释。
+        "pane-inactive-background": "#DFE9F3",
     },
 )
 
