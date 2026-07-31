@@ -1409,7 +1409,14 @@ class MainScreen(Screen):
             self._split_area().clear_focus_intent()
         except Exception:
             pass
-        self.query_one(SessionListView).focus()
+        # 用 Screen.set_focus 同步生效，不要用 Widget.focus()——后者走 call_later，
+        # 生效顺序与调用顺序会**反过来**：本方法先被调用、把「回列表」排进队列，
+        # 随后用户点进某个内嵌格（或代码直接 EmbedPane.focus()）也排进队列，队列
+        # 依次兑现时较早排队的「回列表」反而落在后面，把焦点从格子上抢走。真机
+        # 表现是点进内嵌会话、键盘却还在侧边栏。同步设置后，谁后请求谁生效。
+        # （main_screen.on_mount 里「不要先调 SessionListView.focus()」那条注释
+        # 说的是同一个坑，当时是绕开、没有根治。）
+        self.set_focus(self.query_one(SessionListView))
 
     def on_descendant_focus(self, event) -> None:
         self._sync_input_mask()

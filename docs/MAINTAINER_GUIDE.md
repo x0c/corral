@@ -88,7 +88,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 
 - **TUI 多语言（`i18n.py`）**：界面默认英文；系统 locale 主语言为 `zh*`（`LANG`/`LC_ALL`/`LC_MESSAGES`/`LANGUAGE`）时自动中文。`PICKUP_LANG=en|zh` 可强制覆盖。机器接口（`pickup list` 等 JSON）不走翻译。新增用户可见文案必须进 `_MESSAGES` 并同时写 en/zh；测试固定 `i18n.set_lang("en")` 再断言，中文覆盖用 `test_i18n.py`。Textual 的 `BINDINGS` 在类创建时会冻结：`MainScreen` 在 `__init__` 里用 `dataclasses.replace` **只改 description**，禁止整表替换 `_bindings`（会丢掉 ListView 继承的 up/down/enter，表现为方向键失灵）。
 
-- **判定 Textual Pilot 用例是真回归还是既有偶发（2026-07-30）**：`AGENTS.md` 说「失败用例单独重跑一遍确认」，但**单跑一次不够**——`test_focusing_split_pane_highlights_matching_sidebar_session` 会在单跑时也失败（`_wait_until` 等满 5s），连续跑 5～8 次才出现 1 次，改动前后的偶发率一样。正确判定路径：① 同一用例在仓库目录内**重复采样 5 次以上**统计失败率；② 用 `git archive HEAD | tar -x -C <临时目录>` 拉出改动前的源码，**并显式 `PYTHONPATH=<临时目录>/src`** 再跑同样次数对比。注意第 ② 步不加 `PYTHONPATH` 会因 editable 安装的 `.pth` 仍指回工作区 `cli/src`，实际测的还是改动后的代码，得出「改动前能过」的错误结论。两边失败率相当即为既有偶发，可照常发版。**该偶发的机制已于 2026-07-31 查清（尚未修）**：插桩 `PaneCell._on_descendant_focus` 可见事件本身每次都正常送达、携带正确的 `EmbedPane`，但它用 `call_after_refresh` 延后执行的 `_notify_pane_focused` 在回调时刻读到 `has_focus_within=False`、`screen.focused` 已经变回 `SessionListView`——焦点在「pane 拿到」与「延后回调执行」之间被抢回了侧边栏，通知被静默丢弃且**没有任何重试**，侧边栏高亮因此永远不同步。根因是 Textual 的 `Widget.focus()` 走 `call_later` 异步生效（见「界面」节同类记录），与 `_schedule_follow_selection` 的 120ms 节流定时器互相插队，谁先落地由时序抖动决定。注意**插桩会改变时序**：给 `Screen.set_focus` 加 `traceback.format_stack` 后连跑 40 轮一次都不复现，想抓抢占方必须用不影响时序的手段（如只记录轻量标记）。
+- **判定 Textual Pilot 用例是真回归还是既有偶发（2026-07-30）**：`AGENTS.md` 说「失败用例单独重跑一遍确认」，但**单跑一次不够**——`test_focusing_split_pane_highlights_matching_sidebar_session` 会在单跑时也失败（`_wait_until` 等满 5s），连续跑 5～8 次才出现 1 次，改动前后的偶发率一样。正确判定路径：① 同一用例在仓库目录内**重复采样 5 次以上**统计失败率；② 用 `git archive HEAD | tar -x -C <临时目录>` 拉出改动前的源码，**并显式 `PYTHONPATH=<临时目录>/src`** 再跑同样次数对比。注意第 ② 步不加 `PYTHONPATH` 会因 editable 安装的 `.pth` 仍指回工作区 `cli/src`，实际测的还是改动后的代码，得出「改动前能过」的错误结论。两边失败率相当即为既有偶发，可照常发版。**该偶发已于 2026-07-31 定位并根治**（实测 40 次全过，修复前 8/40 失败），根因与修法见下面「焦点竞态」一节；本条保留的是那套判定方法本身，仍然适用于将来任何新的 Pilot 偶发。补一条量化教训：**20 次一组的采样会被噪声骗到**（同一改动量到「前 3 挂 / 后 6 挂」像是翻倍回归，换 40 次一组则两边都是 8/40），判定回归至少用 40 次一组。
 - **CI 上的判定已经自动化，不要再让偶发变成失败邮件（2026-07-31）**：上面那条「失败用例单独重跑」以前只写在文档里靠人执行，GitHub Actions 仍旧一失败就发邮件。现在 CI 走 `scripts/ci-test.py` 而不是裸 `python -m unittest discover`：首轮失败的用例会被自动单独重跑一次，两次都失败才判真回归（真回归是确定性的，重跑照样挂，不会被这层重试掩盖）。该脚本同时用 `faulthandler.dump_traceback_later` 兜挂死，见下方「CI 工作流」节。
 
 - **点击崩溃（2026-07 真机实报，已修复）**：Textual 默认给所有 Widget 开启内置的鼠标拖拽文本选择（`ALLOW_SELECT = True`）。`SessionCard`/`NewSessionCard` 这类会被后台重扫线程动态增删的列表项 Widget 被点击时触发该逻辑，选择过程中控件被移除会导致 `container` 解析为 `None`，访问 `.region` 直接 `AttributeError` 崩溃整个应用。修法：`PickupApp`/`SessionCard`/`NewSessionCard`/弹窗菜单项 `_ChoiceItem` 设 `ALLOW_SELECT = False`；`EmbedPane` 保留默认值用于划词选中+复制（见「内嵌面板」节）。回归：`test_ui.py` 的 `test_clicking_session_card_selects_and_launches_without_crashing`。
@@ -436,9 +436,11 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 
 **这类「只在某个平台失败」的问题可以在 Linux 上复现**，别干等 CI：把 `TMPDIR` 指向一个软链目录即可等价重演——`mkdir /tmp/realtmp && ln -s /tmp/realtmp /tmp/linktmp && TMPDIR=/tmp/linktmp python -m unittest tests.test_projects`。修复前失败 6 个、修复后全过，是本次实际用的验证手法。
 
-### 焦点竞态：挂载收尾会把焦点从刚点进去的格子抢回列表（2026-07-31 已修）
+### 焦点竞态：焦点被从刚点进去的格子抢回列表（2026-07-31 已修）
 
-现象有两个面：用户点进内嵌会话后**键盘却还在侧边栏**；以及侧边栏高亮、右上角会话小窗停在旧格不动。
+现象有两个面：用户点进内嵌会话后**键盘却还在侧边栏**；以及侧边栏高亮、右上角会话小窗停在旧格不动。**两个独立触发点**（下面分别是触发点一和触发点二），当时只修了第一个，老偶发纹丝不动。
+
+**触发点一：挂载收尾把焦点还给列表时，闸门漏掉了「绕过意图机制的直接聚焦」。**
 
 `SplitPaneArea._settle_focus_intent` 在挂载收尾时会「按挂载前的样子把焦点还给列表」，原先只有 `_focus_intent_serial` 一道闸门——而那个计数只在焦点意图经 `_apply_focus_intent` 兑现时才推进。**用户点击、或代码直接 `EmbedPane.focus()` 是绕过意图机制的**，推不动计数，于是迟到的 `_on_focus_list()` 照常执行、把焦点抢走；连带 `PaneCell._notify_pane_focused`（`call_after_refresh` 延后执行）读到 `has_focus_within=False` 而**静默丢弃通知且不重试**，高亮和小窗就此停住。修法是补第二道闸门 `any_embed_focused()` 现查，两道各管一种时序（注释里写清了为什么缺一不可）。
 
@@ -447,9 +449,13 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - **不要试图在 `DescendantFocus` 上推进计数。** 该事件冒泡到 `SplitPaneArea` 是**异步**的，实测常常排在 `_settle_focus_intent` 之后才送达（`PaneCell` 自己的处理器倒是先跑，但够不着区域层的计数）。试过，无效。
 - **插桩必须足够轻。** 给 `Screen.set_focus` 加 `traceback.format_stack` 后连跑 40 轮一次都不复现——格式化栈的开销直接把竞态窗口盖掉了。可行的做法是只记类型名 / `sys._getframe(1).f_lineno` 这类常数级信息，对照「成功一轮」与「失败一轮」的事件序列差异，抢占者一眼可见。
 
-**注意：这条只修好了会话小窗那个用例（12 次挂 4 次 → 15 次全过），`test_focusing_split_pane_highlights_matching_sidebar_session` 的老偶发并未随之消失**（同一现象、不同触发点），仍由 `scripts/ci-test.py` 的自动重跑兜着。别把这条当成那个老偶发的结案。
+**同一个现象有两个独立触发点，必须分别修，只修一个另一个照样挂**——这是本次最容易误判的地方（修完第一个后 A/B 显示老偶发失败率一动不动，才意识到还有第二个）：
 
-判定「有没有把老偶发弄得更糟」必须做够样本的 A/B，20 次一组会被噪声骗到：本次 20 次一组量到「修复前 3 挂 / 修复后 6 挂」，看着像翻倍的回归；换 40 次一组、两棵源码树各跑一遍，结果是**两边都是 8/40**，完全相同。A/B 用 `PYTHONPATH` 指向两棵独立源码树来切换版本（`cp -r src/pickup` 一份、再用 `git show HEAD:<文件> >` 覆盖出基线那一份），比来回改工作区文件更不容易搞混。顺带修正上面那条旧记录的偶发率：实测约 **20%（8/40）**，比「5～8 次出现 1 次」更高。
+**触发点二：`_focus_list()` 里的 `Widget.focus()` 让生效顺序与调用顺序反过来。** `MainScreen._focus_list()` 原先用 `SessionListView.focus()`，它走 `call_later` 排队生效。于是：挂载收尾先调 `_focus_list()`（把「回列表」排进队列）→ 用户随后点进某个内嵌格 / 代码调 `EmbedPane.focus()`（也排进队列）→ 队列依次兑现时，**较早排队的「回列表」反而落在后面**，把焦点从格子上抢走。轨迹里看得很清楚：失败轮次是 `FOCUS_LIST | set_focus->EmbedPane | set_focus->SessionListView`，成功轮次是 `FOCUS_LIST | set_focus->SessionListView | ... | set_focus->EmbedPane`。修法是改用 `Screen.set_focus()` 同步生效，谁后请求谁生效。这条也解释了为什么触发点一的两道闸门救不了它——闸门在**调用时刻**判断，而这里出问题的是**兑现时刻**的顺序，判断时焦点还没落到格子上，`any_embed_focused()` 当然是 False。
+
+`test_focusing_split_pane_highlights_matching_sidebar_session` 由此从 8/40 失败变为 **40/40 全过**。
+
+A/B 用 `PYTHONPATH` 指向两棵独立源码树来切换版本（`cp -r src/pickup` 一份、再用 `git show HEAD:<文件> >` 覆盖出基线那一份），比来回改工作区文件更不容易搞混。**核对基线树是否真的是旧代码时，别用「源码里有没有某个标识符」判断**——本次差点被骗：那个标识符同时出现在解释性的文档字符串里，`in inspect.getsource(...)` 一直为真，看着像基线没生效。要比就比实际的代码行。
 
 ### 排查 CI 失败的取证手法（有个反直觉的坑）
 
