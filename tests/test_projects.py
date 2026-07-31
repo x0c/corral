@@ -14,6 +14,19 @@ from pickup import projects
 from pickup.models import LaunchPlan
 
 
+def _temp_root(td: str) -> Path:
+    """把临时目录解析成真实路径再用作断言基准。
+
+    **macOS 上不解析会全线假失败**：那里 `/var` 是指向 `/private/var` 的软链，
+    `tempfile` 交回来的是 `/var/folders/...`，而 `projects.scan_git_roots` 会
+    如实解析成 `/private/var/folders/...`（解析软链是它的既定行为，另有
+    `test_scan_resolves_symlink_root` 专门守着），两边字符串对不上。Linux 上
+    `/tmp` 不是软链，所以本机怎么跑都不复现。2026-07-31 macOS runner 上一次暴露
+    7 个用例，此前一直被 macOS 作业挂死掩盖着没人看见。
+    """
+    return Path(td).resolve()
+
+
 def _touch_git(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / ".git").mkdir(exist_ok=True)
@@ -28,7 +41,7 @@ class GitScanTests(unittest.TestCase):
 
     def test_scan_finds_git_roots_and_skips_nested(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = _temp_root(td)
             _touch_git(root / "subswap")
             _touch_git(root / "a" / "b" / "LingoWeave")
             _touch_git(root / "subswap" / "vendor" / "nested")  # 应被剪枝
@@ -42,7 +55,7 @@ class GitScanTests(unittest.TestCase):
     def test_scan_skips_stversions_syncthing_snapshots(self) -> None:
         """回归：Syncthing `.stversions` 里的 `.git` 不得当成项目。"""
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = _temp_root(td)
             real = root / "Codes" / "subswap"
             snap = root / "Codes" / ".stversions" / "subswap"
             _touch_git(real)
@@ -53,7 +66,7 @@ class GitScanTests(unittest.TestCase):
 
     def test_scan_skips_dot_dirs_and_node_modules(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = _temp_root(td)
             _touch_git(root / "ok")
             _touch_git(root / "node_modules" / "pkg")
             _touch_git(root / ".cache" / "hidden")
@@ -63,7 +76,7 @@ class GitScanTests(unittest.TestCase):
 
     def test_scan_resolves_symlink_root(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = _temp_root(td)
             real = root / "real"
             link = root / "link"
             _touch_git(real / "pickup")
@@ -75,7 +88,7 @@ class GitScanTests(unittest.TestCase):
     def test_scan_follows_symlinked_subdir(self) -> None:
         """回归：`~/Codes -> /elsewhere/Codes` 这类软链接子目录必须照样扫到项目。"""
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = _temp_root(td)
             home = root / "home"
             home.mkdir()
             elsewhere = root / "elsewhere" / "Codes"
@@ -89,7 +102,7 @@ class GitScanTests(unittest.TestCase):
     def test_scan_symlink_cycle_terminates(self) -> None:
         """软链接成环不得死循环。"""
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = _temp_root(td)
             _touch_git(root / "repo")
             (root / "loop").symlink_to(root)
 
@@ -98,7 +111,7 @@ class GitScanTests(unittest.TestCase):
 
     def test_pickup_project_roots_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = _temp_root(td)
             _touch_git(root / "only")
             with mock.patch.dict(os.environ, {"PICKUP_PROJECT_ROOTS": str(root)}):
                 projects.clear_filesystem_cache()
@@ -167,7 +180,7 @@ class MatchResolveTests(unittest.TestCase):
 class ProjectEntriesTests(unittest.TestCase):
     def test_merges_git_and_session_stats(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = _temp_root(td)
             _touch_git(root / "diskonly")
             sessions = {
                 "claude": [
@@ -221,7 +234,7 @@ class DirectLaunchProjectTests(unittest.TestCase):
 
     def test_project_mode_builds_new_session_plan(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = _temp_root(td)
             proj = root / "subswap"
             _touch_git(proj)
             new_plan = LaunchPlan(("claude", "--dangerously-skip-permissions"), str(proj))

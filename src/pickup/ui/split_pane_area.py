@@ -803,14 +803,33 @@ class SplitPaneArea(Vertical):
     def _settle_focus_intent(self, restore_list: bool, serial: int) -> None:
         """挂载收尾：兑现意图，兑现不了就按挂载前的样子把焦点还给列表。
 
-        `serial` 是排这次挂载时的兑现计数。计数变了说明挂载排队期间已经有一次
-        明确意图被兑现（点击/回车打开），此时绝不能再把焦点还回列表——
-        Textual 的 `Widget.focus()` 是 `call_later` 延迟生效的，这里不能靠
-        `any_embed_focused()` 现查，那时焦点还没真正落到格子上。
+        两道闸门缺一不可，各管一种时序，都不能单独扛：
+
+        - `serial` 是排这次挂载时的兑现计数。计数变了说明挂载排队期间已经有一次
+          明确意图被兑现（点击/回车打开），此时绝不能再把焦点还回列表。这道闸门
+          管的是**焦点还没落地**的情况——Textual 的 `Widget.focus()` 走
+          `call_later` 延迟生效，那一刻 `any_embed_focused()` 现查还是 False。
+        - `any_embed_focused()` 管的是**焦点已经落地**的情况：用户直接点进某个
+          内嵌会话、或代码直接调 `EmbedPane.focus()`，都绕过了意图机制、推不动
+          serial，于是这里迟到执行时会把焦点从人家刚点进去的格子抢回侧边栏。
+          用户表现是「点进内嵌会话，键盘却还在侧边栏」；连带
+          `PaneCell._notify_pane_focused` 读到焦点已不在本格而静默丢弃通知，
+          侧边栏高亮和右上角会话小窗都停在旧格不动。
+
+        为什么不能只靠在 `DescendantFocus` 上推 serial：那个事件冒泡到本区域是
+        **异步**的，实测常常排在本方法之后才送达（`PaneCell` 自己的处理器倒是先
+        跑，但它够不着这里的计数）。只有「此刻焦点是不是真在格子里」这个现查是
+        可靠的。2026-07-31 由 CI 上确定性失败的
+        `test_only_the_active_pane_draws_the_hud` 暴露，同一竞态也是
+        `test_focusing_split_pane_highlights_matching_sidebar_session` 长期偶发的根因。
         """
         if self._apply_focus_intent() or self._focus_intent_key:
             return
-        if restore_list and self._focus_intent_serial == serial:
+        if (
+            restore_list
+            and self._focus_intent_serial == serial
+            and not self.any_embed_focused()
+        ):
             self._on_focus_list()
 
     def _schedule_mount(

@@ -430,6 +430,27 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - 修法在测试侧：`tests/test_ui.py` 的 `_draining_pty_master()` 上下文管理器在探测期间持续读空 master，模拟真实终端。**验证它没退化成空转**的最小办法：不开 drain 时往 slave 写几个字节，`select` master 应当可读；开 drain 后同样的写入应当被吃掉、master 不再可读。
 - **顺带暴露的产品侧风险（未改，知悉即可）**：同一行 `TCSADRAIN` 在真实终端被流控卡住时（用户按了 `Ctrl+S`、或 SSH 链路停顿）同样会阻塞，表现为 pickup 启动时整个卡住、TUI 出不来。改成 `TCSANOW` 可以规避，但会让刚写出的查询字节在输出后处理模式变回去之后才发出，需要在真实终端上验证过再动，不要凭推理改。
 
+### macOS 上项目扫描用例全线假失败：`/var` 是软链（2026-07-31 已修）
+
+`test_projects` 有 7 个用例只在 macOS 挂。macOS 的 `/var` 是指向 `/private/var` 的软链，`tempfile` 交回 `/var/folders/...`，而 `projects.scan_git_roots` 会如实解析成 `/private/var/folders/...`（解析软链是既定行为，`test_scan_resolves_symlink_root` 专门守着），两边字符串对不上。修法是 `tests/test_projects.py` 的 `_temp_root()`：临时目录先 `resolve()` 再当断言基准。
+
+**这类「只在某个平台失败」的问题可以在 Linux 上复现**，别干等 CI：把 `TMPDIR` 指向一个软链目录即可等价重演——`mkdir /tmp/realtmp && ln -s /tmp/realtmp /tmp/linktmp && TMPDIR=/tmp/linktmp python -m unittest tests.test_projects`。修复前失败 6 个、修复后全过，是本次实际用的验证手法。
+
+### 焦点竞态：挂载收尾会把焦点从刚点进去的格子抢回列表（2026-07-31 已修）
+
+现象有两个面：用户点进内嵌会话后**键盘却还在侧边栏**；以及侧边栏高亮、右上角会话小窗停在旧格不动。
+
+`SplitPaneArea._settle_focus_intent` 在挂载收尾时会「按挂载前的样子把焦点还给列表」，原先只有 `_focus_intent_serial` 一道闸门——而那个计数只在焦点意图经 `_apply_focus_intent` 兑现时才推进。**用户点击、或代码直接 `EmbedPane.focus()` 是绕过意图机制的**，推不动计数，于是迟到的 `_on_focus_list()` 照常执行、把焦点抢走；连带 `PaneCell._notify_pane_focused`（`call_after_refresh` 延后执行）读到 `has_focus_within=False` 而**静默丢弃通知且不重试**，高亮和小窗就此停住。修法是补第二道闸门 `any_embed_focused()` 现查，两道各管一种时序（注释里写清了为什么缺一不可）。
+
+排查这类竞态的两条教训：
+
+- **不要试图在 `DescendantFocus` 上推进计数。** 该事件冒泡到 `SplitPaneArea` 是**异步**的，实测常常排在 `_settle_focus_intent` 之后才送达（`PaneCell` 自己的处理器倒是先跑，但够不着区域层的计数）。试过，无效。
+- **插桩必须足够轻。** 给 `Screen.set_focus` 加 `traceback.format_stack` 后连跑 40 轮一次都不复现——格式化栈的开销直接把竞态窗口盖掉了。可行的做法是只记类型名 / `sys._getframe(1).f_lineno` 这类常数级信息，对照「成功一轮」与「失败一轮」的事件序列差异，抢占者一眼可见。
+
+**注意：这条只修好了会话小窗那个用例（12 次挂 4 次 → 15 次全过），`test_focusing_split_pane_highlights_matching_sidebar_session` 的老偶发并未随之消失**（同一现象、不同触发点），仍由 `scripts/ci-test.py` 的自动重跑兜着。别把这条当成那个老偶发的结案。
+
+判定「有没有把老偶发弄得更糟」必须做够样本的 A/B，20 次一组会被噪声骗到：本次 20 次一组量到「修复前 3 挂 / 修复后 6 挂」，看着像翻倍的回归；换 40 次一组、两棵源码树各跑一遍，结果是**两边都是 8/40**，完全相同。A/B 用 `PYTHONPATH` 指向两棵独立源码树来切换版本（`cp -r src/pickup` 一份、再用 `git show HEAD:<文件> >` 覆盖出基线那一份），比来回改工作区文件更不容易搞混。顺带修正上面那条旧记录的偶发率：实测约 **20%（8/40）**，比「5～8 次出现 1 次」更高。
+
 ### 排查 CI 失败的取证手法（有个反直觉的坑）
 
 - **`gh run view --log-failed` 在整轮 run 还没结束时会直接拒绝**（`run … is still in progress; logs will be available when it is complete`）。而「有作业挂死」恰恰意味着整轮永远不结束——最需要看日志的时候正好看不到，是这次排查最先撞上的墙。绕法是走 API 拿**作业级**信息，它不受整轮状态限制：
