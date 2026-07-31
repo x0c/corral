@@ -74,6 +74,21 @@ _PICKUP_LIGHT = Theme(
 )
 
 
+# pickup 自有主题变量的兜底值。**凡是在 widget 的 DEFAULT_CSS 里用到、而 Textual
+# 内置主题没有的变量，都必须同时登记在这里**，不能只写在上面两个 Theme 里。
+# 原因：widget 的 DEFAULT_CSS 是在该类第一次挂载时并入应用样式表并做变量代换的，
+# 那一刻当前主题不一定已经切到 pickup 自有主题（`on_mount` 里注册与切换，和首屏
+# 各控件的挂载时机不是同一件事，且随 Textual 版本、终端探测结果、直启/普通启动
+# 路径而变）。主题里缺一个变量的后果不是"颜色不对"，而是**整个应用起不来**：
+# Textual 直接报 `reference to undefined variable` 并中止（2026-07-31 真机事故：
+# 0.24.29 在 macOS Homebrew 安装下一启动就报 `$pane-inactive-background` 未定义）。
+# 这里给的是深色兜底值，具体主题里的同名变量会覆盖它。
+_THEME_VARIABLE_DEFAULTS = {
+    "pane-active-background": "#31475E",
+    "pane-inactive-background": "#212E3C",
+}
+
+
 class PickupApp(App):
     """pickup 的主应用；具体界面全部在 MainScreen 里，这里只挂屏幕。"""
 
@@ -102,6 +117,10 @@ class PickupApp(App):
         background: $primary-muted;
     }
     """
+
+    def get_theme_variable_defaults(self) -> dict[str, str]:
+        """pickup 自有主题变量的兜底值，见 `_THEME_VARIABLE_DEFAULTS` 的说明。"""
+        return dict(_THEME_VARIABLE_DEFAULTS)
 
     def get_driver_class(self):
         """默认 Unix 驱动增加终端主题应答解析，其他驱动保持 Textual 原行为。"""

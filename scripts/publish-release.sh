@@ -113,7 +113,19 @@ for item in sorted(dist.iterdir()):
 PY
 
   echo "==> 上传安装包"
-  gh release upload "$TAG" "$DIST"/* --clobber
+  # 打完 tag 之后 CI 的 release 工作流也在传同名附件，而 --clobber 是「先删再传」：
+  # 两边交错时本机这次会拿到 404（附件 ID 在上传途中被对方删掉了）。这里绝不能让
+  # 上传失败中断整个脚本——后面的 Homebrew 配方才是决定"用户能不能升级"的那一步，
+  # 附件没传成最多是少个预编译包，配方停在旧版本才是真事故。
+  # 2026-07-31 v0.24.29 实测踩到：脚本在这里退出，配方全靠 CI 恰好跑赢才没停在旧版。
+  if ! gh release upload "$TAG" "$DIST"/* --clobber; then
+    echo "!!  上传失败，等 8 秒重试一次（多半是和 CI 的 release 工作流抢同名附件）"
+    sleep 8
+    if ! gh release upload "$TAG" "$DIST"/* --clobber; then
+      UPLOAD_FAILED=1
+      echo "!!  安装包上传仍未成功；继续往下走，收尾核对会列出 Release 实际有几个附件"
+    fi
+  fi
   echo "==> 本轮未覆盖：${SKIPPED}"
 fi
 
@@ -172,3 +184,7 @@ curl -fsSL "https://raw.githubusercontent.com/${TAP_REPO}/main/Formula/pickup.rb
   | grep -E '^  url ' | sed 's/^/配方 /'
 curl -fsSL "https://api.github.com/repos/${SOURCE_REPO}/releases/latest" \
   | python3 -c 'import json,sys; print("最新 Release：" + json.load(sys.stdin)["tag_name"])'
+if [ "${UPLOAD_FAILED:-0}" = "1" ]; then
+  echo "!!  注意：本机这轮安装包上传失败过，请对照上面的附件数量确认是否需要重跑本脚本"
+  exit 1
+fi

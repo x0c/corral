@@ -357,6 +357,43 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             self.assertEqual(app.theme, "pickup-light")
 
+    async def test_widget_css_survives_a_builtin_theme(self) -> None:
+        """自有主题变量必须有兜底值，否则整个应用起不来（v0.24.29 真机事故）。
+
+        widget 的 DEFAULT_CSS 是各自第一次挂载时才并入样式表做变量代换的，那一刻
+        当前主题不保证已经是 pickup 自有主题。只把变量写在 Theme 里，换个终端探测
+        结果或 Textual 版本就可能在代换时找不到它，Textual 直接报
+        `reference to undefined variable` 并中止启动，而不是退化成默认颜色。
+        这里强行切到 Textual 内置主题再挂载整屏，等价于"最坏时序"。
+        """
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            app.theme = "textual-dark"  # 内置主题里没有 pickup 自有变量
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause(delay=0.3)
+            # 能取到颜色就说明变量代换成功；解析失败时 Textual 早已中止应用
+            for name in ("pane-active-background", "pane-inactive-background"):
+                with self.subTest(variable=name):
+                    self.assertIn(name, app.get_css_variables())
+
+    def test_theme_variable_defaults_cover_every_custom_variable(self) -> None:
+        """自有主题里定义的变量，兜底表必须一个不落地覆盖。"""
+        from pickup.ui.app import (
+            _PICKUP_DARK, _PICKUP_LIGHT, _THEME_VARIABLE_DEFAULTS,
+        )
+
+        builtin = {"block-cursor-background", "block-cursor-blurred-background"}
+        for theme in (_PICKUP_DARK, _PICKUP_LIGHT):
+            custom = set(theme.variables) - builtin
+            missing = custom - set(_THEME_VARIABLE_DEFAULTS)
+            self.assertEqual(
+                missing, set(),
+                f"{theme.name} 定义了自有变量但没进兜底表：{missing}",
+            )
+
     async def test_dark_background_uses_dark_theme(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False, osc_report=b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07")
