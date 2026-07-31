@@ -414,12 +414,21 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：
 
 - **Kitty 键盘协议回归用例在 5 个 Python 版本上全挂（确定性，非偶发）。** `TEXTUAL_DISABLE_KITTY_KEY` 原先只在 `cli.py` 顶部 `setdefault`，而 `textual.constants` 是**导入时一次性读环境变量定死**的：任何先 `import textual` 再碰 `pickup.cli` 的路径（测试套件、只 `import pickup` 的脚本、第三方嵌入）都会让这道保护整个失效。本机之所以一直看不出来，是因为开发环境的 shell 里已经导出了 `TEXTUAL_DISABLE_KITTY_KEY=1`，把问题掩盖掉了——**复现必须 `env -u TEXTUAL_DISABLE_KITTY_KEY` 清掉再跑**。已修：开关上移到 `pickup/__init__.py`（包顶层是唯一「任何用法必经」的位置），`cli.py` 不再重复设置。
-- **macOS 作业挂死并空烧 6 小时，进而拖垮整个队列。** 作业没有配 `timeout-minutes`，单测跑到 `test_ui` 后半段卡住后一直占着 runner 直到平台 6 小时上限才被杀。免费额度的 macOS 并发本就少，两个这样的僵尸作业把后续排队拖到 **14 小时以上**（实测：11:48 推送的作业次日 02:22 才开始跑），连带一大片 `cancelled`。已加 `timeout-minutes: 40`，并让 `scripts/ci-test.py` 用 `faulthandler.dump_traceback_later` 在 1500 秒时打印**全部线程栈**再退出——下次再挂，日志里直接能看到卡在哪个用例，而不是只剩一句 `The operation was canceled`。**挂死点尚未定位**（macOS 专有，Linux 上不复现；日志显示最后完成的是 `ModalTests.test_sidebar_new_session_opens_single_modal`，按 unittest 的字母序，嫌疑落在紧随其后的 `OscProbeFlushTests` 那两个 pty 用例）。
+- **macOS 作业挂死并空烧 6 小时，进而拖垮整个队列。** 作业没有配 `timeout-minutes`，单测跑到 `test_ui` 后半段卡住后一直占着 runner 直到平台 6 小时上限才被杀。免费额度的 macOS 并发本就少，两个这样的僵尸作业把后续排队拖到 **14 小时以上**（实测：11:48 推送的作业次日 02:22 才开始跑），连带一大片 `cancelled`。已加 `timeout-minutes: 40`，并让 `scripts/ci-test.py` 用 `faulthandler.dump_traceback_later` 在 1500 秒时打印**全部线程栈**再退出——下次再挂，日志里直接能看到卡在哪个用例，而不是只剩一句 `The operation was canceled`。**挂死点已于当天定位并修复**——见下面「macOS 专有挂死」一条，这套打栈机制第一次上线就把它抓了出来（26 分钟自曝，而不是空烧 6 小时）。
 - **已知 Pilot 偶发污染结论。** 见「界面」节的分屏聚焦竞态那条。CI 现在走 `scripts/ci-test.py`，首轮失败的用例自动单独重跑一次，两次都失败才算真回归。
 
 另外两处工作流层面的浪费也一并修了：`on: push` 不带过滤时，tag 推送会和同一提交在 `main` 上的推送产生**完全重复的一轮矩阵**（每次发版凭空多 7 个作业），已收窄为 `branches: ["**"]`；并加了 `concurrency` + `cancel-in-progress`，同分支后推的提交自动作废前一轮排队。
 
 改这个工作流或 `scripts/ci-test.py` 后，本机至少验证：`env -u TEXTUAL_DISABLE_KITTY_KEY python scripts/ci-test.py` 全绿，且用临时目录造一个「首轮失败、重跑通过」和一个「两轮都失败」的假用例，确认退出码分别是 0 和 1。
+
+### macOS 专有挂死：`TCSADRAIN` 在无人读取的伪终端上永不返回（2026-07-31 已修）
+
+`OscProbeFlushTests` 那两个 pty 用例在 macOS runner 上百分之百挂死，Linux 上怎么跑都不复现。栈精确停在 `theme._probe_osc_colours` 收尾的 `termios.tcsetattr(fd, termios.TCSADRAIN, old)`：
+
+- **`TCSADRAIN` 的语义是「先等输出队列排空，再让新属性生效」。** 探测会先把 OSC 10/11 查询写给 pty slave，这些字节堆在输出队列里等对端来读。测试只造了一个「会写应答」的线程，**从来没有人读 master**，队列永远不空，于是这一行永远不返回。真实终端不存在这个问题——终端一直在读。
+- **不要试图在 Linux 上复现**：两边的排空语义不同，Linux 直接返回。这类「只在某一个 OS 上挂」的问题，靠本机重跑是抓不到的，必须让 CI 把线程栈打出来（正是 `scripts/ci-test.py` 存在的理由）。
+- 修法在测试侧：`tests/test_ui.py` 的 `_draining_pty_master()` 上下文管理器在探测期间持续读空 master，模拟真实终端。**验证它没退化成空转**的最小办法：不开 drain 时往 slave 写几个字节，`select` master 应当可读；开 drain 后同样的写入应当被吃掉、master 不再可读。
+- **顺带暴露的产品侧风险（未改，知悉即可）**：同一行 `TCSADRAIN` 在真实终端被流控卡住时（用户按了 `Ctrl+S`、或 SSH 链路停顿）同样会阻塞，表现为 pickup 启动时整个卡住、TUI 出不来。改成 `TCSANOW` 可以规避，但会让刚写出的查询字节在输出后处理模式变回去之后才发出，需要在真实终端上验证过再动，不要凭推理改。
 
 ### 排查 CI 失败的取证手法（有个反直觉的坑）
 

@@ -14,7 +14,9 @@ embed.* 调用）：项目已有的 embed.py 单测负责纯函数层，selftest
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import select
 import shutil
 import subprocess
 import threading
@@ -182,6 +184,38 @@ class KittyKeyboardProtocolTests(unittest.TestCase):
         )
 
 
+@contextlib.contextmanager
+def _draining_pty_master(master: int):
+    """持续读空 pty master，模拟「真实终端会把程序写出去的字节收走」。
+
+    **没有这个读者，测试会在 macOS 上永久挂死。** 探测把 OSC 查询写给 slave，
+    这些字节堆在输出队列里等对端来读；`_probe_osc_colours` 收尾用
+    `tcsetattr(fd, TCSADRAIN, old)` 恢复终端属性，而 `TCSADRAIN` 的语义正是
+    「先等输出队列排空再生效」——没人读 master，队列永远不空，这一行就永远不返回。
+    Linux 的排空语义不同、不会卡，所以本机怎么跑都复现不了。2026-07-31 GitHub
+    macOS runner 上真实挂死，作业空烧 6 小时才被平台上限杀掉，线程栈精确停在
+    `theme.py` 的那一行 `tcsetattr`。真实终端不存在这个问题（终端一直在读）。
+    """
+    stop = threading.Event()
+
+    def _drain() -> None:
+        while not stop.is_set():
+            try:
+                ready, _, _ = select.select([master], [], [], 0.02)
+                if ready and not os.read(master, 4096):
+                    return
+            except OSError:
+                return  # slave 已关闭
+
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        reader.join(timeout=1.0)
+
+
 class OscProbeFlushTests(unittest.TestCase):
     """回归：OSC 探测结束必须清空终端输入队列，否则没读完的应答尾巴会漏进 Textual
     被当键盘输入注入搜索框——真机现象是启动时先闪过一行 `...rgb:xxxx/...`、搜索框
@@ -226,7 +260,8 @@ class OscProbeFlushTests(unittest.TestCase):
                 os.environ.pop("TMUX", None)
                 os.environ.pop("PICKUP_OSC_REPORT", None)
                 with mock.patch.object(theme.sys, "stdin", _FakeStd(slave)), \
-                        mock.patch.object(theme.sys, "stdout", _FakeStd(slave)):
+                        mock.patch.object(theme.sys, "stdout", _FakeStd(slave)), \
+                        _draining_pty_master(master):
                     report = theme._probe_osc_colours(timeout=0.5)
             writer.join()
 
@@ -293,7 +328,8 @@ class OscProbeFlushTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"TMUX": "1"}, clear=False):
                 os.environ.pop("PICKUP_OSC_REPORT", None)
                 with mock.patch.object(theme.sys, "stdin", _FakeStd(slave)), \
-                        mock.patch.object(theme.sys, "stdout", _FakeStd(slave)):
+                        mock.patch.object(theme.sys, "stdout", _FakeStd(slave)), \
+                        _draining_pty_master(master):
                     report = theme._probe_osc_colours(timeout=0.5)
             writer.join(timeout=2.0)
 
