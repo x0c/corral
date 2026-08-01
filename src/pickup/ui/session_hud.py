@@ -318,10 +318,17 @@ class SessionHud(Widget):
 
     def render(self) -> Text:
         width = self.content_size.width or self._inner_width(self.container_size.width)
-        rendered = self.lines(
-            width,
-            self._max_height(self.container_size.height) if self._expanded else None,
-        )
+        # 高度必须取**已经分配给自己的** content 高度，不能在这里拿 container 高度
+        # 再算一遍 `_max_height()`：布局阶段（`get_content_height`）和渲染阶段看到的
+        # container 尺寸不保证一致（首帧、resize 中间态都可能差一拍），两边各算各的
+        # 就会出现"底色框 20 行、正文只有 6 行"这种背景高度与文字对不上的现象。
+        # 按分配高度开窗，行数与框高恒等。
+        max_height = None
+        if self._expanded:
+            max_height = self.content_size.height or self._max_height(
+                self.container_size.height,
+            )
+        rendered = self.lines(width, max_height)
         out = Text(no_wrap=True)
         for index, line in enumerate(rendered):
             if index:

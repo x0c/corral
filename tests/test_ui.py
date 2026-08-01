@@ -4772,6 +4772,44 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             app.screen.action_toggle_hud()
             await _wait_until(lambda: not hud.expanded and hud.region.height == 3)
 
+    async def test_box_height_matches_rendered_lines_in_both_states(self) -> None:
+        """底色框的高度必须恰好等于正文行数。
+
+        真机现象：展开后浮层底色比文字高出一截。根因是布局阶段（`get_content_height`）
+        和渲染阶段各自拿 container 尺寸算了一遍可见高度，两边看到的中间态不一定一样。
+        渲染必须按**已经分配给自己的** content 高度开窗，行数与框高才恒等。
+        """
+        sessions = self._live_sessions(1)
+        store, app = await self._hosted_app(sessions)
+        registry = store.registry
+        registry.get("claude").load_conversation.return_value = [
+            pickup.ConversationMessage("user", f"第{i}条提问：" + "很长的正文" * 10)
+            for i in range(6)
+        ]
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            area = app.screen.query_one(SplitPaneArea)
+            key = pickup.session_key(sessions[0])
+            area.show_hosted_group(
+                "/tmp", [(sessions[0], sessions[0]["keepalive_name"], lambda: "")],
+                focus_key=key,
+            )
+            await _wait_until(lambda: len(area._cells()) == 1)  # noqa: SLF001
+            hud = area._cells()[0].session_hud()  # noqa: SLF001
+            app.screen._sync_hud()  # noqa: SLF001
+            await _wait_until(lambda: hud.display and hud.size.height > 0)
+
+            def _matches() -> bool:
+                return hud.size.height == len(hud.render().plain.split("\n"))
+
+            self.assertTrue(_matches(), "收起态：底色框高度与正文行数不一致")
+            app.screen.action_toggle_hud()
+            await _wait_until(lambda: hud.expanded and hud.size.height > 3)
+            self.assertTrue(_matches(), "展开态：底色框高度与正文行数不一致")
+            # 每行都补齐到同宽，底色才是规整矩形，右侧不会露出锯齿
+            widths = {pickup._text_width(line) for line in hud.render().plain.split("\n")}
+            self.assertEqual(widths, {hud.size.width})
+
     async def test_only_the_active_pane_draws_the_hud(self) -> None:
         sessions = self._live_sessions(2)
         store, app = await self._hosted_app(sessions)
