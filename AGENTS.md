@@ -10,7 +10,7 @@
 
 > 以下文档在涉及对应领域的开发、评审或排查时先读取。领域知识库与验证细则见组件内说明。
 
-- [cli/AGENTS.md](cli/AGENTS.md)：改、评审或发布 pickup CLI 工具前必读（含领域知识库与截图验收）。Remote：`ssh://git@10.10.10.2:2222/Max/pickup.git`
+- [cli/AGENTS.md](cli/AGENTS.md)：改、评审或发布 pickup CLI 工具前必读（含领域知识库、截图验收，以及**排查「GitHub 持续发单测失败邮件 / 流水线作业排队十几小时 / macOS 作业挂死」**的入口）。**用 pickup 导出的会话数据写周报 / 日报 / 工作总结，或排查「导出内容不够写总结」时，从这里进 `cli/docs/SKILL.md` 的「拿会话数据做总结 / 周报时的边界」节。** Remote：`ssh://git@10.10.10.2:2222/Max/pickup.git`
 
 ## 组件一览
 
@@ -20,17 +20,18 @@
 
 ## 领域地图（doc-init）
 
-<!-- 覆盖度复核基线：2026-07-20 · src/pickup 包化 · 基线版本 0.19.4 -->
+<!-- 覆盖度复核基线：2026-08-01 · 源码指纹 扫描 147 文件 / Python 83 · Rust 1 / 1 子模块 · 基线版本 0.24.32 -->
 
 | 领域 | 入口锚点 |
 |------|---------|
-| 终端界面 | cli/src/pickup/ui/ · cli/src/pickup/cli.py · cli/src/pickup/display.py · cli/src/pickup/theme.py · cli/src/pickup/store.py · cli/src/pickup/i18n.py · cli/src/pickup/split_layout.py |
+| 终端界面 | cli/src/pickup/ui/ · cli/src/pickup/cli.py · cli/src/pickup/display.py · cli/src/pickup/theme.py · cli/src/pickup/store.py · cli/src/pickup/i18n.py · cli/src/pickup/split_layout.py · cli/src/pickup/ui_prefs.py |
 | 会话关注状态 | cli/src/pickup/attention.py · cli/src/pickup/attention_signals.py · cli/src/pickup/cursor_observer.py · cli/src/pickup/store.py · cli/src/pickup/ui/ |
 | 会话全文搜索 | cli/src/pickup/search.py · cli/src/pickup/ui/search_modal.py |
 | 内嵌实时终端 | cli/src/pickup/embed.py · cli/src/pickup/ui/embed_pane.py |
 | 会话扫描与对话内容 | cli/src/pickup/scan/ · cli/src/pickup/models.py · cli/src/pickup/runtime/ |
 | 跨助手接力与启动 | cli/src/pickup/runtime/ · cli/src/pickup/models.py |
 | 新助手接入 | cli/src/pickup/runtime/ · cli/src/pickup/scan/ |
+| 性能、派生缓存与原生加速 | cli/src/pickup/cache.py · cli/src/pickup/cache_cli.py · cli/src/pickup/native.py · cli/src/pickup/bootstrap.py · cli/rust/lib.rs · cli/Cargo.toml · cli/scripts/benchmark.py |
 | 可观测与诊断 | cli/src/pickup/observe.py · cli/src/pickup/agent_api.py |
 | 会话保活 | cli/src/pickup/keepalive.py |
 | 直启子命令 | cli/src/pickup/cli.py · cli/src/pickup/projects.py |
@@ -184,17 +185,18 @@ head -1 "$(command -v pickup)"   # 若 #!.../pipx/venvs/pickup/bin/python → �
 
 ## 领域地图（doc-init）
 
-<!-- 覆盖度复核基线：2026-07-20 · src/pickup 包化 · 基线版本 0.19.4 -->
+<!-- 覆盖度复核基线：2026-08-01 · 源码指纹 扫描 147 文件 / Python 83 · Rust 1 / 1 子模块 · 基线版本 0.24.32 -->
 
 | 领域 | 入口锚点 |
 |------|---------|
-| 终端界面 | src/pickup/ui/ · src/pickup/cli.py · src/pickup/display.py · src/pickup/theme.py · src/pickup/store.py · src/pickup/i18n.py |
+| 终端界面 | src/pickup/ui/ · src/pickup/cli.py · src/pickup/display.py · src/pickup/theme.py · src/pickup/store.py · src/pickup/i18n.py · src/pickup/split_layout.py · src/pickup/ui_prefs.py |
 | 会话关注状态 | src/pickup/attention.py · src/pickup/attention_signals.py · src/pickup/cursor_observer.py · src/pickup/store.py · src/pickup/ui/ |
 | 会话全文搜索 | src/pickup/search.py · src/pickup/ui/search_modal.py |
 | 内嵌实时终端 | src/pickup/embed.py · src/pickup/ui/embed_pane.py |
 | 会话扫描与对话内容 | src/pickup/scan/ · src/pickup/models.py · src/pickup/runtime/ |
 | 跨助手接力与启动 | src/pickup/runtime/ · src/pickup/models.py |
 | 新助手接入 | src/pickup/runtime/ · src/pickup/scan/ |
+| 性能、派生缓存与原生加速 | src/pickup/cache.py · src/pickup/cache_cli.py · src/pickup/native.py · src/pickup/bootstrap.py · rust/lib.rs · Cargo.toml · scripts/benchmark.py |
 | 可观测与诊断 | src/pickup/observe.py · src/pickup/agent_api.py |
 | 会话保活 | src/pickup/keepalive.py |
 | 直启子命令 | src/pickup/cli.py · src/pickup/projects.py |
