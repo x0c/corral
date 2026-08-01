@@ -94,6 +94,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Click to collapse",
         "zh": "点击收起",
     },
+    "hud.collapse_hint_scroll": {
+        "en": "Click to collapse · scroll for more",
+        "zh": "点击收起 · 滚轮看更多",
+    },
     "action.quit": {
         "en": "Quit",
         "zh": "退出",

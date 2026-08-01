@@ -39,6 +39,10 @@ class BaseRuntime(ABC):
     executable: str
     history_reading_hint: str
     auto_approve_args: tuple[str, ...] = ()  # 全自动放行参数（跳过权限审批），供直启子命令复用
+    # 用户实际会敲、但不等于 id 也不等于 executable 的命令名。直启子命令按这张表把
+    # `pickup cursor-agent …` 解析到本运行时——用户记得住的是自己天天敲的命令名，
+    # 不是 pickup 内部的运行时 id。
+    executable_aliases: tuple[str, ...] = ()
 
     def is_available(self) -> bool:
         return shutil.which(self.executable) is not None

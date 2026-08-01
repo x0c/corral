@@ -215,6 +215,8 @@ class DirectLaunchProjectTests(unittest.TestCase):
     def test_passthrough_when_first_arg_is_flag(self) -> None:
         plan = LaunchPlan(("claude", "--dangerously-skip-permissions", "--print", "hi"), None)
         registry = mock.Mock()
+        # 直启入口会先把第一个词按别名解析成运行时 id；假 registry 原样返回即可
+        registry.resolve_id.side_effect = lambda token: token
         registry.build_passthrough_plan.return_value = plan
         registry.ids = ("claude",)
 
@@ -242,6 +244,8 @@ class DirectLaunchProjectTests(unittest.TestCase):
             runtime = mock.Mock()
             runtime.build_new_session_plan.return_value = new_plan
             registry = mock.Mock()
+            # 直启入口会先把第一个词按别名解析成运行时 id；假 registry 原样返回即可
+            registry.resolve_id.side_effect = lambda token: token
             registry.get.return_value = runtime
             registry.scan_all.return_value = {"claude": []}
             registry.ids = ("claude",)
@@ -266,6 +270,8 @@ class DirectLaunchProjectTests(unittest.TestCase):
 
     def test_project_mode_rejects_extra_args(self) -> None:
         registry = mock.Mock()
+        # 直启入口会先把第一个词按别名解析成运行时 id；假 registry 原样返回即可
+        registry.resolve_id.side_effect = lambda token: token
         with (
             mock.patch.object(pickup, "_require_tmux"),
             mock.patch.object(pickup.sys, "stderr", new_callable=io.StringIO) as err,
@@ -279,6 +285,8 @@ class DirectLaunchProjectTests(unittest.TestCase):
     def test_no_keepalive_passthrough_with_flag_args(self) -> None:
         plan = LaunchPlan(("codex", "--dangerously-bypass-approvals-and-sandbox", "--resume", "x"), None)
         registry = mock.Mock()
+        # 直启入口会先把第一个词按别名解析成运行时 id；假 registry 原样返回即可
+        registry.resolve_id.side_effect = lambda token: token
         registry.build_passthrough_plan.return_value = plan
 
         with (
@@ -304,6 +312,8 @@ class LegacyDirectLaunchTestsUpdate(unittest.TestCase):
         plan = LaunchPlan(("claude", "--dangerously-skip-permissions", "--print", "hi"), None)
         wrapped = LaunchPlan(("tmux", "-L", "pickup-keepalive", "new-session"), None)
         registry = mock.Mock()
+        # 直启入口会先把第一个词按别名解析成运行时 id；假 registry 原样返回即可
+        registry.resolve_id.side_effect = lambda token: token
         registry.build_passthrough_plan.return_value = plan
 
         with (

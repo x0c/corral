@@ -260,8 +260,20 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **用户在透传参数里已经带了该运行时的危险参数时不重复添加**（`build_passthrough_plan` 用 `arg not in user_args` 过滤），这样 `pickup claude --dangerously-skip-permissions --resume xxx` 这类用户自己拼好完整参数的调用不会看到参数被加两遍。
 - **`cwd` 语义**：透传形态下 `cwd` 恒为 `None`（就地拉起）；项目快捷启动形态下 `cwd` 为匹配到的项目绝对路径（与 TUI 新建空白会话一致）。不要把两种形态的 `usable_cwd` 用法混掉。
 - `_dispatch_direct_launch` 捕获 `execute_launch` / 项目解析抛出的错误，打印信息并 `sys.exit(1)`，不让用户看到裸 Python 堆栈。
+- **入口探测用 `registry.launch_tokens`，展开用 `registry.resolve_id()`**：前者是"运行时 id + 可执行文件名 + `executable_aliases`"的集合，`main()` 只拿它做一次成员判断；命中后 `_dispatch_direct_launch` 再把第一个词展开成真正的 id，后续逻辑一律只认 id。**入口探测必须保持"集合包含"语义，不能改成"某个函数返回真值即命中"**——`cli.main` 的既有测试用 MagicMock/SimpleNamespace 替换整个 registry，任何返回真值的探测函数都会让 `--version` 这类普通命令被误判成直启，进而真的 execvp 出去把测试进程替换掉（实测现象：pytest 整体静默退出、tmux 打印 `server exited unexpectedly`，没有任何失败用例信息，极难定位）。回归：`tests/test_cli_options.py`、`tests/test_shim.py::DirectLaunchAliasTests`。
+- **别名只在 `executable_aliases` 一处声明**：Cursor 的安装脚本同时提供 `agent`（官方现行主名，即 `CursorRuntime.executable`）和 `cursor-agent`（兼容名，登记为别名），所以 `pickup cursor` / `pickup agent` / `pickup cursor-agent` 三种写法等价。新增运行时若也有多个入口名，加进这个类属性即可，不要在 `cli.py` 里写死映射表。
 
-## 机器接口维护（agent_api.py）
+## 命令拦截（shim.py）
+
+- **形态是交互式 shell 函数，不是 PATH shim 目录**，理由与全部放行判据写在 `shim.py` 的模块 docstring 里，改之前先读那段。核心一句：拦截只该作用于"用户手敲"，脚本 / CI / 编辑器插件 / 别的 Agent 拉起的子进程一个都不该被托管。
+- **pickup 自己会无头调用 `claude -p` / `codex exec` 生成标题**（`titlegen.py`）。放行判据里"非真实终端"和"参数命中无头/管理类词"两条**都不能删**，删任何一条都会让标题生成被包进 tmux 托管、静默失效并堆积进程。
+- **防递归三重保险**：shell 函数不被子进程继承（bash 不 `export -f`、zsh 不导出）、走 pickup 那一支带 `PICKUP_SHIM_ACTIVE=1`、托管会话里已注入的 `PICKUP_RUNTIME` 与 tmux 的 `TMUX` 同样触发放行。三条互相独立，不要因为"看起来重复"删掉任何一条。
+- **失败方向必须是"没托管"而不是"命令坏了"**：找不到 `pickup`、非 TTY、脚本文件缺失（配置里的 `source` 带 `-f` 判断）全部退回 `command <cmd>`。用户的 `claude` 因为装了 pickup 而不可用，是这个功能唯一不可接受的失败。
+- **绝不自动改用户 shell 配置**：只有显式 `pickup shim install` 才写入，写前备份原文件到缓存目录。配置里只放一行 `source`，函数正文在 `~/.cache/pickup/shim/` 的生成脚本里——升级只需重写脚本，不必反复动用户配置。
+- **状态判定按整行匹配函数定义**（`_shimmed_commands`）：`agent` 是 `cursor-agent` 的后缀，用子串判断会把"只拦了 cursor-agent"误报成"agent 也拦了"。回归：`test_agent_is_not_reported_as_shimmed_by_cursor_agent_suffix`。
+- **`agent` 默认不拦**：Cursor 占了这个极通用的名字，默认拦截会遮蔽用户机器上的其它同名工具（asdf 社区有 shim 误伤 `clear` 的先例），需 `--include agent` 显式开启。
+- **`TARGETS` 与默认注册表必须同步**：新增运行时要同时在这里登记可拦截命令名与放行子命令，`tests/test_shim.py::ShimTargetTableTests` 会断言两边不漂移。
+- 验证手法：`tests/test_shim.py` 里的 `ShimBehaviourTests` 用真实 bash + 伪终端（`pty`）跑生成的脚本，逐条验证"该托管的托管了、该放行的放行了"。**管道场景验证不了正向拦截**（`[ -t 1 ]` 不成立会一律放行），正向用例必须走 pty。zsh / fish 的语法与行为在容器里用真实 shell 验证过（本机没装这两个 shell 时对应用例自动跳过）。
 
 - `list`/`search`/`resolve_ref`（`show`/`context`/`plan continue` 共用）在扫描多个运行时时统一走 `_scan_runtimes` 辅助函数：`ThreadPoolExecutor` 并发扫描 + 单运行时异常隔离，与 `runtime/registry.py` 的 `scan_all()` 同语义但独立实现（机器接口按需只扫描 `--runtime` 指定的子集，不复用 TUI 那份）。之前是逐个运行时串行 `scan_sessions()`，运行时数量越多、`pickup list`/`search` 不带 `--runtime` 时延迟越接近各运行时耗时之和；改并发后接近最慢那个运行时的耗时。新增调用点需要扫描多个运行时时复用这个函数，不要退回字典推导式的串行写法。
 - `list`/`search`/`show`/`context`/`plan continue`/`describe` 的 JSON envelope 结构（`{ok, data, error, meta}`）、

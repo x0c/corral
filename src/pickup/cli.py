@@ -230,7 +230,8 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     pkg._require_tmux()
     no_keepalive = argv and argv[0] == "--no-keepalive"
     rest = argv[1:] if no_keepalive else argv
-    runtime_id, user_args = rest[0], rest[1:]
+    # 别名（`agent` / `cursor-agent` → `cursor`）只在这里展开一次，后续全用 id。
+    runtime_id, user_args = registry.resolve_id(rest[0]) or rest[0], rest[1:]
 
     project_query: str | None = None
     if user_args and not user_args[0].startswith("-"):
@@ -342,8 +343,9 @@ def main() -> None:
     _direct_launch_probe = (
         _direct_launch_argv[1:] if _direct_launch_argv[:1] == ["--no-keepalive"] else _direct_launch_argv
     )
-    if _direct_launch_probe and _direct_launch_probe[0] in default_registry().ids:
-        _dispatch_direct_launch(_direct_launch_argv, default_registry())
+    _direct_launch_registry = default_registry()
+    if _direct_launch_probe and _direct_launch_probe[0] in _direct_launch_registry.launch_tokens:
+        _dispatch_direct_launch(_direct_launch_argv, _direct_launch_registry)
         return
 
     parser = argparse.ArgumentParser(
@@ -360,6 +362,7 @@ def main() -> None:
             "  pickup --json          # 输出 JSON 会话列表后退出，不启动 TUI（旧格式）\n"
             "  pickup --json --limit 5  # JSON 模式，每个运行时最多 5 条\n"
             "  pickup describe        # 查看 list/search/show/context 等子命令的用法\n"
+            "  pickup shim status     # 查看/安装命令拦截：敲 claude/codex 等原命令自动走 pickup\n"
             "\n"
             "JSON 输出字段说明：\n"
             "  runtime        运行时标识（claude / codex / opencode / kimi / cursor）\n"

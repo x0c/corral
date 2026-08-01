@@ -4598,16 +4598,81 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertIn("问题1", lines[2])
         self.assertIn("问题2", lines[3])
 
-    def test_long_prompt_truncated_to_width(self) -> None:
+    def test_expanded_wraps_long_prompt_instead_of_eliding_it(self) -> None:
+        """展开态整条换行显示：半句话加省略号常常刚好把关键信息切掉。"""
+        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+
+        body = "长提问" * 40
+        hud = SessionHud()
+        hud.update_data(
+            summarize_user_messages([pickup.ConversationMessage("user", body)]),
+            expanded=True,
+        )
+        lines = hud.lines(30)
+        self.assertNotIn("...", " ".join(line.plain for line in lines))
+        # 正文完整可读：把各行去掉缩进再拼回来，应当还原原文
+        joined = "".join(line.plain[7:].rstrip() for line in lines[1:-1])
+        self.assertEqual(joined, body)
+        for line in lines:
+            self.assertLessEqual(pickup._text_width(line.plain), 30)
+
+    def test_expanded_continuation_lines_align_with_the_first_line(self) -> None:
         from pickup.ui.session_hud import SessionHud, summarize_user_messages
 
         hud = SessionHud()
         hud.update_data(
-            summarize_user_messages([pickup.ConversationMessage("user", "长" * 200)]),
+            summarize_user_messages([
+                pickup.ConversationMessage("user", "对齐" * 30, 1_785_000_000.0),
+            ]),
             expanded=True,
         )
-        for line in hud.lines(30):
-            self.assertLessEqual(pickup._text_width(line.plain), 30)
+        body = hud.lines(40)[1:-1]
+        self.assertGreater(len(body), 1, "这么长的提问必须换行，不能一行装下")
+        head_indent = len(body[0].plain) - len(body[0].plain.lstrip())
+        for line in body[1:]:
+            self.assertEqual(
+                len(line.plain) - len(line.plain.lstrip()),
+                len(body[0].plain[:7]),
+                "续行必须缩进到与首行正文同一列",
+            )
+        self.assertEqual(head_indent, 0, "首行以时间列开头，不额外缩进")
+
+    def test_expanded_caps_height_and_scrolls_instead_of_dropping_content(self) -> None:
+        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+
+        msgs = [pickup.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(6)]
+        hud = SessionHud()
+        hud.update_data(summarize_user_messages(msgs), expanded=True)
+
+        capped = hud.lines(40, 10)
+        self.assertEqual(len(capped), 10, "超出高度必须封顶，不能盖满整格")
+        self.assertGreater(hud._max_scroll, 0)  # noqa: SLF001
+        self.assertIn("Your prompts", capped[0].plain, "页眉必须常驻")
+        self.assertIn("Click to collapse", capped[-1].plain, "页脚（唯一的收起出口）必须常驻")
+        self.assertIn("scroll for more", capped[-1].plain)
+
+        top = [line.plain for line in capped[1:-1]]
+        self.assertTrue(hud._scroll_by(3))  # noqa: SLF001
+        scrolled = [line.plain for line in hud.lines(40, 10)[1:-1]]
+        self.assertNotEqual(top, scrolled, "滚动必须换到另一段正文")
+        # 到底之后不再动，也不会滚出界
+        for _ in range(50):
+            hud._scroll_by(3)  # noqa: SLF001
+        self.assertEqual(hud._scroll, hud._max_scroll)  # noqa: SLF001
+
+    def test_collapsing_resets_scroll(self) -> None:
+        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+
+        msgs = [pickup.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(6)]
+        data = summarize_user_messages(msgs)
+        hud = SessionHud()
+        hud.update_data(data, expanded=True)
+        hud.lines(40, 10)
+        hud._scroll_by(6)  # noqa: SLF001
+        self.assertGreater(hud._scroll, 0)  # noqa: SLF001
+        hud.update_data(data, expanded=False)
+        hud.update_data(data, expanded=True)
+        self.assertEqual(hud._scroll, 0, "重新展开必须从头看起")  # noqa: SLF001
 
     def test_hide_clears_data(self) -> None:
         hud = self._hud(3, expanded=False)

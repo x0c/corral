@@ -114,6 +114,9 @@ pickup observer status cursor                    # 查看 Cursor 实时状态接
 pickup observer install cursor --dry-run --json  # 预演用户级观察配置变更
 pickup observer install cursor                   # 显式安装或修复
 pickup observer uninstall cursor                 # 只移除 pickup 管理的条目
+pickup shim status                               # 查看命令拦截安装情况（敲原命令自动走 pickup）
+pickup shim install                              # 安装命令拦截（显式执行才会改 shell 配置）
+pickup shim uninstall                            # 移除命令拦截
 ```
 
 支持常见别名：`-h` / `--help`、`-v` / `-V` / `--version`，以及 `-d` / `--debug` / `--verbose`。
@@ -141,7 +144,7 @@ Claude Code、Codex CLI、OpenCode 和 Kimi Code 从本地历史推导这些信�
 
 - 第一行是固定的「＋ 新建会话」（英文界面为 `+ New session`），永远不会被滚走：在它上面按 `Enter` 可以选择项目目录和助手，新建的空白会话会直接托管在右栏。
 - 点击右侧上方的助手按钮，即可在当前项目下把该助手加为另一格。最多三格同时运行；点击某一格可让它获得焦点，侧边栏选中项随之同步。
-- **实时格的右上角浮着一个会话小窗**，切到某个会话时扫一眼就知道它在干啥、进行到哪。默认收起时只给两头：`▶ 12 条提问`，下面是`最初 <本会话第一条提问>`和`最近 <最新那条>`——最初那条说明这个会话本来要干嘛，最近那条说明现在做到哪。点它（或按 `Ctrl+G`）展开成最多 6 条带时间的提问，**顺序一律由旧到新**；超过 6 条时省掉的是中间那段（最早那条一定保留），并会写明省了多少条。它只画在你正在用的那一格，也只对实时托管的画面画——已结束的会话在右栏本来就是完整对话。注意它盖住的地方看不到助手输出、鼠标滚轮也穿不过去，所以默认保持小，需要更多再展开。
+- **实时格的右上角浮着一个会话小窗**，切到某个会话时扫一眼就知道它在干啥、进行到哪。默认收起时只给两头：`▶ 12 条提问`，下面是`最初 <本会话第一条提问>`和`最近 <最新那条>`——最初那条说明这个会话本来要干嘛，最近那条说明现在做到哪。点它（或按 `Ctrl+G`）展开成最多 6 条带时间的提问，**顺序一律由旧到新**；超过 6 条时省掉的是中间那段（最早那条一定保留），并会写明省了多少条。展开后的提问**整条换行显示、不用省略号截断**，续行缩进到与首行对齐；内容超过小窗的最大高度时，正文可以滚轮翻看，标题和"点击收起"始终留在原处。它只画在你正在用的那一格，也只对实时托管的画面画——已结束的会话在右栏本来就是完整对话。注意它盖住的地方看不到助手输出、鼠标滚轮也穿不过去，所以默认保持小，需要更多再展开。
 - 在侧边栏卡片上按 `Ctrl`/`Cmd` + 点击（或按空格）可切换多选；选中两到三个后按 `Enter` 会以分屏方式打开（已结束的会话显示对话预览，运行中／已托管的会话显示内嵌终端）。`Esc` 会先清空多选。普通点击或方向键也会退出多选。
 - `Enter` 在右栏恢复选中的会话（若已托管则重新接上那个实时终端），**并把键盘输入交给那一格**——可以立刻开始对助手打字，不需要再点一下鼠标。方向键浏览永远不会抢焦点（也不会启动任何助手），列表始终可用；`Ctrl-\` 把输入交还给列表。
 - 点击会话卡的效果和 `Enter` 一样。点击是对称的开关：点击当前持有输入的那一格对应的卡片，键盘控制权回到侧边栏（等价于 `Ctrl-\`，会话继续运行）；再点一次又进去。直接点击某一格也是接管它的等价方式。
@@ -174,6 +177,31 @@ pickup --no-keepalive claude        # 传统的全终端接管启动，不套后
 ```
 
 OpenCode 是个例外：它的 `--dangerously-skip-permissions` 参数只在 `opencode run` 下被接受，裸的 TUI 命令不认（实测真实二进制确认过——加上这个参数会让裸命令以用法错误退出）。所以 `pickup opencode` 永远不会自动补它；如果你想让非交互式运行免审批，请用 `pickup opencode run --dangerously-skip-permissions ...`。
+
+Cursor 可以用你平时敲的命令名直接进来：`pickup agent` 和 `pickup cursor-agent` 与 `pickup cursor` 完全等价（Cursor 的安装脚本同时提供 `agent` 和 `cursor-agent` 两个入口）。
+
+## 命令拦截（敲原命令自动走 pickup）
+
+装完拦截以后，在终端里正常敲 `claude`、`codex`、`opencode`、`kimi`、`cursor-agent`，就等于敲了 `pickup <助手>`：新会话直接被托管、带上免审批参数、断线也不会丢。
+
+```bash
+pickup shim status                  # 查看当前 shell 装没装、拦了哪些命令
+pickup shim install                 # 安装（会往 shell 配置里加一小段带标记的引用）
+pickup shim install --dry-run --json  # 只预演，不写任何文件
+pickup shim install --include agent # 额外拦截通用名 agent（默认不拦，见下）
+pickup shim uninstall               # 只移除 pickup 加的那一段，其余配置原样保留
+```
+
+支持 bash / zsh / fish，默认按 `$SHELL` 自动探测，也可以用 `--shell` 显式指定。**pickup 不会自动改你的 shell 配置**——只有你显式执行 `pickup shim install` 才会写入，写之前还会把原文件备份一份。
+
+下面这些情况一律原样执行原命令，不会被托管：
+
+- 无头 / 脚本调用（`claude -p "..."`、`codex exec ...`、管道、CI、编辑器插件、别的 Agent 拉起的子进程）；
+- 管理类子命令（`claude update`、`cursor-agent login` 等）；
+- 已经在 tmux／screen／pickup 托管会话里（不会套第二层）；
+- 找不到 `pickup` 命令时（例如你卸载了 pickup）——你的原命令永远保底可用。
+
+`agent` 默认不拦：Cursor 占用了这个很通用的名字，自动拦截容易遮蔽你机器上的其它同名工具，需要就用 `--include agent` 显式打开。
 
 ## 会话保活（扛住 SSH 断线）
 

@@ -57,7 +57,8 @@ class CommonCliOptionsTests(unittest.TestCase):
             self.assertEqual(os.environ.get("NO_COLOR"), "1")
 
     def test_no_input_uses_noninteractive_json_path(self) -> None:
-        registry = SimpleNamespace(ids=())
+        # launch_tokens 是入口层判定"是不是直启子命令"的唯一依据（id + 可执行名 + 别名）
+        registry = SimpleNamespace(ids=(), launch_tokens=())
         with (
             mock.patch.object(sys, "argv", ["pickup", "--no-input", "--limit", "7"]),
             mock.patch.object(cli.observe, "install_crash_hooks"),

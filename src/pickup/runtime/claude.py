@@ -17,7 +17,26 @@ class ClaudeRuntime(BaseRuntime):
         "Claude Code JSONL；重点关注 user、assistant、tool_use、tool_result、"
         "last-prompt 等记录及其 message.content。"
     )
-    auto_approve_args = ("--dangerously-skip-permissions",)
+    _AUTO_APPROVE_ARGS = ("--dangerously-skip-permissions",)
+
+    @property
+    def auto_approve_args(self) -> tuple[str, ...]:  # type: ignore[override]
+        """默认全自动放行；唯一例外是 root/sudo 下 Claude 自己拒绝这个参数。
+
+        这不是安全权衡（项目既定默认就是跳过全部权限问询，见 `AGENTS.md`），而是
+        "加了就起不来"的事实：Claude Code 在非 Windows 平台检测到 uid 为 0 且不在
+        已知沙箱里时，带该参数会直接以退出码 1 结束。以 root 身份敲 `pickup claude`
+        的用户如果被垫上这个参数，拿到的是一个起不来的会话，比不放行糟糕得多。
+        沙箱标记（`IS_SANDBOX` / `CLAUDE_CODE_BUBBLEWRAP`）存在时 Claude 会跳过该
+        检查，此时照常放行。
+        """
+        if os.name == "nt":
+            return self._AUTO_APPROVE_ARGS
+        if getattr(os, "geteuid", None) is None or os.geteuid() != 0:
+            return self._AUTO_APPROVE_ARGS
+        if os.environ.get("IS_SANDBOX") or os.environ.get("CLAUDE_CODE_BUBBLEWRAP"):
+            return self._AUTO_APPROVE_ARGS
+        return ()
 
     def scan_sessions(self, limit: int) -> list[SessionInfo]:
         return scan_claude.scan_sessions(limit=limit)

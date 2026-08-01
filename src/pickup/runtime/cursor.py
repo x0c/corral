@@ -13,6 +13,10 @@ class CursorRuntime(BaseRuntime):
     id = "cursor"
     display_name = "Cursor"
     executable = "agent"
+    # Cursor 的安装脚本同时放下 `agent` 和 `cursor-agent` 两个入口（官方文档现以
+    # `agent` 为准，`cursor-agent` 作为兼容名保留）。可执行文件仍用官方主名 `agent`，
+    # 但直启子命令两个名字都认——用户敲哪个都能进来。
+    executable_aliases = ("cursor-agent",)
     history_reading_hint = (
         "Cursor Agent CLI 会话目录（~/.cursor/chats/<workspace>/<chatId>/）："
         "meta.json 是标题与工作目录；prompt_history.json 是用户输入（最新在前）；"

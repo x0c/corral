@@ -114,6 +114,9 @@ pickup observer status cursor                    # inspect Cursor live-state int
 pickup observer install cursor --dry-run --json  # preview its user-level hook changes
 pickup observer install cursor                   # repair/install it explicitly
 pickup observer uninstall cursor                 # remove only pickup-managed hooks
+pickup shim status                               # command interception status (type `claude`, get pickup)
+pickup shim install                              # install interception (only ever writes when you ask)
+pickup shim uninstall                            # remove interception
 ```
 
 Common aliases are supported: `-h` / `--help`, `-v` / `-V` / `--version`,
@@ -167,10 +170,12 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
   the first prompt says what this session set out to do, the latest says where it is now. Click it
   (or press `Ctrl+G`) to expand it into up to six prompts with timestamps, always ordered oldest to
   newest; when there are more, the middle is dropped (never the first one) and the card says how many
-  it left out. It is drawn only on the pane you are working in, and only for live hosted terminals —
-  a finished session already shows its full conversation there. Note that whatever it covers is hidden
-  from the agent's screen and the mouse wheel cannot reach through it, which is why it stays small
-  until you ask for more.
+  it left out. Expanded prompts are **wrapped in full rather than cut off with an ellipsis**, with
+  continuation lines aligned under the first; if that runs past the card's maximum height, the body
+  scrolls under a pinned header and footer. It is drawn only on the pane you are working in, and only
+  for live hosted terminals — a finished session already shows its full conversation there. Note that
+  whatever it covers is hidden from the agent's screen and the mouse wheel cannot reach through it,
+  which is why it stays small until you ask for more.
 - `Ctrl`/`Cmd`-click (or `Space`) toggles multi-select on sidebar cards; with two or three selected,
   `Enter` opens them as a split (ended sessions show conversation preview; live/hosted sessions
   embed). `Esc` clears multi-select first. Plain click or arrow keys exit multi-select.
@@ -238,6 +243,38 @@ OpenCode is the exception: its `--dangerously-skip-permissions` flag is only acc
 bare command exit with a usage error). `pickup opencode` never adds it automatically; use
 `pickup opencode run --dangerously-skip-permissions ...` if you want auto-approval for a non-interactive
 run.
+
+Cursor also answers to the names you actually type: `pickup agent` and `pickup cursor-agent` are exact
+aliases for `pickup cursor` (Cursor's installer ships both `agent` and `cursor-agent` entry points).
+
+## Command Interception (type the real command, get pickup)
+
+Once interception is installed, typing `claude`, `codex`, `opencode`, `kimi` or `cursor-agent` in your
+terminal is the same as typing `pickup <runtime>`: the new session is hosted, auto-approved, and
+survives disconnects.
+
+```bash
+pickup shim status                    # what's installed for the current shell
+pickup shim install                   # install (adds one marked block to your shell config)
+pickup shim install --dry-run --json  # preview only, writes nothing
+pickup shim install --include agent   # also intercept the generic name `agent` (off by default)
+pickup shim uninstall                 # remove only pickup's block, leave everything else intact
+```
+
+Supports bash / zsh / fish, auto-detected from `$SHELL` or pinned with `--shell`. **pickup never edits
+your shell config on its own** — writes happen only when you run `pickup shim install`, and the original
+file is backed up first.
+
+These always run the real command untouched:
+
+- headless/scripted calls (`claude -p "..."`, `codex exec ...`, pipes, CI, editor extensions, agents
+  spawning agents);
+- management subcommands (`claude update`, `cursor-agent login`, …);
+- anything already inside tmux / screen / a pickup-hosted session (no double wrapping);
+- when `pickup` isn't on PATH (e.g. you uninstalled it) — your original command always still works.
+
+`agent` is opt-in: Cursor claimed that very generic name, and intercepting it can shadow unrelated
+tools on your machine, so enable it explicitly with `--include agent`.
 
 ## Keep-Alive (survive SSH disconnects)
 

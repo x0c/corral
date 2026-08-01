@@ -48,6 +48,36 @@ class RuntimeRegistry:
         except KeyError as exc:
             raise LaunchError(f"未注册的运行时：{runtime_id}") from exc
 
+    @property
+    def launch_tokens(self) -> tuple[str, ...]:
+        """所有能触发直启子命令的第一个词：运行时 id + 可执行文件名 + 别名。
+
+        入口层（`cli.main`）只拿它做一次成员判断，判定"这是不是直启命令"；判定通过
+        后再由 `resolve_id()` 展开成真正的运行时 id。分成两步是为了让入口探测保持
+        纯粹的集合包含语义，不引入"某个函数返回真值就算命中"的隐式分支。
+        """
+        tokens: list[str] = []
+        for runtime in self._runtimes.values():
+            tokens.append(runtime.id)
+            if runtime.executable != runtime.id:
+                tokens.append(runtime.executable)
+            tokens.extend(alias for alias in runtime.executable_aliases if alias not in tokens)
+        return tuple(tokens)
+
+    def resolve_id(self, token: str) -> str | None:
+        """把用户敲的第一个词解析成运行时 id，认不出返回 None。
+
+        依次认：运行时 id（`cursor`）、可执行文件名（`agent`）、适配器登记的别名
+        （`cursor-agent`）。别名只在这一层展开，`get()` 与其余逻辑仍只认 id，避免
+        运行时标识出现第二套事实来源。
+        """
+        if token in self._runtimes:
+            return token
+        for runtime in self._runtimes.values():
+            if token == runtime.executable or token in runtime.executable_aliases:
+                return runtime.id
+        return None
+
     def scan_all(self, limit: int) -> dict[str, list[SessionInfo]]:
         """并发扫描各运行时。各适配器只读各自独立的历史目录，互不干扰，
         用线程池重叠磁盘 I/O 等待时间即可，不需要多进程。

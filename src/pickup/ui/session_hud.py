@@ -26,19 +26,26 @@ from textual import events
 from textual.geometry import Size
 from textual.widget import Widget
 
-from pickup.display import _fit_cell, _text_width
+from pickup.display import _fit_cell, _text_width, _wrap_preview_text
 from pickup.i18n import t
 from pickup.models import ConversationMessage
 
 # 展开态最多列几条提问；再多就靠"更早 N 条"一行如实说明，不做静默截断。
 MAX_ENTRIES = 6
 _MIN_WIDTH = 16
-# 内容宽度上限。46 太保守，提问经常在这里被截成半句话；按实际使用反馈放宽到 170%。
-# 这只是**上限**：真实宽度仍取 `min(上限, 本格可用宽度 - 4)`，所以三分屏那种窄格
-# 不受影响，只有单格 / 宽终端才吃得到这个上限。收起态还会再按内容实宽收缩。
-_MAX_WIDTH = 78
+# 内容宽度上限。展开态既然整条换行显示、不再靠横向宽度救截断，就没必要铺那么宽——
+# 浮层越宽盖住的助手画面越多。这只是**上限**：真实宽度仍取 `min(上限, 本格可用宽度 - 4)`，
+# 三分屏那种窄格不受影响；收起态还会再按内容实宽收缩。
+_MAX_WIDTH = 55
 # 窄到这个宽度以下（三分屏 + 窄终端）直接不画：浮层会把整格盖掉。
 _MIN_PANE_WIDTH = 24
+# 时间列宽度：`HH:MM` / `MM-DD` 恒 5 格，再留两格间距；展开态续行按这个宽度顶齐。
+_TIME_COL_WIDTH = 7
+# 展开态的高度上下限。提问整条换行显示后行数不可控，必须封顶——浮层再有用也不能
+# 把整格助手画面盖掉；超出部分靠滚动看，不做省略。
+_MIN_EXPANDED_HEIGHT = 6
+_MAX_EXPANDED_HEIGHT = 20
+_SCROLL_STEP = 3
 
 
 @dataclass(frozen=True)
@@ -157,12 +164,19 @@ class SessionHud(Widget):
         self._data = HudData(0, ())
         self._expanded = False
         self._on_toggle = on_toggle
+        # 展开态正文的滚动位置（行）。`lines()` 每次按实际可见高度重算上限并夹紧，
+        # 所以窗口变小、内容变少都不会滚出界；新提问追加在末尾，不打断当前位置。
+        self._scroll = 0
+        self._max_scroll = 0
 
     # ---- 外部驱动 ----
 
     def update_data(self, data: HudData | None, *, expanded: bool) -> None:
         """喂新数据；data 为空（没有提问）时整个小窗不出现。"""
         changed = (data or HudData(0, ())) != self._data or expanded != self._expanded
+        if expanded != self._expanded:
+            # 每次重新展开都从头看起；沿用上次的滚动位置会让人以为内容丢了。
+            self._scroll = 0
         self._data = data or HudData(0, ())
         self._expanded = expanded
         self.set_class(bool(self._data), "-visible")
@@ -193,31 +207,67 @@ class SessionHud(Widget):
         """按所在格的可用宽度算内容宽度；留出右边距（1）与左右内边距（2）。"""
         return max(_MIN_WIDTH, min(_MAX_WIDTH, available - 4))
 
+    def _max_height(self, available: int) -> int:
+        """展开态的最高行数：不超过本格能给的高度，也不允许无限长到盖满整格。"""
+        return max(_MIN_EXPANDED_HEIGHT, min(_MAX_EXPANDED_HEIGHT, available - 3))
+
     def _prefixed(self, prefix: str, body: str, width: int) -> Text:
-        """前缀（时间或「最初/最近」标签）用淡色，正文用正常色，整行补齐到同宽。"""
+        """收起态用：前缀（最初/最近标签）淡色，正文一行内截断。"""
         line = Text(no_wrap=True)
         line.append(prefix, style="dim")
         line.append(_fit_cell(body, max(1, width - _text_width(prefix)), ellipsis=True))
         return line
 
-    def lines(self, width: int) -> list[Text]:
+    def _entry_lines(self, stamp: str, body: str, width: int) -> list[Text]:
+        """展开态的一条提问：**整条换行显示，不省略**，续行缩进到与首行正文对齐。
+
+        小窗是用来判断"这个会话在干嘛"的，半句话加省略号常常刚好把关键信息切掉；
+        宁可多占几行，也要让提问完整可读。时间列固定 5 格 + 2 格间距，续行前缀
+        用等宽空白顶齐，正文块看起来是规整的一栏。
+        """
+        prefix = f"{stamp}  " if stamp else " " * _TIME_COL_WIDTH
+        indent = " " * _text_width(prefix)
+        body_width = max(1, width - _text_width(prefix))
+        out: list[Text] = []
+        for index, part in enumerate(_wrap_preview_text(body, body_width) or [""]):
+            line = Text(no_wrap=True)
+            line.append(prefix if index == 0 else indent, style="dim")
+            line.append(_fit_cell(part, body_width))
+            out.append(line)
+        return out
+
+    def _expanded_body(self, width: int) -> list[Text]:
+        """展开态除页眉/页脚外的全部内容行（未按可见高度裁切）。"""
+        out: list[Text] = []
+        for index, (stamp, body) in enumerate(self._data.entries):
+            if index == 1 and self._data.omitted:
+                # 省略的是中间那段，说明行就画在被省掉的位置上。
+                out.append(Text(
+                    _fit_cell(_plural("hud.omitted", self._data.omitted), width, ellipsis=True),
+                    style="dim", no_wrap=True,
+                ))
+            out.extend(self._entry_lines(stamp, body, width))
+        return out
+
+    def lines(self, width: int, max_height: int | None = None) -> list[Text]:
         """按给定内容宽度生成每一行；所有行补齐到同宽，浮层底色才是规整的矩形。
 
         两种形态都是**从上到下、从旧到新**：收起态只留两头（最初一条 + 最近一条），
         展开态把中间那段补上。方向和右栏完整对话一致，不要改成最新在最前。
+
+        展开态超过 `max_height` 时不截断内容，而是**只画一个窗口**（页眉与页脚始终
+        可见，中间正文按 `_scroll` 滚动）——页脚是唯一写着"点击收起"的地方，被滚出去
+        用户就找不到出口了。
         """
         data = self._data
         if not data:
             return []
 
-        header = _plural("hud.count", data.count) if not self._expanded else t(
-            "hud.title", count=data.count,
-        )
-        out: list[Text] = [
-            Text(_fit_cell(header, width, ellipsis=True), style="bold", no_wrap=True),
-        ]
-
         if not self._expanded:
+            out: list[Text] = [Text(
+                _fit_cell(_plural("hud.count", data.count), width, ellipsis=True),
+                style="bold", no_wrap=True,
+            )]
             label_width = max(
                 _text_width(t("hud.label_first")), _text_width(t("hud.label_latest")),
             ) + 2
@@ -232,22 +282,18 @@ class SessionHud(Widget):
                 ))
             return out
 
-        for index, (stamp, body) in enumerate(data.entries):
-            if index == 1 and data.omitted:
-                # 省略的是中间那段，说明行就画在被省掉的位置上。
-                out.append(Text(
-                    _fit_cell(_plural("hud.omitted", data.omitted), width, ellipsis=True),
-                    style="dim", no_wrap=True,
-                ))
-            out.append(
-                self._prefixed(f"{stamp}  ", body, width) if stamp
-                else Text(_fit_cell(body, width, ellipsis=True), no_wrap=True)
-            )
-        out.append(
-            Text(_fit_cell(t("hud.collapse_hint"), width, ellipsis=True),
-                 style="dim", no_wrap=True),
-        )
-        return out
+        body = self._expanded_body(width)
+        capacity = len(body) if max_height is None else max(1, max_height - 2)
+        self._max_scroll = max(0, len(body) - capacity)
+        self._scroll = max(0, min(self._scroll, self._max_scroll))
+        window = body[self._scroll:self._scroll + capacity]
+        hint = t("hud.collapse_hint_scroll") if self._max_scroll else t("hud.collapse_hint")
+        return [
+            Text(_fit_cell(t("hud.title", count=data.count), width, ellipsis=True),
+                 style="bold", no_wrap=True),
+            *window,
+            Text(_fit_cell(hint, width, ellipsis=True), style="dim", no_wrap=True),
+        ]
 
     def get_content_width(self, container: Size, viewport: Size) -> int:
         if not self._data or container.width < _MIN_PANE_WIDTH:
@@ -265,11 +311,17 @@ class SessionHud(Widget):
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
         if not self._data or container.width < _MIN_PANE_WIDTH:
             return 0
-        return len(self.lines(width or self._inner_width(container.width)))
+        return len(self.lines(
+            width or self._inner_width(container.width),
+            self._max_height(container.height) if self._expanded else None,
+        ))
 
     def render(self) -> Text:
         width = self.content_size.width or self._inner_width(self.container_size.width)
-        rendered = self.lines(width)
+        rendered = self.lines(
+            width,
+            self._max_height(self.container_size.height) if self._expanded else None,
+        )
         out = Text(no_wrap=True)
         for index, line in enumerate(rendered):
             if index:
@@ -284,9 +336,23 @@ class SessionHud(Widget):
         if self._on_toggle is not None:
             self._on_toggle()
 
+    def _scroll_by(self, delta: int) -> bool:
+        """展开态滚动正文；返回是否真的动了（没得滚就不用重画）。"""
+        if not self._expanded or self._max_scroll <= 0:
+            return False
+        target = max(0, min(self._scroll + delta, self._max_scroll))
+        if target == self._scroll:
+            return False
+        self._scroll = target
+        self.refresh()
+        return True
+
+    # 滚轮：展开态滚小窗自己的正文；其余情况就地吃掉——浮层盖住的那几行本来
+    # 就传不到托管画面（Textual 没有点击穿透），别让事件跑去滚别的控件。
     def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        # 浮层盖住的那几行滚轮到不了托管画面；就地吃掉，别让它去滚别的控件。
         event.stop()
+        self._scroll_by(_SCROLL_STEP)
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         event.stop()
+        self._scroll_by(-_SCROLL_STEP)

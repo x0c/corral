@@ -36,6 +36,11 @@ def main() -> None:
         from pickup.updater import cli_update
 
         raise SystemExit(cli_update())
+    if argv[:1] == ["shim"]:
+        # 命令拦截的安装/卸载/检查只读写 shell 配置，不碰扫描器、Textual 和 tmux。
+        from pickup.shim import cli_main as shim_main
+
+        raise SystemExit(shim_main(argv[1:]))
     from pickup.cli import main as cli_main
 
     cli_main()

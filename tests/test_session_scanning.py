@@ -2786,6 +2786,8 @@ class DirectLaunchTests(unittest.TestCase):
 
     def _registry_returning(self, plan: LaunchPlan) -> mock.Mock:
         registry = mock.Mock()
+        # 直启入口会先把第一个词按别名解析成运行时 id；假 registry 原样返回即可
+        registry.resolve_id.side_effect = lambda token: token
         registry.build_passthrough_plan.return_value = plan
         return registry
 
