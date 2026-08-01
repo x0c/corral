@@ -160,6 +160,58 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
   多时合并结果可达数 MB，**强烈建议加 `--out <path>`**——stdout 只回文件路径、字节数、会话数与消息总数，
   完整内容写在文件里。时间过滤按会话的 `mtime`（最后更新时间）判定。
 
+## 拿会话数据做总结 / 周报时的边界（必读）
+
+`pickup` 交出来的是**对话记录**，不是工作成果台账。下面 5 条是设计使然、不会改的产品边界；
+用 `show` / `export` 的结果做周报、日报、工作总结前必须先按这些边界校正，否则结论会失真。
+括号内是本机真实数据实测值（2026-08-01），供判断量级用。
+
+1. **对话里不含助手实际执行的动作。** `messages` 只有真人消息和助手的**文本回复**；助手改了哪些
+   文件、跑了哪些命令、提交了什么代码，连同这些操作的结果**全部不在导出里**——所有运行时一致
+   （各扫描器的 `load_conversation` 只提取文本，不提取工具调用）。实测一条 17.7 MB 的 Claude 会话，
+   导出后只剩约 19.6 万字符纯文本，被丢弃的 1683 次工具调用里含 361 次文件修改、73 次新建文件、
+   837 次命令执行（其中 46 条是完整的 git 提交 / 打标签 / 推送，提交说明本身就是最好的成果素材）。
+   **后果**：导出里"索引已落地""改完了"这类话只是**口述**，无法据此核实真的改了、改了哪些文件。
+   **怎么办**：需要证据时，用 `history_path` 自己去读原始历史文件（`context` 的
+   `history_reading_hint` 说明该运行时的格式），或按下面第 5 条走 git 侧自查。
+
+2. **`title` 只能当索引，不能当工作内容。** 标题要么是运行时自己写的原生标题，要么是从首条用户
+   消息首行兜底而来，所以经常是"好的 做流程设计计划""那还需要改动吗"这种没有信息量的句子。
+   **不要按标题聚类、归类或直接抄进周报**；判断一条会话在干嘛，看 `last_user`/`last_agent`，
+   不够就读 `messages`。
+
+3. **`last_agent` 不保证有值，不能作为唯一分流依据。** 各运行时扫描 15 条的实测空值率：
+   Cursor 15/15（扫描阶段不打开该运行时的对话库，这个字段恒为空串）、Kimi 9/15、Codex 4/15、
+   OpenCode 1/15、Claude 0/15。更进一步，Cursor 与 Kimi 的部分会话**整条对话都取不到助手消息**
+   （抽查 5 条：Cursor 3 条、Kimi 2 条只有用户提问侧）。
+   **怎么办**：`last_agent` 为空时回退到 `last_user` + `messages`，不要判成"这条会话没内容"而跳过。
+
+4. **`messages` 的 user 侧混着系统注入文本，需要自行过滤。** Claude 的 task-notification 类事件
+   已在扫描层滤掉，但仍有几类会以"真人消息"的身份混进来（实测 Cursor 侧 206 条用户消息里有 16 条，
+   约 8%）：
+   - Cursor 的计划附件指令，特征是含 `Implement the plan as specified, it is attached for your reference`
+     / `Do NOT edit the plan file itself`；
+   - `Briefly inform the user about the task result…` 这类运行时内部提示；
+   - **pickup 自己生成的跨运行时接力提示词**，特征是以 `任务：` 开头且含 `你正在接力一个来自 … 的会话`。
+
+   **后果**：不过滤会把这些当成真人需求，凭空多出一堆"用户要求"。汇总前按上述特征剔除。
+
+5. **没有任何成果结构化字段。** 不提供 commits / PR / 变更文件列表，也不会有——`pickup` 只负责把
+   会话数据交出来（见本文档开头的只读约定）。所以"做完了"只能从对话文字推断，很容易把
+   **计划了**写成**做完了**。
+   **怎么办**：真实成果去代码仓库侧取，用 `pickup` 提供的 `cwd` 和 `mtime` 做锚点即可对齐：
+
+   ```bash
+   # 1. 圈出时间范围内涉及哪些工作目录（export 没有 --fields，落盘后再取需要的字段）
+   pickup export --since 7d --out /tmp/week.json
+   python3 -c "import json;d=json.load(open('/tmp/week.json'))['data'];\
+   print('\n'.join(sorted({s['cwd'] for s in d['sessions'] if s.get('cwd')})))"
+   # 2. 再到各工作目录用 git 拿可核验的成果
+   git -C <上一步列出的目录> log --since=7.days --stat
+   ```
+
+   两边对齐后，git 侧给"实际改了什么"，`pickup` 侧给"为什么改、当时在讨论什么"。
+
 ## 与 OpenConductor 项目关联
 
 `pickup` 只提供 `cwd` / `cwd_display`（会话当时的原始工作目录），**不提供、也不应该提供**任何
