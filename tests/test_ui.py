@@ -411,7 +411,9 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("down")
             await pilot.pause(delay=0.3)
             # 能取到颜色就说明变量代换成功；解析失败时 Textual 早已中止应用
-            for name in ("pane-active-background", "pane-inactive-background"):
+            from pickup.ui.app import _SIDEBAR_SPLIT_LADDER
+
+            for name in ("pane-active-background", *_SIDEBAR_SPLIT_LADDER):
                 with self.subTest(variable=name):
                     self.assertIn(name, app.get_css_variables())
 
@@ -1362,17 +1364,51 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(rows[1].has_class("-in-split"))
             self.assertTrue(rows[0].has_class("-in-split"))
             self.assertFalse(rows[2].has_class("-in-split"))
-            # 激活格底色与右栏分栏激活条同源，且比同组的其它格更显著
+            # 组合内的行都要明显浮出列表底色，激活的那行再重一档
+            plain_bg = app.screen.query_one(SessionListView).styles.background
             active_bg = rows[1].styles.background
             listed_bg = rows[0].styles.background
-            self.assertEqual(active_bg, Color.parse("#31475E"))
-            self.assertEqual(listed_bg, Color.parse("#212E3C"))
             self.assertGreater(
-                active_bg.r + active_bg.g + active_bg.b,
-                listed_bg.r + listed_bg.g + listed_bg.b,
+                self._weight(active_bg, app), self._weight(listed_bg, app)
+            )
+            self.assertGreater(
+                self._weight(listed_bg, app), self._weight(plain_bg, app)
             )
             # 组合外的会话保持透明，不铺任何底色
             self.assertEqual(rows[2].styles.background.a, 0)
+
+    @staticmethod
+    def _weight(color, app) -> float:
+        """底色的「显著程度」：深色主题下越亮越重，浅色主题下越深越重。"""
+        total = color.r + color.g + color.b
+        return -total if app.current_theme.dark is False else total
+
+    async def test_keyboard_cursor_on_a_marked_row_never_dims_it(self) -> None:
+        """光标停到组合行上必须更重，不能被列表自身的选中底色压回去。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view, items = self._items(app)
+            rows = [item for item, _ in items]
+            keys = [pickup.session_key(card.session) for _, card in items]
+            list_view.set_split_marks(keys[:2], keys[1])
+            list_view.focus()
+            await pilot.pause()
+
+            listed_bg = rows[0].styles.background
+            active_bg = rows[1].styles.background
+            list_view.index = 1  # 光标落到组合内的非激活行
+            await pilot.pause()
+            listed_cursor_bg = rows[0].styles.background
+            list_view.index = 2  # 光标落到激活行
+            await pilot.pause()
+            active_cursor_bg = rows[1].styles.background
+
+            ladder = [listed_bg, listed_cursor_bg, active_bg, active_cursor_bg]
+            weights = [self._weight(c, app) for c in ladder]
+            self.assertEqual(sorted(weights), weights, f"四级底色必须单调：{ladder}")
+            self.assertEqual(len(set(weights)), 4, f"四级底色不能重复：{ladder}")
 
     async def test_single_pane_and_placeholder_keys_are_not_marked(self) -> None:
         """单格不标（列表光标本身就指着它），新建提示这类占位键也不参与。"""

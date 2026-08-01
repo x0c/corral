@@ -20,17 +20,17 @@
 - 当前模型是：`_spawn_title_daemon` 拉起 `pickup --generate-titles` 后台进程，后台进程用缓存目录下的文件锁保证全机单实例；TUI 侧只读缓存并轮询缓存文件变化。
 - 后台进程内的候选生成器选择发生在 `refresh_titles`；本机一个 agent CLI 都没有时保留临时兜底标题，并把本批会话写成当前缓存版本的失败终态，不能静默返回后让会话永远留在 `generating`、下次启动再次排队。不要在 TUI 首屏路径做可用性探测。
 
-## 跨扫描器共享 helper（scan_common.py）
+## 跨扫描器共享 helper（scan/common.py）
 
-五个扫描器（scan_claude.py/scan_codex.py/scan_opencode.py/scan_kimi.py/scan_cursor.py）互不
+五个扫描器（scan/claude.py/scan/codex.py/scan/opencode.py/scan/kimi.py/scan/cursor.py）互不
 依赖运行时私有格式，但都需要几个完全相同的小工具：`shorten_cwd`（路径展示时
 把用户主目录替换成 `~`）、`parse_timestamp`（ISO8601 字符串转 epoch 秒）、
 `live_processes` / `live_pids_by_process_name`（存活同名进程及其 cwd）、
 `process_command_line` / `process_environ` / `open_file_paths`（读命令行、环境变量、
-打开的文件路径，供 Cursor 等按正向证据精确绑会话）。这些集中在 `scan_common.py`，
+打开的文件路径，供 Cursor 等按正向证据精确绑会话）。这些集中在 `scan/common.py`，
 避免多份重复实现各自演进出细微差异；新增运行时扫描器时优先检查这里有没有能复用的
 helper，不要先照抄再改。这个模块只放无状态纯函数，运行时私有的解析格式
-（JSONL 字段、SQLite 表结构等）仍留在各自的 scan_*.py 里。
+（JSONL 字段、SQLite 表结构等）仍留在各自的 scan/*.py 里。
 
 ## Claude 扫描
 
@@ -42,7 +42,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **`load_conversation`（会话预览的正文来源）不能按 `stop_reason` 过滤要不要展示某条 assistant 文本。** 真实 JSONL 里一次 assistant 轮次的 `thinking`/`text`/`tool_use` 各是独立的顶层行，且共享同一个 `stop_reason`——哪怕这一行本身就是纯文本、只是后面紧跟着一次工具调用，它的 `stop_reason` 也是 `tool_use` 而不是 `end_turn`。之前的实现按 `stop_reason in (None, "end_turn")` 过滤 assistant 行，实测在一个 97 条真实消息的会话里把 88 条有真实文本内容的 assistant 消息整段丢了（包括工具调用前的说明、`AskUserQuestion` 之前的分析文字等），预览页看起来像是"Claude 跳过了回答"，其实是解析漏了。现在只要 `content` 里有非空 `text` block 就展示，不再看 `stop_reason`；`stop_reason is None` 分支保留给可能存在的历史遗留流式格式（增量快照，只在 flush 前取最后一份），和当前主流格式互不冲突。改这块逻辑前先用真实会话文件跑一遍 `load_conversation` 数消息条数，不要只信单测里手写的小样例。
 - **Monitor/task-notification 等系统注入事件在原始 JSONL 里也挂在 `type: "user"` 轮次下，`load_conversation` 必须整条丢弃，不能当成真人输入。** 区分信号是顶层 `origin.kind` 字段：真人手动输入是 `"human"`（或字段缺失，如老格式/`/plan` 等本地命令包装出的用户轮次），系统事件（Monitor 到点触发、task 通知）是 `"task-notification"`。消息历史只保留 Agent 和真人的对话，系统事件价值很低——最初的实现把它标成 `ConversationMessage("system", ...)` 单独渲染成"◇ 系统事件"展示出来，被用户否决（"什么系统消息都不要显示出来"），改成命中 `origin.kind not in (None, "human")` 就直接 `continue` 跳过，不进入返回结果。`ConversationMessage.role` 因此保持只有 `user`/`assistant` 两种，不要再引入第三种 role。新增其它 `origin.kind` 取值（目前本机全量历史只出现过 `human`/`task-notification` 两种）时按同一分类原则处理，不要默认归到 `user`。
 - **content part 的 `text` 字段、`snapshot`/`payload` 这类嵌套对象字段，同样可能是 JSON `null`（key 存在但值为 null），不是只有 Codex 才有这个坑。** `_extract_text`、`_entry_time` 的 `snapshot` 取值、`_build_session_info` 尾部循环取 assistant 文本、`load_conversation` 的 `text_parts` 列表推导式，都曾用裸 `part.get("text", "")`/`entry.get("snapshot", {})` 取值——这类写法的默认值只在 key **缺失**时生效，key 存在但值为 `null` 时会拿到 `None`，后续 `.strip()`/`.get(...)` 直接 `AttributeError` 崩掉整个扫描或预览（真实场景可复现，不是假设）。统一改成 `(x.get(key) or 默认值)` 的写法；新增任何从 Claude JSONL 嵌套字段取值的代码都要假设该字段可能是显式 `null`，不能只防"key 缺失"这一种情况。
-- **Codex 的 `event_msg.payload` 里字段值可能是 JSON `null`（key 存在但值为 null），`payload.get(key, "")` 的默认值只在 key 缺失时生效，取不到 null 场景，会拿到 `None` 再被 `str()` 变成字面量 `"None"` 混进正文。** 实测 `task_complete.last_agent_message` 为 null 很常见（任务结束但没有最终文本输出，比如被打断/答案已在更早轮次说完），预览页因此显示过多轮" ◆ Codex\nNone"。三处取值（`user_message.message`、`agent_message.message`、`task_complete.last_agent_message`）统一改成 `payload.get(key) or ""`，`or` 会把 `None` 也兜成空字符串再被后续的 `if text:` 过滤掉。改 `scan_codex.py` 任何从 payload 取文本的地方都要用这个写法，不要用 `.get(key, "")`。
+- **Codex 的 `event_msg.payload` 里字段值可能是 JSON `null`（key 存在但值为 null），`payload.get(key, "")` 的默认值只在 key 缺失时生效，取不到 null 场景，会拿到 `None` 再被 `str()` 变成字面量 `"None"` 混进正文。** 实测 `task_complete.last_agent_message` 为 null 很常见（任务结束但没有最终文本输出，比如被打断/答案已在更早轮次说完），预览页因此显示过多轮" ◆ Codex\nNone"。三处取值（`user_message.message`、`agent_message.message`、`task_complete.last_agent_message`）统一改成 `payload.get(key) or ""`，`or` 会把 `None` 也兜成空字符串再被后续的 `if text:` 过滤掉。改 `scan/codex.py` 任何从 payload 取文本的地方都要用这个写法，不要用 `.get(key, "")`。
 
 ## Codex 扫描
 
@@ -61,7 +61,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 ## Kimi 扫描
 
 - **历史按「工作区 / 会话」两级目录存放，不是单文件**：`~/.kimi-code/sessions/<workspace_id>/<session_id>/`，元数据在 `state.json`（`title`、`isCustomTitle`、`workDir`、`lastPrompt`、`createdAt`/`updatedAt`），对话流水在 `agents/main/wire.jsonl`。子 agent 的 `agents/<other>/wire.jsonl` 是旁路对话，扫描和预览一律只读 `main`，忽略其它 agent。元数据优先取 `state.json`（小而权威，`updatedAt` 直接作会话时间）；正文只能解析 `wire.jsonl`。本机没有 `~/.kimi-code/sessions/` 时该运行时会话列表为空，不报错。
-- **wire.jsonl 是协议事件流，混着体量很大的噪音行**：开头的 `config.update`（系统提示，约 20KB）、`llm.tools_snapshot`（工具定义，可上百 KB）、`llm.request`/`usage.record` 等都与对话正文无关。逐行 `json.loads` 会很慢，`scan_kimi._iter_message_entries` 先按带引号的类型值子串（`"context.append_message"` / `"context.append_loop_event"`）廉价过滤，只对真正承载对话的两类事件行做完整解析。**用带引号的类型值而不是 `"type":"…"` 前缀做匹配，是为了兼容紧凑与带空格两种 JSON 写法**（真实 wire 是紧凑的，但测试 fixture 用默认 `json.dumps` 带空格）。
+- **wire.jsonl 是协议事件流，混着体量很大的噪音行**：开头的 `config.update`（系统提示，约 20KB）、`llm.tools_snapshot`（工具定义，可上百 KB）、`llm.request`/`usage.record` 等都与对话正文无关。逐行 `json.loads` 会很慢，`scan.kimi._iter_message_entries` 先按带引号的类型值子串（`"context.append_message"` / `"context.append_loop_event"`）廉价过滤，只对真正承载对话的两类事件行做完整解析。**用带引号的类型值而不是 `"type":"…"` 前缀做匹配，是为了兼容紧凑与带空格两种 JSON 写法**（真实 wire 是紧凑的，但测试 fixture 用默认 `json.dumps` 带空格）。
 - **用户 / 助手正文分别来自两类事件**：用户消息是 `type=="context.append_message"` 且 `message.role=="user"`，正文在 `message.content` 里 `type=="text"` 的分片；`message.origin.kind` 非 `"user"`（如 `task-notification` 等系统注入事件）一律丢弃，和 Claude 的 `origin.kind` 过滤同思路。助手正文是 `type=="context.append_loop_event"` 且 `event.type=="content.part"` 且 `event.part.type=="text"`；`part.type=="think"` 是思考过程，跳过。同一轮里连续的文本分片合并成一条助手消息，遇到下一条用户消息断开成新一轮。（`turn.prompt` 事件与 `context.append_message` 冗余，不解析，避免用户消息重复。）
 - **状态推导按末轮角色**：解析到的最后一条消息是用户 → `⏳待回复`，是助手 → `✅已完成`，都没有 → 无状态。Kimi 的 `step.end.finishReason` 里虽然可能有中断信号，但格式尚未在真实数据里充分观察，暂不细分「已中断」，宁缺毋滥（和 OpenCode 一致）。
 - **判活同 OpenCode 思路**：Kimi 没有 pid 注册表，历史也不独占单文件。`_live_pids_by_cwd` 用 `pgrep -x kimi-code`（进程 comm 是 `kimi-code`，不是 `kimi`）拿存活进程，读其 cwd 与会话 `workDir` 归一化匹配，同 cwd 只标最新一条存活。已知局限：`kimi server`/`kimi web` 等同名进程会被计入；判活失败静默降级为空集。
@@ -71,7 +71,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 ## 扫描性能
 
 - **首屏延迟目标 ≤1s（已放宽为非阻断，见 `AGENTS.md`「验证要求」）。** 当前路径：`main()` 把 `store.load()`（→ `registry.scan_all()`）丢进后台 daemon 线程，同时跑 `_probe_osc_colours()`，再 `run_app()` 先画出骨架（空列表 +「＋ 新建会话」）；`MainScreen` 用 `@work` 等 `store.wait_loaded()` 后再 `rebuild`。扫描没跑完时页头不得误报「未找到任何会话」——必须等 `store.loaded`。直启/`_dispatch_direct_launch` 等仍可同步预加载后再进 UI。`StartupLatencyTests` 测的是 `scan_all(50)` 本身耗时，不是「进程启动到首帧」墙钟。
-- `scan_claude.py`/`scan_codex.py` 的 `scan_sessions()` 接受 `limit`，但早期实现会先对全部历史会话文件做完整的头尾 JSONL 解析，再 `results[:limit]` 截断——不管 `limit` 多小都要扫完全部历史（本机曾实测 796+1074 个文件耗时 ~5s，是 `pickup` 启动慢的根因）。现在改为先用 `os.stat` 按真实文件 mtime 把候选文件排好序，凑够 `limit` 条有效结果就停止；新增或改写这两个扫描函数时不要退回“先建全量列表再截断”的写法。因为时间修正已经收敛成单会话 `effective_session_time` 判断（见「标题与排序」），提前停止不再需要按分钟桶粒度对齐。
+- `scan/claude.py`/`scan/codex.py` 的 `scan_sessions()` 接受 `limit`，但早期实现会先对全部历史会话文件做完整的头尾 JSONL 解析，再 `results[:limit]` 截断——不管 `limit` 多小都要扫完全部历史（本机曾实测 796+1074 个文件耗时 ~5s，是 `pickup` 启动慢的根因）。现在改为先用 `os.stat` 按真实文件 mtime 把候选文件排好序，凑够 `limit` 条有效结果就停止；新增或改写这两个扫描函数时不要退回“先建全量列表再截断”的写法。因为时间修正已经收敛成单会话 `effective_session_time` 判断（见「标题与排序」），提前停止不再需要按分钟桶粒度对齐。
 - Codex 侧提前停止前必须先按真实文件 mtime（`os.path.getmtime`）重新排序，不能直接用 `_find_all_session_files` 现成的按文件名（创建时间）排序去做提前停止——同一会话被续接时 mtime 会变但文件名不变，按创建时间提前停会漏掉“很久以前创建、但刚被续接”的会话。
 - `runtime/registry.py` 的 `scan_all()` 用 `ThreadPoolExecutor` 并发跑各运行时的扫描：各运行时读的是完全独立的目录、无共享状态，线程池只是为了重叠磁盘 I/O 等待。实现了 `scan_signature()` 的运行时可复用上一次扫描；目前只有 OpenCode 接入，签名必须同时包含数据库/`-wal` mtime 和排序后的存活进程 cwd→pid 快照——只看文件时间会在进程退出但数据库不再写入时把“运行中”永久冻住，探活恢复也无法触发重扫。Claude/Codex 的多层历史目录不满足可靠 mtime 冒泡条件，继续返回 `None`，不要为追求命中率强接缓存。
 - **registry 缓存与失败回退的可变对象边界**：缓存保存、命中返回和旧结果回退都必须逐条 `dict(session)`，因为 `SessionStore`/`keepalive.annotate()` 会就地注入 `keepalive_name` 等展示字段；直接返回缓存对象会让调用方反向污染下一轮扫描。带新签名的 `scan_sessions` 失败时不得用空列表或新签名覆盖最后一次成功缓存：已有缓存返回其副本，首次失败才降级为空，并在同一签名恢复后重新扫描。未实现签名的运行时仍保持单次异常隔离为空。`agent_api.py` 的 `_scan_runtimes` 是独立扫描路径，不复用 TUI registry 缓存；改通用异常隔离语义时仍要检查两处是否需要同步。
@@ -79,7 +79,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **Claude 侧完整解析前必须先用廉价预探（`_peek_head_meta`）拦掉自产噪音会话和死 cwd 会话，不能等整文件解析完才丢弃。** 后台标题生成会调用 `claude`/`codex`，在 `~/.claude/projects/` 留下以 `titles.PROMPT_MARKER` 开头的噪音会话；这类会话和 cwd 已删的会话本来就会在解析后被过滤，但过滤发生在读完 300 行头部 + 64KB 尾部之后，白白解析。实测本机为凑够 30 条有效结果，`_build_session_info` 曾被调 347 次，其中一大半是最终会被丢弃的噪音/死 cwd 会话。`_peek_head_meta` 只读头部 ≤40 行拿 cwd 和首条用户消息，探到确定是噪音或死 cwd 才提前 `continue`；探不到（如头部很长的真实会话）时不跳过，照常走完整解析兜底——改动前后结果必须字节级一致（id 顺序、`fallback_title`、`native_title` 全部相同），新增类似优化时也要用这个标准核验。Codex 侧噪音少，只做了 cwd 记忆化，没加预探，保持简单。
 - 上述两项优化落地后，本机实测 `limit=30` 时 Claude 扫描从 1320ms 降到 225ms、Codex 从 585ms 降到 243ms，`scan_all` 并发后首屏约 0.25s；`limit=50`（默认值）约 0.6s，仍在 1s 硬指标内。
 - 评估过给单文件解析结果加磁盘缓存（按 `路径+mtime+size` 做 key）的方案，判断当前收益不足以覆盖风险，暂缓：cwd 记忆化 + 预探已经把首屏压到 1s 硬指标以内，缓存要处理和后台标题生成进程的并发写、文件被删除/截断重写后的失效判断，复杂度换来的收益不划算。若历史继续增长导致启动明显变慢（>1s）或用户明确要求，再按 `titles.py` 已有的原子写 + 内容指纹失效模式加缓存。
-- **本机历史数据量增长后，`scan_claude.py` 的头部解析（`_read_head`，最多 300 行）重新成为首屏耗时大头**：实测本机真实会话文件里，前 300 行经常混入几百 KB 甚至上 MB 的 `assistant`/工具调用大段嵌入内容（大文件读取、工具结果），逐行 `json.loads()` 解析这些巨大行很贵；同时后台标题生成积累的自产噪音会话（`PROMPT_MARKER` 前缀）在候选文件中占比可能相当高（本机实测一次凑够 50 条有效结果需要探测 130+ 候选，其中过半是噪音），叠加多个真实 codex/claude 进程并发争抢磁盘和 CPU 时，`scan_all` 有概率短暂超过 1s。**曾尝试给 `_read_head` 加字节预算提前停止（仿 `_read_tail` 的 `max_bytes`），用本机全部 1263 条真实会话验证后发现 196 条（约 15.6%）`fallback_title` 结果改变，且抽查显示新结果通常比原结果质量更差（挑到的是对话里更靠后、更简短的跟帖消息，而不是最初的完整需求描述）——已回退，不要重新引入这个方向。** 若要继续优化头部解析开销，应该在不改变"必须完整扫描到能覆盖 ai-title/last-prompt 出现位置"这个约束的前提下想办法（如按类型子串先廉价过滤要不要整行 `json.loads`，同时确保时间戳提取仍走完整解析，不能用无法区分嵌套字段的正文子串匹配去猜时间戳）。
+- **本机历史数据量增长后，`scan/claude.py` 的头部解析（`_read_head`，最多 300 行）重新成为首屏耗时大头**：实测本机真实会话文件里，前 300 行经常混入几百 KB 甚至上 MB 的 `assistant`/工具调用大段嵌入内容（大文件读取、工具结果），逐行 `json.loads()` 解析这些巨大行很贵；同时后台标题生成积累的自产噪音会话（`PROMPT_MARKER` 前缀）在候选文件中占比可能相当高（本机实测一次凑够 50 条有效结果需要探测 130+ 候选，其中过半是噪音），叠加多个真实 codex/claude 进程并发争抢磁盘和 CPU 时，`scan_all` 有概率短暂超过 1s。**曾尝试给 `_read_head` 加字节预算提前停止（仿 `_read_tail` 的 `max_bytes`），用本机全部 1263 条真实会话验证后发现 196 条（约 15.6%）`fallback_title` 结果改变，且抽查显示新结果通常比原结果质量更差（挑到的是对话里更靠后、更简短的跟帖消息，而不是最初的完整需求描述）——已回退，不要重新引入这个方向。** 若要继续优化头部解析开销，应该在不改变"必须完整扫描到能覆盖 ai-title/last-prompt 出现位置"这个约束的前提下想办法（如按类型子串先廉价过滤要不要整行 `json.loads`，同时确保时间戳提取仍走完整解析，不能用无法区分嵌套字段的正文子串匹配去猜时间戳）。
 - `_choose_claude_fallback_title` 同分候选（如两条 `last_prompt`）平手时用 `max()` 取先出现的那条：这是**有意**保留的行为，不是 bug。头部/尾部按时间顺序把候选依次加入 `title_candidates`，同源同分时"先出现"往往对应对话里更早、更完整的原始诉求，而"最后出现"经常只是简短的追问或跟帖（已用本机真实数据核验：反转成"取最后一条"会让约 15.6% 的会话标题变得更模糊、更不能代表这次会话在做什么）。不要假设"更晚出现的候选更能代表用户意图"去改这里。
 
 ## 界面
@@ -238,7 +238,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **公开维护命令**：`pickup observer status cursor` 只读检查；`pickup observer install cursor` 安装/修复；`pickup observer uninstall cursor` 只移除 pickup 管理条目。三者支持 `--json` 结构化信封；安装和卸载支持 `--dry-run` 严格预演且不创建配置、备份或目录，`status --dry-run` 是用法错误。非 TTY 自动输出 JSON；重复安装必须返回无需变更。
 - **与既有状态消歧**：关注圆点不得改写标题模块 `status_tag`、机器接口英文 `status` 或进程判活 `live`，也不进入机器接口默认字段。这三套状态服务不同消费方，保持已发布语义不变。
 
-## Cursor 扫描（scan_cursor.py / runtime/cursor.py）
+## Cursor 扫描（scan/cursor.py / runtime/cursor.py）
 
 - 历史只扫 CLI：`~/.cursor/chats/<workspace>/<chatId>/`（不扫 IDE `agent-transcripts`）。
 - 列表轻扫：`meta.json` + `prompt_history.json`（最新在前）；`path` 优先指向 `store.db`。
@@ -301,8 +301,9 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
   模式输出比普通模式更大。
 - `show --full` 的大结果优先配合 `--out` 落盘，stdout 只返回路径、字节数和消息数量摘要；完整 JSON
   envelope 写到目标文件。这个写文件行为只允许发生在用户显式传 `--out` 时，不能变成默认副作用。
-- `pickup.py`（`pickup` 入口）的非 TTY 自动降级（`sys.stdin.isatty() and sys.stdout.isatty()`）和 `list/search/show/
-  context/describe` 子命令分发写在 `main()` 顶部，早于旧版 `--json`/`--limit` 的 legacy parser；
+- `cli.py` 的非 TTY 自动降级（`sys.stdin.isatty() and sys.stdout.isatty()`）写在 `main()` 顶部，早于旧版
+  `--json`/`--limit` 的 legacy parser；`list/search/show/context/describe` 的子命令分发更早一层，在
+  `bootstrap.py` 的 `main()` 里（那层刻意不 import Textual/扫描器，见性能知识库「性能架构」）；
   改 `main()` 时不要把两条路径的参数解析合并到同一个 `argparse.ArgumentParser`，legacy 路径的报错
   仍是给人看的文本，机器接口路径的报错必须是 JSON envelope，混用会破坏其中一边的调用方假设。
 - **`AgentApiTests` 里给 `store_true` 参数写测试的坑**：`_registry`/各测试方法构造 `args` 大多是裸
@@ -314,7 +315,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
   `cmd_*` 里按它做条件分支时，同样用 `is True` 这个模式；纯读值转发（如 `compact`/`out`）目前
   所有测试都显式传了值，暂时安全，但新写测试时也建议养成显式传 `live=False` 等布尔关键字的习惯，
   别依赖 Mock 的默认行为。
-- **`live`/`pid` 从扫描层到接口的传递**：`scan_claude._live_session_ids()`/`scan_codex._live_session_ids()`
+- **`live`/`pid` 从扫描层到接口的传递**：`scan.claude._live_session_ids()`/`scan.codex._live_session_ids()`
   返回 `{会话ID: pid}` 字典（不是纯 `set`），`scan_sessions` 里 `info["live"] = info["id"] in live_ids`
   之后紧跟 `info["pid"] = live_ids.get(info["id"])`；两个运行时判活时手上本来就有 pid（Claude 是
   `~/.claude/sessions/{pid}.json` 的文件名，Codex 是 `pgrep -x codex` 循环里的 pid），顺手带出，
@@ -363,7 +364,7 @@ pickup 是本地 TUI，不是常驻服务：**禁止** Prometheus / 远程遥测
 
 事件名约定：`scan_all`、`list_rebuild`、`host_session`、`capture_slow`（≥100ms）、`screenshot`、`error`。默认不写对话正文；敏感字段名会被改写为 `<redacted>`。
 
-README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`、去 Rich 假窗口铬）。配色验收亦可对照真机或 `render_line` segment。计划原文：`docs/superpowers/plans/2026-07-19-tui-observability.md`。
+README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`、去 Rich 假窗口铬）。配色验收亦可对照真机或 `render_line` segment。
 
 ## 客户端自动更新（updater.py / ui/update_toast.py）
 

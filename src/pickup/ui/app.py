@@ -45,9 +45,11 @@ _PICKUP_DARK = Theme(
         "block-cursor-blurred-background": "#24344766",
         # 分栏激活顶/底条：$primary-muted 再提亮约 10%
         "pane-active-background": "#31475E",
-        # 侧边栏里「在当前分屏组合内、但输入不在它身上」的会话行：比 surface
-        # 抬一档、又明显低于激活底色，保证一眼能分出哪格是激活格。
-        "pane-inactive-background": "#212E3C",
+        # 侧边栏投影分屏组合的四级底色（见 _SIDEBAR_SPLIT_LADDER 的说明）
+        "sidebar-split-background": "#2A3F58",
+        "sidebar-split-cursor-background": "#35506E",
+        "sidebar-split-active-background": "#3E648B",
+        "sidebar-split-active-cursor-background": "#4A76A3",
     },
 )
 _PICKUP_LIGHT = Theme(
@@ -68,8 +70,11 @@ _PICKUP_LIGHT = Theme(
         "block-cursor-blurred-background": "#C5D6E880",
         # 分栏激活顶/底条：$primary-muted 再提亮约 10%
         "pane-active-background": "#D1E7F7",
-        # 侧边栏里「在当前分屏组合内、但输入不在它身上」的会话行，见深色注释。
-        "pane-inactive-background": "#DFE9F3",
+        # 浅色下"更显著"是更深更饱和，梯度方向与深色相反，见 _SIDEBAR_SPLIT_LADDER
+        "sidebar-split-background": "#BCD5EE",
+        "sidebar-split-cursor-background": "#A8C9E9",
+        "sidebar-split-active-background": "#93BCE4",
+        "sidebar-split-active-cursor-background": "#7FAEDC",
     },
 )
 
@@ -85,8 +90,24 @@ _PICKUP_LIGHT = Theme(
 # 这里给的是深色兜底值，具体主题里的同名变量会覆盖它。
 _THEME_VARIABLE_DEFAULTS = {
     "pane-active-background": "#31475E",
-    "pane-inactive-background": "#212E3C",
+    "sidebar-split-background": "#2A3F58",
+    "sidebar-split-cursor-background": "#35506E",
+    "sidebar-split-active-background": "#3E648B",
+    "sidebar-split-active-cursor-background": "#4A76A3",
 }
+
+# 侧边栏投影右栏分屏组合时的四级底色阶梯，从弱到强：
+#   组合内 → 组合内且键盘光标停在它上面 → 当前激活格 → 激活格且光标停在它上面
+# 必须整体单调（深色越来越亮、浅色越来越深），否则会出现「光标移到激活行上，
+# 整行反而变暗」的倒挂——列表自身的选中底色（`block-cursor-background`）比激活
+# 格底色弱，光标一旦落到组合行上就会把它压回去，看着像状态丢了。四级都用主题
+# 变量而不是写死 hex，深浅主题各给一套。
+_SIDEBAR_SPLIT_LADDER = (
+    "sidebar-split-background",
+    "sidebar-split-cursor-background",
+    "sidebar-split-active-background",
+    "sidebar-split-active-cursor-background",
+)
 
 
 class PickupApp(App):

@@ -290,16 +290,24 @@ class SessionListView(ListView):
         scrollbar-size-vertical: 0;
         scrollbar-size-horizontal: 0;
     }
-    /* 右栏分屏时给「组合里的会话」整行铺底：当前激活的那格用与分栏顶/底条同
-       一个 $pane-active-background，视觉上把侧边栏和右栏那一格连起来；其余格
-       用弱一档的底色，表示「也在这组里，但输入不在它身上」。
-       列表自己有焦点时，Textual 的 `ListView:focus > ListItem.-highlight` 多带
-       一个伪类、优先级更高，光标高亮仍然压在这层之上，键盘导航不会被埋掉。 */
+    /* 右栏分屏时给「组合里的会话」整行铺底，当前激活的那格再重一档，一眼能看出
+       「这几个会话在一组、输入正在其中哪一个上」。四级底色见 ui/app.py 的
+       `_SIDEBAR_SPLIT_LADDER`。
+       后两条是光标落在组合行上时的合成色：列表自身的选中底（block-cursor）比这
+       里的组合底色弱，不单独写就会出现「光标一移上来整行反而变暗」的倒挂。它们
+       比 Textual 内置的 `ListView:focus > ListItem.-highlight` 多一个类，优先级
+       更高；组合外的普通行仍然吃 Textual 原样式，键盘导航不受影响。 */
     SessionListView > ListItem.-in-split {
-        background: $pane-inactive-background;
+        background: $sidebar-split-background;
     }
     SessionListView > ListItem.-split-active {
-        background: $pane-active-background;
+        background: $sidebar-split-active-background;
+    }
+    SessionListView:focus > ListItem.-in-split.-highlight {
+        background: $sidebar-split-cursor-background;
+    }
+    SessionListView:focus > ListItem.-split-active.-highlight {
+        background: $sidebar-split-active-cursor-background;
     }
     """
 

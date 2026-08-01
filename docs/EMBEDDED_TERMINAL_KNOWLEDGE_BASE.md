@@ -136,7 +136,7 @@ stateDiagram-v2
 
 ### 主题、背景与光标的时序
 
-1. 启动 pickup 时，外层终端仍未被 Textual 接管，`pickup.py` 探测 OSC 10 / OSC 11 应答。
+1. 启动 pickup 时，外层终端仍未被 Textual 接管，`theme.py` 的 `_probe_osc_colours()` 探测 OSC 10 / OSC 11 应答。
 2. 创建“运行中(托管)”会话时，`host_session()` 用 pane 实际尺寸启动目标助手，并记录 tmux pane 标识。
 3. 对支持 `refresh-client -r` 的 tmux，立即保持控制通道并向该 pane 报告外层颜色。此操作只会让**后续**背景色查询得到正确应答。
    - **背景色与前景色必须拆成两条独立命令报告，背景色先发**：tmux 只解析 `refresh -r` 参数里的**第一条** OSC 序列、其余整段丢弃，而探测函数返回的是「OSC 10 前景 + OSC 11 背景」拼接串——整串报告等于只注入了前景色，pane 背景停在 tmux 默认猜测（纯黑），助手一律判深色。拆分由 `theme._split_osc_report()` 负责，`report_theme()` 分两次发送。症状、逐条实测结论和可复现验证方式见 [维护指南](MAINTAINER_GUIDE.md)「托管 agent 自己的深浅色检测」条目下 2026-07-25 踩坑记录。
@@ -251,7 +251,7 @@ stateDiagram-v2
 
    检查托管创建、控制通道 FIFO / 超时关闭、抓帧历史窗口、键位翻译、真彩色、宽字符、主题报告和通道死亡回退。安装了 tmux 时，真实控制通道集成测试也会运行；缺少 tmux 时该部分自动跳过。
 
-2. 涉及内嵌实时终端、会话保活、`pickup.py` 的保活接线或直启路径时，运行：
+2. 涉及内嵌实时终端、会话保活、`cli.py` 的保活接线或直启路径时，运行：
 
    ```bash
    bash selftest.sh

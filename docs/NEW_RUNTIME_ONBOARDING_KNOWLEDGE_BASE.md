@@ -87,9 +87,9 @@ sequenceDiagram
 按以下检查清单完成新助手接入；任何一项缺失都会导致「能扫到但不能使用」或「界面能选到但启动失败」的半接入状态。
 
 1. **确认真实数据与命令能力**：在本机实际创建、续接并结束至少一个新助手会话；记录历史目录或数据库、会话 ID、工作目录、用户/助手正文、时间、原生恢复命令、空白新建命令，以及可安全使用的自动批准参数。不要只依据官网文档推断参数。
-2. **实现扫描与预览**：新增 `scan_<助手>.py`，把私有历史转换成完整 `SessionInfo`；列表扫描保持轻量，完整对话在 `load_conversation` 按需读取。过滤内部子任务、空会话、系统注入和标题生成留下的噪音会话。
+2. **实现扫描与预览**：新增 `scan/<助手>.py`，把私有历史转换成完整 `SessionInfo`；列表扫描保持轻量，完整对话在 `load_conversation` 按需读取。过滤内部子任务、空会话、系统注入和标题生成留下的噪音会话。
 3. **实现助手运行时**：新增 `runtime/<助手>.py` 的 `BaseRuntime` 子类，声明稳定的 id、显示名、可执行命令、历史阅读提示和唯一一处的 `auto_approve_args`；实现扫描、预览、原生恢复、跨助手目标新建、空白新建。仅在确实支持且已验证时实现带指令的原生续接。
-   同时实现 `delete_session(session)`（终端界面 `x` 删除会话用；`BaseRuntime` 默认实现是直接报错，不覆写就等于该助手不支持删除）：删除是彻底抹掉、不可恢复，必须先确认新助手的历史存储形态再决定实现方式——单文件（如 Claude/Codex 的 JSONL）直接 `os.unlink`；每会话一个目录（如 Kimi/Cursor）要整目录 `shutil.rmtree`，只删 `path` 指向的那一个文件会留下同目录的其他元数据文件；**所有会话共享同一份存储时（如 OpenCode 的单个 SQLite 库）绝对不能删文件本身**，必须开一个可写连接、按会话 ID 精确删除对应的行（含外键关联表，按依赖顺序删除、一次事务提交），否则会连带清空其他会话的历史。详见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md` 和各 `scan_<助手>.py` 里 `delete_session()` 的实现与测试。
+   同时实现 `delete_session(session)`（终端界面 `x` 删除会话用；`BaseRuntime` 默认实现是直接报错，不覆写就等于该助手不支持删除）：删除是彻底抹掉、不可恢复，必须先确认新助手的历史存储形态再决定实现方式——单文件（如 Claude/Codex 的 JSONL）直接 `os.unlink`；每会话一个目录（如 Kimi/Cursor）要整目录 `shutil.rmtree`，只删 `path` 指向的那一个文件会留下同目录的其他元数据文件；**所有会话共享同一份存储时（如 OpenCode 的单个 SQLite 库）绝对不能删文件本身**，必须开一个可写连接、按会话 ID 精确删除对应的行（含外键关联表，按依赖顺序删除、一次事务提交），否则会连带清空其他会话的历史。详见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md` 和各 `scan/<助手>.py` 里 `delete_session()` 的实现与测试。
 4. **注册一次**：在 `runtime/registry.py` 导入并加入 `default_registry()`。注册表顺序就是默认显示/选择顺序之一；id 必须唯一，且扫描结果的 `source` 必须与其一致。
 5. **补展示配色**：仅在 `src/pickup/theme.py` 的 `RUNTIME_LABEL_STYLES` 加一行 `id → 色值`，使列表、详情和预览角色名通过同一个 `runtime_label_style` 自动取得样式。
 6. **补测试**：在 `test_runtime.py` 覆盖新助手自身恢复、空白新建、作为跨助手目标、作为跨助手源（有真实可读历史样例时）；补相应扫描器测试，锁定私有格式的过滤和解析。
@@ -107,13 +107,14 @@ sequenceDiagram
 | `runtime/opencode.py` | OpenCode 对照实现；单文件数据库签名优化 | `OpenCodeRuntime` |
 | `runtime/kimi.py` | Kimi 对照实现；接力目标的非交互限制 | `KimiRuntime` |
 | `runtime/cursor.py` | Cursor 对照实现 | `CursorRuntime` |
-| `scan_claude.py` | Claude JSONL 扫描、噪音过滤和预览 | Claude 扫描器 |
-| `scan_codex.py` | Codex rollout JSONL 扫描和子助手过滤 | Codex 扫描器 |
-| `scan_opencode.py` | OpenCode SQLite 只读扫描 | OpenCode 扫描器 |
-| `scan_kimi.py` | Kimi `state.json` / `wire.jsonl` 扫描 | Kimi 扫描器 |
-| `scan_cursor.py` | Cursor CLI 目录、JSON 与 SQLite 扫描 | Cursor 扫描器 |
+| `scan/claude.py` | Claude JSONL 扫描、噪音过滤和预览 | Claude 扫描器 |
+| `scan/codex.py` | Codex rollout JSONL 扫描和子助手过滤 | Codex 扫描器 |
+| `scan/opencode.py` | OpenCode SQLite 只读扫描 | OpenCode 扫描器 |
+| `scan/kimi.py` | Kimi `state.json` / `wire.jsonl` 扫描 | Kimi 扫描器 |
+| `scan/cursor.py` | Cursor CLI 目录、JSON 与 SQLite 扫描 | Cursor 扫描器 |
 | `models.py` | 统一会话、接力和启动计划数据模型 | `SessionInfo`、`Handoff`、`LaunchPlan` |
-| `src/pickup/cli.py` 等 | 启动入口、运行时配色、直启分发 | `RUNTIME_LABEL_STYLES`、`runtime_label_style` |
+| `theme.py` | 运行时配色唯一来源 | `RUNTIME_LABEL_STYLES`、`runtime_label_style` |
+| `cli.py`、`bootstrap.py` | 启动入口与直启分发 | `main()`、`_dispatch_direct_launch()` |
 | `test_runtime.py` | 运行时、注册、接力、缓存和透传参数测试 | `RuntimeTests` |
 
 ## §3 本域代码入口索引
@@ -121,17 +122,17 @@ sequenceDiagram
 | 场景 | 入口 | 类/方法/配置 | 说明 |
 |---|---|---|---|
 | 定义新助手最小能力 | `runtime/base.py` | `BaseRuntime` | 必须实现扫描、预览、原生恢复、跨助手目标新建、空白新建 |
-| 新助手扫描历史 | `scan_<助手>.py` | `scan_sessions(limit)` | 返回按时间倒序的统一会话；单条异常不应使其他助手不可用 |
-| 新助手读取完整预览 | `scan_<助手>.py` | `load_conversation(...)` | 只保留真人用户与助手可读文本，按时间正序返回 |
+| 新助手扫描历史 | `scan/<助手>.py` | `scan_sessions(limit)` | 返回按时间倒序的统一会话；单条异常不应使其他助手不可用 |
+| 新助手读取完整预览 | `scan/<助手>.py` | `load_conversation(...)` | 只保留真人用户与助手可读文本，按时间正序返回 |
 | 同助手恢复 | `runtime/<助手>.py` | `build_resume_plan(session)` | 使用新助手已验证的原生命令和会话 ID |
 | 新助手接手其他助手 | `runtime/<助手>.py` | `build_new_plan(handoff)` | 新建目标会话，把统一接力提示词作为首条任务，不伪造恢复 |
 | 新助手空白开局 | `runtime/<助手>.py` | `build_new_session_plan(cwd)` | 不带任何历史或接力提示词，只在有效工作目录启动 |
 | 新助手作为接力来源 | `runtime/base.py` | `export_handoff(session, title)` | 统一校验历史路径、附带格式提示与摘要；必要时在适配器补充会话定位信息 |
-| 彻底删除会话（可选能力） | `runtime/<助手>.py`、`scan_<助手>.py` | `delete_session(session)` | 基类默认报错（不覆写=不支持删除）；单文件直接 unlink，每会话一目录要整目录 `shutil.rmtree`，共享存储（如 OpenCode SQLite）必须开可写连接按会话 ID 精确删行，不能删文件本身 |
+| 彻底删除会话（可选能力） | `runtime/<助手>.py`、`scan/<助手>.py` | `delete_session(session)` | 基类默认报错（不覆写=不支持删除）；单文件直接 unlink，每会话一目录要整目录 `shutil.rmtree`，共享存储（如 OpenCode SQLite）必须开可写连接按会话 ID 精确删行，不能删文件本身 |
 | 注册与扫描缓存 | `runtime/registry.py` | `default_registry()`、`scan_all(limit)` | 注册一次；扫描并发且单助手异常隔离 |
 | 直启参数透传 | `runtime/registry.py` | `build_passthrough_plan` | 只补 `auto_approve_args`，用户已传入时不重复 |
 | 统一会话键与接力正文 | `models.py` | `session_key`、`Handoff.render_prompt` | 标题键按「助手运行时 + 会话 ID」隔离；接力提示词禁止改写源历史 |
-| 列表配色 | `src/pickup/cli.py` 等 | `RUNTIME_LABEL_STYLES`、`runtime_label_style` | 颜色唯一来源，界面层不可另建色表 |
+| 列表配色 | `theme.py` | `RUNTIME_LABEL_STYLES`、`runtime_label_style` | 颜色唯一来源，界面层不可另建色表 |
 | 回归测试 | `test_runtime.py` | `RuntimeTests`、`FakeRuntime` | FakeRuntime 演示无两两转换分支地扩展第六种助手 |
 
 ## §4 本域表与外部数据入口索引
@@ -157,7 +158,7 @@ sequenceDiagram
 | 接力编排 | `Handoff → LaunchPlan` | `RuntimeRegistry.build_launch_plan` | 同助手原生恢复；跨助手新建目标会话 |
 | 空白新建编排 | 新会话计划 | `RuntimeRegistry.build_new_session_plan` | 用户选择新助手和工作目录但不关联历史 |
 | 直启编排 | 参数透传计划 | `RuntimeRegistry.build_passthrough_plan` | `pickup <助手> [参数…]` 的统一入口 |
-| 展示组件 | 运行时标签样式 | `pickup.py` 的 `RUNTIME_LABEL_STYLES` | 列表、详情和预览共享的显示色 |
+| 展示组件 | 运行时标签样式 | `theme.py` 的 `RUNTIME_LABEL_STYLES` | 列表、详情和预览共享的显示色 |
 | 标题噪音防护 | 标记前缀 | `titles.PROMPT_MARKER` 与各扫描器 | 标题生成器可能落盘时，避免自产会话刷入列表 |
 
 ## §6 核心业务规则与隐性约束

@@ -50,10 +50,10 @@ pickup 的会话扫描负责从本机已安装助手的私有历史中读取可�
 
 ```mermaid
 graph TD
-    A[本地助手历史<br/>JSONL / SQLite / JSON] --> B[scan_*.py<br/>运行时私有格式解析]
+    A[本地助手历史<br/>JSONL / SQLite / JSON] --> B[scan/*.py<br/>运行时私有格式解析]
     B --> C[SessionInfo<br/>统一会话列表项]
     B --> Q[attention_signals<br/>关注状态证据]
-    D[scan_common.py<br/>纯函数与按 cwd 判活] --> B
+    D[scan/common.py<br/>纯函数与按 cwd 判活] --> B
     C --> E[runtime/*.py<br/>运行时适配器]
     E --> F[RuntimeRegistry.scan_all]
     F --> G[SessionStore.load / refresh<br/>异步加载与合并]
@@ -122,7 +122,7 @@ sequenceDiagram
 1. 用户选中会话后，`SessionStore.get_conversation()` 以“运行时 + 会话 ID”定位预览缓存。
 2. 先检查进程内缓存，再按历史入口的设备、inode、字节数和纳秒修改时间检查本地派生缓存；签名未变化则复用已有对话预览数据。
 3. 签名变化或无缓存时，定位对应运行时适配器的 `load_conversation(session)`。
-4. 适配器委托相应 `scan_*.load_conversation` 读取完整对话；原始系统事件、思考分片、工具定义和空文本不进入完整对话。
+4. 适配器委托相应 `scan.*.load_conversation` 读取完整对话；原始系统事件、思考分片、工具定义和空文本不进入完整对话。
 5. 返回的消息按时间顺序同时写入进程内缓存和有界本地派生缓存，再交给右栏。解析失败返回空列表，不得因一个损坏历史文件导致主界面崩溃。
 
 ### 2.4 会话时间与排序
@@ -165,17 +165,18 @@ flowchart TD
 
 | 目录（相对 cli） | 内容 | 关键文件 |
 |---|---|---|
-| `./` | Claude 历史扫描、预览解析、轻量过滤 | `scan_claude.py` |
-| `./` | Codex 历史扫描、判活、预览解析 | `scan_codex.py` |
-| `./` | OpenCode SQLite 扫描、签名与预览解析 | `scan_opencode.py` |
-| `./` | Kimi 元数据与主事件流扫描、预览解析 | `scan_kimi.py` |
-| `./` | Cursor CLI 元数据扫描、SQLite blob 预览 | `scan_cursor.py` |
-| `./` | 跨扫描器纯函数、按 cwd 判活 | `scan_common.py` |
+| `src/pickup/scan/` | Claude 历史扫描、预览解析、轻量过滤 | `scan/claude.py` |
+| `src/pickup/scan/` | Codex 历史扫描、判活、预览解析 | `scan/codex.py` |
+| `src/pickup/scan/` | OpenCode SQLite 扫描、签名与预览解析 | `scan/opencode.py` |
+| `src/pickup/scan/` | Kimi 元数据与主事件流扫描、预览解析 | `scan/kimi.py` |
+| `src/pickup/scan/` | Cursor CLI 元数据扫描、SQLite blob 预览 | `scan/cursor.py` |
+| `src/pickup/scan/` | 跨扫描器纯函数、按 cwd 判活 | `scan/common.py` |
 | `src/pickup/` | 关注状态裁决、各运行时证据解析与 Cursor 用户级观察器 | `attention.py`、`attention_signals.py`、`cursor_observer.py` |
-| `runtime/` | 统一适配抽象、注册表与各助手委托 | `runtime/base.py`、`runtime/registry.py`、`runtime/*.py` |
-| `./` | 会话列表合并、异步加载、预览缓存 | `src/pickup/cli.py` 等 |
-| `./` | 统一会话与完整对话的数据结构 | `models.py` |
-| `./` | 扫描、格式、缓存与性能回归测试 | `test_session_scanning.py` |
+| `src/pickup/runtime/` | 统一适配抽象、注册表与各助手委托 | `runtime/base.py`、`runtime/registry.py`、`runtime/*.py` |
+| `src/pickup/` | 会话列表合并、异步加载、预览缓存 | `store.py`、`cli.py` |
+| `src/pickup/` | 统一会话与完整对话的数据结构 | `models.py` |
+| `src/pickup/` | 派生缓存读写（元数据与完整对话） | `cache.py` |
+| `tests/` | 扫描、格式、缓存与性能回归测试 | `test_session_scanning.py`、`test_cache.py` |
 
 ## §3 本域代码入口索引
 
@@ -183,22 +184,22 @@ flowchart TD
 |---|---|---|---|
 | 新增或修改统一列表字段 | 统一数据模型 | `models.py` 的 `SessionInfo` | 五个扫描器都必须填充统一语义，跨运行时唯一键是“运行时 + 会话 ID” |
 | 新增或修改预览消息规则 | 统一数据模型 | `models.py` 的 `ConversationMessage` | 只允许 `user` 与 `assistant` 两种角色；时间戳可为空 |
-| 修改 Claude 扫描或列表轻量化 | Claude 扫描器 | `scan_claude.scan_sessions()`、`_peek_head_meta()`、`_build_session_info()` | 先 mtime 排序，预探过滤噪音和失效 cwd，再头尾解析 |
-| 修改 Claude 完整预览 | Claude 扫描器 | `scan_claude.load_conversation()` | 只根据文本内容决定是否展示 assistant 消息；保留真人用户消息 |
-| 修改 Codex 扫描或判活 | Codex 扫描器 | `scan_codex.scan_sessions()`、`_live_session_ids()` | 过滤子代理线程；macOS 使用批量 `lsof`，不可逐 pid 调用 |
-| 修改 Codex 完整预览 | Codex 扫描器 | `scan_codex.load_conversation()` | 读取 `event_msg` 的用户、过程叙述和最终答复文本 |
-| 修改 OpenCode 查询或刷新跳过 | OpenCode 扫描器 | `scan_opencode.scan_sessions()`、`scan_signature()` | 历史为 SQLite；签名需同时覆盖 DB/WAL 和进程活性快照 |
-| 修改 OpenCode 完整预览 | OpenCode 扫描器 | `scan_opencode.load_conversation()` | 从 `message` 与 `part` 表合并同一消息的多个 text part |
-| 修改 Kimi 事件过滤或预览 | Kimi 扫描器 | `scan_kimi._iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent |
-| 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan_cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；同 cwd 多 `agent` 必须按打开的 store.db / 完整 PICKUP_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底 |
-| 修改共用路径、时间、cwd 判活 | 共享 helper | `scan_common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`is_cursor_agent_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`） |
+| 修改 Claude 扫描或列表轻量化 | Claude 扫描器 | `scan.claude.scan_sessions()`、`_peek_head_meta()`、`_build_session_info()` | 先 mtime 排序，预探过滤噪音和失效 cwd，再头尾解析 |
+| 修改 Claude 完整预览 | Claude 扫描器 | `scan.claude.load_conversation()` | 只根据文本内容决定是否展示 assistant 消息；保留真人用户消息 |
+| 修改 Codex 扫描或判活 | Codex 扫描器 | `scan.codex.scan_sessions()`、`_live_session_ids()` | 过滤子代理线程；macOS 使用批量 `lsof`，不可逐 pid 调用 |
+| 修改 Codex 完整预览 | Codex 扫描器 | `scan.codex.load_conversation()` | 读取 `event_msg` 的用户、过程叙述和最终答复文本 |
+| 修改 OpenCode 查询或刷新跳过 | OpenCode 扫描器 | `scan.opencode.scan_sessions()`、`scan_signature()` | 历史为 SQLite；签名需同时覆盖 DB/WAL 和进程活性快照 |
+| 修改 OpenCode 完整预览 | OpenCode 扫描器 | `scan.opencode.load_conversation()` | 从 `message` 与 `part` 表合并同一消息的多个 text part |
+| 修改 Kimi 事件过滤或预览 | Kimi 扫描器 | `scan.kimi._iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent |
+| 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；同 cwd 多 `agent` 必须按打开的 store.db / 完整 PICKUP_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底 |
+| 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`is_cursor_agent_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`） |
 | 修改跨运行时并发或扫描复用 | 注册表 | `runtime.registry.RuntimeRegistry.scan_all()` | 各运行时并发、异常隔离、结果副本隔离、签名命中跳过 |
 | 修改异步首屏、列表合并或预览缓存 | 会话存储 | `pickup.SessionStore.load()`、`refresh()`、`get_conversation()` | `store.load` 在后台线程，预览缓存按 mtime 失效 |
 | 修改会话关注状态裁决或已读基线 | 关注状态存储 | `attention.AttentionStore`、`store.SessionStore` | 单圆点优先级、首升级基线、占位键迁移和删除清理收敛在此；不得改变排序或机器接口状态 |
 | 修改各助手关注信号 | 状态证据解析 | `attention_signals.inspect_session()` | 只解析明确事件；结构化问题才产生等待回答，历史证据必须使用稳定时间 |
 | 修改 Cursor 实时状态接入 | 用户级观察器 | `cursor_observer` | 增量维护 hook 配置，备份并原子写；事件接收始终故障开放；公开命令支持状态、安装、卸载、结构化输出和写入预演 |
 | 修改运行时委托边界 | 运行时适配 | `runtime.base.BaseRuntime` 与 `runtime/*.py` | 适配器只把统一调用委托给私有扫描器，不在界面层写运行时分支 |
-| 修改任一助手的彻底删除逻辑 | 各扫描器 | `scan_<助手>.delete_session(...)` | Claude/Codex 单文件 `os.unlink`；Kimi/Cursor 每会话一目录、`shutil.rmtree` 整个会话目录；OpenCode 所有会话共享一个库，必须按会话 ID 在可写连接里精确删 `part`/`message`/`session` 三表对应行，一次事务提交，不能删文件本身（见 §4 与 `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` 的 `x` 删除会话流程） |
+| 修改任一助手的彻底删除逻辑 | 各扫描器 | `scan.<助手>.delete_session(...)` | Claude/Codex 单文件 `os.unlink`；Kimi/Cursor 每会话一目录、`shutil.rmtree` 整个会话目录；OpenCode 所有会话共享一个库，必须按会话 ID 在可写连接里精确删 `part`/`message`/`session` 三表对应行，一次事务提交，不能删文件本身（见 §4 与 `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` 的 `x` 删除会话流程） |
 
 ## §4 本域外部数据入口索引
 
@@ -218,7 +219,7 @@ flowchart TD
 - 历史路径不存在时该运行时返回空列表；这是“未安装/未使用”的正常状态。
 - 历史格式损坏、单行 JSON 损坏或单个数据库查询失败，应在该条或该数据源边界降级，不能导致其他助手不可用。
 - **扫描与预览** 一律只读：SQLite 用只读 URI 打开，不得为了读取会话而创建、迁移、checkpoint 或写回数据库。
-- **删除是唯一的写入例外**：终端界面 `x` 删除会话（不可恢复）需要真正修改磁盘，各 `delete_session()` 因此允许写操作——OpenCode 是全仓第一处、也是唯一一处可写 SQLite 连接（`scan_opencode.delete_session()`，非只读 URI），仅用于按会话 ID 删除该会话自己的行，不得用于任何读取路径。
+- **删除是唯一的写入例外**：终端界面 `x` 删除会话（不可恢复）需要真正修改磁盘，各 `delete_session()` 因此允许写操作——OpenCode 是全仓第一处、也是唯一一处可写 SQLite 连接（`scan.opencode.delete_session()`，非只读 URI），仅用于按会话 ID 删除该会话自己的行，不得用于任何读取路径。
 - 历史中的绝对路径、用户文本和工具输出是隐私数据；不得写入仓库、截图夹具、遥测或诊断默认日志。
 
 ## §5 本域流程、组件与缓存入口索引
@@ -231,10 +232,10 @@ flowchart TD
 | 合并流程 | 稳定会话顺序 | `SessionStore._merge_scanned()` | 让已展示项目不因内容更新跳动 |
 | 异步任务 | 首屏后台加载 | `SessionStore.load()` / `wait_loaded()` | TUI 首帧不能被磁盘扫描阻塞 |
 | 时间修正 | 有效会话时间 | `models.effective_session_time()` | 文件 mtime 与真实事件时间脱节时 |
-| 共享组件 | 路径/时间/按 cwd 判活 | `scan_common.py` | 多扫描器一致的展示和活性兜底 |
-| 进程活性 | Claude 专用 pid 注册 | `scan_claude._live_session_ids()` | 会话与 Claude pid 的精确关联 |
-| 进程活性 | Codex 打开文件关联 | `scan_codex._live_session_ids()` | 会话与 rollout 文件描述符关联 |
-| 进程活性 | 全部同名进程列表 / cwd→单 pid 折叠 | `scan_common.live_processes()`、`live_pids_by_process_name()` | Cursor 用前者做精确绑定；OpenCode/Kimi 仍用后者保守标最新一条 |
+| 共享组件 | 路径/时间/按 cwd 判活 | `scan/common.py` | 多扫描器一致的展示和活性兜底 |
+| 进程活性 | Claude 专用 pid 注册 | `scan.claude._live_session_ids()` | 会话与 Claude pid 的精确关联 |
+| 进程活性 | Codex 打开文件关联 | `scan.codex._live_session_ids()` | 会话与 rollout 文件描述符关联 |
+| 进程活性 | 全部同名进程列表 / cwd→单 pid 折叠 | `scan.common.live_processes()`、`live_pids_by_process_name()` | Cursor 用前者做精确绑定；OpenCode/Kimi 仍用后者保守标最新一条 |
 
 ## §6 核心业务规则与隐性约束
 
