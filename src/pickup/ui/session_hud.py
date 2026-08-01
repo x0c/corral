@@ -2,9 +2,10 @@
 
 形态与取舍（改之前先读）：
 
-- **默认收起成一行胶囊**，展开才列出最近几条用户提问。小窗是盖在托管画面上的浮层，
-  盖住多少行就有多少行助手输出看不见；Textual 没有「点击穿透」，被盖住的区域滚轮
-  不会再转发给托管会话、也划不了词。收起态只占一行，把这两笔代价压到最小。
+- **默认收起成「条数 + 最初 + 最近」三行**，展开才补上中间那段。小窗是盖在托管画面上
+  的浮层，盖住多少行就有多少行助手输出看不见；Textual 没有「点击穿透」，被盖住的区域
+  滚轮不会再转发给托管会话、也划不了词。收起态只留这两头，把这两笔代价压到最小。
+- **顺序恒为从上到下、由旧到新**，与右栏完整对话一致。条数超上限时砍中间、留两头。
 - **只画在当前激活的那一格、且只对实时托管画面画**。已结束会话的右栏本来就是完整
   对话，再叠一层是重复信息；多格同时画会刷屏。
 - 用 `dock: right` + `width/height: auto` 把浮层贴到右上角：这样浮层的命中区域**只有
@@ -17,6 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 
 from rich.text import Text
@@ -26,12 +28,15 @@ from textual.widget import Widget
 
 from pickup.display import _fit_cell, _text_width
 from pickup.i18n import t
-from pickup.models import ConversationMessage, format_message_time
+from pickup.models import ConversationMessage
 
 # 展开态最多列几条提问；再多就靠"更早 N 条"一行如实说明，不做静默截断。
 MAX_ENTRIES = 6
 _MIN_WIDTH = 16
-_MAX_WIDTH = 46
+# 内容宽度上限。46 太保守，提问经常在这里被截成半句话；按实际使用反馈放宽到 170%。
+# 这只是**上限**：真实宽度仍取 `min(上限, 本格可用宽度 - 4)`，所以三分屏那种窄格
+# 不受影响，只有单格 / 宽终端才吃得到这个上限。收起态还会再按内容实宽收缩。
+_MAX_WIDTH = 78
 # 窄到这个宽度以下（三分屏 + 窄终端）直接不画：浮层会把整格盖掉。
 _MIN_PANE_WIDTH = 24
 
@@ -62,6 +67,21 @@ class HudData:
         return bool(self.entries)
 
 
+def _short_time(timestamp: float, now: float | None = None) -> str:
+    """小窗自己的时间列：当天只给 `HH:MM`，更早只给 `MM-DD`。
+
+    不复用 `format_message_time`（`MM-DD HH:MM`）：那是右栏完整对话和侧边栏共用的
+    格式，它们有整行宽度可用；小窗横向寸土寸金，11 格的时间列会把正文挤掉一截，
+    而同一个会话里绝大多数提问都在当天，日期是纯冗余。两种写法都恰好 5 格宽，
+    混排时列也不会错位；`:` 与 `-` 足以区分是几点还是哪天。
+    """
+    stamp = datetime.fromtimestamp(timestamp)
+    today = datetime.fromtimestamp(now) if now is not None else datetime.now()
+    if stamp.date() == today.date():
+        return stamp.strftime("%H:%M")
+    return stamp.strftime("%m-%d")
+
+
 def _one_line(text: str) -> str:
     """把多行提问压成一行：换行/制表一律折成单空格，连续空白合并。"""
     return " ".join(str(text or "").split())
@@ -83,7 +103,7 @@ def summarize_user_messages(
         return HudData(0, ())
 
     def _entry(message: ConversationMessage) -> tuple[str, str]:
-        stamp = format_message_time(message.timestamp) if message.timestamp else ""
+        stamp = _short_time(message.timestamp) if message.timestamp else ""
         return stamp, _one_line(message.text)
 
     limit = max(2, limit)

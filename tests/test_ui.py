@@ -4481,6 +4481,18 @@ class SessionHudSummaryTests(unittest.TestCase):
         bodies = [body for _stamp, body in data.entries]
         self.assertEqual(bodies, ["问题0", "问题15", "问题16", "问题17", "问题18", "问题19"])
 
+    def test_time_column_drops_the_date_for_todays_prompts(self) -> None:
+        """横向寸土寸金：当天只给 HH:MM，更早只给 MM-DD，两者都恰好 5 格宽。"""
+        from pickup.ui.session_hud import _short_time
+
+        now = time.mktime((2026, 7, 31, 16, 30, 0, 0, 0, -1))
+        today = time.mktime((2026, 7, 31, 9, 5, 0, 0, 0, -1))
+        earlier = time.mktime((2026, 7, 28, 9, 5, 0, 0, 0, -1))
+        self.assertEqual(_short_time(today, now), "09:05")
+        self.assertEqual(_short_time(earlier, now), "07-28")
+        for stamp in (_short_time(today, now), _short_time(earlier, now)):
+            self.assertEqual(pickup._text_width(stamp), 5)
+
     def test_multiline_prompt_collapsed_to_single_line(self) -> None:
         from pickup.ui.session_hud import summarize_user_messages
 
