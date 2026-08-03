@@ -1240,9 +1240,33 @@ class SessionCardVisualTests(unittest.TestCase):
             rendered = card.render()
 
         first_line = rendered.plain.splitlines()[0]
-        self.assertTrue(first_line.lstrip().startswith("└─"))
+        self.assertTrue(first_line.startswith("└─ "))
         self.assertNotIn("pickup", first_line)
         self.assertIn("修复侧边栏展示", first_line)
+
+    def test_group_tree_prefix_is_not_dim(self) -> None:
+        """树线贴左缘后只剩两列，再用 dim 会糊成灰影；不得用 dim。"""
+        card = self._card(display_title="修复侧边栏展示")
+        card.tree_position = "middle"
+        with mock.patch.object(
+            SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
+        ):
+            rendered = card.render()
+
+        # 未挂载时树线吃默认前景（无 span 也行）；一旦有覆盖第 0 列的 span，不能是 dim。
+        covering = [
+            span for span in rendered.spans
+            if span.start <= 0 < span.end
+        ]
+        self.assertFalse(
+            any("dim" in str(span.style).lower() for span in covering),
+            f"tree prefix must not be dim, spans={covering}",
+        )
+        first_line, runtime_line, time_line = rendered.plain.splitlines()
+        self.assertTrue(first_line.startswith("├─ "))
+        # 三行第 0 列都是竖向框线，终端里才能连成一条不断的树干。
+        self.assertTrue(runtime_line.startswith("│"))
+        self.assertTrue(time_line.startswith("│"))
 
     def test_sidebar_shows_no_generating_spinner(self) -> None:
         """标题生成期间侧边栏不再显示任何「加载中」转圈动画：无关注圆点时首行
@@ -1530,9 +1554,16 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             group_cards = list(list_view.query(SessionGroupCard))
             self.assertEqual(len(group_cards), 1)
             group_text = group_cards[0].render().plain
-            self.assertEqual(len(group_text.splitlines()), 3)
+            lines = group_text.splitlines()
+            self.assertEqual(len(lines), 3)
             self.assertTrue(group_text.startswith("▼ Group "))
             self.assertNotIn("●", group_text, "会话组标题不能重复显示会话状态圆点")
+            # 第二行项目名与第一行 Group 文字同列起笔，不能靠右。
+            group_col = lines[0].index("Group")
+            self.assertEqual(lines[1].find("tmp"), group_col)
+            # 第三行留白：成员卡已有时间，组卡不再重复「多久以前」。
+            self.assertEqual(lines[2].strip(), "")
+            self.assertNotRegex(lines[2], r"\d")
 
             child_cards = [
                 card
@@ -1542,12 +1573,16 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(child_cards), 2)
             first_child_line = child_cards[0].render().plain.splitlines()[0]
             last_child_line = child_cards[1].render().plain.splitlines()[0]
-            self.assertIn("├─", first_child_line)
-            self.assertIn("└─", last_child_line)
+            self.assertTrue(first_child_line.startswith("├─ "))
+            self.assertTrue(last_child_line.startswith("└─ "))
             self.assertIn("●", first_child_line)
             # 组卡第二行已经写了项目，子项标题前不再重复「tmp 」前缀。
-            self.assertNotRegex(first_child_line, r"[├└]─\s*(?:●\s+)?tmp\s")
-            self.assertNotRegex(last_child_line, r"[├└]─\s*(?:●\s+)?tmp\s")
+            self.assertNotRegex(first_child_line, r"^[├└]─\s*(?:●\s+)?tmp\s")
+            self.assertNotRegex(last_child_line, r"^[├└]─\s*(?:●\s+)?tmp\s")
+            # 中间项续行竖线与分叉同列，避免三行高度把树干扯断。
+            mid_lines = child_cards[0].render().plain.splitlines()
+            self.assertTrue(mid_lines[1].startswith("│"))
+            self.assertTrue(mid_lines[2].startswith("│"))
             self.assertEqual(len(list(list_view.query(SessionCard))), len(sessions))
 
     async def test_space_collapses_and_expands_selected_group(self) -> None:

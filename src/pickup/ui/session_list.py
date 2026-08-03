@@ -110,6 +110,7 @@ class SessionCard(Widget):
         "session-card--time-recent",
         "session-card--time-today",
         "session-card--time-old",
+        "session-card--tree",
     }
 
     # Textual 默认所有 Widget 都允许鼠标拖拽文本选择（ALLOW_SELECT=True）；这类
@@ -143,6 +144,11 @@ class SessionCard(Widget):
     }
     SessionCard > .session-card--time-old {
         color: $foreground 30%;
+    }
+    /* 组内树线：与卡片基础色同亮，靠「非 bold」让标题仍跳一层；绝不用终端
+       dim——那一档在深色底上几乎看不见。 */
+    SessionCard > .session-card--tree {
+        color: $foreground 80%;
     }
     """
 
@@ -189,6 +195,16 @@ class SessionCard(Widget):
         import pickup
 
         return pickup._time_brightness_tier(self.session.get("mtime") or 0)
+
+    def _tree_style(self) -> Style:
+        """组内树线配色；未挂载时用默认前景，挂载后吃 `$foreground 80%`。
+
+        只要前景、丢掉组件底色，避免盖住列表选中/分屏高亮。
+        """
+        style = self.get_component_rich_style("session-card--tree", default=Style())
+        if style.color is None:
+            return Style()
+        return Style(color=style.color)
 
     def _time_style(self, tier: str) -> Style:
         """时间行的档位配色；未挂载（单测直接调 render）时退回 dim 兜底。
@@ -268,14 +284,17 @@ class SessionCard(Widget):
         if show_project:
             title_prefix = f"{title_prefix}{project} "
         width = max(10, self.size.width or 40)
+        # 树线贴左缘，必须用同一套半角框线（`│├└─`）：全角 `｜`/`－` 与 `├`
+        # 对不齐，三行卡片之间竖线会断开。第 0 列始终是竖向框线，续行同列填
+        # `│`，末项续行改空格，线才连续收住。
         first_prefix = ""
         continuation_prefix = ""
         if self.tree_position == "middle":
-            first_prefix = "  ├─ "
-            continuation_prefix = "  │  "
+            first_prefix = "├─ "
+            continuation_prefix = "│  "
         elif self.tree_position == "last":
-            first_prefix = "  └─ "
-            continuation_prefix = "     "
+            first_prefix = "└─ "
+            continuation_prefix = "   "
         content_width = max(5, width - pickup._text_width(first_prefix))
 
         runtime = store.registry.get(str(session.get("source") or ""))
@@ -307,8 +326,9 @@ class SessionCard(Widget):
         # 首行整体 bold（与下面两行拉开层级）；独立卡的项目名再 dim 一档，
         # 避免和标题抢视线。组内子项不写项目名，也就没有这段 dim。
         # 进行状态只由首行最左的圆点表达，标题本身不随运行状态变色。
+        tree_style = self._tree_style() if first_prefix else Style()
         out = Text()
-        out.append(first_prefix, style="dim")
+        out.append(first_prefix, style=tree_style)
         content_start = len(first_prefix)
         if dot_style is not None:
             out.append("●", style=dot_style)
@@ -330,16 +350,19 @@ class SessionCard(Widget):
                         content_start + dot_width + project_end,
                     )
         out.append("\n")
-        out.append(continuation_prefix, style="dim")
+        out.append(continuation_prefix, style=tree_style)
         out.append(runtime_cell, style=pickup.runtime_label_style(runtime_id))
         out.append("\n")
-        out.append(continuation_prefix, style="dim")
+        out.append(continuation_prefix, style=tree_style)
         out.append(time_cell, style=time_style)
         return out
 
 
 class SessionGroupCard(Widget):
-    """会话组三行卡：展开三角+水果名 / 项目与数量 / 最近活动时间。"""
+    """会话组三行卡：展开三角+水果名 / 项目与数量 / 空白行（高度与会话卡统一为 3）。
+
+    第三行故意留空：成员各自已有时间，组卡再写「最近活动」是重复噪音。
+    """
 
     ALLOW_SELECT = False
 
@@ -365,13 +388,14 @@ class SessionGroupCard(Widget):
         self._render_signature = self._compute_signature()
 
     def _compute_signature(self) -> tuple:
+        # 组卡不展示时间，mtime 变化不必触发重绘；成员身份/数量变了才要刷新。
         return (
             self.group.name,
             self.group.project_cwd,
             self.group.collapsed,
             self.pinned,
             tuple(
-                (session.get("mtime"), session.get("cwd"))
+                (session.get("source"), session.get("id"))
                 for session in self.member_sessions
             ),
         )
@@ -406,25 +430,25 @@ class SessionGroupCard(Widget):
         width = max(10, self.size.width or 40)
         arrow = "▶" if self.group.collapsed else "▼"
         pin = " ↑" if self.pinned else ""
-        title = pickup._fit_cell(f"{arrow}{pin} {self.group.name}", width)
+        # 前缀宽度固定：第二行项目名从同一列起笔，和 Group xxx 左对齐。
+        name_prefix = f"{arrow}{pin} "
+        title = pickup._fit_cell(f"{name_prefix}{self.group.name}", width)
         project = os.path.basename(self.group.project_cwd.rstrip(os.sep))
         if not project:
             project = t("project.unknown")
         count = len(self.member_sessions)
         count_key = "group.session_count_one" if count == 1 else "group.session_count"
-        summary = f"{project} · {t(count_key, count=count)}"
-        summary_cell = pickup._fit_cell_right(summary, width)
-        latest = max(
-            (float(session.get("mtime") or 0) for session in self.member_sessions),
-            default=0,
-        )
-        time_cell = pickup._fit_cell_right(pickup._format_relative_time(latest), width)
+        indent = " " * pickup._text_width(name_prefix)
+        summary = f"{indent}{project} · {t(count_key, count=count)}"
+        summary_cell = pickup._fit_cell(summary, width)
         out = Text(title.rstrip(), style="bold")
         out.append(" " * max(0, width - pickup._text_width(title.rstrip())))
         out.append("\n")
-        out.append(summary_cell, style="dim")
+        out.append(summary_cell.rstrip(), style="dim")
+        out.append(" " * max(0, width - pickup._text_width(summary_cell.rstrip())))
         out.append("\n")
-        out.append(time_cell, style="dim")
+        # 第三行留白占位，高度仍是 3，与会话卡对齐；时间只在成员卡上显示。
+        out.append(" " * width)
         return out
 
 
