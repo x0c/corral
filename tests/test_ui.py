@@ -4889,6 +4889,21 @@ class SessionHudSummaryTests(unittest.TestCase):
         for stamp in (_short_time(today, now), _short_time(earlier, now)):
             self.assertEqual(pickup._text_width(stamp), 5)
 
+    def test_expanded_shows_na_when_timestamp_missing(self) -> None:
+        """Cursor 等没有逐条时间的历史：展开态用 N/A 占位，列宽与真实时间对齐。"""
+        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+        from pickup.ui.session_hud import _MISSING_TIME
+
+        hud = SessionHud()
+        hud.update_data(
+            summarize_user_messages([pickup.ConversationMessage("user", "无时间提问")]),
+            expanded=True,
+        )
+        body = hud.lines(40)[1].plain
+        self.assertEqual(pickup._text_width(_MISSING_TIME), 5)
+        self.assertTrue(body.startswith(_MISSING_TIME), body)
+        self.assertEqual(body[7:7 + len("无时间提问")], "无时间提问")
+
     def test_multiline_prompt_collapsed_to_single_line(self) -> None:
         from pickup.ui.session_hud import summarize_user_messages
 

@@ -39,8 +39,9 @@ _MIN_WIDTH = 16
 _MAX_WIDTH = 55
 # 窄到这个宽度以下（三分屏 + 窄终端）直接不画：浮层会把整格盖掉。
 _MIN_PANE_WIDTH = 24
-# 时间列宽度：`HH:MM` / `MM-DD` 恒 5 格，再留两格间距；展开态续行按这个宽度顶齐。
-_TIME_COL_WIDTH = 7
+# 缺时间戳时的占位（Cursor 等历史里没有逐条时间）。必须恰好 5 格，与 `HH:MM` /
+# `MM-DD` 同宽，后面再拼两格间距；只用 ASCII，避免 CJK 双宽把列挤歪。
+_MISSING_TIME = "N/A  "
 # 展开态的高度上下限。提问整条换行显示后行数不可控，必须封顶——浮层再有用也不能
 # 把整格助手画面盖掉；超出部分靠滚动看，不做省略。
 _MIN_EXPANDED_HEIGHT = 6
@@ -223,9 +224,11 @@ class SessionHud(Widget):
 
         小窗是用来判断"这个会话在干嘛"的，半句话加省略号常常刚好把关键信息切掉；
         宁可多占几行，也要让提问完整可读。时间列固定 5 格 + 2 格间距，续行前缀
-        用等宽空白顶齐，正文块看起来是规整的一栏。
+        用等宽空白顶齐，正文块看起来是规整的一栏。缺时间戳时用 `N/A` 占位，
+        不留空白缩进——否则 Cursor 这类没有逐条时间的会话看起来像列坏了。
         """
-        prefix = f"{stamp}  " if stamp else " " * _TIME_COL_WIDTH
+        cell = stamp if stamp else _MISSING_TIME
+        prefix = f"{cell}  "
         indent = " " * _text_width(prefix)
         body_width = max(1, width - _text_width(prefix))
         out: list[Text] = []
