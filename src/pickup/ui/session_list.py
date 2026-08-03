@@ -864,9 +864,9 @@ class SessionListView(ListView):
         active = self._split_active_key
         for item, card in self._group_items():
             group_keys = set(card.group.session_keys)
-            is_current_group = bool(
-                keys and active in group_keys and keys.issubset(group_keys)
-            )
+            # 右栏分屏成员都属于本组即可标组卡；active 为空（光标停在组卡上）
+            # 时仍要保留组标题底色，只是不标任何子会话。
+            is_current_group = bool(keys) and keys.issubset(group_keys)
             item.set_class(is_current_group, "-in-split")
             item.set_class(False, "-split-active")
         for item, card in self._session_items():

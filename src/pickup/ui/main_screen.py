@@ -413,6 +413,9 @@ class MainScreen(Screen):
 
         右栏格数、格内绑定的会话、激活格都可能变；这里统一取一次现状交给列表，
         列表内部会跟上次比对，没变就不动 DOM。
+
+        光标停在会话组卡上时：只给组标题铺底，不标任何子会话为「激活」——点组卡
+        是在看整组，不是选中某一个成员。
         """
         if not self.embed_ok:
             return
@@ -421,7 +424,10 @@ class MainScreen(Screen):
             session_list = self.query_one(SessionListView)
         except Exception:  # noqa: BLE001 分栏/列表重建中间态查不到，下一轮兜底同步会补上
             return
-        session_list.set_split_marks(area.ordered_session_keys(), area.focus_key)
+        active = area.focus_key
+        if session_list.selected_group() is not None:
+            active = None
+        session_list.set_split_marks(area.ordered_session_keys(), active)
 
     def _save_split_layout(self) -> None:
         from pickup import split_layout

@@ -1453,6 +1453,58 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(inactive_row.styles.background.a, 0)
 
+    async def test_selecting_group_card_clears_member_split_active(self) -> None:
+        """光标停在会话组卡上时只高亮组标题，不得再高亮其中某一个成员。"""
+        sessions = [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": f"pickup-claude-s{i}",
+            }
+            for i in range(2)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.is_alive", return_value=True):
+            async with app.run_test(size=(160, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                area = app.screen.query_one(SplitPaneArea)
+                keys = [pickup.session_key(s) for s in sessions]
+                list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+                await list_view.rebuild()
+                area.show_hosted_group(
+                    "/tmp",
+                    [(s, s["keepalive_name"], lambda: "") for s in sessions],
+                    focus_key=keys[0],
+                )
+                await _wait_until(lambda: len(area._cells()) == 2)  # noqa: SLF001
+
+                # 先停在某个成员上：该成员应有 -split-active
+                list_view.select_session_key(keys[0])
+                await pilot.pause()
+                app.screen._sync_split_marks()  # noqa: SLF001
+                member0 = next(
+                    item
+                    for item, card in list_view._session_items()
+                    if pickup.session_key(card.session) == keys[0]
+                )
+                self.assertTrue(member0.has_class("-split-active"))
+
+                # 点到 / 选中组卡：组标题保留 -in-split，所有成员都去掉 -split-active
+                group_row = list_view._group_items()[0][0]
+                list_view.index = list(list_view.children).index(group_row)
+                await pilot.pause()
+                app.screen._sync_split_marks()  # noqa: SLF001
+                self.assertTrue(group_row.has_class("-in-split"))
+                for item, _card in list_view._session_items():
+                    self.assertFalse(
+                        item.has_class("-split-active"),
+                        "选中组卡时不应高亮任何子会话",
+                    )
+
     @staticmethod
     def _weight(color, app) -> float:
         """底色的「显著程度」：深色主题下越亮越重，浅色主题下越深越重。"""
