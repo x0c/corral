@@ -8,7 +8,7 @@ q 结束会话 / x 删除会话 / c 关闭面板 / Ctrl+B 显隐侧栏 / Esc 退
 上即可滚动。焦点契约与两条易踩的时序坑见 docs/TERMINAL_UI_KNOWLEDGE_BASE.md §6。
 多分屏时聚焦某一格会把侧边栏高亮切到对应会话。新建会话走侧边栏「＋ 新建」或
 右栏顶栏加格，不再提供底栏 `n` 快捷键。
-侧边栏顶部为项目搜索框，大小写无关模糊匹配项目名与会话标题。
+侧边栏顶部为搜索框，大小写无关模糊匹配组名、项目名与会话标题。
 `Ctrl+B` 与右栏顶栏左侧开关可显隐侧栏（无右栏时不可用）；偏好写入
 `~/.cache/pickup/ui-prefs.json`。禁止再加第二套全屏预览或纯列表旧界面。
 """
@@ -235,7 +235,8 @@ class MainScreen(Screen):
         # 右上角会话小窗：展开状态全局共用一份（切格不该让它一会儿开一会儿关），
         # 最近一次算好的摘要按会话键留着，历史文件正在被写、缓存暂时失效时继续
         # 显示旧摘要，避免小窗一秒一闪。
-        self._hud_expanded = False
+        # 会话提问概览默认展开，让用户进入会话时直接看到上下文；仍可随时收起。
+        self._hud_expanded = True
         self._hud_cache: dict[str, object] = {}
         self._hud_warm_at = 0.0
         self._hud_warm_key: str | None = None
@@ -244,7 +245,13 @@ class MainScreen(Screen):
         with Horizontal():
             with Vertical(id="list-pane"):
                 yield Input(placeholder=t("filter.placeholder"), id="project-search")
-                yield SessionListView(self.store, self.nav, id="session-list")
+                yield SessionListView(
+                    self.store,
+                    self.nav,
+                    group_store=self._split_store,
+                    on_group_changed=self._save_sidebar_state,
+                    id="session-list",
+                )
             if self.embed_ok:
                 yield SplitPaneArea(
                     self.store,
@@ -402,7 +409,7 @@ class MainScreen(Screen):
         return migrated
 
     def _sync_split_marks(self) -> None:
-        """把右栏当前分屏组合与激活格投影到侧边栏底色。
+        """把右栏当前分屏组合与激活格投影到组标题和激活子会话底色。
 
         右栏格数、格内绑定的会话、激活格都可能变；这里统一取一次现状交给列表，
         列表内部会跟上次比对，没变就不动 DOM。
@@ -421,18 +428,23 @@ class MainScreen(Screen):
 
         if not self.embed_ok:
             return
-        # 右栏格数/绑定/焦点变了才会走到这里，顺手把侧边栏的分屏底色对齐；写盘
-        # 记忆只认活跃会话、下面还会提前 return，标记同步必须放在它前面。
+        # 右栏格数/绑定/焦点变了才会走到这里，顺手把侧边栏的当前组与激活会话
+        # 底色对齐。已结束成员仍属于会话组，因此持久化不再按活跃状态裁剪。
         self._sync_split_marks()
         area = self._split_area()
         keys = [
             k for k in area.ordered_session_keys()
-            if self._is_session_active(k) and not k.startswith("__")
+            if not k.startswith("__")
         ]
-        if not keys:
-            return
-        focus = area.focus_key if area.focus_key in keys else keys[0]
-        self._split_store.set_group(area.current_project, keys, focus_key=focus)
+        if len(keys) >= 2:
+            focus = area.focus_key if area.focus_key in keys else keys[0]
+            self._split_store.set_group(area.current_project, keys, focus_key=focus)
+        split_layout.save_layout(self._split_store)
+
+    def _save_sidebar_state(self) -> None:
+        """保存会话组折叠与置顶状态；不改动右栏当前布局。"""
+        from pickup import split_layout
+
         split_layout.save_layout(self._split_store)
 
     def _on_pane_close(self, session_key: str) -> None:
@@ -441,8 +453,16 @@ class MainScreen(Screen):
         self._split_store.remove_session(session_key)
         split_layout.save_layout(self._split_store)
         self._sync_split_marks()
+        self.call_next(self._rebuild_sidebar_projection)
         # 焦点由 SplitPaneArea 收尾：还有剩余实时格就接着用，最后一格被关掉才
         # 回列表。这里再调一次 _focus_list() 会把焦点提前抢走，让接力落空。
+
+    async def _rebuild_sidebar_projection(self) -> None:
+        """只重建会话组树，不触发右栏跟随，避免关格时重挂仍存活的同伴格。"""
+        session_list = self.query_one(SessionListView)
+        await session_list.rebuild()
+        self._update_header()
+        self._sync_split_marks()
 
     def _on_runtime_pick(self, runtime_id: str) -> None:
         import pickup
@@ -465,18 +485,14 @@ class MainScreen(Screen):
         self._embed_open(request, add_pane=True)
 
     def _try_restore_startup_layout(self) -> None:
-        """启动时恢复上次活跃项目的分屏组合（仅活跃/托管会话）。"""
+        """启动时从持久会话组中恢复仍活跃/托管的成员。"""
         if not self.embed_ok or self.direct is not None:
             return
         # 扫描未完成时 _is_session_active 全假；此时 prune+save 会把磁盘上的
         # 分屏记忆整份清空，且后续首屏也不会再恢复（真机：重启后组合丢失）。
         if not self.store.loaded:
             return
-        from pickup import split_layout
-
         self._reconcile_split_session_keys()
-        self._split_store.prune_inactive(self._is_session_active)
-        split_layout.save_layout(self._split_store)
         focus = self._split_store.last_focus_key
         if focus and self._is_session_active(focus):
             self._show_session_group(focus)
@@ -492,15 +508,32 @@ class MainScreen(Screen):
                 self._show_session_group(alive[0])
                 return
 
-    def _show_session_group(self, focus_key: str, *, focus_pane: bool = False) -> None:
+    def _show_session_group(
+        self,
+        focus_key: str,
+        *,
+        focus_pane: bool = False,
+        include_inactive: bool = False,
+    ) -> None:
+        if not self.embed_ok:
+            return
         from pickup import split_layout
 
-        project, keys = split_layout.resolve_active_group(
-            self._split_store,
-            focus_key,
-            is_active=self._is_session_active,
-            find_session=self.store.find_session,
-        )
+        group = self._split_store.get_group(focus_key)
+        if include_inactive and group is not None:
+            project = group.project_cwd
+            keys = [
+                key
+                for key in group.session_keys
+                if self.store.find_session(key) is not None
+            ]
+        else:
+            project, keys = split_layout.resolve_active_group(
+                self._split_store,
+                focus_key,
+                is_active=self._is_session_active,
+                find_session=self.store.find_session,
+            )
         entries = self._build_hosted_entries(keys)
         if not entries:
             return
@@ -619,15 +652,12 @@ class MainScreen(Screen):
             self.call_next(self._rebuild_list)
 
     async def _rebuild_list(self, select_key: str | None = None) -> None:
-        from pickup import split_layout
-
         async with self._rebuild_lock:
             session_list = self.query_one(SessionListView)
             migrated: dict[str, str] = {}
             if self.embed_ok and self.store.loaded:
                 migrated = self._reconcile_split_session_keys()
-                self._split_store.prune_inactive(self._is_session_active)
-                split_layout.save_layout(self._split_store)
+                self._save_sidebar_state()
             if select_key is None:
                 selected_key = session_list._displayed_selected_key()
                 select_key = migrated.get(selected_key) if selected_key else None
@@ -836,12 +866,24 @@ class MainScreen(Screen):
                 return
             area.show_new_session_hint()
             return
+        group = session_list.selected_group()
+        if group is not None:
+            focus_key = (
+                group.focus_key
+                if group.focus_key in group.session_keys
+                else group.session_keys[0]
+            )
+            self._show_session_group(focus_key, include_inactive=True)
+            return
         session = session_list.selected_session()
         if session is None:
             return
         import pickup
 
         key = pickup.session_key(session)
+        if self._split_store.get_group(key) is not None:
+            self._show_session_group(key, include_inactive=True)
+            return
         # 托管成功后 store 会先写入 keepalive，列表卡片要到下一次异步重建才
         # 换成新 dict。此间若旧高亮事件到达，必须以 store 的最新快照为准；
         # 否则旧卡会被误判成静态会话，把刚挂上的实时终端盖回预览。
@@ -1058,10 +1100,9 @@ class MainScreen(Screen):
         )
         self._begin_attention_read(focus_key)
         self._sync_split_marks()
-        active_keys = [k for k in keys if self._is_session_active(k)]
-        if len(active_keys) >= 2:
-            self._split_store.set_group(project, active_keys, focus_key=focus_key)
-            split_layout.save_layout(self._split_store)
+        self._split_store.set_group(project, keys, focus_key=focus_key)
+        split_layout.save_layout(self._split_store)
+        self.call_next(self._rebuild_list, focus_key)
         self._preview_gen += 1
         for key in keys:
             session = self.store.find_session(key)
@@ -1084,12 +1125,32 @@ class MainScreen(Screen):
         if session_list.is_new_session_selected():
             await self._start_new_session_flow()
             return
-        session = session_list.selected_session()
+        group = session_list.selected_group()
+        if group is not None:
+            focus_key = (
+                group.focus_key
+                if group.focus_key in group.session_keys
+                else group.session_keys[0]
+            )
+            if self.embed_ok:
+                self._show_session_group(
+                    focus_key, focus_pane=True, include_inactive=True
+                )
+                return
+            session = self.store.find_session(focus_key)
+        else:
+            session = session_list.selected_session()
         if session is None:
             return
         import pickup
-        if self._click_returns_focus_to_list(focus_before_click, pickup.session_key(session)):
+        session_key = pickup.session_key(session)
+        if self._click_returns_focus_to_list(focus_before_click, session_key):
             self._focus_list()
+            return
+        if self._split_store.get_group(session_key) is not None:
+            self._show_session_group(
+                session_key, focus_pane=True, include_inactive=True
+            )
             return
         request = pickup.LaunchRequest(
             session, str(session.get("source") or self.nav.source), self.store.get_title(session)
@@ -1724,10 +1785,6 @@ class MainScreen(Screen):
         keepalive.kill(keepalive_name)
         key = pickup.session_key(session)
         self.store.mark_hosted(key, None)
-        from pickup import split_layout
-
-        self._split_store.remove_session(key)
-        split_layout.save_layout(self._split_store)
         if self.embed_ok:
             self._split_area().remove_by_keepalive(keepalive_name)
         await self._rebuild_list()
@@ -1753,7 +1810,11 @@ class MainScreen(Screen):
         key = pickup.session_key(session)
         keepalive_name = session.get("keepalive_name")
         title = self.store.get_title(session)
-        message_key = "confirm.delete_running_session" if keepalive_name else "confirm.delete_session"
+        message_key = (
+            "confirm.delete_running_session"
+            if keepalive_name
+            else "confirm.delete_session"
+        )
         confirmed = await self.app.push_screen_wait(
             ConfirmModal(t(message_key, title=title), confirm_key="x")
         )
@@ -1762,10 +1823,6 @@ class MainScreen(Screen):
         if keepalive_name:
             keepalive.kill(keepalive_name)
             self.store.mark_hosted(key, None)
-            from pickup import split_layout
-
-            self._split_store.remove_session(key)
-            split_layout.save_layout(self._split_store)
             if self.embed_ok:
                 self._split_area().remove_by_keepalive(keepalive_name)
         # 乐观 UI：确认后立刻从内存与侧边栏摘除；磁盘 delete 可能较慢（如 Cursor
@@ -1786,6 +1843,11 @@ class MainScreen(Screen):
             self.app.bell()
             return
         self.store.finish_pending_delete(key)
+        from pickup import split_layout
+
+        self._split_store.remove_session(key)
+        split_layout.save_layout(self._split_store)
+        await self._rebuild_list()
 
     def action_close_pane(self) -> None:
         if not self.embed_ok:

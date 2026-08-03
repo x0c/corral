@@ -33,9 +33,12 @@ i18n.set_lang("en")
 import tempfile
 
 from pickup import ui_prefs as _ui_prefs
+from pickup import split_layout as _split_layout
 
 _UI_PREFS_DIR = tempfile.mkdtemp(prefix="pickup-test-ui-prefs-")
 _ui_prefs.PREFS_FILE = os.path.join(_UI_PREFS_DIR, "ui-prefs.json")
+_SPLIT_LAYOUT_DIR = tempfile.mkdtemp(prefix="pickup-test-split-layout-")
+_split_layout.LAYOUT_FILE = os.path.join(_SPLIT_LAYOUT_DIR, "split-layout.json")
 
 import pickup
 from pickup.models import LaunchPlan
@@ -53,7 +56,12 @@ from pickup.ui.modals import (
     RuntimePickerModal,
 )
 from pickup.ui.search_modal import FullTextSearchModal, SearchResultRow
-from pickup.ui.session_list import NEW_SESSION_ID, SessionCard, SessionListView
+from pickup.ui.session_list import (
+    NEW_SESSION_ID,
+    SessionCard,
+    SessionGroupCard,
+    SessionListView,
+)
 from pickup.ui.terminal_theme import TerminalBackgroundReport, TerminalThemeParser
 from pickup.ui.runtime_top_bar import _SidebarToggleChip
 
@@ -140,6 +148,10 @@ async def _wait_for_session_name(pane, *, tries: int = 60, interval: float = 0.1
 
 
 def _make_store(sessions=None, extra_runtimes=()):
+    # 每个界面用例从空会话组状态开始，避免置顶/分组跨用例串扰；使用 unittest
+    # discover 时不会执行 pytest fixture，因此隔离必须放在共用夹具入口。
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(_split_layout.LAYOUT_FILE)
     sessions = sessions if sessions is not None else [
         {
             "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
@@ -752,16 +764,26 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             "native_title": "真实会话", "fallback_title": "真实会话",
             "cwd": "/tmp", "live": True, "keepalive_name": kname,
         }
-        store, _ = _make_store(sessions=[provisional])
+        companion = {
+            "source": "claude", "id": "companion", "short_id": "companion",
+            "mtime": time.time() - 1, "size_bytes": 1, "size_kb": 1,
+            "native_title": "同伴会话", "fallback_title": "同伴会话",
+            "cwd": "/tmp", "live": True,
+            "keepalive_name": "pickup-claude-companion",
+        }
+        store, _ = _make_store(sessions=[provisional, companion])
         old_key = pickup.session_key(provisional)
         new_key = pickup.session_key(real)
+        companion_key = pickup.session_key(companion)
         app = PickupApp(store, embed_ok=True)
         # 本测手动模拟一次扫描替换；禁止后台定时重扫把 fixture 又写回占位卡。
         with mock.patch.object(store, "refresh", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 area = app.screen.query_one(SplitPaneArea)
-                app.screen._split_store.set_group("/tmp", [old_key], focus_key=old_key)  # noqa: SLF001
+                app.screen._split_store.set_group(  # noqa: SLF001
+                    "/tmp", [old_key, companion_key], focus_key=old_key
+                )
                 with mock.patch("pickup.embed.is_alive", return_value=True):
                     area.show_hosted_group(
                         "/tmp",
@@ -773,13 +795,13 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(
                         pickup.session_key(list_view.selected_session()), old_key
                     )
-                    store.sessions["claude"] = [real]
-                    store._order = [new_key]  # noqa: SLF001 — 模拟重扫把占位卡替换成真实卡
+                    store.sessions["claude"] = [real, companion]
+                    store._order = [new_key, companion_key]  # noqa: SLF001 — 模拟重扫把占位卡替换成真实卡
                     store.hosted[new_key] = kname
                     await app.screen._rebuild_list()  # noqa: SLF001
                     group = app.screen._split_store.get_group(new_key)  # noqa: SLF001
                     self.assertIsNotNone(group)
-                    self.assertEqual(group.session_keys, [new_key])
+                    self.assertEqual(group.session_keys, [new_key, companion_key])
                     self.assertEqual(area.pane_specs()[0].session_key, new_key)
                     self.assertEqual(
                         pickup.session_key(list_view.selected_session()), new_key,
@@ -1208,6 +1230,20 @@ class SessionCardVisualTests(unittest.TestCase):
             f"title should not be dim, spans={title_spans}",
         )
 
+    def test_group_member_title_omits_project_name(self) -> None:
+        """组内子项挂在已写项目的组卡下，标题前不再重复项目名。"""
+        card = self._card(cwd="/tmp/pickup", display_title="修复侧边栏展示")
+        card.tree_position = "last"
+        with mock.patch.object(
+            SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
+        ):
+            rendered = card.render()
+
+        first_line = rendered.plain.splitlines()[0]
+        self.assertTrue(first_line.lstrip().startswith("└─"))
+        self.assertNotIn("pickup", first_line)
+        self.assertIn("修复侧边栏展示", first_line)
+
     def test_sidebar_shows_no_generating_spinner(self) -> None:
         """标题生成期间侧边栏不再显示任何「加载中」转圈动画：无关注圆点时首行
         直接以项目名开头，不出现 braille spinner 帧或任何转圈占位字符。"""
@@ -1341,41 +1377,54 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
-    """右栏分屏时，侧边栏要标出「组合里有哪些会话、哪一格正激活」。"""
+    """右栏分屏时只高亮会话组标题和当前激活的子会话。"""
 
     @staticmethod
     def _items(app):
         list_view = app.screen.query_one(SessionListView)
         return list_view, list_view._session_items()
 
+    async def _seed_group(self, list_view: SessionListView) -> list[str]:
+        keys = [
+            pickup.session_key(session)
+            for session in list_view.store.all_sessions()
+        ][:2]
+        list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+        await list_view.rebuild()
+        return keys
+
     async def test_split_marks_group_and_active_session(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            list_view, items = self._items(app)
-            keys = [pickup.session_key(card.session) for _, card in items]
-            self.assertGreaterEqual(len(keys), 3)
+            list_view, _ = self._items(app)
+            keys = await self._seed_group(list_view)
 
             list_view.set_split_marks(keys[:2], keys[1])
             await pilot.pause()
-            rows = [item for item, _ in items]
-            self.assertTrue(rows[1].has_class("-split-active"))
-            self.assertFalse(rows[1].has_class("-in-split"))
-            self.assertTrue(rows[0].has_class("-in-split"))
-            self.assertFalse(rows[2].has_class("-in-split"))
-            # 组合内的行都要明显浮出列表底色，激活的那行再重一档
+            group_row = list_view._group_items()[0][0]
+            session_rows = {
+                pickup.session_key(card.session): item
+                for item, card in list_view._session_items()
+            }
+            active_row = session_rows[keys[1]]
+            inactive_row = session_rows[keys[0]]
+            self.assertTrue(group_row.has_class("-in-split"))
+            self.assertTrue(active_row.has_class("-split-active"))
+            self.assertFalse(inactive_row.has_class("-in-split"))
+            self.assertFalse(inactive_row.has_class("-split-active"))
+            # 组标题明显浮出列表底色，激活子会话再重一档
             plain_bg = app.screen.query_one(SessionListView).styles.background
-            active_bg = rows[1].styles.background
-            listed_bg = rows[0].styles.background
+            active_bg = active_row.styles.background
+            listed_bg = group_row.styles.background
             self.assertGreater(
                 self._weight(active_bg, app), self._weight(listed_bg, app)
             )
             self.assertGreater(
                 self._weight(listed_bg, app), self._weight(plain_bg, app)
             )
-            # 组合外的会话保持透明，不铺任何底色
-            self.assertEqual(rows[2].styles.background.a, 0)
+            self.assertEqual(inactive_row.styles.background.a, 0)
 
     @staticmethod
     def _weight(color, app) -> float:
@@ -1389,21 +1438,26 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            list_view, items = self._items(app)
-            rows = [item for item, _ in items]
-            keys = [pickup.session_key(card.session) for _, card in items]
+            list_view, _ = self._items(app)
+            keys = await self._seed_group(list_view)
             list_view.set_split_marks(keys[:2], keys[1])
             list_view.focus()
             await pilot.pause()
 
-            listed_bg = rows[0].styles.background
-            active_bg = rows[1].styles.background
-            list_view.index = 1  # 光标落到组合内的非激活行
+            group_row = list_view._group_items()[0][0]
+            active_row = next(
+                item
+                for item, card in list_view._session_items()
+                if pickup.session_key(card.session) == keys[1]
+            )
+            listed_bg = group_row.styles.background
+            active_bg = active_row.styles.background
+            list_view.index = list(list_view.children).index(group_row)
             await pilot.pause()
-            listed_cursor_bg = rows[0].styles.background
-            list_view.index = 2  # 光标落到激活行
+            listed_cursor_bg = group_row.styles.background
+            list_view.index = list(list_view.children).index(active_row)
             await pilot.pause()
-            active_cursor_bg = rows[1].styles.background
+            active_cursor_bg = active_row.styles.background
 
             ladder = [listed_bg, listed_cursor_bg, active_bg, active_cursor_bg]
             weights = [self._weight(c, app) for c in ladder]
@@ -1434,8 +1488,8 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            list_view, items = self._items(app)
-            keys = [pickup.session_key(card.session) for _, card in items]
+            list_view, _ = self._items(app)
+            keys = await self._seed_group(list_view)
             list_view.set_split_marks(keys[:2], keys[0])
             await pilot.pause()
 
@@ -1444,9 +1498,155 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             await list_view.rebuild()
             await pilot.pause()
 
-            rows = [item for item, _ in list_view._session_items()]
-            self.assertTrue(rows[0].has_class("-split-active"))
-            self.assertTrue(rows[1].has_class("-in-split"))
+            group_row = list_view._group_items()[0][0]
+            active_row = next(
+                item
+                for item, card in list_view._session_items()
+                if pickup.session_key(card.session) == keys[0]
+            )
+            self.assertTrue(group_row.has_class("-in-split"))
+            self.assertTrue(active_row.has_class("-split-active"))
+
+
+class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
+    """会话组在侧边栏按三行组卡 + 缩进子会话展示，并支持折叠与置顶。"""
+
+    async def _grouped_app(self):
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        return store, app
+
+    async def test_group_card_has_three_lines_without_attention_dot(self) -> None:
+        store, app = await self._grouped_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            sessions = store.all_sessions()
+            sessions[0]["attention_kind"] = "working"
+            keys = [pickup.session_key(session) for session in sessions[:2]]
+            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            await list_view.rebuild()
+
+            group_cards = list(list_view.query(SessionGroupCard))
+            self.assertEqual(len(group_cards), 1)
+            group_text = group_cards[0].render().plain
+            self.assertEqual(len(group_text.splitlines()), 3)
+            self.assertTrue(group_text.startswith("▼ Group "))
+            self.assertNotIn("●", group_text, "会话组标题不能重复显示会话状态圆点")
+
+            child_cards = [
+                card
+                for card in list_view.query(SessionCard)
+                if pickup.session_key(card.session) in keys
+            ]
+            self.assertEqual(len(child_cards), 2)
+            first_child_line = child_cards[0].render().plain.splitlines()[0]
+            last_child_line = child_cards[1].render().plain.splitlines()[0]
+            self.assertIn("├─", first_child_line)
+            self.assertIn("└─", last_child_line)
+            self.assertIn("●", first_child_line)
+            # 组卡第二行已经写了项目，子项标题前不再重复「tmp 」前缀。
+            self.assertNotRegex(first_child_line, r"[├└]─\s*(?:●\s+)?tmp\s")
+            self.assertNotRegex(last_child_line, r"[├└]─\s*(?:●\s+)?tmp\s")
+            self.assertEqual(len(list(list_view.query(SessionCard))), len(sessions))
+
+    async def test_space_collapses_and_expands_selected_group(self) -> None:
+        store, app = await self._grouped_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = [
+                pickup.session_key(session)
+                for session in store.all_sessions()[:2]
+            ]
+            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            await list_view.rebuild()
+            list_view.focus()
+            list_view.index = 1
+
+            await pilot.press("space")
+            await _wait_until(
+                lambda: list_view.group_store.get_group(keys[0]).collapsed
+                and len(list(list_view.query(SessionCard))) == 1
+            )
+            self.assertTrue(
+                list(list_view.query(SessionGroupCard))[0].render().plain.startswith("▶")
+            )
+
+            await pilot.press("space")
+            await _wait_until(
+                lambda: not list_view.group_store.get_group(keys[0]).collapsed
+                and len(list(list_view.query(SessionCard))) == 3
+            )
+
+    async def test_filter_by_group_name_reveals_all_members(self) -> None:
+        store, app = await self._grouped_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = [
+                pickup.session_key(session)
+                for session in store.all_sessions()[:2]
+            ]
+            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            group = list_view.group_store.get_group(keys[0])
+            group.collapsed = True
+            list_view.nav.project_query = group.name.lower()
+            await list_view.rebuild()
+            self.assertEqual(len(list(list_view.query(SessionGroupCard))), 1)
+            self.assertEqual(len(list(list_view.query(SessionCard))), 2)
+
+    async def test_refresh_keeps_ended_sessions_in_the_group(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = [
+                pickup.session_key(session)
+                for session in store.all_sessions()[:2]
+            ]
+            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            await app.screen._rebuild_list()  # noqa: SLF001
+            self.assertIsNotNone(list_view.group_store.get_group(keys[0]))
+            self.assertEqual(len(list(list_view.query(SessionGroupCard))), 1)
+
+    async def test_p_pins_independent_session_and_whole_group(self) -> None:
+        store, app = await self._grouped_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            sessions = store.all_sessions()
+            keys = [pickup.session_key(session) for session in sessions[:2]]
+            independent_key = pickup.session_key(sessions[2])
+            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            await list_view.rebuild()
+            list_view.focus()
+
+            independent_item = next(
+                item
+                for item, card in list_view._session_items()
+                if pickup.session_key(card.session) == independent_key
+            )
+            list_view.index = list(list_view.children).index(independent_item)
+            await pilot.press("p")
+            await _wait_until(
+                lambda: independent_key in list_view.group_store.pinned_session_keys
+            )
+            first_card = list_view.children[1].children[0]
+            self.assertIsInstance(first_card, SessionCard)
+            self.assertIn("↑", first_card.render().plain.splitlines()[0])
+
+            group_item = list_view._group_items()[0][0]
+            list_view.index = list(list_view.children).index(group_item)
+            await pilot.press("p")
+            group = list_view.group_store.get_group(keys[0])
+            await _wait_until(
+                lambda: group.group_id in list_view.group_store.pinned_group_ids
+            )
+            first_card = list_view.children[1].children[0]
+            self.assertIsInstance(first_card, SessionGroupCard)
+            self.assertIn("↑", first_card.render().plain.splitlines()[0])
 
 
 class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
@@ -1480,7 +1680,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             search = app.screen.query_one("#project-search", Input)
             self.assertEqual(list_view.index, 0)  # 固定「+新建会话」项
             self.assertEqual(len(list_view.visible_sessions()), 3)
-            self.assertIn("Filter projects", search.placeholder)
+            self.assertIn("Filter groups / projects / titles", search.placeholder)
 
             await pilot.press("down")
             await pilot.pause()
@@ -4855,6 +5055,9 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             hud = area._cells()[0].session_hud()  # noqa: SLF001
             self.assertIsInstance(hud, SessionHud)
             await _wait_until(lambda: hud.display and hud.region.height > 0)
+            self.assertTrue(hud.expanded, "会话提问小窗启动后应默认展开")
+            app.screen.action_toggle_hud()
+            await _wait_until(lambda: not hud.expanded and hud.region.height == 3)
             cell = area._cells()[0]  # noqa: SLF001
             header = cell.region.y
             # 收起态固定三行：条数 + 最初 + 最近
@@ -4887,15 +5090,14 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: len(area._cells()) == 1)  # noqa: SLF001
             hud = area._cells()[0].session_hud()  # noqa: SLF001
             app.screen._sync_hud()  # noqa: SLF001
-            await _wait_until(lambda: hud.display and hud.region.height == 3)
-
-            app.screen.action_toggle_hud()
-            await _wait_until(lambda: hud.expanded and hud.region.height > 3)
+            await _wait_until(lambda: hud.display and hud.expanded and hud.region.height > 3)
             self.assertIn("Your prompts", hud.render().plain)
             self.assertEqual(hud.region.right, area._cells()[0].region.right - 1)  # noqa: SLF001
 
             app.screen.action_toggle_hud()
             await _wait_until(lambda: not hud.expanded and hud.region.height == 3)
+            app.screen.action_toggle_hud()
+            await _wait_until(lambda: hud.expanded and hud.region.height > 3)
 
     async def test_box_height_matches_rendered_lines_in_both_states(self) -> None:
         """底色框的高度必须恰好等于正文行数。
@@ -4927,10 +5129,11 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             def _matches() -> bool:
                 return hud.size.height == len(hud.render().plain.split("\n"))
 
-            self.assertTrue(_matches(), "收起态：底色框高度与正文行数不一致")
-            app.screen.action_toggle_hud()
-            await _wait_until(lambda: hud.expanded and hud.size.height > 3)
+            self.assertTrue(hud.expanded, "会话提问小窗启动后应默认展开")
             self.assertTrue(_matches(), "展开态：底色框高度与正文行数不一致")
+            app.screen.action_toggle_hud()
+            await _wait_until(lambda: not hud.expanded and hud.size.height == 3)
+            self.assertTrue(_matches(), "收起态：底色框高度与正文行数不一致")
             # 每行都补齐到同宽，底色才是规整矩形，右侧不会露出锯齿
             widths = {pickup._text_width(line) for line in hud.render().plain.split("\n")}
             self.assertEqual(widths, {hud.size.width})
@@ -5000,7 +5203,7 @@ class SessionHudGatingTests(unittest.TestCase):
         screen = MainScreen(store, embed_ok=False)
         self.assertIs(screen.check_action("toggle_hud", ()), False)
         screen.action_toggle_hud()  # 纯列表模式下调用也不能崩
-        self.assertFalse(screen._hud_expanded)  # noqa: SLF001
+        self.assertTrue(screen._hud_expanded)  # noqa: SLF001 — 默认展开且无面板时不改状态
 
 
 if __name__ == "__main__":

@@ -385,23 +385,42 @@ _CAIRO_SNIPPET = (
 )
 
 async def _capture() -> None:
+    from pickup import split_layout
+
     store = _demo_store()
-    app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
-    if app.no_color:
-        raise RuntimeError(
-            "PickupApp.no_color 仍为 True：NO_COLOR 未在创建 App 前清除，截图会灰阶"
-        )
-    async with app.run_test(size=(140, 36)) as pilot:
-        await pilot.pause(delay=0.4)
-        # 跳过「新建会话」钉，选中第一条真实会话 → 右栏完整预览
-        await pilot.press("down")
-        await pilot.pause(delay=0.5)
-        with tempfile.TemporaryDirectory() as td:
-            svg = app.save_screenshot("list.svg", path=td)
-            png_path = OUT_DIR / "list.png"
-            _svg_to_png(Path(td) / Path(svg).name, png_path)
-            _assert_png_sane(png_path)
-        print(f"wrote {OUT_DIR / 'list.png'}")
+    with tempfile.TemporaryDirectory() as layout_td:
+        layout_path = Path(layout_td) / "split-layout.json"
+        original_layout_path = split_layout.LAYOUT_FILE
+        split_layout.LAYOUT_FILE = str(layout_path)
+        try:
+            keys = ["cursor:demo-cursor-1", "codex:demo-codex-1"]
+            seed = split_layout.SplitLayoutStore()
+            seed.set_group(
+                "/Users/demo/Codes/pickup", keys, focus_key=keys[0]
+            )
+            group = seed.get_group(keys[0])
+            group.name = "Group Pineapple"
+            seed.toggle_group_pin(group.group_id)
+            split_layout.save_layout(seed)
+
+            app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
+            if app.no_color:
+                raise RuntimeError(
+                    "PickupApp.no_color 仍为 True：NO_COLOR 未在创建 App 前清除，截图会灰阶"
+                )
+            async with app.run_test(size=(140, 36)) as pilot:
+                await pilot.pause(delay=0.4)
+                # 跳过「新建会话」，选中置顶会话组 → 右栏显示整组预览。
+                await pilot.press("down")
+                await pilot.pause(delay=0.5)
+                with tempfile.TemporaryDirectory() as td:
+                    svg = app.save_screenshot("list.svg", path=td)
+                    png_path = OUT_DIR / "list.png"
+                    _svg_to_png(Path(td) / Path(svg).name, png_path)
+                    _assert_png_sane(png_path)
+                print(f"wrote {OUT_DIR / 'list.png'}")
+        finally:
+            split_layout.LAYOUT_FILE = original_layout_path
 
 
 def _assert_png_sane(png_path: Path) -> None:
@@ -439,28 +458,39 @@ async def _capture_search() -> None:
     """全文搜索弹窗（Ctrl+F）：命中行 + 关键词高亮。"""
     from pickup.ui.search_modal import FullTextSearchModal
 
+    from pickup import split_layout
+
     store = _demo_store()
-    app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
-    async with app.run_test(size=(140, 36)) as pilot:
-        await pilot.pause(delay=0.4)
-        await pilot.press("ctrl+f")
-        for _ in range(100):
-            if isinstance(app.screen, FullTextSearchModal) and not app.screen._indexing:
-                break
-            await asyncio.sleep(0.05)
-        else:
-            raise RuntimeError("全文搜索弹窗没有就绪")
-        modal = app.screen
-        modal.query_one("#search-query").value = "回归"
-        await pilot.pause(delay=0.5)
-        if not modal._matches:
-            raise RuntimeError("演示查询没有命中，截图会是空列表")
-        with tempfile.TemporaryDirectory() as td:
-            svg = app.save_screenshot("search.svg", path=td)
-            png_path = OUT_DIR / "search.png"
-            _svg_to_png(Path(td) / Path(svg).name, png_path)
-            _assert_png_sane(png_path)
-        print(f"wrote {png_path}")
+    with tempfile.TemporaryDirectory() as layout_td:
+        original_layout_path = split_layout.LAYOUT_FILE
+        split_layout.LAYOUT_FILE = str(Path(layout_td) / "split-layout.json")
+        try:
+            app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
+            async with app.run_test(size=(140, 36)) as pilot:
+                await pilot.pause(delay=0.4)
+                await pilot.press("ctrl+f")
+                for _ in range(100):
+                    if (
+                        isinstance(app.screen, FullTextSearchModal)
+                        and not app.screen._indexing
+                    ):
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    raise RuntimeError("全文搜索弹窗没有就绪")
+                modal = app.screen
+                modal.query_one("#search-query").value = "回归"
+                await pilot.pause(delay=0.5)
+                if not modal._matches:
+                    raise RuntimeError("演示查询没有命中，截图会是空列表")
+                with tempfile.TemporaryDirectory() as td:
+                    svg = app.save_screenshot("search.svg", path=td)
+                    png_path = OUT_DIR / "search.png"
+                    _svg_to_png(Path(td) / Path(svg).name, png_path)
+                    _assert_png_sane(png_path)
+                print(f"wrote {png_path}")
+        finally:
+            split_layout.LAYOUT_FILE = original_layout_path
 
 
 def main() -> None:

@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.style import Style
@@ -27,11 +29,13 @@ from textual.widgets import ListItem, ListView
 
 if TYPE_CHECKING:
     import pickup
+    from pickup.split_layout import SplitGroup, SplitLayoutStore
 
 from pickup.i18n import t
 
 
 NEW_SESSION_ID = "__new_session__"
+GROUP_ID_PREFIX = "__group__-"
 
 # 时间行档位在「控件还没挂载」时的兜底样式：单测会直接构造 SessionCard 调
 # render()，此时主题变量尚未解析，退回旧的二值 dim 表现，不让渲染整体失败。
@@ -73,6 +77,29 @@ class SessionMultiToggleRequested(Message):
     def __init__(self, session_key: str) -> None:
         super().__init__()
         self.session_key = session_key
+
+
+class SessionGroupToggleRequested(Message):
+    """点击组卡三角：切换展开状态，不触发打开会话组。"""
+
+    bubble = True
+
+    def __init__(self, group_id: str) -> None:
+        super().__init__()
+        self.group_id = group_id
+
+
+@dataclass(frozen=True)
+class _SidebarRow:
+    """侧边栏的一行逻辑条目；组卡与会话卡共用同一套重建顺序。"""
+
+    kind: str
+    identity: str
+    session: dict | None = None
+    group: "SplitGroup | None" = None
+    member_sessions: tuple[dict, ...] = ()
+    tree_position: str | None = None
+    pinned: bool = False
 
 
 class SessionCard(Widget):
@@ -125,6 +152,8 @@ class SessionCard(Widget):
         store: "pickup.SessionStore",
         *,
         display_title: str | None = None,
+        tree_position: str | None = None,
+        pinned: bool = False,
     ) -> None:
         super().__init__()
         self.session = session
@@ -132,7 +161,13 @@ class SessionCard(Widget):
         # 展示标题由外部（rebuild()/_update_cards_in_place）注入并按需更新，不在
         # render() 里自己调用 store.snapshot()——那个方法要拿锁、拷贝整个
         # display_titles dict，卡片一多就是重复的拷贝开销。
-        self.display_title = display_title if display_title is not None else session["fallback_title"]
+        self.display_title = (
+            display_title
+            if display_title is not None
+            else session["fallback_title"]
+        )
+        self.tree_position = tree_position
+        self.pinned = pinned
         self._multi_selected = False
         self._render_signature = self._compute_signature()
 
@@ -182,13 +217,24 @@ class SessionCard(Widget):
             # mtime 不变但会话「变旧」跨过档位线时，时间行要跟着压暗，所以档位
             # 本身也得进签名，否则原地更新路径不会重绘。
             self._time_tier(),
+            self.tree_position,
+            self.pinned,
         )
 
-    def apply_update(self, session: dict, display_title: str) -> bool:
+    def apply_update(
+        self,
+        session: dict,
+        display_title: str,
+        *,
+        tree_position: str | None = None,
+        pinned: bool = False,
+    ) -> bool:
         """原地更新路径专用：替换会话引用与展示态，仅当渲染相关字段确实变化
         时才 refresh()。返回是否触发了 refresh，供调用方按需断言/统计。"""
         self.session = session
         self.display_title = display_title
+        self.tree_position = tree_position
+        self.pinned = pinned
         signature = self._compute_signature()
         changed = signature != self._render_signature
         self._render_signature = signature
@@ -204,15 +250,33 @@ class SessionCard(Widget):
         title = self.display_title
         from pickup.i18n import t
 
-        project_path = pickup._normalize_cwd(session.get("cwd"))
-        project = (
-            os.path.basename(project_path)
-            if project_path
-            else str(session.get("cwd_display") or t("project.unknown"))
-        )
+        # 组内子项挂在项目已知的会话组下，标题前再写项目名是重复噪音；
+        # 独立会话卡仍用「项目 标题」前缀做定位。
+        show_project = self.tree_position is None
+        project = ""
+        if show_project:
+            project_path = pickup._normalize_cwd(session.get("cwd"))
+            project = (
+                os.path.basename(project_path)
+                if project_path
+                else str(session.get("cwd_display") or t("project.unknown"))
+            )
         multi_prefix = "▸ " if self._multi_selected else ""
-        title_prefix = f"{multi_prefix}{project} "
+        # 终端字体对彩色图钉 emoji 的覆盖很差，真实截图会变成方框；用单格上箭头。
+        pin_prefix = "↑ " if self.pinned else ""
+        title_prefix = f"{multi_prefix}{pin_prefix}"
+        if show_project:
+            title_prefix = f"{title_prefix}{project} "
         width = max(10, self.size.width or 40)
+        first_prefix = ""
+        continuation_prefix = ""
+        if self.tree_position == "middle":
+            first_prefix = "  ├─ "
+            continuation_prefix = "  │  "
+        elif self.tree_position == "last":
+            first_prefix = "  └─ "
+            continuation_prefix = "     "
+        content_width = max(5, width - pickup._text_width(first_prefix))
 
         runtime = store.registry.get(str(session.get("source") or ""))
         runtime_name = runtime.display_name
@@ -229,36 +293,138 @@ class SessionCard(Widget):
         dot_width = 0 if dot_style is None else 2
         # 放不下就直接截断，不留 `...`：省略号本身要占 3 格，等于把最后几个
         # 有效字符换成没有信息量的符号，宁可多显示几个字。
-        title_cell = pickup._fit_cell(title_prefix + title, max(1, width - dot_width))
-        runtime_cell = pickup._fit_cell_right(runtime_name, width)
+        title_cell = pickup._fit_cell(
+            title_prefix + title, max(1, content_width - dot_width)
+        )
+        runtime_cell = pickup._fit_cell_right(runtime_name, content_width)
 
         relative_time = pickup._format_relative_time(session.get("mtime") or 0)
-        time_cell = pickup._fit_cell_right(relative_time, width)
+        time_cell = pickup._fit_cell_right(relative_time, content_width)
         # 时间按新鲜度取一档亮度：半小时内与标题同亮，越旧越暗，让「刚刚还在动」
         # 的会话在一列时间里一眼可见。
         time_style = self._time_style(self._time_tier())
 
-        # 首行整体 bold（与下面两行拉开层级），但项目名比标题淡一档：项目名是
-        # 定位用的前缀，同亮度时会和标题抢视线。用 dim 而不是具体颜色，深浅色
-        # 主题下都成立，也和运行时未知色、时间行用的是同一套弱化语汇。
+        # 首行整体 bold（与下面两行拉开层级）；独立卡的项目名再 dim 一档，
+        # 避免和标题抢视线。组内子项不写项目名，也就没有这段 dim。
         # 进行状态只由首行最左的圆点表达，标题本身不随运行状态变色。
         out = Text()
+        out.append(first_prefix, style="dim")
+        content_start = len(first_prefix)
         if dot_style is not None:
             out.append("●", style=dot_style)
             out.append(" ")
         content_len = len(title_cell.rstrip(" "))
         out.append(title_cell)
         if content_len > 0:
-            out.stylize("bold", dot_width, dot_width + content_len)
-            # 窄栏时截断可能吃掉部分项目名，取两者较小值，别把 dim 涂到标题上。
-            project_end = min(len(title_prefix), content_len)
-            project_start = min(len(multi_prefix), project_end)
-            if project_end > project_start:
-                out.stylize("dim", dot_width + project_start, dot_width + project_end)
+            out.stylize(
+                "bold", content_start + dot_width, content_start + dot_width + content_len
+            )
+            if show_project:
+                # 窄栏时截断可能吃掉部分项目名，取两者较小值，别把 dim 涂到标题上。
+                project_end = min(len(title_prefix), content_len)
+                project_start = min(len(multi_prefix), project_end)
+                if project_end > project_start:
+                    out.stylize(
+                        "dim",
+                        content_start + dot_width + project_start,
+                        content_start + dot_width + project_end,
+                    )
         out.append("\n")
+        out.append(continuation_prefix, style="dim")
         out.append(runtime_cell, style=pickup.runtime_label_style(runtime_id))
         out.append("\n")
+        out.append(continuation_prefix, style="dim")
         out.append(time_cell, style=time_style)
+        return out
+
+
+class SessionGroupCard(Widget):
+    """会话组三行卡：展开三角+水果名 / 项目与数量 / 最近活动时间。"""
+
+    ALLOW_SELECT = False
+
+    DEFAULT_CSS = """
+    SessionGroupCard {
+        height: 3;
+        width: 1fr;
+        color: $foreground 88%;
+    }
+    """
+
+    def __init__(
+        self,
+        group: "SplitGroup",
+        member_sessions: tuple[dict, ...],
+        *,
+        pinned: bool = False,
+    ) -> None:
+        super().__init__()
+        self.group = group
+        self.member_sessions = member_sessions
+        self.pinned = pinned
+        self._render_signature = self._compute_signature()
+
+    def _compute_signature(self) -> tuple:
+        return (
+            self.group.name,
+            self.group.project_cwd,
+            self.group.collapsed,
+            self.pinned,
+            tuple(
+                (session.get("mtime"), session.get("cwd"))
+                for session in self.member_sessions
+            ),
+        )
+
+    def apply_update(
+        self,
+        group: "SplitGroup",
+        member_sessions: tuple[dict, ...],
+        *,
+        pinned: bool = False,
+    ) -> bool:
+        self.group = group
+        self.member_sessions = member_sessions
+        self.pinned = pinned
+        signature = self._compute_signature()
+        changed = signature != self._render_signature
+        self._render_signature = signature
+        if changed:
+            self.refresh()
+        return changed
+
+    def on_click(self, event: events.Click) -> None:
+        # 只有三角本身负责折叠；点击卡片其它位置仍是「打开这个会话组」。
+        if event.x > 1:
+            return
+        event.stop()
+        self.post_message(SessionGroupToggleRequested(self.group.group_id))
+
+    def render(self) -> Text:
+        import pickup
+
+        width = max(10, self.size.width or 40)
+        arrow = "▶" if self.group.collapsed else "▼"
+        pin = " ↑" if self.pinned else ""
+        title = pickup._fit_cell(f"{arrow}{pin} {self.group.name}", width)
+        project = os.path.basename(self.group.project_cwd.rstrip(os.sep))
+        if not project:
+            project = t("project.unknown")
+        count = len(self.member_sessions)
+        count_key = "group.session_count_one" if count == 1 else "group.session_count"
+        summary = f"{project} · {t(count_key, count=count)}"
+        summary_cell = pickup._fit_cell_right(summary, width)
+        latest = max(
+            (float(session.get("mtime") or 0) for session in self.member_sessions),
+            default=0,
+        )
+        time_cell = pickup._fit_cell_right(pickup._format_relative_time(latest), width)
+        out = Text(title.rstrip(), style="bold")
+        out.append(" " * max(0, width - pickup._text_width(title.rstrip())))
+        out.append("\n")
+        out.append(summary_cell, style="dim")
+        out.append("\n")
+        out.append(time_cell, style="dim")
         return out
 
 
@@ -290,13 +456,8 @@ class SessionListView(ListView):
         scrollbar-size-vertical: 0;
         scrollbar-size-horizontal: 0;
     }
-    /* 右栏分屏时给「组合里的会话」整行铺底，当前激活的那格再重一档，一眼能看出
-       「这几个会话在一组、输入正在其中哪一个上」。四级底色见 ui/app.py 的
-       `_SIDEBAR_SPLIT_LADDER`。
-       后两条是光标落在组合行上时的合成色：列表自身的选中底（block-cursor）比这
-       里的组合底色弱，不单独写就会出现「光标一移上来整行反而变暗」的倒挂。它们
-       比 Textual 内置的 `ListView:focus > ListItem.-highlight` 多一个类，优先级
-       更高；组合外的普通行仍然吃 Textual 原样式，键盘导航不受影响。 */
+    /* 右栏分屏时只给会话组标题铺一档底色，当前持有输入的子会话再重一档；同组
+       其它子会话不高亮，避免树形结构已经表达过一次关系后又整块重复强调。 */
     SessionListView > ListItem.-in-split {
         background: $sidebar-split-background;
     }
@@ -318,16 +479,27 @@ class SessionListView(ListView):
         Binding("down", "cursor_down", "Select", show=False),
         Binding("up", "cursor_up", "Select", show=False),
         Binding("space", "toggle_multi", t("action.toggle_multi"), show=False),
+        Binding("p", "toggle_pin", t("action.toggle_pin"), show=False),
     ]
 
-    def __init__(self, store: "pickup.SessionStore", nav, **kwargs) -> None:
+    def __init__(
+        self,
+        store: "pickup.SessionStore",
+        nav,
+        *,
+        group_store: "SplitLayoutStore | None" = None,
+        on_group_changed: Callable[[], None] | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.store = store
-        # 项目搜索查询只认 nav.project_query 这一份，供 visible_sessions /
+        # 侧边栏搜索查询只认 nav.project_query 这一份，供 visible_sessions /
         # 页头占位文案 / 新建会话目录解析共用，禁止在本类另开一份状态。
         self.nav = nav
+        self.group_store = group_store
+        self.on_group_changed = on_group_changed
         self._multi_keys: list[str] = []
-        # 右栏分屏组合在侧边栏的投影：组合内全部会话键 + 当前激活格的会话键。
+        # 右栏分屏在侧边栏的投影：用于定位当前组标题与当前激活子会话。
         self._split_keys: list[str] = []
         self._split_active_key: str | None = None
         # 鼠标按下前，右栏哪一格正持有输入（会话键），见 focus_on_click()。
@@ -378,41 +550,195 @@ class SessionListView(ListView):
         """按当前显示顺序返回全部 SessionCard（跳过顶部固定的新建会话项）。"""
         return [card for _, card in self._session_items()]
 
-    def _current_session_keys(self) -> list[str]:
+    def _group_items(self) -> list[tuple[ListItem, SessionGroupCard]]:
+        """按当前显示顺序返回全部会话组卡。"""
+        items = []
+        for item in self.children:
+            card = item.children[0] if item.children else None
+            if isinstance(card, SessionGroupCard):
+                items.append((item, card))
+        return items
+
+    def _current_row_identities(self) -> list[str]:
+        """返回当前 DOM 的组/会话身份，用于判断能否原地刷新。"""
         import pickup
 
-        return [pickup.session_key(card.session) for card in self._session_cards()]
+        identities: list[str] = []
+        for item in self.children:
+            if item.id == NEW_SESSION_ID or not item.children:
+                continue
+            card = item.children[0]
+            if isinstance(card, SessionGroupCard):
+                identities.append(f"{GROUP_ID_PREFIX}{card.group.group_id}")
+            elif isinstance(card, SessionCard):
+                identities.append(pickup.session_key(card.session))
+        return identities
 
-    def _update_cards_in_place(self, sessions: list[dict]) -> None:
-        """会话集合（顺序+成员）没变，只需换 SessionCard 手上的 session 引用、
-        按需 refresh，不碰 ListView 子项结构（不 mount/unmount 任何 Widget）。"""
+    def _update_rows_in_place(self, rows: list[_SidebarRow]) -> None:
+        """条目身份与顺序不变时只换展示数据，不改 DOM。"""
         import pickup
 
         display_titles = self.store.snapshot()
-        for card, session in zip(self._session_cards(), sessions):
-            key = pickup.session_key(session)
-            card.apply_update(
-                session,
-                display_titles.get(key, session["fallback_title"]),
-            )
+        widgets = [
+            item.children[0]
+            for item in self.children
+            if item.id != NEW_SESSION_ID and item.children
+        ]
+        for widget, row in zip(widgets, rows):
+            if isinstance(widget, SessionGroupCard) and row.group is not None:
+                widget.apply_update(
+                    row.group, row.member_sessions, pinned=row.pinned
+                )
+            elif isinstance(widget, SessionCard) and row.session is not None:
+                key = pickup.session_key(row.session)
+                widget.apply_update(
+                    row.session,
+                    display_titles.get(key, row.session["fallback_title"]),
+                    tree_position=row.tree_position,
+                    pinned=row.pinned,
+                )
 
     def visible_sessions(self) -> list[dict]:
         import pickup
 
         display_titles = self.store.snapshot()
-        return pickup._filter_sessions_by_query(
+        sessions = self.store.all_sessions()
+        visible = pickup._filter_sessions_by_query(
             self.store.all_sessions(),
             self.nav.project_query,
             titles=display_titles,
         )
+        query = self.nav.project_query.strip().casefold()
+        if not query or self.group_store is None:
+            return visible
+        visible_keys = {pickup.session_key(session) for session in visible}
+        by_key = {pickup.session_key(session): session for session in sessions}
+        for group in self.group_store.groups.values():
+            if query not in group.name.casefold():
+                continue
+            for key in group.session_keys:
+                session = by_key.get(key)
+                if session is not None and key not in visible_keys:
+                    visible.append(session)
+                    visible_keys.add(key)
+        return visible
+
+    def _sidebar_rows(self) -> list[_SidebarRow]:
+        """把持久会话组投影成「组卡 + 缩进子会话」，其余会话保持扁平。"""
+        import pickup
+
+        sessions = self.store.all_sessions()
+        by_key = {pickup.session_key(session): session for session in sessions}
+        filtered = self.visible_sessions()
+        filtered_keys = {pickup.session_key(session) for session in filtered}
+        query = self.nav.project_query.strip().casefold()
+        pinned_blocks: list[tuple[float, list[_SidebarRow]]] = []
+        group_blocks: list[list[_SidebarRow]] = []
+        session_rows: list[_SidebarRow] = []
+        grouped_keys: set[str] = set()
+
+        if self.group_store is not None:
+            for group in self.group_store.ordered_groups():
+                all_members = tuple(
+                    by_key[key] for key in group.session_keys if key in by_key
+                )
+                # 历史记录缺失或会话已被明确删除后，侧边栏不显示空壳组。
+                if len(all_members) < 2:
+                    continue
+                grouped_keys.update(
+                    pickup.session_key(session) for session in all_members
+                )
+                group_matches = bool(query and query in group.name.casefold())
+                members = (
+                    all_members
+                    if not query or group_matches
+                    else tuple(
+                        session
+                        for session in all_members
+                        if pickup.session_key(session) in filtered_keys
+                    )
+                )
+                if query and not members:
+                    continue
+                group_row = _SidebarRow(
+                    kind="group",
+                    identity=f"{GROUP_ID_PREFIX}{group.group_id}",
+                    group=group,
+                    member_sessions=all_members,
+                    pinned=group.group_id in self.group_store.pinned_group_ids,
+                )
+                child_rows: list[_SidebarRow] = []
+                if not group.collapsed or query:
+                    for index, session in enumerate(members):
+                        child_rows.append(
+                            _SidebarRow(
+                                kind="session",
+                                identity=pickup.session_key(session),
+                                session=session,
+                                tree_position=(
+                                    "last"
+                                    if index == len(members) - 1
+                                    else "middle"
+                                ),
+                            )
+                        )
+                block = [group_row, *child_rows]
+                pinned_at = self.group_store.pinned_group_ids.get(group.group_id)
+                if pinned_at is not None:
+                    # 组卡与子会话是不可拆散的一个排序块。
+                    pinned_blocks.append((pinned_at, block))
+                else:
+                    group_blocks.append(block)
+
+        for session in filtered:
+            key = pickup.session_key(session)
+            if key not in grouped_keys:
+                row = _SidebarRow(
+                    kind="session",
+                    identity=key,
+                    session=session,
+                    pinned=(
+                        self.group_store is not None
+                        and key in self.group_store.pinned_session_keys
+                    ),
+                )
+                pinned_at = (
+                    self.group_store.pinned_session_keys.get(key)
+                    if self.group_store is not None
+                    else None
+                )
+                if pinned_at is not None:
+                    pinned_blocks.append((pinned_at, [row]))
+                else:
+                    session_rows.append(row)
+
+        # 先排置顶块，再排普通组，最后才是普通会话。置顶组的子会话紧随组卡，
+        # 不能被其它置顶项插进组的树形结构中间。
+        rows: list[_SidebarRow] = []
+        pinned_blocks.sort(key=lambda item: item[0], reverse=True)
+        for _, block in pinned_blocks:
+            rows.extend(block)
+        for block in group_blocks:
+            rows.extend(block)
+        rows.extend(session_rows)
+        return rows
 
     def selected_session(self) -> dict | None:
-        sessions = self.visible_sessions()
         idx = self.index
-        if idx is None or idx == 0:
+        if idx is None or idx < 0 or idx >= len(self.children):
             return None
-        pos = idx - 1
-        return sessions[pos] if 0 <= pos < len(sessions) else None
+        item = self.children[idx]
+        card = item.children[0] if item.children else None
+        return card.session if isinstance(card, SessionCard) else None
+
+    def selected_group(self) -> "SplitGroup | None":
+        """返回当前选中的会话组；普通会话或新建项返回 None。"""
+        idx = self.index
+        if idx is None or idx < 0 or idx >= len(self.children):
+            return None
+        item = self.children[idx]
+        card = item.children[0] if item.children else None
+        return card.group if isinstance(card, SessionGroupCard) else None
 
     def is_new_session_selected(self) -> bool:
         return self.index == 0
@@ -436,7 +762,7 @@ class SessionListView(ListView):
         self._apply_multi_markers()
 
     def set_split_marks(self, pane_keys: list[str], active_key: str | None) -> None:
-        """把右栏分屏组合投影到侧边栏：组合内会话整行高亮，激活格更显著。
+        """把右栏分屏投影到侧边栏：只高亮组标题和当前激活的子会话。
 
         只有真正分屏（≥2 格）才标。单格时列表光标本身就指着那一格，再叠一层
         底色只会和光标高亮互相打架，反而看不出焦点在哪。
@@ -460,10 +786,17 @@ class SessionListView(ListView):
 
         keys = set(self._split_keys)
         active = self._split_active_key
+        for item, card in self._group_items():
+            group_keys = set(card.group.session_keys)
+            is_current_group = bool(
+                keys and active in group_keys and keys.issubset(group_keys)
+            )
+            item.set_class(is_current_group, "-in-split")
+            item.set_class(False, "-split-active")
         for item, card in self._session_items():
             key = pickup.session_key(card.session)
             is_active = active is not None and key == active
-            item.set_class(key in keys and not is_active, "-in-split")
+            item.set_class(False, "-in-split")
             item.set_class(is_active, "-split-active")
 
     def _apply_multi_markers(self) -> None:
@@ -477,9 +810,13 @@ class SessionListView(ListView):
     def _index_for_session_key(self, session_key: str) -> int | None:
         import pickup
 
-        for i, card in enumerate(self._session_cards()):
-            if pickup.session_key(card.session) == session_key:
-                return i + 1
+        for i, item in enumerate(self.children):
+            card = item.children[0] if item.children else None
+            if (
+                isinstance(card, SessionCard)
+                and pickup.session_key(card.session) == session_key
+            ):
+                return i
         return None
 
     def _toggle_multi_key(self, session_key: str) -> None:
@@ -499,12 +836,40 @@ class SessionListView(ListView):
         self._apply_multi_markers()
 
     def action_toggle_multi(self) -> None:
+        group = self.selected_group()
+        if group is not None:
+            self._toggle_group(group.group_id)
+            return
         session = self.selected_session()
         if session is None:
             return
         import pickup
 
         self._toggle_multi_key(pickup.session_key(session))
+
+    def action_toggle_pin(self) -> None:
+        """用 p 切换独立会话或整个会话组的置顶状态。"""
+        if self.group_store is None:
+            return
+        group = self.selected_group()
+        if group is not None:
+            pinned = self.group_store.toggle_group_pin(group.group_id)
+        else:
+            session = self.selected_session()
+            if session is None:
+                return
+            import pickup
+
+            key = pickup.session_key(session)
+            if self.group_store.get_group(key) is not None:
+                self.notify(t("pin.group_member_hint"))
+                self.app.bell()
+                return
+            pinned = self.group_store.toggle_session_pin(key)
+        if self.on_group_changed is not None:
+            self.on_group_changed()
+        self.notify(t("pin.enabled" if pinned else "pin.disabled"))
+        self.call_next(self.rebuild)
 
     def action_cursor_down(self) -> None:
         self.clear_multi()
@@ -518,6 +883,24 @@ class SessionListView(ListView):
         event.stop()
         self._toggle_multi_key(event.session_key)
 
+    def on_session_group_toggle_requested(
+        self, event: SessionGroupToggleRequested,
+    ) -> None:
+        event.stop()
+        self._toggle_group(event.group_id)
+
+    def _toggle_group(self, group_id: str) -> None:
+        if self.group_store is None:
+            return
+        group = self.group_store.groups.get(group_id)
+        if group is None:
+            return
+        if not self.group_store.set_collapsed(group_id, not group.collapsed):
+            return
+        if self.on_group_changed is not None:
+            self.on_group_changed()
+        self.call_next(self.rebuild)
+
     def select_session_key(self, session_key: str) -> bool:
         """按会话键设置列表高亮；找不到对应项时返回 False。
 
@@ -529,17 +912,32 @@ class SessionListView(ListView):
             if self.index != 0:
                 self.index = 0
             return True
-        for i, card in enumerate(self._session_cards()):
-            if pickup.session_key(card.session) == session_key:
-                target = i + 1
+        for i, item in enumerate(self.children):
+            card = item.children[0] if item.children else None
+            if isinstance(card, SessionCard) and pickup.session_key(card.session) == session_key:
+                target = i
                 if self.index != target:
                     self.index = target
                 return True
+        if self.group_store is not None:
+            group = self.group_store.get_group(session_key)
+            if group is not None:
+                target_identity = f"{GROUP_ID_PREFIX}{group.group_id}"
+                for i, item in enumerate(self.children):
+                    card = item.children[0] if item.children else None
+                    if (
+                        isinstance(card, SessionGroupCard)
+                        and target_identity
+                        == f"{GROUP_ID_PREFIX}{card.group.group_id}"
+                    ):
+                        if self.index != i:
+                            self.index = i
+                        return True
         return False
 
-    def _displayed_selected_key(self) -> str | None:
+    def _displayed_selected_identity(self) -> str | None:
         """按当前已渲染的 DOM 卡片（而非刚重算过的 `visible_sessions()`）取回
-        「用户此刻实际选中的会话」键。
+        「用户此刻实际选中的会话或会话组」身份。
 
         `self.index` 是 DOM 子项下标；只有在 DOM 与 store 同步时它才等价于
         `visible_sessions()` 的下标。后台重扫时 store 先于 DOM 更新（新会话
@@ -553,13 +951,22 @@ class SessionListView(ListView):
         import pickup
 
         idx = self.index
-        if idx is None or idx == 0:
+        if idx is None or idx == 0 or idx >= len(self.children):
             return None
-        cards = self._session_cards()
-        pos = idx - 1
-        if 0 <= pos < len(cards):
-            return pickup.session_key(cards[pos].session)
+        item = self.children[idx]
+        card = item.children[0] if item.children else None
+        if isinstance(card, SessionGroupCard):
+            return f"{GROUP_ID_PREFIX}{card.group.group_id}"
+        if isinstance(card, SessionCard):
+            return pickup.session_key(card.session)
         return None
+
+    def _displayed_selected_key(self) -> str | None:
+        """兼容只关心会话的调用方；组卡选中时返回 None。"""
+        identity = self._displayed_selected_identity()
+        if identity is None or identity.startswith(GROUP_ID_PREFIX):
+            return None
+        return identity
 
     async def rebuild(
         self,
@@ -605,44 +1012,54 @@ class SessionListView(ListView):
         """rebuild() 的实现体；只允许持 `_rebuild_lock` 时调用。"""
         import pickup
 
-        previous_key = select_key
-        if previous_key is None and keep_selection:
-            previous_key = self._displayed_selected_key()
+        previous_identity = select_key
+        if previous_identity is None and keep_selection:
+            previous_identity = self._displayed_selected_identity()
 
-        sessions = self.visible_sessions()
-        new_keys = [pickup.session_key(session) for session in sessions]
-        self._prune_multi_keys(set(new_keys))
+        rows = self._sidebar_rows()
+        new_identities = [row.identity for row in rows]
+        self._prune_multi_keys(
+            {row.identity for row in rows if row.kind == "session"}
+        )
         t0 = time.perf_counter()
 
-        if new_keys == self._current_session_keys() and select_key is None:
-            self._update_cards_in_place(sessions)
-            if previous_key is None and self.index is None:
-                self.index = 1 if sessions else 0
+        if new_identities == self._current_row_identities() and select_key is None:
+            self._update_rows_in_place(rows)
+            if previous_identity is None and self.index is None:
+                self.index = 1 if rows else 0
             from pickup import observe
             observe.event(
                 "list_rebuild",
                 duration_ms=int((time.perf_counter() - t0) * 1000),
                 mode="in_place",
-                card_count=len(sessions),
+                card_count=len(rows),
             )
             return
 
         display_titles = self.store.snapshot()
         items = [ListItem(NewSessionCard(), id=NEW_SESSION_ID)]
-        for session in sessions:
-            key = pickup.session_key(session)
-            items.append(
-                ListItem(
-                    SessionCard(
-                        session,
-                        self.store,
-                        display_title=display_titles.get(key, session["fallback_title"]),
-                    )
+        for row in rows:
+            if row.kind == "group" and row.group is not None:
+                card: Widget = SessionGroupCard(
+                    row.group, row.member_sessions, pinned=row.pinned
                 )
-            )
+            elif row.session is not None:
+                key = pickup.session_key(row.session)
+                card = SessionCard(
+                    row.session,
+                    self.store,
+                    display_title=display_titles.get(
+                        key, row.session["fallback_title"]
+                    ),
+                    tree_position=row.tree_position,
+                    pinned=row.pinned,
+                )
+            else:
+                continue
+            items.append(ListItem(card))
 
         # clear 前记下是否已有会话卡：用来区分「初次填充」和「用户正停在新建项」
-        had_session_cards = bool(self._session_cards())
+        had_rows = bool(self._current_row_identities())
 
         # batch_update() 抑制 clear()+extend() 中间那次多余重绘；两步都要 await
         # 完成（DOM 真正更新），批量 API 本身已经把"多次 mount"合成一轮。
@@ -651,15 +1068,15 @@ class SessionListView(ListView):
             await self.extend(items)
 
         new_index = 0
-        for i, session in enumerate(sessions):
-            if previous_key is not None and pickup.session_key(session) == previous_key:
+        for i, identity in enumerate(new_identities):
+            if previous_identity is not None and identity == previous_identity:
                 new_index = i + 1
                 break
-        if previous_key is not None:
+        if previous_identity is not None:
             self.index = new_index
-        elif not had_session_cards:
+        elif not had_rows:
             # 初次填充：默认选最近一条会话（进 pickup 回车即恢复）
-            self.index = 1 if sessions else 0
+            self.index = 1 if rows else 0
         # 全量重建换掉了全部 ListItem，分屏底色标记要重新贴一遍（原地更新那条
         # 路径不动列表项结构，标记还在，不必重贴）。
         self._apply_split_marks()
@@ -675,5 +1092,5 @@ class SessionListView(ListView):
             "list_rebuild",
             duration_ms=int((time.perf_counter() - t0) * 1000),
             mode="full",
-            card_count=len(sessions),
+            card_count=len(rows),
         )

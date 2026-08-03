@@ -140,6 +140,14 @@ buttons above the right side can add another agent in the same project, up to th
 the active pane combination is remembered. Once the list is shown its order is stable — cards never jump
 around when their content updates; only genuinely new sessions appear, always prepended at the top.
 
+Opening two or three sessions as a split now creates a persistent sidebar group with a stable fruit name
+such as `Group Apple` or `Group Pineapple`. The group takes three rows, while its sessions move underneath
+as an indented tree instead of being duplicated in the top-level timeline. Child rows omit the project name
+prefix — that already lives on the group card. The group title has no attention
+dot — dots remain on the individual sessions. Only the active group title and the currently focused child are
+highlighted. Press `Space` on a group to collapse it. Press `p` to pin/unpin an independent session or an
+entire group; sessions inside a group are pinned only with their group.
+
 The small dot at the very start of row one is intentionally simple:
 
 - yellow — the agent asked a structured question and is waiting for your answer;
@@ -165,17 +173,18 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
 - Click a runtime button above the right side to add that agent as another pane in the current project.
   Up to three panes may run together; click a pane to focus it and sync the sidebar selection.
 - A small **session card floats in the top-right corner of the live pane**, so switching to a session
-  tells you at a glance what it is about and how far along it is. Collapsed (the default) it shows the
-  two ends — `▶ 12 prompts`, then `First <your very first prompt>` and `Latest <your newest one>`:
+  tells you at a glance what it is about and how far along it is. It is expanded by default, showing up
+  to six timestamped prompts. When collapsed it shows the two ends — `▶ 12 prompts`, then
+  `First <your very first prompt>` and `Latest <your newest one>`:
   the first prompt says what this session set out to do, the latest says where it is now. Click it
-  (or press `Ctrl+G`) to expand it into up to six prompts with timestamps, always ordered oldest to
-  newest; when there are more, the middle is dropped (never the first one) and the card says how many
+  (or press `Ctrl+G`) to toggle the two forms. Expanded prompts are always ordered oldest to newest;
+  when there are more than six, the middle is dropped (never the first one) and the card says how many
   it left out. Expanded prompts are **wrapped in full rather than cut off with an ellipsis**, with
   continuation lines aligned under the first; if that runs past the card's maximum height, the body
   scrolls under a pinned header and footer. It is drawn only on the pane you are working in, and only
   for live hosted terminals — a finished session already shows its full conversation there. Note that
-  whatever it covers is hidden from the agent's screen and the mouse wheel cannot reach through it,
-  which is why it stays small until you ask for more.
+  whatever it covers is hidden from the agent's screen and the mouse wheel cannot reach through it;
+  click it or press `Ctrl+G` whenever you want the compact three-line view.
 - `Ctrl`/`Cmd`-click (or `Space`) toggles multi-select on sidebar cards; with two or three selected,
   `Enter` opens them as a split (ended sessions show conversation preview; live/hosted sessions
   embed). `Esc` clears multi-select first. Plain click or arrow keys exit multi-select.
@@ -332,13 +341,14 @@ agent workflows.
 | Key | Action |
 | --- | --- |
 | `Up` / `Down` / `j` / `k` | Move selection |
-| `/` | Focus the sidebar filter box (case-insensitive fuzzy match on project name, path and session title) |
+| `/` | Focus the sidebar filter box (case-insensitive fuzzy match on group name, project name, path and session title) |
 | `Ctrl+F` | Full-text search across session conversations; results show the matching lines, newest session first. `Enter` opens the selected session in the sidebar |
 | `Enter` | Resume selected session with the native runtime (reattach if it's already running in the background); on the pinned first row `+ New session` (Chinese: `＋ 新建会话`), start the new-session flow instead |
 | `a` | Open advanced handoff actions |
 | `q` | End a backgrounded / in-progress (keep-alive) session; press `q` again in the confirm dialog |
 | `x` | Permanently delete the selected local session; press `x` again in the confirm dialog |
 | `c` | Close the focused right-side pane without ending its hosted session |
+| `p` | Pin / unpin the selected independent session or the selected session group |
 | `Ctrl+B` | Show / hide the sidebar (also the ◀/▶ control on the runtime top bar) |
 | `Ctrl+G` | Expand / collapse the session card floating in the top-right corner of a live pane (clicking it does the same) |
 | `Home` / `End` / `PgUp` / `PgDn` | Scroll the right-pane conversation preview (also mouse wheel over the pane) |
@@ -411,7 +421,7 @@ pickup update
 | `src/pickup/ui/` | Textual UI: main screen, modals, session list, split-pane area, runtime top bar, embed pane |
 | `src/pickup/ui/search_modal.py` | full-text search modal (`Ctrl+F`) |
 | `src/pickup/search.py` | in-memory full-text index over session conversations |
-| `src/pickup/split_layout.py` | remembered active split-pane groups |
+| `src/pickup/split_layout.py` | persistent session groups, collapsed state and sidebar pinning |
 | `src/pickup/embed.py` | embedded-pane host (`capture-pane` / `send-keys`) |
 | `src/pickup/agent_api.py` | read-only `list`/`search`/`show`/`context`/`describe` |
 | `src/pickup/keepalive.py` | tmux-backed keep-alive wrapper |

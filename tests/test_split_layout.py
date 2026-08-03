@@ -31,22 +31,18 @@ class SplitLayoutStoreTests(unittest.TestCase):
         assert group is not None
         self.assertEqual(len(group.session_keys), split_layout.MAX_PANES)
 
-    def test_remove_session_shrinks_group(self) -> None:
+    def test_remove_session_dissolves_group_with_one_member_left(self) -> None:
         store = split_layout.SplitLayoutStore()
         store.set_group("/p", ["claude:a", "codex:b"])
         store.remove_session("codex:b")
         self.assertIsNone(store.get_group("codex:b"))
-        group = store.get_group("claude:a")
-        assert group is not None
-        self.assertEqual(group.session_keys, ["claude:a"])
+        self.assertIsNone(store.get_group("claude:a"))
 
     def test_prune_inactive(self) -> None:
         store = split_layout.SplitLayoutStore()
         store.set_group("/p", ["claude:a", "codex:b"])
         store.prune_inactive(lambda k: k == "claude:a")
-        group = store.get_group("claude:a")
-        assert group is not None
-        self.assertEqual(group.session_keys, ["claude:a"])
+        self.assertIsNone(store.get_group("claude:a"))
 
     def test_migrate_session_key(self) -> None:
         store = split_layout.SplitLayoutStore()
@@ -91,6 +87,7 @@ class SplitLayoutStoreTests(unittest.TestCase):
                     assert group is not None
                     self.assertEqual(group.session_keys, ["claude:x", "codex:y"])
                     self.assertEqual(loaded.last_project, "/proj")
+                    self.assertTrue(group.name.startswith("Group "))
 
     def test_load_rebuilds_index_from_groups_only(self) -> None:
         """磁盘里陈旧/矛盾的 session_to_group 不得覆盖 groups 真相。"""
@@ -105,7 +102,7 @@ class SplitLayoutStoreTests(unittest.TestCase):
                         "groups": {
                             "g1": {
                                 "project_cwd": "/p",
-                                "session_keys": ["claude:a"],
+                                "session_keys": ["claude:a", "codex:b"],
                                 "focus_key": "claude:a",
                             }
                         },
@@ -115,8 +112,45 @@ class SplitLayoutStoreTests(unittest.TestCase):
                 )
             with mock.patch.object(split_layout, "LAYOUT_FILE", path):
                 loaded = split_layout.load_layout()
-            self.assertEqual(loaded.session_to_group, {"claude:a": "g1"})
+            self.assertEqual(
+                loaded.session_to_group,
+                {"claude:a": "g1", "codex:b": "g1"},
+            )
             self.assertIsNone(loaded.get_group("claude:ghost"))
+
+    def test_group_names_are_fruit_based_and_unique(self) -> None:
+        store = split_layout.SplitLayoutStore()
+        store.set_group("/a", ["claude:a", "codex:b"])
+        store.set_group("/b", ["claude:c", "codex:d"])
+        names = {group.name for group in store.groups.values()}
+        self.assertEqual(len(names), 2)
+        self.assertTrue(all(name.startswith("Group ") for name in names))
+
+    def test_pin_state_roundtrip_and_group_members_cannot_stay_individually_pinned(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "split-layout.json")
+            with mock.patch.object(split_layout, "LAYOUT_FILE", path):
+                store = split_layout.SplitLayoutStore()
+                self.assertTrue(store.toggle_session_pin("claude:a"))
+                store.set_group("/p", ["claude:a", "codex:b"])
+                group = store.get_group("claude:a")
+                assert group is not None
+                self.assertNotIn("claude:a", store.pinned_session_keys)
+                self.assertTrue(store.toggle_group_pin(group.group_id))
+                store.set_collapsed(group.group_id, True)
+                split_layout.save_layout(store)
+                loaded = split_layout.load_layout()
+            loaded_group = loaded.get_group("claude:a")
+            assert loaded_group is not None
+            self.assertTrue(loaded_group.collapsed)
+            self.assertIn(loaded_group.group_id, loaded.pinned_group_ids)
+
+    def test_independent_session_pin_migrates_with_provisional_key(self) -> None:
+        store = split_layout.SplitLayoutStore()
+        store.toggle_session_pin("claude:short")
+        store.migrate_session_key("claude:short", "claude:full")
+        self.assertNotIn("claude:short", store.pinned_session_keys)
+        self.assertIn("claude:full", store.pinned_session_keys)
 
 
 if __name__ == "__main__":

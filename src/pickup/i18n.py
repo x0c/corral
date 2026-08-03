@@ -138,27 +138,27 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Preview page down",
         "zh": "预览下翻",
     },
-    # 筛选框一直就同时匹配项目名、路径和会话标题，文案照实写；搜对话正文是
+    # 筛选框同时匹配组名、项目名、路径和会话标题；搜对话正文是
     # 另一条路（Ctrl+F 全文搜索弹窗），不在这个框里。
     "filter.placeholder": {
-        "en": "Filter projects / titles…",
-        "zh": "筛选项目 / 标题…",
+        "en": "Filter groups / projects / titles…",
+        "zh": "筛选分组 / 项目 / 标题…",
     },
     "filter.placeholder_count": {
-        "en": "Filter projects / titles ({count})",
-        "zh": "筛选项目 / 标题 ({count})",
+        "en": "Filter groups / projects / titles ({count})",
+        "zh": "筛选分组 / 项目 / 标题 ({count})",
     },
     "filter.placeholder_count_active": {
-        "en": "Filter projects / titles… ({count})",
-        "zh": "筛选项目 / 标题… ({count})",
+        "en": "Filter groups / projects / titles… ({count})",
+        "zh": "筛选分组 / 项目 / 标题… ({count})",
     },
     "filter.load_error": {
-        "en": "Filter projects / titles… — {error}; retrying",
-        "zh": "筛选项目 / 标题… — {error}；正在自动重试",
+        "en": "Filter groups / projects / titles… — {error}; retrying",
+        "zh": "筛选分组 / 项目 / 标题… — {error}；正在自动重试",
     },
     "filter.no_sessions": {
-        "en": "Filter projects / titles… — no {names} sessions found",
-        "zh": "筛选项目 / 标题… — 未找到任何 {names} 会话记录",
+        "en": "Filter groups / projects / titles… — no {names} sessions found",
+        "zh": "筛选分组 / 项目 / 标题… — 未找到任何 {names} 会话记录",
     },
     "action.search": {
         "en": "Search",
@@ -285,6 +285,30 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "action.toggle_multi": {
         "en": "Toggle multi-select",
         "zh": "切换多选",
+    },
+    "action.toggle_pin": {
+        "en": "Pin / unpin",
+        "zh": "置顶 / 取消置顶",
+    },
+    "group.session_count": {
+        "en": "{count} sessions",
+        "zh": "{count} 个会话",
+    },
+    "group.session_count_one": {
+        "en": "1 session",
+        "zh": "1 个会话",
+    },
+    "pin.enabled": {
+        "en": "Pinned to top",
+        "zh": "已置顶",
+    },
+    "pin.disabled": {
+        "en": "Unpinned",
+        "zh": "已取消置顶",
+    },
+    "pin.group_member_hint": {
+        "en": "Sessions inside a group are pinned with the whole group",
+        "zh": "组内会话只能随整个会话组置顶",
     },
     "detail.pick_session": {
         "en": "Select a session to view details",
