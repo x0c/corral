@@ -57,6 +57,7 @@ from pickup.ui.modals import (
 )
 from pickup.ui.search_modal import FullTextSearchModal, SearchResultRow
 from pickup.ui.session_list import (
+    GROUP_ID_PREFIX,
     NEW_SESSION_ID,
     SessionCard,
     SessionGroupCard,
@@ -1683,6 +1684,46 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(first_card, SessionGroupCard)
             self.assertIn("↑", first_card.render().plain.splitlines()[0])
 
+    async def test_newer_independent_session_sorts_above_unpinned_group(self) -> None:
+        """未置顶组不霸榜：比组成员更新的独立会话应排在组前面。"""
+        now = time.time()
+        sessions = [
+            {
+                "source": "claude", "id": "old-a", "short_id": "old-a",
+                "mtime": now - 3600, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "旧成员 A",
+                "cwd": "/tmp", "live": False,
+            },
+            {
+                "source": "claude", "id": "old-b", "short_id": "old-b",
+                "mtime": now - 3500, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "旧成员 B",
+                "cwd": "/tmp", "live": False,
+            },
+            {
+                "source": "claude", "id": "fresh", "short_id": "fresh",
+                "mtime": now, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "新建会话",
+                "cwd": "/tmp", "live": False,
+            },
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = ["claude:old-a", "claude:old-b"]
+            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            await list_view.rebuild()
+
+            rows = list_view._sidebar_rows()
+            kinds = [row.kind for row in rows]
+            identities = [row.identity for row in rows]
+            self.assertEqual(kinds[0], "session")
+            self.assertEqual(identities[0], "claude:fresh")
+            self.assertEqual(kinds[1], "group")
+            self.assertTrue(identities[1].startswith(GROUP_ID_PREFIX))
+
 
 class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_initial_selection_and_project_search_filter(self) -> None:
@@ -1853,18 +1894,47 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         """回归测试：真机实测过点击会话卡片直接闪退——Textual 默认给所有 Widget
         开启内置的鼠标拖拽文本选择（ALLOW_SELECT=True），会话卡片这类自定义
         展示型 Widget 被点击时触发该逻辑，在某些时序下 container 解析为 None，
-        访问 .region 抛 AttributeError 崩溃整个应用。修法是全局关闭
-        ALLOW_SELECT（PickupApp/SessionCard/NewSessionCard/EmbedPane 均已设置），
+        访问 .region 抛 AttributeError 崩溃整个应用。修法：子卡片 + 外层
+        NoSelectListItem + SessionListView 都关 ALLOW_SELECT；EmbedPane 保留。
         这里钉死「点击等价于 Enter」的行为不能再回归成崩溃。"""
+        from pickup.ui.session_list import NoSelectListItem
+
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            self.assertFalse(list_view.ALLOW_SELECT)
+            self.assertTrue(
+                all(isinstance(item, NoSelectListItem) for item in list_view.children)
+            )
             card = app.screen.query(SessionCard).first()
             clicked = await pilot.click(card, offset=(5, 0))
             await pilot.pause()
             self.assertTrue(clicked)
         self.assertIsInstance(app.return_value, pickup.LaunchRequest)
+
+    async def test_clicking_group_card_does_not_crash(self) -> None:
+        """会话组卡同样包在会重建的 ListItem 里，拖选开着会在启动刷新时崩。"""
+        from pickup.ui.session_list import NoSelectListItem
+
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = [pickup.session_key(session) for session in store.all_sessions()[:2]]
+            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            await list_view.rebuild()
+            group_card = list_view.query(SessionGroupCard).first()
+            self.assertIsNotNone(group_card)
+            self.assertIsInstance(group_card.parent, NoSelectListItem)
+            await pilot.click(group_card, offset=(8, 0))
+            await pilot.pause()
+            # 再强制全量重建一次，模拟启动后后台重扫与点击交错；未崩即过。
+            await list_view.rebuild()
+            self.assertGreaterEqual(len(list(list_view.query(SessionGroupCard))), 1)
+        self.assertIsNone(app.return_value)
 
     async def test_ctrl_click_multi_select_does_not_launch(self) -> None:
         """Ctrl/Cmd+点击只 toggle 多选，不等价 Enter，也不退出应用。"""

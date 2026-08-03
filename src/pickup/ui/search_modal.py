@@ -20,11 +20,12 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Input, ListItem, ListView, Static
+from textual.widgets import Input, ListView, Static
 
 from pickup.i18n import t
 from pickup.search import DEFAULT_MAX_LINES, MatchLine, SessionMatch, split_keywords
 from pickup.ui.modals import OutsideClickDismiss
+from pickup.ui.session_list import NoSelectListItem
 
 # 输入防抖：正文匹配本身在毫秒级，但每次都要重建结果列表里的控件，连打时没必要
 # 每个中间态都重建一遍。窗口取得比选择跟随（120ms）稍长，打字手感更稳。
@@ -299,7 +300,7 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
                 return
             results = self.query_one("#search-results", ListView)
             await results.clear()
-            rows = [ListItem(SearchResultRow(match, self.store)) for match in self._matches]
+            rows = [NoSelectListItem(SearchResultRow(match, self.store)) for match in self._matches]
             if rows:
                 await results.extend(rows)
                 results.index = 0

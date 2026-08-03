@@ -47,6 +47,18 @@ _TIME_FALLBACK_STYLES = {
 }
 
 
+class NoSelectListItem(ListItem):
+    """禁止拖选文本的 ListItem。
+
+    子卡片即便设了 ALLOW_SELECT=False，外层 ListItem 默认仍是 True。后台重扫
+    clear/extend 时若 Textual 正巧把选区挂在这个 ListItem 上，parent 变 None
+    后访问 .region 会直接打崩整个 TUI（真机 2026-08-03：启动后闪退，
+    AttributeError: 'NoneType' object has no attribute 'region'）。
+    """
+
+    ALLOW_SELECT = False
+
+
 def _focused_live_session_key(focused) -> str | None:
     """焦点控件若是右栏某个「活着的实时终端」，返回它此刻绑定的会话键。
 
@@ -474,6 +486,9 @@ class NewSessionCard(Widget):
 class SessionListView(ListView):
     """会话列表：虚拟索引 0 固定为新建会话项，之后是稳定顺序的会话卡片。"""
 
+    # 列表本身也不接受拖选：空白处点一下不该进入 Textual 文本选择状态。
+    ALLOW_SELECT = False
+
     # 隐藏滚动条占位，保留键盘/滚轮滚动（scrollbar-size: 0 不关掉 overflow）。
     DEFAULT_CSS = """
     SessionListView {
@@ -657,8 +672,9 @@ class SessionListView(ListView):
         filtered_keys = {pickup.session_key(session) for session in filtered}
         query = self.nav.project_query.strip().casefold()
         pinned_blocks: list[tuple[float, list[_SidebarRow]]] = []
-        group_blocks: list[list[_SidebarRow]] = []
-        session_rows: list[_SidebarRow] = []
+        # 未置顶的组与独立会话按同一把「新鲜度」钥匙混排：新建会话应能把旧组顶下去，
+        # 组不能永远霸占未置顶区的最上方。
+        unpinned_blocks: list[tuple[float, str, list[_SidebarRow]]] = []
         grouped_keys: set[str] = set()
 
         if self.group_store is not None:
@@ -712,7 +728,11 @@ class SessionListView(ListView):
                     # 组卡与子会话是不可拆散的一个排序块。
                     pinned_blocks.append((pinned_at, block))
                 else:
-                    group_blocks.append(block)
+                    freshness = max(
+                        (float(session.get("mtime") or 0) for session in all_members),
+                        default=float(group.updated_at or 0),
+                    )
+                    unpinned_blocks.append((freshness, group.group_id, block))
 
         for session in filtered:
             key = pickup.session_key(session)
@@ -734,17 +754,19 @@ class SessionListView(ListView):
                 if pinned_at is not None:
                     pinned_blocks.append((pinned_at, [row]))
                 else:
-                    session_rows.append(row)
+                    unpinned_blocks.append(
+                        (float(session.get("mtime") or 0), key, [row])
+                    )
 
-        # 先排置顶块，再排普通组，最后才是普通会话。置顶组的子会话紧随组卡，
-        # 不能被其它置顶项插进组的树形结构中间。
+        # 置顶块始终在最上（按置顶时间）；未置顶区组与会话按新鲜度混排。
+        # 置顶/未置顶组的子会话都紧随组卡，不能被其它项插进树中间。
         rows: list[_SidebarRow] = []
         pinned_blocks.sort(key=lambda item: item[0], reverse=True)
         for _, block in pinned_blocks:
             rows.extend(block)
-        for block in group_blocks:
+        unpinned_blocks.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        for _, _, block in unpinned_blocks:
             rows.extend(block)
-        rows.extend(session_rows)
         return rows
 
     def selected_session(self) -> dict | None:
@@ -1061,7 +1083,7 @@ class SessionListView(ListView):
             return
 
         display_titles = self.store.snapshot()
-        items = [ListItem(NewSessionCard(), id=NEW_SESSION_ID)]
+        items = [NoSelectListItem(NewSessionCard(), id=NEW_SESSION_ID)]
         for row in rows:
             if row.kind == "group" and row.group is not None:
                 card: Widget = SessionGroupCard(
@@ -1080,7 +1102,7 @@ class SessionListView(ListView):
                 )
             else:
                 continue
-            items.append(ListItem(card))
+            items.append(NoSelectListItem(card))
 
         # clear 前记下是否已有会话卡：用来区分「初次填充」和「用户正停在新建项」
         had_rows = bool(self._current_row_identities())

@@ -154,7 +154,7 @@ stateDiagram-v2
 
 ### 侧边栏会话组与置顶
 
-- 两到三个会话以分屏打开后立即形成会话组，组卡排在所有未置顶条目的最前面；组名在创建时从水果表随机生成，例如 `Group Apple`、`Group Pineapple`，之后保持不变。
+- 两到三个会话以分屏打开后立即形成会话组；组名在创建时从水果表随机生成，例如 `Group Apple`、`Group Pineapple`，之后保持不变。未置顶的组与独立会话按成员最新活动时间混排——新建会话会把更旧的组往下顶，组不会永远霸占列表顶端；只有按 `p` 置顶的组/会话才固定在最上。
 - 组卡固定三行（与会话卡同高）：第一行只有 `▼/▶ + 可选置顶标记 + 组名`，**没有关注圆点**；第二行是项目与成员数（与第一行 `Group …` **同列左对齐**，不靠右）；第三行**留白**——成员卡已各自显示时间，组卡不再重复。关注圆点只画在缩进的会话子项上。
 - 展开后成员以贴侧栏左缘的半角框线 `├─ `/`└─ `（续行同列 `│  `，总宽 3 列、无前导空格）连接，并从顶层列表摘除，禁止同一会话同时出现两份。必须整套半角框线——混用全角 `｜`/`－` 会和 `├` 错列，三行卡片之间竖线断开。树线用 `$foreground 80%`（与卡片基础色同亮），**不用**终端 `dim`。组内子项首行只显示「可选圆点 + 标题」，**不再重复项目名**（项目已写在组卡第二行）。组卡上按 `Space` 或点击三角可收起/展开；搜索组名时即使原先收起，也临时展示全部成员。
 - 分屏高亮只落在**当前会话组标题**和**当前激活的子会话**上；其余组员不再整块铺底。光标落到这两类高亮项上时，仍要使用更重一档的合成色。
@@ -204,7 +204,7 @@ stateDiagram-v2
 | 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
 | 会话卡片、关注状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 固定三行：独立卡首行「圆点 项目 标题」、组内子项首行「圆点 标题」（无项目前缀）/ 运行时靠右 / 时间靠右；圆点优先级黄 > 绿 > 红；首行按有无圆点取 `width - 2` / `width` 硬截断、不写省略号；首行整体 bold，独立卡项目名再叠一层 `dim` 比标题淡一档（标题不 dim），回归 `test_project_name_is_one_shade_lighter_than_title`、`test_group_member_title_omits_project_name` |
 | 时间行的新鲜度亮度梯度 | `ui/session_list.py`、`display.py` | `SessionCard._time_tier()` / `_time_style()`、`_time_brightness_tier()`、`TIME_BRIGHTNESS_TIERS` | 半小时 / 三小时 / 一天为界分四档，最新一档与标题同色（着重）、越旧越暗；档位色走 `SessionCard` 的组件样式（`$foreground` + 透明度，深浅色主题各自与背景混合），渲染时只取混色后的前景、丢掉背景，回归 `test_time_line_brightness_steps_down_with_age` |
-| 会话组树与置顶排序 | `split_layout.py`、`ui/session_list.py`、`ui/main_screen.py` | `SplitLayoutStore`、`SessionGroupCard`、`SessionListView._sidebar_rows()` | 组名、成员、折叠态、最近使用时间、独立会话/整组置顶时间统一持久化；列表顺序为「置顶块 → 普通组 → 普通会话」，组成员不重复出现在顶层；回归 `SessionGroupSidebarTests` / `SplitLayoutStoreTests` |
+| 会话组树与置顶排序 | `split_layout.py`、`ui/session_list.py`、`ui/main_screen.py` | `SplitLayoutStore`、`SessionGroupCard`、`SessionListView._sidebar_rows()` | 组名、成员、折叠态、最近使用时间、独立会话/整组置顶时间统一持久化；列表顺序为「置顶块 → 未置顶组/会话按新鲜度混排」，组成员不重复出现在顶层；回归 `SessionGroupSidebarTests` / `SplitLayoutStoreTests` |
 | 分屏组合在侧边栏的投影 | `ui/session_list.py`、`ui/main_screen.py` | `SessionListView.set_split_marks()`、`MainScreen._sync_split_marks()` | ≥2 格才标：当前组卡贴 `-in-split`，只有当前激活子会话贴 `-split-active`，其余成员不铺底；光标叠加态仍用 `_SIDEBAR_SPLIT_LADDER` 的四级阶梯；单格与 `__hint__` 不标，全量重建后重新贴标；回归 `SidebarSplitHighlightTests` |
 | 状态详情与已读确认 | `ui/main_screen.py`、`store.py` | 详情头状态、稳定可见计时、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；只有红点在右侧成功稳定可见 0.5 秒后清除，切换、失败或失焦取消 |
 | 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`NewSessionModal`、`_on_runtime_pick()` | 侧边栏「＋ 新建」弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径）、右栏运行时；←→ 换栏、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |

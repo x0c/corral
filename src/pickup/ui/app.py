@@ -115,11 +115,10 @@ class PickupApp(App):
 
     TITLE = "pickup"
     # 不整体关闭 Textual 内置的鼠标拖拽文本选择：EmbedPane 需要它来实现"划词
-    # 选中托管会话画面里的文字，抬起后自动 OSC 52 复制"。真机实测过的崩溃只出在 SessionCard/
-    # NewSessionCard 这类会被后台重扫动态增删的列表项 Widget 上（选择过程中
-    # 控件被移除，container 解析为 None 后访问 .region 崩溃），已单独在那两个
-    # 类和弹窗菜单项上关闭 ALLOW_SELECT；EmbedPane 画面不会被动态增删，不受
-    # 这条限制，保留选择能力。
+    # 选中托管会话画面里的文字，抬起后自动 OSC 52 复制"。真机实测过的崩溃出在
+    # 会被后台重扫动态增删的列表项上（选择过程中控件被移除，container 变 None
+    # 后访问 .region 崩溃）——子卡片、外层 NoSelectListItem、SessionListView
+    # 和弹窗列表项都要关 ALLOW_SELECT；只留 EmbedPane 开着用于划词复制。
     CSS = """
     #project-search {
         /* 侧边栏项约定：总高度含末行间隔（正文 1 + 间隔 1），间隔算进本项命中区。

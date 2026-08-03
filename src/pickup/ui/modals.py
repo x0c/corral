@@ -14,9 +14,10 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Label, ListItem, ListView, Static
+from textual.widgets import Label, ListView, Static
 
 from pickup.i18n import t
+from pickup.ui.session_list import NoSelectListItem
 
 
 class OutsideClickDismiss:
@@ -107,7 +108,7 @@ class RuntimePickerModal(OutsideClickDismiss, ModalScreen[str | None]):
                     if choice.available
                     else t("modal.not_installed", action=choice.action_text)
                 )
-                items.append(ListItem(_ChoiceItem(f"{choice.label:<10}", action, choice.available)))
+                items.append(NoSelectListItem(_ChoiceItem(f"{choice.label:<10}", action, choice.available)))
             yield ListView(*items, initial_index=self._default_index)
             yield Label(t("modal.menu_hint"), classes="hint")
 
@@ -258,7 +259,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
             with Horizontal(id="ns-columns"):
                 yield ListView(
                     *[
-                        ListItem(_ColumnRow(cwd_key, label, _short_path(hint)))
+                        NoSelectListItem(_ColumnRow(cwd_key, label, _short_path(hint)))
                         for cwd_key, label, hint in self._projects
                     ],
                     id="ns-projects",
@@ -266,7 +267,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
                 )
                 yield ListView(
                     *[
-                        ListItem(
+                        NoSelectListItem(
                             _ColumnRow(
                                 choice.id,
                                 choice.label,

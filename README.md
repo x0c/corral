@@ -143,7 +143,9 @@ around when their content updates; only genuinely new sessions appear, always pr
 Opening two or three sessions as a split now creates a persistent sidebar group with a stable fruit name
 such as `Group Apple` or `Group Pineapple`. The group takes three rows, while its sessions move underneath
 as an indented tree instead of being duplicated in the top-level timeline. Child rows omit the project name
-prefix — that already lives on the group card. The group title has no attention
+prefix — that already lives on the group card. Unpinned groups share the timeline with independent sessions
+by freshness, so a newly created session can push an older group down; only items pinned with `p` stay at
+the top. The group title has no attention
 dot — dots remain on the individual sessions. Only the active group title and the currently focused child are
 highlighted. Press `Space` on a group to collapse it. Press `p` to pin/unpin an independent session or an
 entire group; sessions inside a group are pinned only with their group.
