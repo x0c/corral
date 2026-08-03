@@ -663,7 +663,12 @@ class SessionListView(ListView):
         return visible
 
     def _sidebar_rows(self) -> list[_SidebarRow]:
-        """把持久会话组投影成「组卡 + 缩进子会话」，其余会话保持扁平。"""
+        """把持久会话组投影成「组卡 + 缩进子会话」，其余会话保持扁平。
+
+        未置顶区的顺序跟 `SessionStore.all_sessions()` 的稳定顺序走：进入 pickup
+        后已有项位置固定，后台重扫只因 mtime/标题更新而重排的「飘」不再发生；
+        新会话仍由 store 插到最前（或冷会话追加末尾）。置顶块仍按置顶时间单独排在最上。
+        """
         import pickup
 
         sessions = self.store.all_sessions()
@@ -672,10 +677,9 @@ class SessionListView(ListView):
         filtered_keys = {pickup.session_key(session) for session in filtered}
         query = self.nav.project_query.strip().casefold()
         pinned_blocks: list[tuple[float, list[_SidebarRow]]] = []
-        # 未置顶的组与独立会话按同一把「新鲜度」钥匙混排：新建会话应能把旧组顶下去，
-        # 组不能永远霸占未置顶区的最上方。
-        unpinned_blocks: list[tuple[float, str, list[_SidebarRow]]] = []
+        unpinned_by_id: dict[str, list[_SidebarRow]] = {}
         grouped_keys: set[str] = set()
+        group_for_key: dict[str, "SplitGroup"] = {}
 
         if self.group_store is not None:
             for group in self.group_store.ordered_groups():
@@ -685,9 +689,10 @@ class SessionListView(ListView):
                 # 历史记录缺失或会话已被明确删除后，侧边栏不显示空壳组。
                 if len(all_members) < 2:
                     continue
-                grouped_keys.update(
-                    pickup.session_key(session) for session in all_members
-                )
+                for session in all_members:
+                    key = pickup.session_key(session)
+                    grouped_keys.add(key)
+                    group_for_key[key] = group
                 group_matches = bool(query and query in group.name.casefold())
                 members = (
                     all_members
@@ -723,16 +728,13 @@ class SessionListView(ListView):
                             )
                         )
                 block = [group_row, *child_rows]
+                block_id = f"{GROUP_ID_PREFIX}{group.group_id}"
                 pinned_at = self.group_store.pinned_group_ids.get(group.group_id)
                 if pinned_at is not None:
                     # 组卡与子会话是不可拆散的一个排序块。
                     pinned_blocks.append((pinned_at, block))
                 else:
-                    freshness = max(
-                        (float(session.get("mtime") or 0) for session in all_members),
-                        default=float(group.updated_at or 0),
-                    )
-                    unpinned_blocks.append((freshness, group.group_id, block))
+                    unpinned_by_id[block_id] = block
 
         for session in filtered:
             key = pickup.session_key(session)
@@ -754,19 +756,47 @@ class SessionListView(ListView):
                 if pinned_at is not None:
                     pinned_blocks.append((pinned_at, [row]))
                 else:
-                    unpinned_blocks.append(
-                        (float(session.get("mtime") or 0), key, [row])
-                    )
+                    unpinned_by_id[key] = [row]
 
-        # 置顶块始终在最上（按置顶时间）；未置顶区组与会话按新鲜度混排。
-        # 置顶/未置顶组的子会话都紧随组卡，不能被其它项插进树中间。
+        # 置顶块始终在最上（按置顶时间）。
         rows: list[_SidebarRow] = []
         pinned_blocks.sort(key=lambda item: item[0], reverse=True)
         for _, block in pinned_blocks:
             rows.extend(block)
-        unpinned_blocks.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        for _, _, block in unpinned_blocks:
+
+        # 未置顶区：按 store 稳定顺序走一遍，组卡落在其「最先出现的成员」位置。
+        # 禁止再按当前 mtime 重排——否则运行中会话一写盘整组就会在侧边栏里上下飘。
+        emitted: set[str] = set()
+        for session in filtered:
+            key = pickup.session_key(session)
+            group = group_for_key.get(key)
+            if group is not None:
+                if group.group_id in (
+                    self.group_store.pinned_group_ids if self.group_store else {}
+                ):
+                    continue
+                block_id = f"{GROUP_ID_PREFIX}{group.group_id}"
+            else:
+                if (
+                    self.group_store is not None
+                    and key in self.group_store.pinned_session_keys
+                ):
+                    continue
+                block_id = key
+            if block_id in emitted:
+                continue
+            block = unpinned_by_id.get(block_id)
+            if block is None:
+                continue
             rows.extend(block)
+            emitted.add(block_id)
+
+        # 搜索把组名命中、成员却不在 filtered 主序里时的兜底（visible_sessions
+        # 已尽量补齐；这里只防止漏块）。
+        for block_id, block in unpinned_by_id.items():
+            if block_id not in emitted:
+                rows.extend(block)
+                emitted.add(block_id)
         return rows
 
     def selected_session(self) -> dict | None:
@@ -1014,6 +1044,21 @@ class SessionListView(ListView):
             return None
         return identity
 
+    def _apply_index_after_rebuild(self, index: int) -> None:
+        """在 clear()+extend() 后设置高亮，并在下一帧再钉一次。
+
+        Textual ListView 在首次填充后会把 index 异步打回 0（落到「＋ 新建」），
+        立刻赋值当场看起来对，refresh 之后就丢了。只在仍停在 0、而目标不是
+        0 时纠正，避免抢掉用户在两帧之间已经手动挪走的光标。
+        """
+        self.index = index
+
+        def _reapply() -> None:
+            if index and self.index == 0:
+                self.index = index
+
+        self.call_after_refresh(_reapply)
+
     async def rebuild(
         self,
         *,
@@ -1118,11 +1163,15 @@ class SessionListView(ListView):
             if previous_identity is not None and identity == previous_identity:
                 new_index = i + 1
                 break
+        target_index: int | None = None
         if previous_identity is not None:
-            self.index = new_index
+            target_index = new_index
         elif not had_rows:
-            # 初次填充：默认选最近一条会话（进 pickup 回车即恢复）
-            self.index = 1 if rows else 0
+            # 初次填充：默认选列表第一条会话/会话组（跳过固定的「＋ 新建」），
+            # 进 pickup 即可直接回车恢复，不必先按 ↓。
+            target_index = 1 if rows else 0
+        if target_index is not None:
+            self._apply_index_after_rebuild(target_index)
         # 全量重建换掉了全部 ListItem，分屏底色标记要重新贴一遍（原地更新那条
         # 路径不动列表项结构，标记还在，不必重贴）。
         self._apply_split_marks()

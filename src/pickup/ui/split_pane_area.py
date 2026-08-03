@@ -477,15 +477,17 @@ class SplitPaneArea(Vertical):
         h = max(1, row.size.height or 24)
         return embed_mod.normalize_host_size(w, h - 1)
 
-    def sync_hud(self, key: str | None, data, *, expanded: bool) -> None:
-        """只在指定的那一格画会话小窗，其余格一律收掉。
+    def sync_hud(self, payloads: dict[str, object] | None, *, expanded: bool) -> None:
+        """每个实时托管格画自己的会话小窗；payloads 里没有的格一律收掉。
 
-        key 为 None（没有激活格 / 该格不该显示）时全部收掉。数据来源与展开状态都
-        由 `MainScreen` 决定，本类不查 store，也不判断会话是不是实时托管的。
+        数据来源与展开状态都由 `MainScreen` 决定，本类不查 store，也不判断会话
+        是不是实时托管的。展开/收起状态所有格共用一份。
         """
+        payloads = payloads or {}
         for cell in self._cells():
-            if key is not None and cell.spec.session_key == key:
-                cell.update_hud(data, expanded=expanded)
+            key = cell.spec.session_key
+            if key in payloads:
+                cell.update_hud(payloads[key], expanded=expanded)
             else:
                 cell.update_hud(None, expanded=False)
 

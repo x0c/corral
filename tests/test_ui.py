@@ -1427,6 +1427,8 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             keys = await self._seed_group(list_view)
 
             list_view.set_split_marks(keys[:2], keys[1])
+            # 光标停在激活子会话上，避免「列表选中高亮」沾到未激活成员上干扰底色断言。
+            list_view.select_session_key(keys[1])
             await pilot.pause()
             group_row = list_view._group_items()[0][0]
             session_rows = {
@@ -1724,6 +1726,51 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kinds[1], "group")
             self.assertTrue(identities[1].startswith(GROUP_ID_PREFIX))
 
+    async def test_sidebar_order_stable_when_member_mtime_updates(self) -> None:
+        """进入后组成员 mtime 变新，不得把整组顶到侧边栏上方（位置应相对固定）。"""
+        now = time.time()
+        sessions = [
+            {
+                "source": "claude", "id": "solo", "short_id": "solo",
+                "mtime": now, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "独立会话",
+                "cwd": "/tmp", "live": False,
+            },
+            {
+                "source": "claude", "id": "g1", "short_id": "g1",
+                "mtime": now - 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "组成员 1",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": "pickup-g1",
+            },
+            {
+                "source": "claude", "id": "g2", "short_id": "g2",
+                "mtime": now - 200, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "组成员 2",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": "pickup-g2",
+            },
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = ["claude:g1", "claude:g2"]
+            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            await list_view.rebuild()
+            before = [row.identity for row in list_view._sidebar_rows()]
+            self.assertEqual(before[0], "claude:solo")
+            self.assertTrue(before[1].startswith(GROUP_ID_PREFIX))
+
+            # 模拟运行中成员写盘：mtime 顶到最新，但 store 顺序不变。
+            g1 = store.find_session("claude:g1")
+            self.assertIsNotNone(g1)
+            g1["mtime"] = now + 10
+            await list_view.rebuild()
+            after = [row.identity for row in list_view._sidebar_rows()]
+            self.assertEqual(after, before, "mtime 更新不得重排侧边栏")
+
 
 class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_initial_selection_and_project_search_filter(self) -> None:
@@ -1754,13 +1801,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             search = app.screen.query_one("#project-search", Input)
-            self.assertEqual(list_view.index, 0)  # 固定「+新建会话」项
+            self.assertEqual(list_view.index, 1)  # 默认落在第一条会话，跳过「＋新建」
+            self.assertEqual(list_view.selected_session()["id"], "a")
             self.assertEqual(len(list_view.visible_sessions()), 3)
             self.assertIn("Filter groups / projects / titles", search.placeholder)
 
             await pilot.press("down")
             await pilot.pause()
-            self.assertEqual(list_view.index, 1)
+            self.assertEqual(list_view.index, 2)
 
             await pilot.press("slash")
             await pilot.pause()
@@ -1875,11 +1923,41 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
         self.assertIsInstance(app.return_value, pickup.LaunchRequest)
         self.assertEqual(app.return_value.session["id"], "s0")
+
+    async def test_startup_selects_first_session_not_new_row(self) -> None:
+        """进入 pickup 默认高亮列表第一条会话/会话组，焦点在侧边栏。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.3)
+            list_view = app.screen.query_one(SessionListView)
+            self.assertTrue(list_view.has_focus)
+            self.assertEqual(list_view.index, 1)
+            self.assertFalse(list_view.is_new_session_selected())
+            self.assertEqual(list_view.selected_session()["id"], "s0")
+            area = app.screen.query_one(SplitPaneArea)
+            self.assertEqual(area.ordered_session_keys(), ["claude:s0"])
+
+    async def test_startup_selects_first_group_when_list_starts_with_group(self) -> None:
+        """列表顶是会话组时，启动默认高亮组卡而不是「＋新建」。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
+            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            # 清空后再重建，走「初次填充」分支（had_rows=False）。
+            await list_view.clear()
+            await list_view.rebuild(keep_selection=False)
+            await pilot.pause(delay=0.2)
+            self.assertEqual(list_view.index, 1)
+            self.assertIsNotNone(list_view.selected_group())
+            self.assertTrue(list_view.has_focus)
 
     async def test_escape_exits_with_no_result(self) -> None:
         store, _ = _make_store()
@@ -1934,6 +2012,34 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             # 再强制全量重建一次，模拟启动后后台重扫与点击交错；未崩即过。
             await list_view.rebuild()
             self.assertGreaterEqual(len(list(list_view.query(SessionGroupCard))), 1)
+        self.assertIsNone(app.return_value)
+
+    async def test_clicking_group_card_keeps_focus_on_sidebar(self) -> None:
+        """点会话组卡：右栏跟随展示组合，键盘焦点必须留在侧边栏。"""
+        store, _ = _make_store()
+        for session in store.all_sessions()[:2]:
+            session["live"] = True
+            session["keepalive_name"] = f"pickup-{session['id']}"
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.is_alive", return_value=True):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
+                list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+                await list_view.rebuild()
+                await pilot.pause(delay=0.2)
+
+                group_card = list_view.query(SessionGroupCard).first()
+                self.assertIsNotNone(group_card)
+                await pilot.click(group_card, offset=(8, 0))
+                await pilot.pause(delay=0.3)
+
+                area = app.screen.query_one(SplitPaneArea)
+                self.assertTrue(list_view.has_focus)
+                self.assertFalse(area.any_embed_focused())
+                self.assertIsNotNone(list_view.selected_group())
+                self.assertEqual(set(area.ordered_session_keys()), set(keys))
         self.assertIsNone(app.return_value)
 
     async def test_ctrl_click_multi_select_does_not_launch(self) -> None:
@@ -2120,8 +2226,6 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
-            await pilot.pause(delay=0.3)
             screen = app.screen
             list_view = screen.query_one(SessionListView)
             pane = _primary_embed_pane(screen)
@@ -2296,8 +2400,6 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
 
-                await pilot.press("down")
-                await pilot.pause(delay=0.2)
                 self.assertTrue(list_view.has_focus, "浏览列表不得把焦点交给右栏")
 
                 await pilot.press("enter")
@@ -2325,7 +2427,6 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
 
-                await pilot.press("down")
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
@@ -2362,7 +2463,6 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
 
-                await pilot.press("down")
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
@@ -2410,7 +2510,6 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
 
-                await pilot.press("down")
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
@@ -2498,13 +2597,12 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("pickup.embed.is_alive", return_value=True):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                await pilot.press("down")
-                await pilot.pause(delay=0.2)
                 screen = app.screen
                 list_view = screen.query_one(SessionListView)
                 area = screen.query_one(SplitPaneArea)
                 stale_session = dict(list_view.selected_session())
                 list_view._session_cards()[0].session = stale_session
+                self.assertEqual(stale_session["id"], "s0")
                 self.assertNotIn("keepalive_name", stale_session)
 
                 store.mark_hosted("claude:s0", "pickup-claude-s0")
@@ -2529,8 +2627,6 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
-            await pilot.pause(delay=0.3)
             list_view = app.screen.query_one(SessionListView)
             pane = _primary_embed_pane(app.screen)
             # 预览默认钉在最新（底部）；等末行可见后再上滚看更早内容
@@ -2571,7 +2667,6 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.2)
                 old_request_session = store.sessions["claude"][0]
 
-                await pilot.press("down")
                 await pilot.press("enter")
                 await _wait_until(started.is_set)
                 self.assertTrue(app.screen._host_pending > 0)
@@ -2603,7 +2698,6 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                await pilot.press("down")
                 await pilot.press("enter")
                 await _wait_until(lambda: host_mock.call_count == 1)
                 await _wait_until(lambda: app.screen._host_pending == 0)
@@ -2668,7 +2762,6 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 pane = _primary_embed_pane(app.screen)
                 list_view = app.screen.query_one(SessionListView)
 
-                await pilot.press("down")
                 await pilot.press("a")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
@@ -2936,7 +3029,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
             pane = await _wait_for_embed_pane(app.screen)
@@ -2985,7 +3077,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             pane = _primary_embed_pane(app.screen)
             await _wait_for_session_name(pane)
@@ -3010,7 +3101,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             pane = _primary_embed_pane(app.screen)
             await _wait_for_session_name(pane)
@@ -3034,7 +3124,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             pane = _primary_embed_pane(app.screen)
             await _wait_for_session_name(pane)
@@ -3072,7 +3161,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
               mock.patch("pickup._log_embed_error") as log_error):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                await pilot.press("down")
                 await pilot.press("enter")
                 pane = _primary_embed_pane(app.screen)
                 await _wait_for_session_name(pane)
@@ -3095,7 +3183,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause(delay=0.5)
             pane = _primary_embed_pane(app.screen)
@@ -3131,7 +3218,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause(delay=0.5)
             pane = _primary_embed_pane(app.screen)
@@ -3154,7 +3240,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause(delay=0.5)
             pane = _primary_embed_pane(app.screen)
@@ -3186,7 +3271,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause(delay=0.5)
             pane = _primary_embed_pane(app.screen)
@@ -3213,7 +3297,6 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("pickup.embed.host_session", side_effect=__import__("pickup.embed", fromlist=["EmbedError"]).EmbedError("boom")):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                await pilot.press("down")
                 await pilot.press("enter")
                 # host_session 现在跑在后台 worker 里，失败结果要经 call_from_thread
                 # 回到主线程才会触发 bell；给够时间让这趟线程往返完成。
@@ -4519,7 +4602,6 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
             self.assertIsInstance(app.screen, ConfirmModal)
@@ -4534,7 +4616,6 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=False)  # embed 不可用 → 确认后退出交外层接管
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
             self.assertIsInstance(app.screen, ConfirmModal)
@@ -4584,7 +4665,6 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
             self.assertNotIsInstance(app.screen, ConfirmModal)
@@ -5258,7 +5338,8 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             widths = {pickup._text_width(line) for line in hud.render().plain.split("\n")}
             self.assertEqual(widths, {hud.size.width})
 
-    async def test_only_the_active_pane_draws_the_hud(self) -> None:
+    async def test_every_live_pane_draws_its_own_hud(self) -> None:
+        """多分屏时每个实时托管格都画自己的 Your prompts，不只激活格。"""
         sessions = self._live_sessions(2)
         store, app = await self._hosted_app(sessions)
         async with app.run_test(size=(160, 30)) as pilot:
@@ -5275,15 +5356,21 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: len(area._cells()) == 2)  # noqa: SLF001
             app.screen._sync_hud()  # noqa: SLF001
             huds = [cell.session_hud() for cell in area._cells()]  # noqa: SLF001
-            await _wait_until(lambda: huds[0].display)
-            self.assertTrue(huds[0].display)
-            self.assertFalse(huds[1].display, "非激活格不画小窗，避免多格刷屏")
+            await _wait_until(lambda: all(h is not None and h.display for h in huds))
+            for hud in huds:
+                self.assertTrue(hud.display)
+                self.assertTrue(hud.expanded)
+                self.assertGreater(hud.data.count, 0)
+                # 二分屏格较窄，页眉可能被截成 "Your prompt…"，只断言前缀。
+                self.assertIn("Your prompt", hud.render().plain)
 
-            # 焦点切到第二格后，小窗必须跟着搬过去
+            # 焦点切到第二格后，两格小窗都还在
             area._cells()[1].embed_pane().focus()  # noqa: SLF001
             await pilot.pause()
             app.screen._sync_hud()  # noqa: SLF001
-            await _wait_until(lambda: huds[1].display and not huds[0].display)
+            await _wait_until(lambda: all(h.display for h in huds))
+            self.assertTrue(huds[0].display)
+            self.assertTrue(huds[1].display)
 
     async def test_static_preview_pane_has_no_hud(self) -> None:
         """已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文。"""
@@ -5291,8 +5378,6 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("down")
-            await pilot.pause(delay=0.3)
             area = app.screen.query_one(SplitPaneArea)
             app.screen._sync_hud()  # noqa: SLF001
             await pilot.pause()

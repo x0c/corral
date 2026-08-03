@@ -31,7 +31,7 @@ pickup 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 侧边栏会话列表 | 左栏的搜索框、新建入口、会话组三行卡和会话三行卡 | `SessionListView`、`SessionGroupCard`、`SessionCard`、`NewSessionCard` |
 | 筛选项目 | 顶部输入框按组名、项目名、路径和标题筛选会话 | `NavState.project_query`；不是独立项目列表页；**不搜对话正文** |
 | 全文搜索 | `Ctrl+F` 弹窗，在所有会话的对话正文里找关键词并展示命中行 | `ui/search_modal.py` + `search.py` 的 `ConversationIndex`；与筛选项目是两条路，不是同一个输入框的两种模式 |
-| 会话小窗 | 实时画面右上角的悬浮摘要：默认展开列出提问，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；只画在当前激活的实时托管格；不是弹窗、不抢焦点 |
+| 会话小窗 | 实时画面右上角的悬浮摘要：默认展开列出提问，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；每个实时托管格各自一份；不是弹窗、不抢焦点 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或右栏顶栏点助手加格；无底栏 `n` 快捷键 |
 | 高级操作 | 对当前会话选择同运行时恢复或跨运行时接力 | `a` → `choose_target_runtime()` |
 | 删除会话 | 彻底抹掉选中会话的本地历史，不可恢复；运行中/托管会话先结束再删 | `x` → `ConfirmModal(confirm_key="x")` → `action_delete_session()` |
@@ -134,7 +134,7 @@ stateDiagram-v2
 - **时间列不用 `format_message_time`**：小窗自己的 `_short_time()` 当天只给 `HH:MM`、更早只给 `MM-DD`，两种都恰好 5 格宽（列不会错位）。共用的 `MM-DD HH:MM` 是 11 格，在浮层里会把正文挤掉一截，而同一会话的提问绝大多数在当天，日期纯冗余。消息缺时间戳时（如 Cursor `store.db` blob 没有逐条时间）展开态用 `N/A` 占位（补齐到 5 格），不留空白缩进。
 - **宽度上限 55 格**（`_MAX_WIDTH`），实际宽度取 `min(上限, 本格可用宽度 - 4)`：三分屏那种窄格不受影响，只有单格 / 宽终端吃得到上限；收起态还会再按内容实宽收缩。既然展开态靠换行而不是靠宽度救截断，就没必要铺得更宽——浮层越宽盖住的助手画面越多。
 - **触发**：点击浮层任意位置切换；`Ctrl+G` 是同一动作，但属于列表侧按键，右栏实时格持有输入时让路给助手（见 §6）。
-- **只画在当前激活格、且只对实时托管画面画**：已结束会话的右栏本身就是完整对话，浮层只会挡住它自己的正文；多格同时画会刷屏。
+- **只对实时托管画面画，且每个分屏格各自一份**：已结束会话的右栏本身就是完整对话，浮层只会挡住它自己的正文；多分屏时每一格都画自己的提问摘要，不再只给激活格。
 - **数据来源**：`SessionStore.get_conversation()` 里 `role == "user"` 的消息，与右栏完整对话共用同一份内存缓存，不另开解析路径。
 
 ### 侧边栏关注状态
@@ -154,7 +154,7 @@ stateDiagram-v2
 
 ### 侧边栏会话组与置顶
 
-- 两到三个会话以分屏打开后立即形成会话组；组名在创建时从水果表随机生成，例如 `Group Apple`、`Group Pineapple`，之后保持不变。未置顶的组与独立会话按成员最新活动时间混排——新建会话会把更旧的组往下顶，组不会永远霸占列表顶端；只有按 `p` 置顶的组/会话才固定在最上。
+- 两到三个会话以分屏打开后立即形成会话组；组名在创建时从水果表随机生成，例如 `Group Apple`、`Group Pineapple`，之后保持不变。未置顶区的组与独立会话顺序跟 `SessionStore` 稳定顺序走——进入 pickup 后已有项位置固定，不会因成员 mtime 更新而上下飘；**新出现**的会话仍由 store 插到最前（可把更旧的组顶下去）。只有按 `p` 置顶的组/会话才固定在最上。
 - 组卡固定三行（与会话卡同高）：第一行只有 `▼/▶ + 可选置顶标记 + 组名`，**没有关注圆点**；第二行是项目与成员数（与第一行 `Group …` **同列左对齐**，不靠右）；第三行**留白**——成员卡已各自显示时间，组卡不再重复。关注圆点只画在缩进的会话子项上。
 - 展开后成员以贴侧栏左缘的半角框线 `├─ `/`└─ `（续行同列 `│  `，总宽 3 列、无前导空格）连接，并从顶层列表摘除，禁止同一会话同时出现两份。必须整套半角框线——混用全角 `｜`/`－` 会和 `├` 错列，三行卡片之间竖线断开。树线用 `$foreground 80%`（与卡片基础色同亮），**不用**终端 `dim`。组内子项首行只显示「可选圆点 + 标题」，**不再重复项目名**（项目已写在组卡第二行）。组卡上按 `Space` 或点击三角可收起/展开；搜索组名时即使原先收起，也临时展示全部成员。
 - 分屏高亮只落在**当前会话组标题**和**当前激活的子会话**上；其余组员不再整块铺底。光标落到这两类高亮项上时，仍要使用更重一档的合成色。
@@ -166,6 +166,7 @@ stateDiagram-v2
 | 用户动作 | 前置条件 | 流程 | 结果 |
 |---|---|---|---|
 | 回车或单击会话卡 | 侧边栏选中已有会话 | 构建恢复或接力计划；优先打开已有托管会话 | 右栏内嵌展示；输入直接交给该格（仅限活着的实时会话） |
+| 单击或回车会话组卡 | 侧边栏选中会话组 | 右栏跟随展示该组合；焦点留在侧边栏 | 进成员会话卡才把输入交给右栏 |
 | “＋ 新建会话” | 用户需选择项目或运行时 | 先选项目，再选运行时 | 创建空白会话 |
 | 右栏顶栏点助手 | 当前项目目录已知且未满三格 | `_on_runtime_pick` 在当前项目下加一格托管 | 新格进入分屏组合 |
 | `a` 高级操作 | 当前选中已有会话 | 弹窗列出运行时；同运行时为原生恢复，其他运行时为读取历史后新建会话 | 形成启动请求 |
@@ -204,14 +205,14 @@ stateDiagram-v2
 | 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
 | 会话卡片、关注状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 固定三行：独立卡首行「圆点 项目 标题」、组内子项首行「圆点 标题」（无项目前缀）/ 运行时靠右 / 时间靠右；圆点优先级黄 > 绿 > 红；首行按有无圆点取 `width - 2` / `width` 硬截断、不写省略号；首行整体 bold，独立卡项目名再叠一层 `dim` 比标题淡一档（标题不 dim），回归 `test_project_name_is_one_shade_lighter_than_title`、`test_group_member_title_omits_project_name` |
 | 时间行的新鲜度亮度梯度 | `ui/session_list.py`、`display.py` | `SessionCard._time_tier()` / `_time_style()`、`_time_brightness_tier()`、`TIME_BRIGHTNESS_TIERS` | 半小时 / 三小时 / 一天为界分四档，最新一档与标题同色（着重）、越旧越暗；档位色走 `SessionCard` 的组件样式（`$foreground` + 透明度，深浅色主题各自与背景混合），渲染时只取混色后的前景、丢掉背景，回归 `test_time_line_brightness_steps_down_with_age` |
-| 会话组树与置顶排序 | `split_layout.py`、`ui/session_list.py`、`ui/main_screen.py` | `SplitLayoutStore`、`SessionGroupCard`、`SessionListView._sidebar_rows()` | 组名、成员、折叠态、最近使用时间、独立会话/整组置顶时间统一持久化；列表顺序为「置顶块 → 未置顶组/会话按新鲜度混排」，组成员不重复出现在顶层；回归 `SessionGroupSidebarTests` / `SplitLayoutStoreTests` |
+| 会话组树与置顶排序 | `split_layout.py`、`ui/session_list.py`、`ui/main_screen.py` | `SplitLayoutStore`、`SessionGroupCard`、`SessionListView._sidebar_rows()` | 组名、成员、折叠态、最近使用时间、独立会话/整组置顶时间统一持久化；列表顺序为「置顶块 → 未置顶区跟 store 稳定顺序（组卡落在最先出现的成员位置）」，组成员不重复出现在顶层；回归 `SessionGroupSidebarTests` / `SplitLayoutStoreTests` |
 | 分屏组合在侧边栏的投影 | `ui/session_list.py`、`ui/main_screen.py` | `SessionListView.set_split_marks()`、`MainScreen._sync_split_marks()` | ≥2 格才标：当前组卡贴 `-in-split`，只有当前激活子会话贴 `-split-active`，其余成员不铺底；光标叠加态仍用 `_SIDEBAR_SPLIT_LADDER` 的四级阶梯；单格与 `__hint__` 不标，全量重建后重新贴标；回归 `SidebarSplitHighlightTests` |
 | 状态详情与已读确认 | `ui/main_screen.py`、`store.py` | 详情头状态、稳定可见计时、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；只有红点在右侧成功稳定可见 0.5 秒后清除，切换、失败或失焦取消 |
 | 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`NewSessionModal`、`_on_runtime_pick()` | 侧边栏「＋ 新建」弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径）、右栏运行时；←→ 换栏、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |
 | 删除会话（不可恢复） | `ui/main_screen.py`、`ui/modals.py`、`store.py`、`runtime/base.py` | `action_delete_session()`、`ConfirmModal(confirm_key="x")`、`SessionStore.remove_session()`、`BaseRuntime.delete_session()` | `ConfirmModal` 的确认键已参数化（结束会话仍是 `q`，删除会话是 `x`）；实际删除逻辑收敛在各运行时适配器，见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`/`docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md` 各存储形态的删除方式 |
 | 右栏静态预览和实时画面挂接 | `ui/embed_pane.py` | `show_detail()`、`focus_session()`、`scroll_detail()` | 本域仅管理呈现切换、焦点与详情滚动；不描述 tmux 实现 |
-| 会话小窗（右上角浮层） | `ui/session_hud.py`、`ui/split_pane_area.py`、`ui/main_screen.py` | `SessionHud`、`summarize_user_messages()`、`PaneCell.update_hud()`、`SplitPaneArea.sync_hud()`、`MainScreen._sync_hud()` / `_hud_target()` / `action_toggle_hud()` | 默认展开；浮层只负责画，数据与展开状态统一由主屏喂；`PaneCell` 的 `layers: default hud` + `dock: right` 决定它贴在标题栏下一行、命中区只有胶囊本身 |
+| 会话小窗（右上角浮层） | `ui/session_hud.py`、`ui/split_pane_area.py`、`ui/main_screen.py` | `SessionHud`、`summarize_user_messages()`、`PaneCell.update_hud()`、`SplitPaneArea.sync_hud()`、`MainScreen._sync_hud()` / `_hud_live_targets()` / `action_toggle_hud()` | 默认展开；每个实时托管格各自一份；浮层只负责画，数据与展开状态统一由主屏喂；`PaneCell` 的 `layers: default hud` + `dock: right` 决定它贴在标题栏下一行、命中区只有胶囊本身 |
 | 多语言文案 | `i18n.py` | `_MESSAGES`、`detect_lang()`、`t()` | 新增用户可见文案必须同时给 en / zh；环境优先级在此定义 |
 | 宽字符与预览正文格式 | `src/pickup/display.py` 等 | `_text_width()`、`_fit_cell()`、`_preview_lines()` | 中文、emoji 和组合字符按终端显示宽度处理；预览为「角色: 正文」同行，角色与正文同色，可选时间后缀 |
 | 本地截图与界面观测 | `observe.py`、`ui/main_screen.py` | `save_tui_screenshot()`、`action_save_screenshot()` | F12 导出当前真实 TUI；对话内容仅由用户主动截图，不能提交 |
@@ -300,7 +301,8 @@ stateDiagram-v2
 - **AI 易错点**【浮层渲染的行数必须取"已分配给自己的"高度】`SessionHud.render()` 只能用 `self.content_size.height` 开窗，**不能**再拿 `container_size` 重算一遍 `_max_height()`：布局阶段（`get_content_height`）和渲染阶段看到的 container 尺寸不保证一致（首帧、resize 中间态都会差一拍），两边各算各的就会出现「底色框比正文高出一截」——框是按布局给的高度铺的，正文却按渲染时另算的行数画。同理，每行都必须 `_fit_cell` 补齐到同宽，否则底色右侧会露出锯齿。回归：`test_box_height_matches_rendered_lines_in_both_states`（去掉修复即失败）。
 - **AI 易错点**【展开态不省略、封顶靠滚动，页眉页脚常驻】提问在展开态必须**整条换行显示**（`_entry_lines()` 走 `_wrap_preview_text`），续行缩进到与首行正文同列；不要为了省行数改回单行加省略号——半句话常常刚好把关键信息切掉，那正是这个小窗要解决的问题。换行后行数不可控，所以另有高度上限（`_max_height()`），超出**只开窗不截内容**：页眉与页脚固定在首尾、正文按 `_scroll` 滚动。**页脚是唯一写着"点击收起"的地方，绝不能跟着正文滚出去**，否则用户找不到出口（点浮层任意处也能收起，但那是隐藏知识）。回归：`test_expanded_wraps_long_prompt_instead_of_eliding_it`、`test_expanded_continuation_lines_align_with_the_first_line`、`test_expanded_caps_height_and_scrolls_instead_of_dropping_content`。
 - **AI 易错点**【小窗顺序恒为由旧到新，超长时砍中间】两种形态都按时间从上到下排，不得改成"最新在最前"——那和右栏完整对话、和人读聊天记录的方向都相反。条数超上限时**留两头砍中间**（`summarize_user_messages` 保证 `entries[0]` 恒为本会话最早那条），被砍掉的条数由 `omitted` 如实说明，不做静默截断。回归：`test_long_session_keeps_both_ends_and_drops_the_middle`、`test_expanded_is_oldest_to_newest_with_the_middle_reported`。
-- **AI 易错点**【小窗只画在激活格、只对实时托管画面画】已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文；多格同时画会刷屏。判定入口是 `MainScreen._hud_target()`（`SplitPaneArea.focus_key` + `PaneSpec.keepalive_name` 两个条件缺一不可），不要下放到 `SplitPaneArea` 或 `PaneCell` 里各判一次。占位卡（直启/空白新建后还没写出真实历史）在扫描快照里找不到会话，此时不画。
+- **AI 易错点**【小窗对每个实时托管格都画，不只激活格】已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文，故跳过静态预览格；多分屏时每一格画自己的提问摘要。判定入口是 `MainScreen._hud_live_targets()`（遍历 `pane_specs()`，要求 `keepalive_name` + store 能找到会话），不要下放到 `SplitPaneArea` 或 `PaneCell` 里各判一次。占位卡（直启/空白新建后还没写出真实历史）在扫描快照里找不到会话，此时不画。回归：`test_every_live_pane_draws_its_own_hud`。
+- **AI 易错点**【侧边栏未置顶区禁止按 mtime 重排】`SessionStore._order` 已保证进入后已有会话位置固定；`_sidebar_rows()` 必须跟这份顺序走（组卡落在最先出现的成员位置），不要再按成员当前 mtime / `group.updated_at` 对未置顶块排序——否则运行中会话一写盘，组卡就会在侧边栏里上下飘。新会话仍由 store 插最前。回归：`test_sidebar_order_stable_when_member_mtime_updates`、`test_newer_independent_session_sorts_above_unpinned_group`。
 - **AI 易错点**【小窗的快捷键必须让路】`toggle_hud`（`Ctrl+G`）留在 `_LIST_ONLY_ACTIONS` 里：小窗是"扫一眼"用的，不值得从助手手里抢一个组合键。右栏实时格持有输入时该键原样转发给助手，用户想展开就点小窗本身——点浮层不会改变键盘焦点（浮层与其祖先都不可聚焦，Textual 只会把焦点给命中点位上可聚焦的控件）。这点与 `Ctrl+B` 显隐侧栏那类壳层键刻意不同。回归：`SessionHudGatingTests`。
 - **AI 易错点**【运行中会话的对话不落盘缓存】`SessionStore.get_conversation()` 对 `live` 会话跳过 `put_conversation`：助手每写一次历史签名就变一次，落盘必然立刻失效。小窗和「在别的窗口跑」的对话都会每隔几秒重读一次运行中会话，真落盘就变成几秒一次的整份 JSON 写库 + `prune()`（缓存到上限后还要删行 + WAL checkpoint）。内存缓存照常按 mtime 更新，会话结束后第一次读取补上落盘。回归：`test_live_session_conversation_is_not_written_to_disk_cache`。
 - **AI 易错点**【小窗刷新不能每秒重解析】1 秒定时器只做 `stat` + 内存缓存判定（`peek_conversation`）；缓存失效才按 `HUD_WARM_INTERVAL` 节流起一次后台线程解析。解析期间必须继续显示上一版摘要（`MainScreen._hud_cache`），否则助手一边写历史小窗就一秒空一下再闪回来。本机实测：最近 15 个真实会话解析中位 4ms，最大的 18MB 会话 203ms——正因为尾部这么重，才必须节流且放后台。
@@ -312,8 +314,9 @@ stateDiagram-v2
 - 【隐性依赖】截图验收分两类：`docs/screenshots/capture.py` 使用虚构数据，适合提交和回归；F12 截图反映真实 TUI，可能含私密对话，只能本地诊断。夹具图灰阶的常见根因是环境 `NO_COLOR=1`（Textual Monochrome），不是 cairosvg；`capture.py` 会在创建 App 前清除 `NO_COLOR` 并去掉 Rich 假窗口铬。仍可用真机或 `SessionCard.render_line` segment 交叉确认配色。
 - 【消歧】侧边栏关注圆点表示「此刻最需要用户知道的状态」，与标题模块状态标签、机器接口英文 `status` 以及单纯进程判活都不是同一套语义，不能互相替换。标题始终使用基础样式；「托管中」和「在别的窗口跑」的区别仍由右栏详情头说明。
 - 【消歧】“对话预览”固定在右栏，旧 Space 全屏预览入口不得复活；`e` 全屏接管已删除。默认展示最新消息（底部），不是会话开头。
-- 【焦点归属】焦点跟随**明确意图**：回车或单击会话卡打开、新建 / 顶栏加格 / 直启托管成功、关掉持有输入的那格 → 输入交给右栏；上下浏览（含方向键选择跟随）、后台重扫一律不抢焦点。自动聚焦只认活着的实时会话，且弹窗或筛选框正持有输入时不抢（`MainScreen._can_autofocus()`）。右栏滚轮与焦点无关。
-- **AI 易错点**【禁止】把自动聚焦挂到 `_follow_current_selection()` 上 -> 浏览必须留在列表（原因：一抢焦点方向键就全发给助手，列表没法继续用）。单击会话卡不属于浏览：Textual 的 `ListView` 点击就发 `Selected`，与回车同一条打开路径（真的会拉起 / 接管会话），必须一样自动聚焦。
+- 【焦点归属】焦点跟随**明确意图**：回车或单击会话卡打开、新建 / 顶栏加格 / 直启托管成功、关掉持有输入的那格 → 输入交给右栏；上下浏览（含方向键选择跟随）、单击/回车会话组卡、后台重扫一律不抢焦点。进入 pickup 时默认高亮列表第一条会话或会话组（跳过「＋ 新建」），焦点在侧边栏。自动聚焦只认活着的实时会话，且弹窗或筛选框正持有输入时不抢（`MainScreen._can_autofocus()`）。右栏滚轮与焦点无关。
+- **AI 易错点**【禁止】把自动聚焦挂到 `_follow_current_selection()` 上 -> 浏览必须留在列表（原因：一抢焦点方向键就全发给助手，列表没法继续用）。单击会话卡不属于浏览：Textual 的 `ListView` 点击就发 `Selected`，与回车同一条打开路径（真的会拉起 / 接管会话），必须一样自动聚焦。会话组卡例外：Selected 只展示组合、`focus_pane=False` 并 `_focus_list()`，不要跟会话卡共用「打开即聚焦」。
+- **AI 易错点**【初次填充的 index 会被 Textual 打回 0】`SessionListView` 在 `clear()+extend()` 后立刻设 `index=1` 当场看着对，下一帧 refresh 会被 ListView 异步重置到 0（落到「＋ 新建」）。必须经 `_apply_index_after_rebuild()`：当场赋值后再 `call_after_refresh` 钉一次；只在仍停在 0 且目标非 0 时纠正。回归：`test_startup_selects_first_session_not_new_row`、`test_startup_selects_first_group_when_list_starts_with_group`。
 - 【点击是对称开关】点会话卡 → 输入交给右栏；再点同一张卡（该格正持有输入）→ 焦点撤回侧边栏、不重新打开会话；点别的会话卡仍是「打开」（右栏切到该会话、焦点留在右栏）。判定依据是 `SessionListView.focus_on_click()` 记下的**按下前焦点**（`take_focus_before_click()` 一次性消费），不能事后现查——Textual 在 MouseDown 阶段先 `set_focus(列表)` 再把事件发下来，处理 `ListView.Selected` 时焦点早已是列表。
 - **AI 易错点**【按下前焦点必须当帧解析成会话键】`focus_on_click()` 只能存**会话键**（`_focused_live_session_key()`），不能存焦点控件对象事后反查它绑着哪个会话：点击后紧跟的选择跟随会把同一个 `EmbedPane` 控件就地改绑到刚点的会话（`PaneCell.rebind` 复用控件不重建），于是「按下前持有输入的控件」和「刚点的这张卡」指向同一个控件，被误判成「点了当前持有输入的那张卡」而把焦点撤回侧边栏。真机表现：连续点不同会话卡，焦点在侧边栏和右栏之间来回跳（点一次进、点一次不进）。回归：`test_consecutive_clicks_on_other_cards_always_hand_input_to_pane`。
 - **AI 易错点**【自动聚焦被 remount 收尾抢回】点击会先触发一次选择跟随的异步整排挂载，其收尾会「把焦点还给列表」，落地时间晚于紧随其后的自动聚焦。所以聚焦意图必须登记成能跨挂载存活的状态（`SplitPaneArea._request_pane_focus()` / `_focus_intent_key`），并由挂载收尾统一裁决（`_settle_focus_intent()`）；判断「意图是否已兑现」需要**兑现计数 `_focus_intent_serial` 与 `any_embed_focused()` 现查两道闸门，缺一不可**（2026-07-31 修正：原先只有前者）。两道各管一种时序——计数管「焦点还没落地」（`Widget.focus()` 走 `call_later` 延迟生效，刚聚焦完那一瞬间现查到的仍是旧焦点，所以不能只靠现查）；现查管「焦点已经落地但绕过了意图机制」（用户直接点进某格、或代码直接 `EmbedPane.focus()`，推不动计数，只靠计数就会把焦点抢走）。也别想着在 `DescendantFocus` 事件里推计数补上后者：该事件冒泡到 `SplitPaneArea` 是异步的，实测常排在 `_settle_focus_intent()` 之后才送达，试过无效。

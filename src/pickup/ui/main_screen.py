@@ -236,10 +236,10 @@ class MainScreen(Screen):
         # 最近一次算好的摘要按会话键留着，历史文件正在被写、缓存暂时失效时继续
         # 显示旧摘要，避免小窗一秒一闪。
         # 会话提问概览默认展开，让用户进入会话时直接看到上下文；仍可随时收起。
+        # 每个实时托管格各自画一份（不再只画激活格）。
         self._hud_expanded = True
         self._hud_cache: dict[str, object] = {}
-        self._hud_warm_at = 0.0
-        self._hud_warm_key: str | None = None
+        self._hud_warm_at: dict[str, float] = {}
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -1007,68 +1007,75 @@ class MainScreen(Screen):
             return
         area.invalidate_all_details()
 
-    # ---- 右上角会话小窗：只画在激活格、只对实时托管画面画 ----
+    # ---- 右上角会话小窗：每个实时托管格各自一份 ----
 
-    def _hud_target(self) -> tuple[str | None, dict | None]:
-        """返回该画小窗的 (会话键, 会话)；不该画时返回 (None, None)。
+    def _hud_live_targets(self) -> list[tuple[str, dict]]:
+        """返回该画小窗的 (会话键, 会话) 列表；只含实时托管格。
 
-        条件有两条：这一格是当前激活格，且它是**实时托管画面**。已结束会话的
-        右栏本来就是完整对话，浮层只会挡住它自己的正文。
+        已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文，故跳过。
+        占位卡（直启/空白新建后尚未写出真实历史）在快照里找不到，也先不画。
         """
         if not self.embed_ok:
-            return None, None
+            return []
         try:
             area = self._split_area()
         except Exception:
             # 内嵌不可用时右栏根本不在 DOM 里（纯列表模式），不能裸 query_one。
-            return None, None
-        key = area.focus_key
-        if not key:
-            return None, None
-        spec = next((s for s in area.pane_specs() if s.session_key == key), None)
-        if spec is None or not spec.keepalive_name:
-            return None, None
-        # 占位卡（直启/空白新建后尚未写出真实历史）在快照里找不到，先不画。
-        return key, self.store.find_session(key)
+            return []
+        targets: list[tuple[str, dict]] = []
+        for spec in area.pane_specs():
+            if not spec.keepalive_name:
+                continue
+            session = self.store.find_session(spec.session_key)
+            if session is None:
+                continue
+            targets.append((spec.session_key, session))
+        return targets
 
     def _sync_hud(self) -> None:
-        """把小窗刷成当前激活格的最新摘要。主线程调用，只做 stat + 内存缓存判定。"""
+        """把每个实时托管格的小窗刷成各自最新摘要。主线程调用，只做 stat + 内存缓存判定。"""
         if not self.embed_ok:
             return
         try:
             area = self._split_area()
         except Exception:
             return
-        key, session = self._hud_target()
-        if key is None or session is None:
-            area.sync_hud(None, None, expanded=False)
-            return
-        messages = self.store.peek_conversation(session)
-        if messages is None:
-            # 助手正在写历史，内存缓存已按 mtime 失效：继续显示上一次的摘要，
-            # 同时按节流去后台重解析，避免小窗每秒空一下再闪回来。
-            data = self._hud_cache.get(key)
-            self._schedule_hud_warm(session, key)
-        else:
-            data = summarize_user_messages(messages)
-            self._hud_cache[key] = data
-        area.sync_hud(key, data or None, expanded=self._hud_expanded)
+        payloads: dict[str, object | None] = {}
+        to_warm: list[tuple[dict, str]] = []
+        for key, session in self._hud_live_targets():
+            messages = self.store.peek_conversation(session)
+            if messages is None:
+                # 助手正在写历史，内存缓存已按 mtime 失效：继续显示上一次的摘要，
+                # 同时按节流去后台重解析，避免小窗每秒空一下再闪回来。
+                payloads[key] = self._hud_cache.get(key)
+                to_warm.append((session, key))
+            else:
+                data = summarize_user_messages(messages)
+                self._hud_cache[key] = data
+                payloads[key] = data or None
+        area.sync_hud(payloads, expanded=self._hud_expanded)
+        if to_warm:
+            self._schedule_hud_warm(to_warm)
 
-    def _schedule_hud_warm(self, session: dict, key: str) -> None:
+    def _schedule_hud_warm(self, items: list[tuple[dict, str]]) -> None:
         now = time.monotonic()
-        if key == self._hud_warm_key and now - self._hud_warm_at < HUD_WARM_INTERVAL:
-            return
-        self._hud_warm_key = key
-        self._hud_warm_at = now
-        self._warm_hud(session, key)
+        due: list[tuple[dict, str]] = []
+        for session, key in items:
+            if now - self._hud_warm_at.get(key, 0.0) < HUD_WARM_INTERVAL:
+                continue
+            self._hud_warm_at[key] = now
+            due.append((session, key))
+        if due:
+            self._warm_hud(due)
 
     @work(thread=True, exclusive=True, group="hud-warm")
-    def _warm_hud(self, session: dict, key: str) -> None:
+    def _warm_hud(self, items: list[tuple[dict, str]]) -> None:
         """后台解析对话（超大会话可到 200ms 量级），完成后回主线程刷小窗。"""
-        try:
-            self.store.get_conversation(session)
-        except Exception:
-            return
+        for session, _key in items:
+            try:
+                self.store.get_conversation(session)
+            except Exception:
+                continue
         self.app.call_from_thread(self._sync_hud)
 
     def action_toggle_hud(self) -> None:
@@ -1133,9 +1140,12 @@ class MainScreen(Screen):
                 else group.session_keys[0]
             )
             if self.embed_ok:
+                # 会话组卡：右栏跟随展示组合，焦点固定留在侧边栏。
+                # 点组卡不是「打开某一格输入」——进成员会话卡才把输入交给右栏。
                 self._show_session_group(
-                    focus_key, focus_pane=True, include_inactive=True
+                    focus_key, focus_pane=False, include_inactive=True
                 )
+                self._focus_list()
                 return
             session = self.store.find_session(focus_key)
         else:

@@ -143,9 +143,10 @@ around when their content updates; only genuinely new sessions appear, always pr
 Opening two or three sessions as a split now creates a persistent sidebar group with a stable fruit name
 such as `Group Apple` or `Group Pineapple`. The group takes three rows, while its sessions move underneath
 as an indented tree instead of being duplicated in the top-level timeline. Child rows omit the project name
-prefix — that already lives on the group card. Unpinned groups share the timeline with independent sessions
-by freshness, so a newly created session can push an older group down; only items pinned with `p` stay at
-the top. The group title has no attention
+prefix — that already lives on the group card. Unpinned groups follow the same stable store order as
+independent sessions — once the list is shown they stay put even when a member’s mtime updates; only
+genuinely new sessions are prepended at the top, and only items pinned with `p` stay pinned above that.
+The group title has no attention
 dot — dots remain on the individual sessions. Only the active group title and the currently focused child are
 highlighted. Press `Space` on a group to collapse it. Press `p` to pin/unpin an independent session or an
 entire group; sessions inside a group are pinned only with their group.
@@ -174,8 +175,8 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
   hosted in the right-hand pane.
 - Click a runtime button above the right side to add that agent as another pane in the current project.
   Up to three panes may run together; click a pane to focus it and sync the sidebar selection.
-- A small **session card floats in the top-right corner of the live pane**, so switching to a session
-  tells you at a glance what it is about and how far along it is. It is expanded by default, showing up
+- A small **session card floats in the top-right corner of each live pane**, so every split
+  tells you at a glance what that session is about and how far along it is. It is expanded by default, showing up
   to six timestamped prompts. When collapsed it shows the two ends — `▶ 12 prompts`, then
   `First <your very first prompt>` and `Latest <your newest one>`:
   the first prompt says what this session set out to do, the latest says where it is now. Click it
@@ -183,8 +184,8 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
   when there are more than six, the middle is dropped (never the first one) and the card says how many
   it left out. Expanded prompts are **wrapped in full rather than cut off with an ellipsis**, with
   continuation lines aligned under the first; if that runs past the card's maximum height, the body
-  scrolls under a pinned header and footer. It is drawn only on the pane you are working in, and only
-  for live hosted terminals — a finished session already shows its full conversation there. Note that
+  scrolls under a pinned header and footer. It is drawn on every live hosted pane — a finished
+  session already shows its full conversation there, so static previews stay clear. Note that
   whatever it covers is hidden from the agent's screen and the mouse wheel cannot reach through it;
   click it or press `Ctrl+G` whenever you want the compact three-line view.
 - `Ctrl`/`Cmd`-click (or `Space`) toggles multi-select on sidebar cards; with two or three selected,
