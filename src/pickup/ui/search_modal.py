@@ -24,6 +24,7 @@ from textual.widgets import Input, ListItem, ListView, Static
 
 from pickup.i18n import t
 from pickup.search import DEFAULT_MAX_LINES, MatchLine, SessionMatch, split_keywords
+from pickup.ui.modals import OutsideClickDismiss
 
 # 输入防抖：正文匹配本身在毫秒级，但每次都要重建结果列表里的控件，连打时没必要
 # 每个中间态都重建一遍。窗口取得比选择跟随（120ms）稍长，打字手感更稳。
@@ -135,8 +136,8 @@ class SearchResultRow(Widget):
         return text
 
 
-class FullTextSearchModal(ModalScreen[str | None]):
-    """返回选中的会话键；Esc 返回 None。"""
+class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
+    """返回选中的会话键；Esc 或点框外空白返回 None。"""
 
     DEFAULT_CSS = """
     FullTextSearchModal {

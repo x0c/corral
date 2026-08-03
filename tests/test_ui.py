@@ -42,7 +42,7 @@ from pickup.models import LaunchPlan
 from textual import events
 from textual.color import Color
 from textual.geometry import Offset, Size
-from textual.widgets import Footer, Input, ListItem, ListView
+from textual.widgets import Footer, Input, Label, ListItem, ListView
 from pickup.ui.app import PickupApp
 from pickup.ui.embed_pane import EmbedPane
 from pickup.ui.split_pane_area import SplitPaneArea
@@ -3941,6 +3941,102 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result_holder.get("result"))
 
 
+class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
+    """点弹窗主体以外的空白＝取消（与 Esc 等价）；点在弹窗内容上不得误关。
+
+    内容那一半是真正的回归点：Click 会从子控件一路冒泡到弹窗，判定若不现查落点
+    控件，弹窗会变成「点哪都关」。
+    """
+
+    async def _open(self, app, pilot, modal):
+        """把弹窗推上来并等它挂好，返回收结果的字典。"""
+        holder: dict = {}
+
+        async def _run():
+            holder["result"] = await app.push_screen_wait(modal)
+
+        app.run_worker(_run())
+        await pilot.pause(delay=0.3)  # 顺带跨过 ConfirmModal 的武装窗口
+        return holder
+
+    def _new_session_modal(self) -> NewSessionModal:
+        return NewSessionModal(
+            [("/tmp/alpha", "alpha", "/tmp/alpha")],
+            [RuntimeChoice("claude", "Claude", "", True)],
+        )
+
+    async def test_runtime_picker_backdrop_click_cancels(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = RuntimePickerModal("接力到", [RuntimeChoice("claude", "Claude", "", True)])
+            holder = await self._open(app, pilot, modal)
+            self.assertIsInstance(app.screen, RuntimePickerModal)
+            await pilot.click(offset=(0, 0))
+            await pilot.pause(delay=0.2)
+            self.assertNotIsInstance(app.screen, RuntimePickerModal)
+        self.assertIsNone(holder.get("result"))
+
+    async def test_runtime_picker_click_inside_keeps_modal_open(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = RuntimePickerModal("接力到", [RuntimeChoice("claude", "Claude", "", True)])
+            await self._open(app, pilot, modal)
+            await pilot.click(modal.query_one(Label))  # 标题行：内容区，不是背景
+            await pilot.pause(delay=0.2)
+            self.assertIsInstance(app.screen, RuntimePickerModal)
+
+    async def test_new_session_backdrop_click_cancels(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            holder = await self._open(app, pilot, self._new_session_modal())
+            self.assertIsInstance(app.screen, NewSessionModal)
+            await pilot.click(offset=(0, 0))
+            await pilot.pause(delay=0.2)
+            self.assertNotIsInstance(app.screen, NewSessionModal)
+        self.assertIsNone(holder.get("result"))
+
+    async def test_new_session_click_on_column_keeps_modal_open(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = self._new_session_modal()
+            await self._open(app, pilot, modal)
+            # 点项目栏的边框内侧：命中的是 ListView 不是背景，弹窗必须留着
+            await pilot.click(modal.query_one("#ns-projects"))
+            await pilot.pause(delay=0.2)
+            self.assertIsInstance(app.screen, NewSessionModal)
+
+    async def test_confirm_backdrop_click_cancels(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            holder = await self._open(app, pilot, ConfirmModal("确认？"))
+            self.assertIsInstance(app.screen, ConfirmModal)
+            await pilot.click(offset=(0, 0))
+            await pilot.pause(delay=0.2)
+            self.assertNotIsInstance(app.screen, ConfirmModal)
+        self.assertIs(holder.get("result"), False)  # 取消，不是确认
+
+    async def test_confirm_click_inside_keeps_modal_open(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = ConfirmModal("确认？")
+            await self._open(app, pilot, modal)
+            await pilot.click(modal.query_one(Label))
+            await pilot.pause(delay=0.2)
+            self.assertIsInstance(app.screen, ConfirmModal)
+
+
 class KillKeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_q_key_confirm_kills_and_clears_keepalive_name(self) -> None:
         sessions = [{
@@ -4310,6 +4406,35 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(list_view.index, before)
             self.assertIsNone(app.return_value)  # Esc 关弹窗不能顺手把程序也退了
+
+    async def test_backdrop_click_closes_without_touching_the_sidebar(self) -> None:
+        """点框外空白＝Esc：关弹窗、不动侧边栏、不退出程序。"""
+        app = PickupApp(self._store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            await pilot.press("down")
+            await pilot.pause()
+            before = list_view.index
+
+            await self._open_search(pilot, app)
+            await pilot.click(offset=(0, 0))
+            await _wait_until(lambda: not isinstance(app.screen, FullTextSearchModal))
+            await pilot.pause()
+
+            self.assertEqual(list_view.index, before)
+            self.assertIsNone(app.return_value)
+
+    async def test_click_on_the_query_box_keeps_the_modal_open(self) -> None:
+        """回归：Click 从输入框冒泡上来，不能被当成点在背景上。"""
+        app = PickupApp(self._store(), embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            modal = await self._open_search(pilot, app)
+            await pilot.click(modal.query_one("#search-query", Input))
+            await pilot.pause(delay=0.2)
+            self.assertIsInstance(app.screen, FullTextSearchModal)
+            await pilot.press("escape")
 
     async def test_sidebar_filter_is_carried_into_the_modal(self) -> None:
         app = PickupApp(self._store(), embed_ok=False)

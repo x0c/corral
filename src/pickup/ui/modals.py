@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass
 
 from rich.text import Text
-from textual import events
+from textual import errors, events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -17,6 +17,32 @@ from textual.widget import Widget
 from textual.widgets import Label, ListItem, ListView, Static
 
 from pickup.i18n import t
+
+
+class OutsideClickDismiss:
+    """点弹窗主体以外的空白处＝取消，和 Esc 等价。
+
+    弹窗铺满整屏、内容居中，中间那块框之外全是背景。鼠标用户对这块区域的直觉
+    就是「点一下关掉」；只留 Esc 一条出口，用鼠标操作时会觉得界面卡住了。
+
+    判定必须**现查落点控件**（`get_widget_at`），不能只看事件有没有到这里：
+    Click 会从列表项、输入框一路冒泡上来，光凭「收到了」会把点在弹窗内容上的
+    每一下都当成点在外面，弹窗一点就关。
+
+    子类用 `outside_click_result` 声明取消时回给调用方的值（默认 `None`，
+    确认框这种返回布尔的要改成 `False`）。放在 `ModalScreen` 之前继承。
+    """
+
+    outside_click_result = None
+
+    def on_click(self, event: events.Click) -> None:
+        try:
+            hit, _ = self.get_widget_at(event.screen_x, event.screen_y)
+        except errors.NoWidget:
+            return
+        if hit is self:
+            event.stop()
+            self.dismiss(self.outside_click_result)
 
 
 class _ChoiceItem(Static):
@@ -60,8 +86,8 @@ class RuntimeChoice:
     available: bool
 
 
-class RuntimePickerModal(ModalScreen[str | None]):
-    """运行时选择弹窗（高级操作接力用）。返回 runtime id 或 None。"""
+class RuntimePickerModal(OutsideClickDismiss, ModalScreen[str | None]):
+    """运行时选择弹窗（高级操作接力用）。返回 runtime id；Esc 或点框外空白返回 None。"""
 
     DEFAULT_CSS = _MENU_CSS
 
@@ -159,7 +185,7 @@ class _ColumnRow(Widget):
         return text
 
 
-class NewSessionModal(ModalScreen[tuple[str, str] | None]):
+class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     """新建会话：左栏选项目、右栏选运行时，一个弹窗里一次选完。
 
     左栏更宽——项目名后面还要跟路径，信息量远大于右栏的助手名。交互上
@@ -167,7 +193,7 @@ class NewSessionModal(ModalScreen[tuple[str, str] | None]):
     确认。原来这是两个前后串起来的弹窗，选完项目会整屏一闪再弹一次，回头
     改项目还得 Esc 退出重来。
 
-    返回 (项目目录, 运行时 id)；Esc 返回 None。
+    返回 (项目目录, 运行时 id)；Esc 或点框外空白返回 None。
     """
 
     DEFAULT_CSS = """
@@ -296,12 +322,16 @@ class NewSessionModal(ModalScreen[tuple[str, str] | None]):
             self.query_one(target, ListView).focus()
 
 
-class ConfirmModal(ModalScreen[bool]):
+class ConfirmModal(OutsideClickDismiss, ModalScreen[bool]):
     """confirm_key 确认 / 其他键取消的确认框，取代 _confirm_kill_keepalive。
 
     打开瞬间会短暂忽略按键：触发弹窗的动作键（结束会话是 `q`，删除会话是 `x`）
     若同一按键落到弹窗里会立刻被当成确认。挂载后等一帧再接收确认/取消。
+
+    点框外空白同样算取消（返回 False）。
     """
+
+    outside_click_result = False
 
     DEFAULT_CSS = """
     ConfirmModal {
@@ -346,6 +376,12 @@ class ConfirmModal(ModalScreen[bool]):
         if not self._armed:
             return
         self.dismiss(event.key in (self._confirm_key, self._confirm_key.upper()))
+
+    def on_click(self, event: events.Click) -> None:
+        # 武装期同样挡住鼠标：和按键一个道理，别让触发这个框的那一下顺手把它关掉。
+        if not self._armed:
+            return
+        super().on_click(event)
 
 
 # ---------------------------------------------------------------------------

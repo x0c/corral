@@ -343,7 +343,7 @@ agent workflows.
 | `Ctrl+G` | Expand / collapse the session card floating in the top-right corner of a live pane (clicking it does the same) |
 | `Home` / `End` / `PgUp` / `PgDn` | Scroll the right-pane conversation preview (also mouse wheel over the pane) |
 | `F12` | Save a local diagnostic screenshot under `~/.cache/pickup/screenshots/` |
-| `Esc` | Clear search / close dialog, or quit |
+| `Esc` | Clear search / close dialog, or quit (clicking outside a dialog closes it too) |
 
 `Enter` (or a click) hands input to a hosted agent; `Ctrl-\` returns keyboard focus to the sidebar
 without ending the process. `Ctrl+B` (or the ◀/▶ control on the left of the runtime top bar) toggles
