@@ -23,7 +23,7 @@ from pickup.scan import opencode as scan_opencode
 import pickup
 from pickup import agent_api
 from pickup import titles
-from pickup.models import ConversationMessage, Handoff, LaunchPlan
+from pickup.models import ConversationMessage, Handoff, LaunchPlan, format_message_time
 from pickup.runtime.base import BaseRuntime
 from pickup.runtime.claude import ClaudeRuntime
 from pickup.runtime.codex import CodexRuntime
@@ -181,7 +181,7 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
             self.assertEqual(info["display_time"], "06-22 16:41")
             self.assertEqual(info["mtime"], info["event_time"])
             self.assertEqual(info["time_source"], "event_time_stale_mtime")
-            self.assertEqual(scan_claude._format_display_time(info["file_mtime"]), "01-01 08:00")
+            self.assertEqual(format_message_time(info["file_mtime"]), "01-01 08:00")
 
     def test_scan_sessions_sorts_by_effective_time(self) -> None:
         old_projects_dir = scan_claude.PROJECTS_DIR
@@ -934,7 +934,7 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
 
             self.assertIsNotNone(info)
             self.assertEqual(info["display_time"], "01-01 08:00")
-            self.assertEqual(scan_codex._format_display_time(info["event_time"]), "06-25 18:12")
+            self.assertEqual(format_message_time(info["event_time"]), "06-25 18:12")
             self.assertEqual(info["status_tag"], titles.STATUS_DONE)
             self.assertEqual(info["first_user_msg"], "修复会话展示")
 

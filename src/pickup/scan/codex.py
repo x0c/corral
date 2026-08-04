@@ -93,9 +93,6 @@ def _entry_time(entry: dict) -> float | None:
     return _parse_timestamp(entry.get("timestamp")) or _parse_timestamp(payload.get("timestamp"))
 
 
-_format_display_time = format_message_time
-
-
 def _read_session_head(path: str, max_lines: int = 30) -> list[dict]:
     """逐行读取文件头部，找到 session_meta 和第一条 user_message 后停止。"""
     entries: list[dict] = []
@@ -237,7 +234,7 @@ def _build_session_info(path: str, index: dict[str, str]) -> dict | None:
         "cwd": cwd or "",
         "cwd_display": _shorten_cwd(cwd or ""),
         "mtime": session_time,
-        "display_time": _format_display_time(session_time),
+        "display_time": format_message_time(session_time),
         "time_source": time_source,
         "event_time": resolved_event_time,
         "file_mtime": mtime,

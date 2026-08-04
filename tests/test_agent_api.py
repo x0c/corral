@@ -303,7 +303,7 @@ class AgentApiTests(unittest.TestCase):
         self.assertEqual(data["runtime"], "fake")
         self.assertEqual(data["history_path"], self.history_path)
         self.assertIn("天气 App 开发", data["suggested_prompt"])
-        self.assertEqual(data["resume_command"], f'true resume aaaa1111-0000-0000-0000-000000000000')
+        self.assertEqual(data["resume_command"], 'true resume aaaa1111-0000-0000-0000-000000000000')
         self.assertFalse(data["cwd_exists"])  # /tmp/weather-app 在测试机上并不存在
 
     def test_cmd_context_missing_history_file_raises_api_error(self) -> None:

@@ -381,7 +381,7 @@ class EmbedPane(Widget):
         if channel is not None and self._osc_report and embed.supports_theme_report():
             embed.report_theme(channel, self._osc_report)
         self._poke.set()
-        return channel  # noqa: RET504（测试里需要断言通道对象，保留返回值）
+        return channel  # noqa: RET504 - 测试里需要断言通道对象，保留返回值
 
     def _stash_screen(self) -> None:
         """把当前这一屏留给「切回来」用。只在真的切走时调用。"""

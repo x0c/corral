@@ -43,6 +43,11 @@ jobs:
         run: python -m pip install .
       - name: Compile
         run: python -m compileall -q src/pickup tests
+      - name: Lint
+        # 固定版本号，避免 ruff 自行升级后规则集变化在 CI 上悄悄多出新的拦截项。
+        run: |
+          python -m pip install ruff==0.16.1
+          ruff check src tests
       - name: Test
         # 走 scripts/ci-test.py 而不是裸 unittest：挂死时自动打印全部线程栈，
         # 已知 Pilot 偶发自动重跑一次再判定。说明见该脚本头部注释。

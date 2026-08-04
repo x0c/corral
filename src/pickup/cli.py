@@ -10,8 +10,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
-import traceback
 from dataclasses import dataclass
 
 # Kitty 键盘协议的关闭开关已上移到 `pickup/__init__.py`（包顶层，任何用法必经），
@@ -19,9 +17,8 @@ from dataclasses import dataclass
 
 from pickup import agent_api, cursor_observer, embed, keepalive, observe, titles, updater
 from pickup.models import LaunchPlan, LaunchRequest, NewSessionRequest
-from pickup.observe import log_embed_error as _log_embed_error
-from pickup.runtime import LaunchError, RuntimeRegistry, default_registry, execute_launch, usable_cwd
-from pickup.store import SessionStore, _new_session_cwd
+from pickup.runtime import LaunchError, RuntimeRegistry, default_registry, execute_launch
+from pickup.store import SessionStore
 from pickup import theme as theme_mod
 from pickup.theme import _probe_osc_colours
 
@@ -38,7 +35,6 @@ def _restart_process() -> None:
     Cellar 里那个冻结的解释器——用它 re-exec 只会重新加载旧代码，用户点了
     「重启」却还是旧版本。找不到 PATH 上的 pickup（裸模块 / 源码运行）时，
     再退回当前解释器的 `-m pickup`。"""
-    import shutil
 
     sys.stdout.flush()
     sys.stderr.flush()

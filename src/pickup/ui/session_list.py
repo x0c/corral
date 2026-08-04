@@ -438,12 +438,15 @@ class SessionGroupCard(Widget):
 
     def render(self) -> Text:
         import pickup
+        from pickup.split_layout import group_emoji
 
         width = max(10, self.size.width or 40)
         arrow = "▶" if self.group.collapsed else "▼"
         pin = " ↑" if self.pinned else ""
-        # 前缀宽度固定：第二行项目名从同一列起笔，和 Group xxx 左对齐。
-        name_prefix = f"{arrow}{pin} "
+        emoji = group_emoji(self.group.name)
+        emoji_prefix = f"{emoji} " if emoji else ""
+        # 前缀宽度固定：第二行项目名从同一列起笔，和水果 emoji/Group xxx 左对齐。
+        name_prefix = f"{arrow}{pin} {emoji_prefix}"
         title = pickup._fit_cell(f"{name_prefix}{self.group.name}", width)
         project = os.path.basename(self.group.project_cwd.rstrip(os.sep))
         if not project:
@@ -453,8 +456,18 @@ class SessionGroupCard(Widget):
         indent = " " * pickup._text_width(name_prefix)
         summary = f"{indent}{project} · {t(count_key, count=count)}"
         summary_cell = pickup._fit_cell(summary, width)
-        out = Text(title.rstrip(), style="bold")
-        out.append(" " * max(0, width - pickup._text_width(title.rstrip())))
+        title = title.rstrip()
+        out = Text()
+        if emoji and emoji in title:
+            before, _, after = title.partition(emoji)
+            out.append(before, style="bold")
+            # emoji 本身天然是彩色图形，不需要再加粗；单独成 span 也方便截图
+            # 工具按字形单独换字体族（参考关注圆点的处理，见 capture.py）。
+            out.append(emoji)
+            out.append(after, style="bold")
+        else:
+            out.append(title, style="bold")
+        out.append(" " * max(0, width - pickup._text_width(title)))
         out.append("\n")
         out.append(summary_cell.rstrip(), style="dim")
         out.append(" " * max(0, width - pickup._text_width(summary_cell.rstrip())))

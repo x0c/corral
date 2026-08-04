@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import Callable
 
 from pickup import embed, keepalive, titles
 from pickup.attention import AttentionEvidence, AttentionState, AttentionStore

@@ -55,7 +55,7 @@ def main(argv: list[str]) -> int:
             data = get_cache().clear(dry_run=args.dry_run)
     except SystemExit as exc:
         return int(exc.code)
-    except Exception as exc:  # noqa: BLE001：维护命令必须给稳定错误契约
+    except Exception as exc:  # noqa: BLE001 - 维护命令必须给稳定错误契约
         if "--json" in argv:
             print(json.dumps(_envelope(error={"code": "cache_error", "message": f"缓存操作失败：{exc}"}), ensure_ascii=False))
         else:

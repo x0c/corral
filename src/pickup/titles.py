@@ -446,25 +446,3 @@ def refresh_titles(sessions: list[dict], cache: dict, generator: "titlegen.Title
             persist_chunk(futures[future], future.result())
 
     return merged
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.path.insert(0, os.path.dirname(__file__))
-    from pickup.scan.codex import scan_sessions as scan_codex_sessions
-
-    sessions = scan_codex_sessions(limit=5)
-    cache = load_cache()
-    pending = []
-    for s in sessions:
-        title, needs_gen = resolve_initial_title(s, cache)
-        print(f"[{s['short_id']}] 初始标题={title!r} 待生成={needs_gen}")
-        if needs_gen:
-            pending.append(s)
-
-    if pending:
-        print(f"\n后台生成 {len(pending)} 条...")
-        result = refresh_titles(pending, cache)
-        for s in pending:
-            print(f"[{s['short_id']}] 生成结果={result.get(s['id'])!r}")

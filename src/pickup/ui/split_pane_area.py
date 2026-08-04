@@ -8,7 +8,6 @@ from typing import Callable
 from rich.text import Text
 from textual import events
 from textual.containers import Horizontal, Vertical
-from textual.widget import Widget
 from textual.widgets import Static
 
 from pickup.i18n import t
@@ -727,8 +726,6 @@ class SplitPaneArea(Vertical):
         return uuid.uuid4().hex[:8]
 
     def _pane_title(self, session: dict) -> str:
-        import pickup
-
         source = str(session.get("source") or "")
         if not source:
             return ""

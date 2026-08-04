@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pickup"
-version = "0.24.46"
+version = "0.24.47"
 description = "Terminal session picker and handoff tool for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, and Cursor Agent CLI."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,3 +48,12 @@ pickup = "pickup.bootstrap:main"
 python-source = "src"
 module-name = "pickup._native"
 features = ["pyo3/abi3-py310"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# 首轮只开未定义名 / 未使用导入 / 语法级错误：卡 CI 见效最快、误报最少。
+# 规则集扩展（import 排序、语法现代化、常见陷阱）见架构整改阶段五。
+select = ["E9", "F"]

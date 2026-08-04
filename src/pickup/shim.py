@@ -218,7 +218,7 @@ def _render_posix(targets: Sequence[ShimTarget]) -> str:
         "    command -v pickup >/dev/null 2>&1 || return 0    # pickup 不在了，退回真身",
         "    local arg",
         "    for arg in \"$@\"; do",
-        f"        case \"$arg\" in",
+        "        case \"$arg\" in",
         f"            {'|'.join(COMMON_PASSTHROUGH)}) return 0 ;;",
         "        esac",
         "        case \" $words \" in",

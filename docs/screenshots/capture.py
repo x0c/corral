@@ -48,6 +48,7 @@ os.chdir(ROOT)
 import pickup
 from pickup.models import ConversationMessage
 from pickup import session_key
+from pickup.split_layout import _FRUIT_EMOJI
 from pickup.ui.app import PickupApp
 
 
@@ -64,6 +65,14 @@ _FONT_CSS = '"Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Droid Sans Fallback",
 # 单引号故意的：这串会写进 SVG 的 style="…" 属性里，用双引号会把属性提前闭合。
 _NARROW_GLYPH_FONT = "'Noto Sans Mono', 'DejaVu Sans Mono', monospace"
 _NARROW_GLYPHS = "●"
+
+# 会话组名前的水果 emoji：session_list.py 把它单独成一个 style span（见该文件
+# render() 注释），这里才能像圆点一样按字形单独换成彩色 emoji 字体——
+# cairosvg 不做逐字形回退，跟 CJK 正文共用字体族只会画出方框。本机没有
+# fonts-noto-color-emoji 时同样会变豆腐块，跟 CJK 缺字体是同类出图环境问题，
+# 不代表产品有问题（真实终端由终端自身的 emoji 字体回退渲染，不受此限）。
+_EMOJI_FONT = "'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif"
+_FRUIT_EMOJI_GLYPHS = "".join(sorted(set(_FRUIT_EMOJI.values())))
 
 # 演示用外层终端底色：对齐左栏列表空区实测色 (#1e242b)，避免右栏垫成
 # pickup-dark $background (#0d1117) 后出现「半边深半边浅」的割裂感。
@@ -336,6 +345,12 @@ def _prepare_svg(svg_text: str) -> str:
     svg_text = re.sub(
         rf"(<text\b[^>]*)(>[{_NARROW_GLYPHS}]</text>)",
         rf'\1 style="font-family: {_NARROW_GLYPH_FONT}"\2',
+        svg_text,
+    )
+    # 会话组名前的水果 emoji 同理：内容恰为该字形时才单独换成彩色 emoji 字体。
+    svg_text = re.sub(
+        rf"(<text\b[^>]*)(>[{_FRUIT_EMOJI_GLYPHS}]</text>)",
+        rf'\1 style="font-family: {_EMOJI_FONT}"\2',
         svg_text,
     )
     svg_text = re.sub(r'\s+textLength="[^"]*"', "", svg_text)

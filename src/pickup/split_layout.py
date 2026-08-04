@@ -36,28 +36,36 @@ MAX_PANES = 3
 
 logger = logging.getLogger(__name__)
 
-_FRUIT_NAMES = (
-    "Apple",
-    "Apricot",
-    "Avocado",
-    "Banana",
-    "Cherry",
-    "Coconut",
-    "Fig",
-    "Grape",
-    "Guava",
-    "Kiwi",
-    "Lemon",
-    "Lime",
-    "Mango",
-    "Melon",
-    "Orange",
-    "Papaya",
-    "Peach",
-    "Pear",
-    "Pineapple",
-    "Plum",
-)
+# 水果名 → emoji：只收录 Unicode 有专属单字符 emoji 的水果（终端渲染稳定，不用 ZWJ
+# 组合序列，避免旧字体/终端把 Lime 一类新版组合 emoji 拆成两个字符导致错位）。
+_FRUIT_EMOJI = {
+    "Apple": "🍎",
+    "Avocado": "🥑",
+    "Banana": "🍌",
+    "Blueberry": "🫐",
+    "Cherry": "🍒",
+    "Coconut": "🥥",
+    "Grape": "🍇",
+    "Kiwi": "🥝",
+    "Lemon": "🍋",
+    "Mango": "🥭",
+    "Melon": "🍈",
+    "Orange": "🍊",
+    "Peach": "🍑",
+    "Pear": "🍐",
+    "Pineapple": "🍍",
+    "Strawberry": "🍓",
+    "Watermelon": "🍉",
+}
+_FRUIT_NAMES = tuple(_FRUIT_EMOJI)
+
+
+def group_emoji(name: str) -> str:
+    """从 `Group <Fruit>`／`Group <Fruit> <n>` 组名中取对应水果 emoji；取不到则返回空串。"""
+    if not name.startswith("Group "):
+        return ""
+    fruit = name[len("Group ") :].split(" ", 1)[0]
+    return _FRUIT_EMOJI.get(fruit, "")
 
 
 def layout_cache_dir() -> Path:

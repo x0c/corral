@@ -48,7 +48,7 @@ from pickup.models import LaunchPlan
 from textual import events
 from textual.color import Color
 from textual.geometry import Offset, Size
-from textual.widgets import Footer, Input, Label, ListItem, ListView
+from textual.widgets import Footer, Input, Label, ListView
 from pickup.ui.app import PickupApp
 from pickup.ui.embed_pane import EmbedPane
 from pickup.ui.split_pane_area import SplitPaneArea
@@ -956,7 +956,6 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         外层终端真实底色上，不能透出 Textual 主题的中性灰——否则整个托管画面看
         着变灰（真机反馈：内嵌 agent tui 背景变中性灰）。断言面板底色 == OSC 11
         探到的真实 RGB。"""
-        from pickup.ui.embed_pane import EmbedPane
 
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=True, osc_report=b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07")
@@ -1633,11 +1632,17 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             group_text = group_cards[0].render().plain
             lines = group_text.splitlines()
             self.assertEqual(len(lines), 3)
-            self.assertTrue(group_text.startswith("▼ Group "))
+            emoji = _split_layout.group_emoji(group_cards[0].group.name)
+            self.assertTrue(emoji, "水果组名必须能取到对应 emoji")
+            self.assertTrue(group_text.startswith(f"▼ {emoji} Group "))
             self.assertNotIn("●", group_text, "会话组标题不能重复显示会话状态圆点")
-            # 第二行项目名与第一行 Group 文字同列起笔，不能靠右。
-            group_col = lines[0].index("Group")
-            self.assertEqual(lines[1].find("tmp"), group_col)
+            # 第二行项目名与第一行 Group 文字同列起笔（按终端显示宽度比较，
+            # emoji 是宽字符：1 个 Python 字符占 2 格，不能直接比字符下标）。
+            from rich.cells import cell_len
+
+            group_col = cell_len(lines[0][: lines[0].index("Group")])
+            tmp_col = cell_len(lines[1][: lines[1].find("tmp")])
+            self.assertEqual(tmp_col, group_col)
             # 第三行留白：成员卡已有时间，组卡不再重复「多久以前」。
             self.assertEqual(lines[2].strip(), "")
             self.assertNotRegex(lines[2], r"\d")
@@ -3019,7 +3024,7 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         _ui_prefs.save_sidebar_visible(False)
         app = PickupApp(store, embed_ok=True)
-        async with app.run_test(size=(100, 30)) as pilot:
+        async with app.run_test(size=(100, 30)):
             list_pane = app.screen.query_one("#list-pane")
             chip = app.screen.query_one("#sidebar-toggle", _SidebarToggleChip)
             self.assertFalse(app.screen.sidebar_visible)
@@ -3663,7 +3668,6 @@ class EmbedPaneSelectionSpanTests(unittest.IsolatedAsyncioTestCase):
         from textual.selection import Selection
         from textual.geometry import Offset
         from textual.geometry import Size
-        from rich.cells import cell_len
         from pickup import embed
         from pickup.ui.embed_pane import _row_to_strip
 
@@ -4398,7 +4402,6 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertIsInstance(app.screen, RuntimePickerModal)
             await pilot.press("down")  # 移到未安装的 kimi
-            bell_calls_before = app._bell_count if hasattr(app, "_bell_count") else None
             with mock.patch.object(app, "bell") as bell:
                 await pilot.press("enter")
                 await pilot.pause()

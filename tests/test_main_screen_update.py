@@ -56,7 +56,7 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(updater, "is_updatable", return_value=True), \
              mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
              mock.patch.object(updater, "should_prompt", return_value=True):
-            async with app.run_test(size=(100, 30)) as pilot:
+            async with app.run_test(size=(100, 30)):
                 toast = app.screen.query_one(UpdateToast)
                 await _wait_until(lambda: toast.has_class("-visible"))
                 body_text = toast.query_one("#toast-body").render().plain

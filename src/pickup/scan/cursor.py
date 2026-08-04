@@ -185,7 +185,7 @@ def _build_session_info(chat_dir: str, chat_id: str) -> dict | None:
         "id": chat_id,
         "short_id": chat_id.replace("-", "")[:12],
         "cwd": cwd,
-        "cwd_display": _shorten_cwd(cwd) if cwd else "",
+        "cwd_display": _shorten_cwd(cwd),
         "mtime": session_time,
         "display_time": format_message_time(session_time),
         "time_source": time_source,

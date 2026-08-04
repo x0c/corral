@@ -33,7 +33,7 @@ class UpdateToastTests(unittest.IsolatedAsyncioTestCase):
     async def test_starts_hidden(self) -> None:
         calls: list = []
         app = _make_app(calls)
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(80, 24)):
             toast = app.query_one(UpdateToast)
             self.assertFalse(toast.has_class("-visible"))
 

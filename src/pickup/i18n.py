@@ -102,22 +102,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Quit",
         "zh": "退出",
     },
-    "action.preview_home": {
-        "en": "Preview top",
-        "zh": "预览顶",
-    },
-    "action.preview_end": {
-        "en": "Preview bottom",
-        "zh": "预览底",
-    },
-    "action.preview_page_up": {
-        "en": "Preview page up",
-        "zh": "预览上翻",
-    },
-    "action.preview_page_down": {
-        "en": "Preview page down",
-        "zh": "预览下翻",
-    },
     "action.select": {
         "en": "Select",
         "zh": "选择",

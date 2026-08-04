@@ -420,7 +420,7 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
     except ObserverError as exc:
         _print(_error(exc, dry_run=dry_run), json_output=json_output)
         return exc.exit_code
-    except PermissionError as exc:
+    except PermissionError:
         wrapped = ObserverError(
             "permission_denied",
             "没有权限访问 Cursor 用户级观察配置",

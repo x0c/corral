@@ -69,9 +69,6 @@ def _entry_time(entry: dict) -> float | None:
     return _parse_timestamp(entry.get("timestamp")) or _parse_timestamp(snapshot.get("timestamp"))
 
 
-_format_display_time = format_message_time
-
-
 def _read_head(path: str, max_lines: int = 300) -> list[dict]:
     """读取文件头部若干行，提取 cwd、首条用户消息和稍晚出现的 ai-title。"""
     entries: list[dict] = []
@@ -329,7 +326,7 @@ def _build_session_info(fpath: str, proj: str) -> dict:
         "cwd": cwd or "",
         "cwd_display": _shorten_cwd(cwd or ""),
         "mtime": session_time,
-        "display_time": _format_display_time(session_time),
+        "display_time": format_message_time(session_time),
         "time_source": time_source,
         "event_time": event_time,
         "file_mtime": stat.st_mtime,

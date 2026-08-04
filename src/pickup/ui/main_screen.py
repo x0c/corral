@@ -376,7 +376,6 @@ class MainScreen(Screen):
         return bool(session.get("live"))
 
     def _is_session_active(self, key: str) -> bool:
-        import pickup
         from pickup import embed
 
         session = self.store.find_session(key)
