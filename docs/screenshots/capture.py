@@ -28,12 +28,18 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 # Textual 在 App.__init__ 里若见到 NO_COLOR 会启用 Monochrome；必须在创建
 # PickupApp 之前清掉。setdefault 不覆盖调用方已显式设置的真彩 / 语言。
 os.environ.pop("NO_COLOR", None)
 os.environ.setdefault("COLORTERM", "truecolor")
 os.environ.setdefault("PICKUP_LANG", "en")
+# 侧边栏记忆（会话组/置顶/显隐）只读临时库，绝不读写机主真实 ~/.cache/pickup。
+# 库路径认 PICKUP_CACHE_DIR > XDG > ~/.cache，且设了该变量时旧 JSON 迁移也只在
+# 这个目录里找，正好顺带隔离。
+_CAPTURE_CACHE_DIR = tempfile.mkdtemp(prefix="pickup-capture-cache-")
+os.environ["PICKUP_CACHE_DIR"] = _CAPTURE_CACHE_DIR
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -389,19 +395,20 @@ async def _capture() -> None:
 
     store = _demo_store()
     with tempfile.TemporaryDirectory() as layout_td:
-        layout_path = Path(layout_td) / "split-layout.json"
-        original_layout_path = split_layout.LAYOUT_FILE
-        split_layout.LAYOUT_FILE = str(layout_path)
-        try:
+        with mock.patch.dict(
+            os.environ, {"PICKUP_CACHE_DIR": str(layout_td)}, clear=False,
+        ):
+            split_layout.reset_default_layout_db()
             keys = ["cursor:demo-cursor-1", "codex:demo-codex-1"]
-            seed = split_layout.SplitLayoutStore()
-            seed.set_group(
+            seed = split_layout.default_layout_db().set_group(
                 "/Users/demo/Codes/pickup", keys, focus_key=keys[0]
             )
-            group = seed.get_group(keys[0])
-            group.name = "Group Pineapple"
-            seed.toggle_group_pin(group.group_id)
-            split_layout.save_layout(seed)
+            group_id = seed.get_group(keys[0]).group_id
+            split_layout.default_layout_db().apply(
+                lambda store: setattr(store.groups[group_id], "name", "Group Pineapple")
+            )
+            split_layout.default_layout_db().toggle_group_pin(group_id)
+            split_layout.reset_default_layout_db()
 
             app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
             if app.no_color:
@@ -419,8 +426,6 @@ async def _capture() -> None:
                     _svg_to_png(Path(td) / Path(svg).name, png_path)
                     _assert_png_sane(png_path)
                 print(f"wrote {OUT_DIR / 'list.png'}")
-        finally:
-            split_layout.LAYOUT_FILE = original_layout_path
 
 
 def _assert_png_sane(png_path: Path) -> None:
@@ -462,35 +467,37 @@ async def _capture_search() -> None:
 
     store = _demo_store()
     with tempfile.TemporaryDirectory() as layout_td:
-        original_layout_path = split_layout.LAYOUT_FILE
-        split_layout.LAYOUT_FILE = str(Path(layout_td) / "split-layout.json")
-        try:
-            app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
-            async with app.run_test(size=(140, 36)) as pilot:
-                await pilot.pause(delay=0.4)
-                await pilot.press("ctrl+f")
-                for _ in range(100):
-                    if (
-                        isinstance(app.screen, FullTextSearchModal)
-                        and not app.screen._indexing
-                    ):
-                        break
-                    await asyncio.sleep(0.05)
-                else:
-                    raise RuntimeError("全文搜索弹窗没有就绪")
-                modal = app.screen
-                modal.query_one("#search-query").value = "回归"
-                await pilot.pause(delay=0.5)
-                if not modal._matches:
-                    raise RuntimeError("演示查询没有命中，截图会是空列表")
-                with tempfile.TemporaryDirectory() as td:
-                    svg = app.save_screenshot("search.svg", path=td)
-                    png_path = OUT_DIR / "search.png"
-                    _svg_to_png(Path(td) / Path(svg).name, png_path)
-                    _assert_png_sane(png_path)
-                print(f"wrote {png_path}")
-        finally:
-            split_layout.LAYOUT_FILE = original_layout_path
+        with mock.patch.dict(
+            os.environ, {"PICKUP_CACHE_DIR": str(layout_td)}, clear=False,
+        ):
+            split_layout.reset_default_layout_db()
+            try:
+                app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
+                async with app.run_test(size=(140, 36)) as pilot:
+                    await pilot.pause(delay=0.4)
+                    await pilot.press("ctrl+f")
+                    for _ in range(100):
+                        if (
+                            isinstance(app.screen, FullTextSearchModal)
+                            and not app.screen._indexing
+                        ):
+                            break
+                        await asyncio.sleep(0.05)
+                    else:
+                        raise RuntimeError("全文搜索弹窗没有就绪")
+                    modal = app.screen
+                    modal.query_one("#search-query").value = "回归"
+                    await pilot.pause(delay=0.5)
+                    if not modal._matches:
+                        raise RuntimeError("演示查询没有命中，截图会是空列表")
+                    with tempfile.TemporaryDirectory() as td:
+                        svg = app.save_screenshot("search.svg", path=td)
+                        png_path = OUT_DIR / "search.png"
+                        _svg_to_png(Path(td) / Path(svg).name, png_path)
+                        _assert_png_sane(png_path)
+                    print(f"wrote {png_path}")
+            finally:
+                split_layout.reset_default_layout_db()
 
 
 def main() -> None:

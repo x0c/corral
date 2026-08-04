@@ -393,6 +393,24 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Session “{title}” is still running. Deleting will end it first, then permanently erase the local history — this cannot be undone",
         "zh": "会话「{title}」正在进行中。删除会先结束它，再永久抹掉本地历史，不可恢复",
     },
+    "confirm.delete_group": {
+        "en": (
+            "Delete all {count} sessions in group “{name}”? This permanently erases "
+            "their local history and cannot be undone"
+        ),
+        "zh": "删除会话组「{name}」下全部 {count} 个会话？将永久抹掉它们的本地历史，不可恢复",
+    },
+    "confirm.delete_running_group": {
+        "en": (
+            "{running} of the {count} sessions in group “{name}” are still running. "
+            "Deleting will end them first, then permanently erase all their local "
+            "history — this cannot be undone"
+        ),
+        "zh": (
+            "会话组「{name}」下有 {running} 个会话正在进行中。删除会先结束它们，"
+            "再永久抹掉全部 {count} 个会话的本地历史，不可恢复"
+        ),
+    },
     "confirm.resume_external_running": {
         "en": (
             "Session “{title}” is running in another terminal window and pickup cannot take "

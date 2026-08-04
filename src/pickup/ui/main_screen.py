@@ -9,8 +9,8 @@ q 结束会话 / x 删除会话 / c 关闭面板 / Ctrl+B 显隐侧栏 / Esc 退
 多分屏时聚焦某一格会把侧边栏高亮切到对应会话。新建会话走侧边栏「＋ 新建」或
 右栏顶栏加格，不再提供底栏 `n` 快捷键。
 侧边栏顶部为搜索框，大小写无关模糊匹配组名、项目名与会话标题。
-`Ctrl+B` 与右栏顶栏左侧开关可显隐侧栏（无右栏时不可用）；偏好写入
-`~/.cache/pickup/ui-prefs.json`。禁止再加第二套全屏预览或纯列表旧界面。
+`Ctrl+B` 与右栏顶栏左侧开关可显隐侧栏（无右栏时不可用）；该偏好与会话组、置顶一起
+存在侧边栏记忆库里（见 `split_layout`）。禁止再加第二套全屏预览或纯列表旧界面。
 """
 
 from __future__ import annotations
@@ -48,6 +48,9 @@ REFRESH_INTERVAL = 3.0  # 秒，后台重扫会话列表的最短间隔，与旧
 REFRESH_INTERVAL_MAX = 10.0  # 秒，连续空闲多轮后退避到的最长间隔
 _IDLE_ROUNDS_BEFORE_BACKOFF = 3  # 连续几轮扫描都没变化才开始拉长间隔，避免偶发抖动误判空闲
 CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重扫轻得多，保持高频）
+# 秒，侧边栏记忆的跨窗口同步间隔。每次只读一个版本号（单行 SELECT），版本号没变就什么都不做；
+# 变了才重新读快照，且只有「看得见的部分」真的变了才重建列表（全量重建是秒级重活）。
+LAYOUT_POLL_INTERVAL = 1.0
 
 # 秒，右上角会话小窗的同步间隔。每次只做一次 stat + 内存缓存命中判断（`peek_conversation`），
 # 真正解析历史另有节流（HUD_WARM_INTERVAL），不会因为助手在狂写历史就每秒重解析一遍。
@@ -105,6 +108,16 @@ def _filter_looks_like_osc_leak(value: str) -> bool:
     if not value:
         return False
     return "\x1b" in value or "rgb:" in value
+
+
+def _drop_layout_sessions(store, keys: list[str]) -> None:
+    """把一批会话从侧边栏记忆里摘掉（成员不足两个时组会自动解散）。
+
+    写成模块级函数而不是内联 lambda：`_apply_layout_change` 收到的这个回调会在
+    记忆库事务里对着**最新**快照重放，一次调用摘一批比逐个开事务省得多。
+    """
+    for key in keys:
+        store.remove_session(key)
 
 
 # 动作名 → 文案 key；实例化时只改 description，不能整表替换（会丢掉 ListView/Screen 继承绑键）
@@ -213,7 +226,11 @@ class MainScreen(Screen):
         self._rebuild_lock = asyncio.Lock()
         from pickup import split_layout
 
-        self._split_store = split_layout.load_layout()
+        # 侧边栏记忆：`_layout_db` 是唯一写入口（事务内重读最新再叠加，多窗口不互相覆盖），
+        # `_split_store` 只是给界面渲染用的本地快照，靠 revision 轮询跟上别的窗口。
+        self._layout_db = split_layout.default_layout_db()
+        self._split_store = self._layout_db.read()
+        self._layout_revision = self._split_store.revision
         # 有右栏时才允许藏侧栏；无右栏（纯列表）藏了无处可点回来。
         self.sidebar_visible = (
             True if not embed_ok else ui_prefs.load_sidebar_visible(default=True)
@@ -249,7 +266,7 @@ class MainScreen(Screen):
                     self.store,
                     self.nav,
                     group_store=self._split_store,
-                    on_group_changed=self._save_sidebar_state,
+                    on_layout_change=self._apply_layout_change,
                     id="session-list",
                 )
             if self.embed_ok:
@@ -290,6 +307,8 @@ class MainScreen(Screen):
         else:
             self._await_initial_load()
         self.set_interval(CACHE_POLL_INTERVAL, self._poll_cache)
+        # 侧边栏记忆是多窗口共享的，别的 pickup 窗口改了置顶/分组要能自动跟上。
+        self.set_interval(LAYOUT_POLL_INTERVAL, self._poll_layout_state)
         if self.embed_ok:
             self.set_interval(HUD_POLL_INTERVAL, self._sync_hud)
             # 分屏标记以显式调用为主（关格/换焦点/重建列表即时生效），这条定时
@@ -404,7 +423,10 @@ class MainScreen(Screen):
             new_key = key_by_keepalive.get(kname)
             if new_key and new_key != spec.session_key:
                 migrated[spec.session_key] = new_key
-                self._split_store.migrate_session_key(spec.session_key, new_key)
+                old_key = spec.session_key
+                self._apply_layout_change(
+                    lambda store, o=old_key, n=new_key: store.migrate_session_key(o, n)
+                )
         area.reconcile_session_keys(key_by_keepalive)
         return migrated
 
@@ -429,35 +451,87 @@ class MainScreen(Screen):
             active = None
         session_list.set_split_marks(area.ordered_session_keys(), active)
 
-    def _save_split_layout(self) -> None:
+    def _apply_layout_change(self, mutate):
+        """把一次侧边栏记忆改动交给记忆库，并把返回的最新快照就地采纳。
+
+        **所有写侧边栏记忆的路径都必须走这里**，不要直接改 `self._split_store`：
+        本地快照可能已经落后于别的窗口，直接改再整份写盘就是当初那个「多开窗口互相
+        抹掉对方置顶和分组」的缺陷。库会在事务里重读最新状态再重放这次改动。
+        """
+        snapshot = self._layout_db.apply(mutate)
+        self._adopt_layout(snapshot)
+        return self._split_store
+
+    def _adopt_layout(self, snapshot) -> None:
+        # 就地更新：SessionListView.group_store 持有的是同一个引用，换实例会让侧边栏渲染旧对象。
+        self._split_store.adopt(snapshot)
+        self._layout_revision = snapshot.revision
+
+    def _poll_layout_state(self) -> None:
+        """跟上别的 pickup 窗口对侧边栏记忆的改动。
+
+        只读一个版本号；版本没变直接返回。版本变了才读整份快照，并且只有「看得见的
+        部分」（组成员/组名/折叠/置顶）真的变了才重建列表——只切焦点不该触发秒级重建。
+        """
         from pickup import split_layout
 
+        try:
+            revision = self._layout_db.read_revision()
+        except Exception:  # noqa: BLE001 记忆库是可降级能力，任何异常都不该打断界面
+            return
+        if revision == self._layout_revision:
+            return
+        before = split_layout.sidebar_fingerprint(self._split_store)
+        self._adopt_layout(self._layout_db.read())
+        if split_layout.sidebar_fingerprint(self._split_store) == before:
+            return
+        self._sync_split_marks()
+        self.call_next(self._rebuild_sidebar_projection)
+
+    def _persist_split_composition(self) -> None:
+        """右栏格数/成员变了：把当前组合断言进侧边栏记忆。
+
+        已结束成员仍属于会话组，因此持久化不按活跃状态裁剪。顺手把侧边栏的当前组与
+        激活会话底色对齐。
+        """
         if not self.embed_ok:
             return
-        # 右栏格数/绑定/焦点变了才会走到这里，顺手把侧边栏的当前组与激活会话
-        # 底色对齐。已结束成员仍属于会话组，因此持久化不再按活跃状态裁剪。
         self._sync_split_marks()
         area = self._split_area()
         keys = [
             k for k in area.ordered_session_keys()
             if not k.startswith("__")
         ]
-        if len(keys) >= 2:
-            focus = area.focus_key if area.focus_key in keys else keys[0]
-            self._split_store.set_group(area.current_project, keys, focus_key=focus)
-        split_layout.save_layout(self._split_store)
+        if len(keys) < 2:
+            # 单格不构成会话组；组的解散由 _on_pane_close / 删除会话那条路负责。
+            return
+        focus = area.focus_key if area.focus_key in keys else keys[0]
+        project = area.current_project
+        self._apply_layout_change(
+            lambda store: store.set_group(project, keys, focus_key=focus)
+        )
 
-    def _save_sidebar_state(self) -> None:
-        """保存会话组折叠与置顶状态；不改动右栏当前布局。"""
-        from pickup import split_layout
+    def _persist_split_focus(self) -> None:
+        """只换了焦点格：更新焦点记忆，**不重写会话组**。
 
-        split_layout.save_layout(self._split_store)
+        这里绝不能退回 `set_group()`：那会把当前右栏组合整份重新断言一遍，另一个窗口
+        刚把某个成员移出去时，这边一切焦点就又把组重建回来（组名还会重新随机），两个
+        窗口来回打架。
+        """
+        if not self.embed_ok:
+            return
+        self._sync_split_marks()
+        area = self._split_area()
+        focus = area.focus_key
+        if not focus or focus.startswith("__"):
+            return
+        if self._split_store.get_group(focus) is None:
+            return
+        project = area.current_project
+        self._apply_layout_change(lambda store: store.set_focus(project, focus))
 
     def _on_pane_close(self, session_key: str) -> None:
-        from pickup import split_layout
-
-        self._split_store.remove_session(session_key)
-        split_layout.save_layout(self._split_store)
+        self._apply_layout_change(lambda store: store.remove_session(session_key))
         self._sync_split_marks()
         self.call_next(self._rebuild_sidebar_projection)
         # 焦点由 SplitPaneArea 收尾：还有剩余实时格就接着用，最后一格被关掉才
@@ -498,6 +572,8 @@ class MainScreen(Screen):
         # 分屏记忆整份清空，且后续首屏也不会再恢复（真机：重启后组合丢失）。
         if not self.store.loaded:
             return
+        # 首扫期间别的窗口可能已经改过记忆，恢复前先取一份最新的。
+        self._adopt_layout(self._layout_db.read())
         self._reconcile_split_session_keys()
         focus = self._split_store.last_focus_key
         if focus and self._is_session_active(focus):
@@ -546,7 +622,7 @@ class MainScreen(Screen):
         self._split_area().show_hosted_group(
             project, entries, focus_key=focus_key, focus_pane=focus_pane and self._can_autofocus(),
         )
-        self._save_split_layout()
+        self._persist_split_composition()
         self._begin_attention_read(focus_key)
 
     def _build_hosted_entries(
@@ -663,7 +739,6 @@ class MainScreen(Screen):
             migrated: dict[str, str] = {}
             if self.embed_ok and self.store.loaded:
                 migrated = self._reconcile_split_session_keys()
-                self._save_sidebar_state()
             if select_key is None:
                 selected_key = session_list._displayed_selected_key()
                 select_key = migrated.get(selected_key) if selected_key else None
@@ -920,7 +995,7 @@ class MainScreen(Screen):
                 self._begin_attention_read(key)
                 return
             area.show_hosted_group(project, entries, focus_key=key)
-            self._save_split_layout()
+            self._persist_split_composition()
             self._begin_attention_read(key)
             return
         # 已在单格预览同一会话：只失效缓存并重新暖加载，避免 remount 抢焦点
@@ -1096,7 +1171,6 @@ class MainScreen(Screen):
         if not self.embed_ok or len(keys) < 2:
             return
         import pickup
-        from pickup import split_layout
         from pickup.split_layout import MAX_PANES
 
         keys = keys[:MAX_PANES]
@@ -1113,8 +1187,9 @@ class MainScreen(Screen):
         )
         self._begin_attention_read(focus_key)
         self._sync_split_marks()
-        self._split_store.set_group(project, keys, focus_key=focus_key)
-        split_layout.save_layout(self._split_store)
+        self._apply_layout_change(
+            lambda store: store.set_group(project, keys, focus_key=focus_key)
+        )
         self.call_next(self._rebuild_list, focus_key)
         self._preview_gen += 1
         for key in keys:
@@ -1401,7 +1476,7 @@ class MainScreen(Screen):
                 focus_key=key,
                 focus_pane=autofocus,
             )
-        self._save_split_layout()
+        self._persist_split_composition()
         self._begin_attention_read(pickup.session_key(current))
         self.call_next(self._rebuild_list, select_key)
 
@@ -1468,7 +1543,7 @@ class MainScreen(Screen):
             [(session, name, None)],
             focus_key=key,
         )
-        self._save_split_layout()
+        self._persist_split_composition()
         self.call_next(self._rebuild_list, key)
         cells = area.cells()
         if cells:
@@ -1576,7 +1651,7 @@ class MainScreen(Screen):
         list_view.clear_multi()
         if not list_view.select_session_key(session_key):
             return
-        self._save_split_layout()
+        self._persist_split_focus()
         # 选择事件与焦点事件可能同帧到达；放到下一轮，确保高亮变更的取消逻辑
         # 先执行，再以实际持有焦点的可见格重新开始完整 0.5 秒计时。
         self.call_next(self._begin_attention_read, session_key)
@@ -1809,6 +1884,9 @@ class MainScreen(Screen):
     async def action_delete_session(self) -> None:
         """x：彻底删除选中会话的本地历史，不可恢复；运行中/托管会话先结束再删。
 
+        光标停在会话组标题上时删的是整组（组卡本身不对应任何一条会话，只删"选中的
+        那一条"在这里没有意义），交给 `_delete_session_group` 处理。
+
         二次确认按 x（而不是复用 q），与结束会话共用同一套 ConfirmModal 交互形态，
         只是把确认键换成触发本动作的键，避免用户记混"删除按 x 确认却按了 q"。
         """
@@ -1819,6 +1897,10 @@ class MainScreen(Screen):
         from pickup.runtime import LaunchError
 
         session_list = self.query_one(SessionListView)
+        group = session_list.selected_group()
+        if group is not None:
+            await self._delete_session_group(group)
+            return
         session = session_list.selected_session()
         if session is None:
             self.app.bell()
@@ -1836,20 +1918,29 @@ class MainScreen(Screen):
         )
         if not confirmed:
             return
+        # 乐观 UI：确认的那一刻就摘卡，结束进程和磁盘抹除全部推到后台线程。
+        # 这两步都可能是秒级的（tmux kill 走子进程且带超时、OpenCode 要写全局共享
+        # SQLite 可能等锁、Cursor 要 rmtree 整个会话目录），放在摘卡之前会让侧边栏
+        # 干等；tombstone 负责挡住后台重扫的回灌。
         if keepalive_name:
-            keepalive.kill(keepalive_name)
+            # 先撤托管标记再摘卡：反过来会往 `_force_ended` 里塞一个已不存在的键。
             self.store.mark_hosted(key, None)
             if self.embed_ok:
                 self._split_area().remove_by_keepalive(keepalive_name)
-        # 乐观 UI：确认后立刻从内存与侧边栏摘除；磁盘 delete 可能较慢（如 Cursor
-        # 整目录 rmtree），期间后台 refresh 仍可能扫到路径——tombstone 挡回灌。
-        self.store.mark_pending_delete(key)
+        self.store.mark_deleted(key)
         await self._rebuild_list()
         runtime = self.store.registry.get(str(session.get("source") or ""))
+
+        def purge() -> None:
+            # 顺序不能反：进程还活着时先抹历史，运行时可能立刻又写回一份。
+            if keepalive_name:
+                keepalive.kill(keepalive_name)
+            runtime.delete_session(session)
+
         try:
-            await asyncio.to_thread(runtime.delete_session, session)
+            await asyncio.to_thread(purge)
         except (LaunchError, OSError, sqlite3.Error) as exc:
-            self.store.abort_pending_delete(key)
+            self.store.abort_delete(key)
             try:
                 self.store.refresh()
             except Exception:
@@ -1858,18 +1949,99 @@ class MainScreen(Screen):
             self.notify(t("notify.delete_failed", error=exc))
             self.app.bell()
             return
-        self.store.finish_pending_delete(key)
-        from pickup import split_layout
-
-        self._split_store.remove_session(key)
-        split_layout.save_layout(self._split_store)
+        self._apply_layout_change(lambda store: store.remove_session(key))
         await self._rebuild_list()
+
+    async def _delete_session_group(self, group) -> None:
+        """x 落在会话组标题上：把整组会话的本地历史一次删干净。
+
+        与删单条同构（乐观摘卡 → 后台结束进程 + 抹磁盘 → 失败回滚），只是把每一步
+        铺到全部成员上。**逐条容错**：某个运行时抹历史失败不该连累同组其他会话，失败
+        的那几条解除 tombstone 让下一轮扫描把卡片捞回来，成功的照常消失。
+        """
+        import asyncio
+        import sqlite3
+        from pickup import keepalive
+        from pickup.runtime import LaunchError
+
+        # keepalive 名必须在动手前就抄下来：`mark_hosted(key, None)` 会把它从会话
+        # 字典里摘掉，等进了后台 purge 再读就永远是空的，托管进程会被漏杀。
+        members = [
+            (key, session, session.get("keepalive_name"))
+            for key in group.session_keys
+            if (session := self.store.find_session(key)) is not None
+        ]
+        if not members:
+            # 成员都已不在扫描快照里（可能被别的窗口删了）：没有历史可抹，只解散组。
+            self._apply_layout_change(
+                lambda store, keys=list(group.session_keys): _drop_layout_sessions(
+                    store, keys
+                )
+            )
+            await self._rebuild_list()
+            return
+        running = sum(1 for *_, keepalive_name in members if keepalive_name)
+        message = (
+            t(
+                "confirm.delete_running_group",
+                name=group.name,
+                count=len(members),
+                running=running,
+            )
+            if running
+            else t("confirm.delete_group", name=group.name, count=len(members))
+        )
+        confirmed = await self.app.push_screen_wait(
+            ConfirmModal(message, confirm_key="x")
+        )
+        if not confirmed:
+            return
+        for key, _session, keepalive_name in members:
+            if keepalive_name:
+                # 先撤托管标记再摘格，顺序与删单条一致。
+                self.store.mark_hosted(key, None)
+                if self.embed_ok:
+                    self._split_area().remove_by_keepalive(keepalive_name)
+            self.store.mark_deleted(key)
+        await self._rebuild_list()
+
+        def purge() -> list[tuple[str, Exception]]:
+            failures: list[tuple[str, Exception]] = []
+            for key, session, keepalive_name in members:
+                runtime = self.store.registry.get(str(session.get("source") or ""))
+                try:
+                    # 顺序不能反：进程还活着时先抹历史，运行时可能立刻又写回一份。
+                    if keepalive_name:
+                        keepalive.kill(keepalive_name)
+                    runtime.delete_session(session)
+                except (LaunchError, OSError, sqlite3.Error) as exc:
+                    failures.append((key, exc))
+            return failures
+
+        failures = await asyncio.to_thread(purge)
+        failed_keys = {key for key, _ in failures}
+        for key in failed_keys:
+            self.store.abort_delete(key)
+        if failed_keys:
+            try:
+                self.store.refresh()
+            except Exception:  # noqa: BLE001 刷新失败不该盖掉上面的删除结果
+                pass
+        purged = [key for key, *_ in members if key not in failed_keys]
+        if purged:
+            self._apply_layout_change(
+                lambda store, keys=purged: _drop_layout_sessions(store, keys)
+            )
+        await self._rebuild_list()
+        if failures:
+            self.notify(t("notify.delete_failed", error=failures[0][1]))
+            self.app.bell()
 
     def action_close_pane(self) -> None:
         if not self.embed_ok:
             return
         self._split_area().close_focused_pane()
-        self._save_split_layout()
+        self._persist_split_composition()
 
     def action_preview_home(self) -> None:
         if self.embed_ok:

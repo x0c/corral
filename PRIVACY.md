@@ -22,8 +22,12 @@ The tool reads these files to build a recent-session list, extract a compact pre
 
 - Generated title cache under `~/.cache/pickup/titles.json`.
 - A lock file under `~/.cache/pickup/titles.lock` while title generation is running.
-- Active split-pane layout memory under `~/.cache/pickup/split-layout.json` (which hosted
-  sessions were last shown side-by-side in the right pane; session keys and project paths only).
+- Sidebar memory under `~/.cache/pickup/sidebar-layout.sqlite3`: session groups (which hosted
+  sessions are shown side-by-side in the right pane), their generated fruit names, collapsed and
+  pinned state, the last focused session, and whether the sidebar is hidden. Session keys and
+  project paths only — no conversation content. Shared by every pickup window on the machine.
+  Older versions kept this in `~/.cache/pickup/split-layout.json` and `~/.cache/pickup/ui-prefs.json`;
+  those files are imported once and then left untouched (never rewritten, renamed, or deleted).
 - Update-check state under `~/.cache/pickup/update.json` (which version you last dismissed, and on
   which day) — only written when you click "dismiss" on the update notification or run `pickup update`.
 - Content-free session attention state under `~/.cache/pickup/session-attention.sqlite3`. It stores

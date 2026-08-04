@@ -250,11 +250,12 @@ pickup kimi                         # blank auto-approved Kimi session, hosted i
 pickup --no-keepalive claude        # classic full-terminal launch without the background tmux wrapper
 ```
 
-OpenCode is the exception: its `--dangerously-skip-permissions` flag is only accepted under
-`opencode run`, not the bare TUI command (confirmed by testing the real binary — the flag makes the
-bare command exit with a usage error). `pickup opencode` never adds it automatically; use
-`pickup opencode run --dangerously-skip-permissions ...` if you want auto-approval for a non-interactive
-run.
+OpenCode uses its own `--auto` flag (auto-approve every permission request that is not explicitly
+denied) and pickup adds it for you. Placement matters: `--auto` belongs to the main command and to
+`opencode run` only, and it must come *after* the subcommand — `opencode --auto run …` is parsed as
+"open the TUI in a directory named `run`". So `pickup opencode run …` becomes
+`opencode run --auto …`, while subcommands that reject the flag (`stats`, `export`, `auth`, …) are
+passed through untouched. If your opencode does not know `--auto` yet, upgrade it.
 
 Cursor also answers to the names you actually type: `pickup agent` and `pickup cursor-agent` are exact
 aliases for `pickup cursor` (Cursor's installer ships both `agent` and `cursor-agent` entry points).
@@ -349,7 +350,7 @@ agent workflows.
 | `Enter` | Resume selected session with the native runtime (reattach if it's already running in the background); on the pinned first row `+ New session` (Chinese: `＋ 新建会话`), start the new-session flow instead |
 | `a` | Open advanced handoff actions |
 | `q` | End a backgrounded / in-progress (keep-alive) session; press `q` again in the confirm dialog |
-| `x` | Permanently delete the selected local session; press `x` again in the confirm dialog |
+| `x` | Permanently delete the selected local session (or every session in the selected group); press `x` again in the confirm dialog |
 | `c` | Close the focused right-side pane without ending its hosted session |
 | `p` | Pin / unpin the selected independent session or the selected session group |
 | `Ctrl+B` | Show / hide the sidebar (also the ◀/▶ control on the runtime top bar) |

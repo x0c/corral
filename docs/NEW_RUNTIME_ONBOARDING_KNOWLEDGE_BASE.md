@@ -130,7 +130,7 @@ sequenceDiagram
 | 新助手作为接力来源 | `runtime/base.py` | `export_handoff(session, title)` | 统一校验历史路径、附带格式提示与摘要；必要时在适配器补充会话定位信息 |
 | 彻底删除会话（可选能力） | `runtime/<助手>.py`、`scan/<助手>.py` | `delete_session(session)` | 基类默认报错（不覆写=不支持删除）；单文件直接 unlink，每会话一目录要整目录 `shutil.rmtree`，共享存储（如 OpenCode SQLite）必须开可写连接按会话 ID 精确删行，不能删文件本身 |
 | 注册与扫描缓存 | `runtime/registry.py` | `default_registry()`、`scan_all(limit)` | 注册一次；扫描并发且单助手异常隔离 |
-| 直启参数透传 | `runtime/registry.py` | `build_passthrough_plan` | 只补 `auto_approve_args`，用户已传入时不重复 |
+| 直启参数透传 | `runtime/registry.py`、`runtime/base.py` | `build_passthrough_plan`、`compose_passthrough_argv` | 只补 `auto_approve_args`，用户已传入时不重复；参数位置或适用子命令有讲究的助手覆写 `compose_passthrough_argv` |
 | 统一会话键与接力正文 | `models.py` | `session_key`、`Handoff.render_prompt` | 标题键按「助手运行时 + 会话 ID」隔离；接力提示词禁止改写源历史 |
 | 列表配色 | `theme.py` | `RUNTIME_LABEL_STYLES`、`runtime_label_style` | 颜色唯一来源，界面层不可另建色表 |
 | 回归测试 | `test_runtime.py` | `RuntimeTests`、`FakeRuntime` | FakeRuntime 演示无两两转换分支地扩展第六种助手 |
@@ -165,7 +165,7 @@ sequenceDiagram
 
 - **AI 易错点**【禁止】为每两个助手增加转换分支；必须统一走「源助手运行时导出 `Handoff` → 目标助手运行时生成 `LaunchPlan`」。原因是两两组合随助手数量平方增长，且会绕开统一的历史校验、摘要和只读边界。
 - **AI 易错点**【禁止】把会话保活、tmux 托管、内嵌抓帧或界面状态塞进新助手适配器；适配器只解释该助手的扫描、预览和启动语义。保活与内嵌是运行时无关层，耦合后新助手会破坏其他助手的生命周期。
-- **AI 易错点**【必须】`auto_approve_args` 只能作为助手运行时的单一类属性声明；恢复、空白新建、带指令续接和直启都复用它。若某危险参数只在特定子命令可用，像 OpenCode 一样不放入该属性，并只在已验证的专用路径声明。
+- **AI 易错点**【必须】`auto_approve_args` 只能作为助手运行时的单一类属性声明；恢复、空白新建、带指令续接和直启都复用它。若该参数只属于部分子命令、或对位置敏感（OpenCode 的 `--auto` 两者都占：`stats`/`export` 等子命令不认，且必须排在子命令之后，前置会让子命令名被当成项目路径），在适配器里覆写 `compose_passthrough_argv` 处理直启透传，不要把这种私有规则写进注册表，也不要因此把类属性留空。
 - **AI 易错点**【必须】标题缓存和界面状态以「助手运行时 + 会话 ID」为唯一键（`session_key`），不能只用会话 ID。不同助手可能生成相同 ID，纯 ID 会造成标题和状态串台。
 - **AI 易错点**【必须】若标题生成调用会写入该助手历史，扫描器必须过滤以 `titles.PROMPT_MARKER` 开头的会话，并在完整解析前尽量廉价预判。否则后台标题任务会变成用户可见的假会话并持续污染列表。
 - **AI 易错点**【默认】`scan_signature()` 保持 `None`；只有用真实数据证明文件或 WAL 的元数据变化能完整代表历史与判活变化时才覆写。多层目录的祖先 mtime 不会因既有文件追加而可靠更新，错误签名会让真实会话冻结在旧列表。

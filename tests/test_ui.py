@@ -29,16 +29,19 @@ from pickup import i18n
 # 界面测试固定英文，避免 CI/本机 LANG=zh* 时断言漂移
 i18n.set_lang("en")
 
-# 侧栏显隐偏好隔离到临时文件，避免读到本机 ~/.cache 里上次藏起的状态。
+# 侧边栏记忆（会话组/置顶/折叠/显隐）隔离到临时目录，避免读到、更避免改到本机
+# ~/.cache/pickup 里机主真实的状态。`PICKUP_CACHE_DIR` 是唯一的隔离开关：少了它，
+# split_layout 会去真实家目录找旧版 JSON 做一次性迁移。
 import tempfile
 
-from pickup import ui_prefs as _ui_prefs
 from pickup import split_layout as _split_layout
 
-_UI_PREFS_DIR = tempfile.mkdtemp(prefix="pickup-test-ui-prefs-")
-_ui_prefs.PREFS_FILE = os.path.join(_UI_PREFS_DIR, "ui-prefs.json")
-_SPLIT_LAYOUT_DIR = tempfile.mkdtemp(prefix="pickup-test-split-layout-")
-_split_layout.LAYOUT_FILE = os.path.join(_SPLIT_LAYOUT_DIR, "split-layout.json")
+_SIDEBAR_STATE_DIR = tempfile.mkdtemp(prefix="pickup-test-sidebar-state-")
+os.environ["PICKUP_CACHE_DIR"] = _SIDEBAR_STATE_DIR
+_split_layout.reset_default_layout_db()
+_SIDEBAR_STATE_DB = os.path.join(_SIDEBAR_STATE_DIR, "sidebar-layout.sqlite3")
+
+from pickup import ui_prefs as _ui_prefs
 
 import pickup
 from pickup.models import LaunchPlan
@@ -151,8 +154,10 @@ async def _wait_for_session_name(pane, *, tries: int = 60, interval: float = 0.1
 def _make_store(sessions=None, extra_runtimes=()):
     # 每个界面用例从空会话组状态开始，避免置顶/分组跨用例串扰；使用 unittest
     # discover 时不会执行 pytest fixture，因此隔离必须放在共用夹具入口。
-    with contextlib.suppress(FileNotFoundError):
-        os.unlink(_split_layout.LAYOUT_FILE)
+    for suffix in ("", "-wal", "-shm"):
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(f"{_SIDEBAR_STATE_DB}{suffix}")
+    _split_layout.reset_default_layout_db()
     sessions = sessions if sessions is not None else [
         {
             "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
@@ -563,7 +568,9 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             key0 = pickup.session_key(sessions[0])
             key1 = pickup.session_key(sessions[1])
             # 写入分屏记忆，避免后续列表高亮回调把两格收成单格
-            app.screen._split_store.set_group("/tmp", [key0, key1], focus_key=key0)
+            app.screen._apply_layout_change(  # noqa: SLF001
+                lambda s: s.set_group("/tmp", [key0, key1], focus_key=key0)
+            )
             area.show_hosted_group(
                 "/tmp",
                 [
@@ -592,7 +599,6 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
     async def test_try_restore_startup_layout_skips_prune_before_store_loaded(self) -> None:
         """扫描未完成时不得 prune+save，否则会把磁盘分屏记忆清空。"""
         from pickup import split_layout
-        import tempfile
 
         sessions = [
             {
@@ -607,25 +613,19 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store(sessions=sessions)
         key0 = pickup.session_key(sessions[0])
         key1 = pickup.session_key(sessions[1])
-        with tempfile.TemporaryDirectory() as td:
-            layout_path = os.path.join(td, "split-layout.json")
-            with mock.patch.object(split_layout, "LAYOUT_FILE", layout_path), \
-                    mock.patch.object(split_layout, "CACHE_DIR", td):
-                # 先写入一份「两格组合」到磁盘；再装 App（__init__ 会 load_layout）
-                seed = split_layout.SplitLayoutStore()
-                seed.set_group("/tmp", [key0, key1], focus_key=key0)
-                split_layout.save_layout(seed)
-                store.loaded = False  # 模拟异步首扫尚未完成
-                app = PickupApp(store, embed_ok=True)
-                async with app.run_test(size=(120, 30)) as pilot:
-                    await pilot.pause(delay=0.05)
-                    # 显式再调一次：即便 on_mount 漏调，契约也必须守住
-                    app.screen._try_restore_startup_layout()  # noqa: SLF001
-                    loaded = split_layout.load_layout()
-                    group = loaded.get_group(key0)
-                    self.assertIsNotNone(group)
-                    assert group is not None
-                    self.assertEqual(group.session_keys, [key0, key1])
+        # 先写入一份「两格组合」到库；再装 App（__init__ 会读一份快照）
+        split_layout.default_layout_db().set_group("/tmp", [key0, key1], focus_key=key0)
+        store.loaded = False  # 模拟异步首扫尚未完成
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.05)
+            # 显式再调一次：即便 on_mount 漏调，契约也必须守住
+            app.screen._try_restore_startup_layout()  # noqa: SLF001
+            loaded = split_layout.default_layout_db().read()
+            group = loaded.get_group(key0)
+            self.assertIsNotNone(group)
+            assert group is not None
+            self.assertEqual(group.session_keys, [key0, key1])
 
     async def test_closing_one_split_pane_keeps_sibling_widget(self) -> None:
         """关一格只卸该格，同伴 EmbedPane 实例不得被整排 remount 换掉。"""
@@ -646,7 +646,9 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             area = app.screen.query_one(SplitPaneArea)
             key0 = pickup.session_key(sessions[0])
             key1 = pickup.session_key(sessions[1])
-            app.screen._split_store.set_group("/tmp", [key0, key1], focus_key=key0)  # noqa: SLF001
+            app.screen._apply_layout_change(  # noqa: SLF001
+                lambda s: s.set_group("/tmp", [key0, key1], focus_key=key0)
+            )
             area.show_hosted_group(
                 "/tmp",
                 [
@@ -782,8 +784,10 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 area = app.screen.query_one(SplitPaneArea)
-                app.screen._split_store.set_group(  # noqa: SLF001
-                    "/tmp", [old_key, companion_key], focus_key=old_key
+                app.screen._apply_layout_change(  # noqa: SLF001
+                    lambda s: s.set_group(
+                        "/tmp", [old_key, companion_key], focus_key=old_key
+                    )
                 )
                 with mock.patch("pickup.embed.is_alive", return_value=True):
                     area.show_hosted_group(
@@ -1067,7 +1071,7 @@ class SessionStoreRemoveSessionTests(unittest.TestCase):
         self.assertIsNotNone(store.find_session("claude:s1"))
         self.assertIsNotNone(store.find_session("claude:s2"))
 
-    def test_pending_delete_blocks_merge_scanned_reinsert(self) -> None:
+    def test_mark_deleted_blocks_merge_scanned_reinsert(self) -> None:
         store, _ = _make_store()
         key = "claude:s0"
         session = store.find_session(key)
@@ -1076,20 +1080,38 @@ class SessionStoreRemoveSessionTests(unittest.TestCase):
             runtime_id: list(bucket)
             for runtime_id, bucket in store.sessions.items()
         }
-        store.mark_pending_delete(key)
+        store.mark_deleted(key)
         self.assertIsNone(store.find_session(key))
         store._merge_scanned(scanned)
         self.assertIsNone(store.find_session(key))
 
-    def test_abort_pending_delete_allows_merge_scanned_restore(self) -> None:
+    def test_deleted_tombstone_survives_later_stale_merges(self) -> None:
+        """删除成功后 tombstone 不解除，晚到的旧扫描结果不得把卡片灌回来。
+
+        后台重扫是「先读磁盘、后合并」两段式，删除很容易落在中间；tombstone 若
+        随删除成功解除，那轮旧数据合并回来就是用户看到的「删掉的会话又冒出来、
+        过几秒才真的消失」。
+        """
+        store, _ = _make_store()
+        key = "claude:s0"
+        stale = {
+            runtime_id: list(bucket)
+            for runtime_id, bucket in store.sessions.items()
+        }
+        store.mark_deleted(key)
+        for _ in range(3):  # 模拟后续多轮扫描仍带着删除前的快照
+            store._merge_scanned(stale)
+            self.assertIsNone(store.find_session(key))
+
+    def test_abort_delete_allows_merge_scanned_restore(self) -> None:
         store, _ = _make_store()
         key = "claude:s0"
         scanned = {
             runtime_id: list(bucket)
             for runtime_id, bucket in store.sessions.items()
         }
-        store.mark_pending_delete(key)
-        store.abort_pending_delete(key)
+        store.mark_deleted(key)
+        store.abort_delete(key)
         store._merge_scanned(scanned)
         self.assertIsNotNone(store.find_session(key))
 
@@ -1414,7 +1436,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             pickup.session_key(session)
             for session in list_view.store.all_sessions()
         ][:2]
-        list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+        list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
         await list_view.rebuild()
         return keys
 
@@ -1473,7 +1495,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
                 list_view = app.screen.query_one(SessionListView)
                 area = app.screen.query_one(SplitPaneArea)
                 keys = [pickup.session_key(s) for s in sessions]
-                list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+                list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
                 await list_view.rebuild()
                 area.show_hosted_group(
                     "/tmp",
@@ -1603,7 +1625,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             sessions = store.all_sessions()
             sessions[0]["attention_kind"] = "working"
             keys = [pickup.session_key(session) for session in sessions[:2]]
-            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
 
             group_cards = list(list_view.query(SessionGroupCard))
@@ -1649,7 +1671,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 pickup.session_key(session)
                 for session in store.all_sessions()[:2]
             ]
-            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
             list_view.focus()
             list_view.index = 1
@@ -1669,6 +1691,40 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 and len(list(list_view.query(SessionCard))) == 3
             )
 
+    async def test_follows_sidebar_memory_changed_by_another_window(self) -> None:
+        """另一个 pickup 窗口改了置顶/分组，本窗口要自动跟上，且不覆盖对方。
+
+        侧边栏记忆是多窗口共享的：这里用一个独立的库句柄模拟另一个窗口，本窗口靠
+        版本号轮询发现改动。断言两件事——对方的改动进得来，本窗口自己的改动还在。
+        """
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            screen = app.screen
+            list_view = screen.query_one(SessionListView)
+            keys = [
+                pickup.session_key(session)
+                for session in store.all_sessions()[:3]
+            ]
+            # 本窗口先置顶一条
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys[:2], focus_key=keys[0]))
+            list_view.on_layout_change(lambda s: s.toggle_session_pin(keys[2]))
+            await list_view.rebuild()
+
+            # 另一个窗口：折叠这个组
+            other_window = _split_layout.SidebarLayoutDB()
+            group_id = list_view.group_store.get_group(keys[0]).group_id
+            other_window.set_collapsed(group_id, True)
+
+            screen._poll_layout_state()  # noqa: SLF001 定时器每秒会调，这里直接触发以免等
+            await _wait_until(
+                lambda: list_view.group_store.groups[group_id].collapsed
+                and len(list(list_view.query(SessionCard))) == 1
+            )
+            # 本窗口自己的置顶没被对方那次写入抹掉
+            self.assertIn(keys[2], list_view.group_store.pinned_session_keys)
+
     async def test_filter_by_group_name_reveals_all_members(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
@@ -1678,7 +1734,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 pickup.session_key(session)
                 for session in store.all_sessions()[:2]
             ]
-            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             group = list_view.group_store.get_group(keys[0])
             group.collapsed = True
             list_view.nav.project_query = group.name.lower()
@@ -1696,7 +1752,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 pickup.session_key(session)
                 for session in store.all_sessions()[:2]
             ]
-            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await app.screen._rebuild_list()  # noqa: SLF001
             self.assertIsNotNone(list_view.group_store.get_group(keys[0]))
             self.assertEqual(len(list(list_view.query(SessionGroupCard))), 1)
@@ -1709,7 +1765,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             sessions = store.all_sessions()
             keys = [pickup.session_key(session) for session in sessions[:2]]
             independent_key = pickup.session_key(sessions[2])
-            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
             list_view.focus()
 
@@ -1767,7 +1823,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             keys = ["claude:old-a", "claude:old-b"]
-            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
 
             rows = list_view._sidebar_rows()
@@ -1809,7 +1865,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             keys = ["claude:g1", "claude:g2"]
-            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
             before = [row.identity for row in list_view._sidebar_rows()]
             self.assertEqual(before[0], "claude:solo")
@@ -2002,7 +2058,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
-            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             # 清空后再重建，走「初次填充」分支（had_rows=False）。
             await list_view.clear()
             await list_view.rebuild(keep_selection=False)
@@ -2054,7 +2110,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             keys = [pickup.session_key(session) for session in store.all_sessions()[:2]]
-            list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
             group_card = list_view.query(SessionGroupCard).first()
             self.assertIsNotNone(group_card)
@@ -2078,7 +2134,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
                 keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
-                list_view.group_store.set_group("/tmp", keys, focus_key=keys[0])
+                list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
                 await list_view.rebuild()
                 await pilot.pause(delay=0.2)
 
@@ -2955,8 +3011,9 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(list_pane.display)
 
     async def test_persisted_hidden_sidebar_restored_on_mount(self) -> None:
-        _ui_prefs.save_sidebar_visible(False)
+        # 顺序不能反：_make_store() 会整份重置侧边栏记忆库（含这条显隐偏好）。
         store, _ = _make_store()
+        _ui_prefs.save_sidebar_visible(False)
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             list_pane = app.screen.query_one("#list-pane")
@@ -4581,9 +4638,40 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
                 )
                 list_view = app.screen.query_one(SessionListView)
                 self.assertEqual(list_view._session_cards(), [])
+                # 结束进程与磁盘抹除都挪到了后台线程，必须在 App 存活期间等它跑完。
+                await _wait_until(lambda: claude_runtime.delete_session.called)
         kill_mock.assert_called_once_with("pickup-claude-fake")
         claude_runtime.delete_session.assert_called_once()
         self.assertIsNone(store.find_session("claude:s0"))
+
+    async def test_card_hides_before_slow_disk_delete_finishes(self) -> None:
+        """确认删除即摘卡，不等磁盘抹除——OpenCode 写共享库等锁时最容易暴露。"""
+        sessions = [{
+            "source": "claude", "id": "s0", "short_id": "s0", "mtime": time.time(),
+            "size_bytes": 1, "size_kb": 1, "native_title": None, "fallback_title": "会话0",
+            "cwd": "/tmp", "live": False, "path": "/tmp/s0.jsonl",
+        }]
+        store, registry = _make_store(sessions=sessions)
+        claude_runtime = registry.get("claude")
+        released = threading.Event()
+        claude_runtime.delete_session.side_effect = lambda *_: released.wait(5)
+        app = PickupApp(store, embed_ok=False)
+        try:
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                await pilot.press("down")
+                await pilot.press("x")
+                await pilot.pause(delay=0.3)
+                await pilot.press("x")
+                list_view = app.screen.query_one(SessionListView)
+                await _wait_until(lambda: not list_view._session_cards())
+                # 磁盘删除仍卡着，卡片必须已经不在了。
+                self.assertFalse(released.is_set())
+                self.assertEqual(list_view._session_cards(), [])
+                released.set()
+                await _wait_until(lambda: store.find_session("claude:s0") is None)
+        finally:
+            released.set()
 
     async def test_delete_failure_keeps_card_and_notifies(self) -> None:
         sessions = [{
@@ -4605,6 +4693,118 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
             list_view = app.screen.query_one(SessionListView)
             self.assertEqual(len(list_view._session_cards()), 1)
         self.assertIsNotNone(store.find_session("claude:s0"))
+
+
+class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
+    """光标停在会话组标题上按 x：删的是整组，不是某一条成员。"""
+
+    @staticmethod
+    async def _grouped(app, pilot, count=2):
+        """把前 count 条会话编成一组，并把光标停在组卡上。"""
+        await pilot.pause(delay=0.2)
+        list_view = app.screen.query_one(SessionListView)
+        keys = [
+            pickup.session_key(session)
+            for session in app.screen.store.all_sessions()[:count]
+        ]
+        list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
+        await list_view.rebuild()
+        list_view.focus()
+        group_item = next(
+            item
+            for item in list_view.children
+            if item.children and isinstance(item.children[0], SessionGroupCard)
+        )
+        list_view.index = list(list_view.children).index(group_item)
+        return list_view, keys
+
+    async def test_x_on_group_card_deletes_every_member(self) -> None:
+        store, registry = _make_store()
+        claude_runtime = registry.get("claude")
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            list_view, keys = await self._grouped(app, pilot)
+            self.assertIsNotNone(list_view.selected_group())
+            await pilot.press("x")
+            await pilot.pause(delay=0.3)  # worker 推弹窗 + ConfirmModal 武装
+            self.assertIsInstance(app.screen, ConfirmModal)
+            await pilot.press("x")
+            await _wait_until(
+                lambda: all(store.find_session(key) is None for key in keys)
+            )
+            await _wait_until(
+                lambda: not list(app.screen.query(SessionGroupCard))
+            )
+        self.assertEqual(claude_runtime.delete_session.call_count, len(keys))
+        for key in keys:
+            self.assertIsNone(store.find_session(key))
+        # 组外的第三条会话不受牵连
+        self.assertIsNotNone(store.find_session("claude:s2"))
+
+    async def test_x_on_running_group_kills_every_keepalive_then_deletes(self) -> None:
+        sessions = [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": time.time() - i, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}", "cwd": "/tmp",
+                "live": True, "pid": 4242 + i, "keepalive_name": f"pickup-claude-fake{i}",
+                "path": f"/tmp/s{i}.jsonl",
+            }
+            for i in range(2)
+        ]
+        store, registry = _make_store(sessions=sessions)
+        claude_runtime = registry.get("claude")
+        app = PickupApp(store, embed_ok=False)
+        with mock.patch("pickup.keepalive.kill") as kill_mock:
+            async with app.run_test(size=(100, 30)) as pilot:
+                _, keys = await self._grouped(app, pilot)
+                await pilot.press("x")
+                await pilot.pause(delay=0.3)
+                self.assertIsInstance(app.screen, ConfirmModal)
+                await pilot.press("x")
+                await _wait_until(
+                    lambda: claude_runtime.delete_session.call_count == len(keys)
+                )
+        self.assertEqual(
+            sorted(call.args[0] for call in kill_mock.call_args_list),
+            ["pickup-claude-fake0", "pickup-claude-fake1"],
+        )
+        for key in keys:
+            self.assertIsNone(store.find_session(key))
+
+    async def test_x_on_group_card_cancel_keeps_every_member(self) -> None:
+        store, registry = _make_store()
+        claude_runtime = registry.get("claude")
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            _, keys = await self._grouped(app, pilot)
+            await pilot.press("x")
+            await pilot.pause(delay=0.3)
+            await pilot.press("n")  # 非确认键，取消
+            await pilot.pause(delay=0.2)
+        claude_runtime.delete_session.assert_not_called()
+        for key in keys:
+            self.assertIsNotNone(store.find_session(key))
+
+    async def test_group_delete_failure_only_restores_failed_member(self) -> None:
+        store, registry = _make_store()
+        claude_runtime = registry.get("claude")
+
+        def fail_second(session):
+            if session.get("id") == "s1":
+                raise OSError("模拟磁盘删除失败")
+
+        claude_runtime.delete_session.side_effect = fail_second
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await self._grouped(app, pilot)
+            await pilot.press("x")
+            await pilot.pause(delay=0.3)
+            await pilot.press("x")
+            await _wait_until(lambda: store.find_session("claude:s0") is None)
+            await _wait_until(lambda: store.find_session("claude:s1") is not None)
+        self.assertIsNone(store.find_session("claude:s0"))
+        self.assertIsNotNone(store.find_session("claude:s1"))
 
 
 class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
@@ -5399,7 +5599,9 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             area = app.screen.query_one(SplitPaneArea)
             key0 = pickup.session_key(sessions[0])
             key1 = pickup.session_key(sessions[1])
-            app.screen._split_store.set_group("/tmp", [key0, key1], focus_key=key0)  # noqa: SLF001
+            app.screen._apply_layout_change(  # noqa: SLF001
+                lambda s: s.set_group("/tmp", [key0, key1], focus_key=key0)
+            )
             area.show_hosted_group(
                 "/tmp",
                 [(s, s["keepalive_name"], lambda: "") for s in sessions],

@@ -177,7 +177,7 @@ pickup kimi                         # 新建空白且免审批的 Kimi 会话，
 pickup --no-keepalive claude        # 传统的全终端接管启动，不套后台 tmux
 ```
 
-OpenCode 是个例外：它的 `--dangerously-skip-permissions` 参数只在 `opencode run` 下被接受，裸的 TUI 命令不认（实测真实二进制确认过——加上这个参数会让裸命令以用法错误退出）。所以 `pickup opencode` 永远不会自动补它；如果你想让非交互式运行免审批，请用 `pickup opencode run --dangerously-skip-permissions ...`。
+OpenCode 用的是它自己的 `--auto`（自动批准所有未被显式拒绝的权限请求），pickup 会替你补上。位置有讲究：`--auto` 只属于主命令和 `opencode run`，且必须排在子命令后面（写成 `opencode --auto run …` 会被当成「在名为 run 的目录里开 TUI」）。所以 `pickup opencode run …` 会补成 `opencode run --auto …`，而 `pickup opencode stats` 这类不认该参数的子命令原样透传、不补。若你的 opencode 还不认识 `--auto`，升级到新版即可。
 
 Cursor 可以用你平时敲的命令名直接进来：`pickup agent` 和 `pickup cursor-agent` 与 `pickup cursor` 完全等价（Cursor 的安装脚本同时提供 `agent` 和 `cursor-agent` 两个入口）。
 
@@ -245,7 +245,7 @@ pickup describe [command]                   # 机器可读的命令／参数／�
 | `Enter` | 用原生助手恢复选中的会话（若已在后台运行则重新接上）；在固定的第一行「＋ 新建会话」（英文 `+ New session`）上则进入新建流程 |
 | `a` | 打开高级接力操作 |
 | `q` | 结束后台运行中／进行中（保活）的会话；在确认框里再按一次 `q` |
-| `x` | 永久删除选中的本地会话；在确认框里再按一次 `x` |
+| `x` | 永久删除选中的本地会话（光标在会话组上时删除整组全部会话）；在确认框里再按一次 `x` |
 | `c` | 关闭当前聚焦的右侧格，不结束它托管的会话 |
 | `p` | 置顶／取消置顶选中的独立会话或会话组 |
 | `Ctrl+B` | 显示／隐藏侧边栏（也可用助手顶栏上的 ◀/▶ 开关） |

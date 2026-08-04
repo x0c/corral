@@ -56,7 +56,10 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **一条 SQL 拿 top-N，含四个预览子查询**：过滤 `parent_id IS NULL`（子代理会话，本机真实数据 31 条会话里 22 条是子代理拆分出的）和 `time_archived IS NULL`（已归档），按 `time_updated DESC` 排序；四个关联子查询分别取最后一条消息（推状态用）、首/末条用户文本、末条助手文本、`SUM(LENGTH(part.data))` 作 `size_bytes`（标题缓存失效 key，必须随内容增长，不能用固定值）。本机 31 会话/219 消息/1135 part 实测这条 SQL 含全部子查询仅 7ms，远在预算内，无需再加 Codex 那种"凑够 limit 提前停止"的优化。
 - **状态推导没有显式中断信号**：OpenCode 不像 Codex 有 `turn_aborted` 这种明确事件，末轮 `finish` 只有 `stop`/`tool-calls`/缺失/未知几种取值；只有消息带非空 `error` 字段才判"已中断"，`finish=="tool-calls"` 或其它值一律归"无状态"（宁缺毋滥），不要臆测把 `tool-calls` 当成中断或完成。
 - **判活没有 Codex 那样"进程独占持有会话文件"的信号**：历史在共享 SQLite 里，无法用 `lsof` 定位某个 pid 对应哪个会话。改用 `pgrep -x opencode` 拿存活进程后读其工作目录（Linux 用 `/proc/<pid>/cwd`，macOS 用 `lsof -a -p <pid> -d cwd -Fn` 只查 cwd 一个 fd，比 Codex 判活时的全量 `lsof -p` 还便宜），与会话的 `directory` 字段（`os.path.realpath` 归一化）匹配；命中即认为该 cwd 下"最新一条"会话存活，同目录下更老的历史会话不标记（宁缺毋滥）。已知局限：`opencode serve`/`opencode run` 等同名进程会被一并计入；判活失败（`pgrep` 缺失/调用失败）静默降级为空集，不抛异常。
-- **`--dangerously-skip-permissions` 实测只在 `opencode run` 子命令下生效，官方文档提到的 `--auto` 在本机 v1.15.11 完全不可用**：起初按照 claude/codex 的既有模式把这个 flag 塞进 `auto_approve_args` 类属性、四处复用，结果真机冒烟发现 `opencode --dangerously-skip-permissions -s <id>`（裸 TUI 命令）直接报错退出（exit=1，打印用法说明）——yargs 对默认/主命令的参数校验是严格模式，这个 flag 只在 `opencode run [message..]` 的 `--help` 里出现，主命令完全不认。同时按官方文档站（`opencode.ai/docs/permissions`）的说法，应该有个语义更安全的 `--auto` 参数（保留 deny 规则，只放行会弹 ask 的请求），但本机实测 `opencode --auto` 和 `opencode run --auto` 两种写法都同样报错退出（exit=1）——这台机器装的 1.15.11 版本还不支持这个参数，文档领先于当前发行版（或反过来是文档过时），**以实测行为为准，不要以文档为准**；未来升级 opencode 版本后应重新验证 `--auto` 是否可用，若可用应优先切换过去（deny 规则仍生效，比 `--dangerously-skip-permissions` 更安全）。因此 `OpenCodeRuntime.auto_approve_args` 显式设为空元组（不像 claude/codex 那样声明危险参数），`--dangerously-skip-permissions` 只硬编码在 `build_continue_plan`（唯一走 `run` 子命令、确认可用的路径）里；这意味着 `pickup opencode`（裸直启，透传给主命令）不会像 `pickup claude`/`pickup codex` 那样自动垫上跳过审批参数，也意味着 `build_new_plan`（跨运行时接力读取其它运行时历史时的新会话）里目标 OpenCode 若触发权限询问，需要用户在 TUI 里手动确认——这是相对 claude/codex 的已知能力差距，不是遗漏。
+- **放行参数是 `--auto`，且位置敏感；`auto_approve_args` 之外还必须覆写 `compose_passthrough_argv`**（2026-08-04 在 opencode 1.18.9 上实测重定）：`--auto`（自动批准所有未被显式拒绝的权限请求）如今在主命令（TUI）和 `run` 子命令的 `--help` 里都是正式声明的选项，旧的隐藏别名 `--yolo` / `--dangerously-skip-permissions` 被折叠进同一个开关（二进制里可见 `auto: D.auto || D.yolo || D["dangerously-skip-permissions"]`）。因此 `OpenCodeRuntime.auto_approve_args` 已改为 `("--auto",)`，恢复 / 接力 / 空白新建 / 续接四条路径与 claude/codex 一样统一垫上，之前记录的"OpenCode 没有可用放行参数"的能力差距不再存在。两条实测得来、写反了就会静默改变用户命令的规则：
+  1. **`--auto` 必须排在子命令之后**。主命令的第一个位置参数是项目路径，`--auto` 一旦前置，后面的词就不再被当作子命令：`opencode --auto stats` 实测报 `Failed to change directory to <cwd>/stats`，也就是"在名为 stats 的目录里开 TUI"——不是报错，是**静默执行了另一件事**，比报错更难发现。
+  2. **只有主命令和 `run` 认这个参数**。`stats`/`export`/`auth` 等子命令带上它会被 yargs 严格校验判为未知参数、用法错误退出（exit=1）。
+  所以直启透传不能沿用"垫在最前"的默认实现，`OpenCodeRuntime.compose_passthrough_argv` 按"首个参数是 `run` → 插在它后面；是其它子命令 → 一律不垫；是路径 / flag / 没有参数 → 按主命令前置"分流。回归：`tests/test_runtime.py` 里 `test_opencode_passthrough_*` 四条。历史教训仍然成立：**以本机实测行为为准，不要以文档为准**——1.15.11 时期官网已在写 `--auto`，而本机两种写法都报错退出；这次是反过来，升级后文档与实测终于一致。旧版本不再做降级兼容（机主 2026-08-04 拍板：不认 `--auto` 就是该升级 opencode）。
 
 ## Kimi 扫描
 
@@ -124,6 +127,32 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **项目搜索**：`#project-search` + `nav.project_query`；`/` 聚焦搜索；Down/Enter 回列表；Esc 先清空再回列表。
 - 右栏随选择变化：托管显示现场；未托管/已结束显示完整对话预览（选中即加载，默认钉在最新）。面板聚焦时列表→右栏跟随暂停；**右栏→列表**仍要同步高亮（`_on_pane_focused`）。长对话用 Home/End/PgUp/PgDn 或滚轮（`detail_offset` / `_detail_stick_bottom`）。
 - 点击会话卡等价 Enter（真的会拉起 / 接管会话，并把输入交给右栏那一格）；再点当前持有输入的那张卡则把焦点撤回侧边栏，与 `Ctrl-\` 等价，点开 / 收回对称。
+
+### 侧边栏记忆的多窗口一致性（split_layout.py / ui_prefs.py）
+
+会话组、置顶、折叠、上次焦点和侧栏显隐存在 `~/.cache/pickup/sidebar-layout.sqlite3`，
+**同一台机器上的所有 pickup 窗口共享这一份**。
+
+- **写入模型**：每次改动都是「`BEGIN IMMEDIATE` → 重读最新快照 → 重放这一次改动 → 整表写回 + `revision` 自增」。
+  数据量只有几个组和几条置顶，整表写回比按行 diff 简单，正确性由事务保证。界面手上的
+  `SplitLayoutStore` 是只读快照，写入一律经 `MainScreen._apply_layout_change()`；
+  `SessionListView` 只表达意图（传一个改动函数），不碰存储。
+- **为什么不能退回 JSON**：旧实现是每个窗口启动读一次、之后整份覆盖写。同时开两个窗口时，
+  后动手的窗口会把先动手窗口的改动整份抹掉——丢的不是一条，而是全部置顶 + 全部分组；
+  两个窗口之间也永远看不到对方。这是 2026-08-04 机主实报后重做的根因。
+- **跨窗口同步**：每秒读一次 `revision`（单行 SELECT）。`PRAGMA data_version` 只对长连接有效，
+  而这里是用完即关的短连接，所以用持久化计数器。版本变了才读整份快照，且只有
+  `sidebar_fingerprint()`（不含焦点字段）真变了才重建列表——全量重建是秒级重活。
+- **焦点写入必须与组合写入分开**：`_persist_split_focus()`（`set_focus`）只更新焦点，
+  `_persist_split_composition()`（`set_group`）才断言组合。混用会让「另一窗口移出成员」和
+  「本窗口切焦点」互相拉锯，组反复消失重建、组名重新随机。
+- **`p` 的翻转以库里最新状态为准**，不看本地快照。极端情况下（对方刚改完、本窗口 1 秒同步还没到）
+  按 `p` 可能翻到与屏幕显示相反的一侧；窗口期约 1 秒，是有意接受的取舍。
+- **旧文件迁移只读不动**：首次开库导入 `split-layout.json` / `ui-prefs.json` 后置 `imported_legacy`，
+  **不改名、不删除**——升级期间机器上很可能还开着跑旧代码的窗口，仍在按秒往那两个文件里写。
+- **降级**：库打不开（只读盘、损坏）时回落进程内内存状态，只警告一次，界面照常工作。
+- **动这块的测试或临时脚本必须设 `PICKUP_CACHE_DIR`**，否则旧文件迁移会去真实 `~/.cache/pickup`
+  找文件。真踩过：一个只想验证并发写的脚本没设，把本机 `ui-prefs.json` 迁走了。
 
 ### 会话级快捷键
 
@@ -256,7 +285,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **项目名匹配分两档**（`match_projects`）：子串档（名字 / 标签 / 路径包含查询串，rank 0–3）与子序列档（`_fuzzy_match` 打散字符，rank 4–6）。**只要有任何子串命中，就整体丢掉子序列命中**——否则 `alpha` 会连 `LLMPlatform/archive/java-platform`（j-**a**-va-p-**l**-atform… 顺序恰好凑得出）一起列进候选，真正想要的 `AlphaForge/*` 被淹在 10 条里。一个子串都没命中时才退回子序列，`sbswp → SubSwap` 这种缩写输入仍然可用。回归：`test_substring_hits_suppress_subsequence_noise` / `test_subsequence_still_works_without_substring_hit`。
 - **为什么透传只垫危险参数，不像 TUI 里的 `build_resume_plan` 之类还塞了 codex 的 `-c model_reasoning_effort="high"`**：透传的诉求是"我知道我要传什么参数给底层 CLI，只是不想每次手打一长串跳过审批的危险参数"，属于用户对透传语义有明确预期的场景；额外静默塞入其它默认配置（哪怕是好意）会让用户没法确定"这次命令实际执行了什么"，所以 `registry.build_passthrough_plan` 只处理 `auto_approve_args`，不碰运行时的其它默认参数。
 - **危险参数改成运行时类属性 `auto_approve_args`**（`runtime/base.py` 声明、`runtime/claude.py`/`runtime/codex.py` 各赋值一次），原本在每个适配器的 `build_resume_plan`/`build_continue_plan`/`build_new_plan`/`build_new_session_plan` 四处各写一遍字面量字符串，现在四处和直启共用同一份声明。新增运行时想接入直启子命令，只需要declare 这个类属性（不声明则默认空元组，直启不会额外加任何参数）。
-- **`OpenCodeRuntime` 是这个模式下的一个刻意例外**：它的危险参数（`--dangerously-skip-permissions`）只在 `opencode run` 子命令下真实生效，裸命令（`pickup opencode` 直启透传的默认形态）带上会直接报错退出（实测确认，非猜测）。这个 flag 因此没有放进 `auto_approve_args`（该属性对 OpenCode 显式设为空元组），而是只硬编码在 `build_continue_plan` 内部——`pickup opencode`（裸直启）不会被自动垫上这个参数，这是有意为之，不是遗漏。详见「OpenCode 扫描」节最后一条。新增运行时如果也存在"危险参数只在特定子命令下有效"的情况，应参照这个处理方式，不要为了凑统一模式硬塞进 `auto_approve_args` 导致裸命令被打坏。
+- **放行参数的位置由适配器自己说了算**（`BaseRuntime.compose_passthrough_argv`）：注册表只调用这个方法，不再自己拼 argv。默认实现是"垫在最前、用户已带过就不重复"；`OpenCodeRuntime` 覆写了它，因为 `--auto` 既只属于部分子命令、又对位置敏感（见「OpenCode 扫描」节最后一条）。新增运行时若也存在"放行参数只在特定子命令下有效"或"位置敏感"的情况，照这个方式覆写，不要为了凑统一模式硬塞进注册表、把裸命令打坏。
 - **用户在透传参数里已经带了该运行时的危险参数时不重复添加**（`build_passthrough_plan` 用 `arg not in user_args` 过滤），这样 `pickup claude --dangerously-skip-permissions --resume xxx` 这类用户自己拼好完整参数的调用不会看到参数被加两遍。
 - **`cwd` 语义**：透传形态下 `cwd` 恒为 `None`（就地拉起）；项目快捷启动形态下 `cwd` 为匹配到的项目绝对路径（与 TUI 新建空白会话一致）。不要把两种形态的 `usable_cwd` 用法混掉。
 - `_dispatch_direct_launch` 捕获 `execute_launch` / 项目解析抛出的错误，打印信息并 `sys.exit(1)`，不让用户看到裸 Python 堆栈。

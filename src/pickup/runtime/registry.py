@@ -165,9 +165,7 @@ class RuntimeRegistry:
         用户已经在 user_args 里显式带了该运行时的放行参数时不重复添加，尊重用户的显式选择。
         """
         runtime = self.get(runtime_id)
-        user_args = tuple(user_args)
-        extra = tuple(arg for arg in runtime.auto_approve_args if arg not in user_args)
-        return LaunchPlan(argv=(runtime.executable, *extra, *user_args), cwd=None)
+        return LaunchPlan(argv=runtime.compose_passthrough_argv(tuple(user_args)), cwd=None)
 
 
 def default_registry() -> RuntimeRegistry:

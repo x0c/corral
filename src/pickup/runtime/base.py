@@ -89,6 +89,16 @@ class BaseRuntime(ABC):
     def build_new_session_plan(self, cwd: str | None) -> LaunchPlan:
         """构造不关联任何已有会话历史的空白新会话计划。"""
 
+    def compose_passthrough_argv(self, user_args: tuple[str, ...]) -> tuple[str, ...]:
+        """直启透传（`pickup <运行时> [参数…]`）的完整 argv。
+
+        默认把放行参数垫在最前；用户已显式带过就不重复。放行参数在某些运行时里
+        只属于特定子命令、或对位置敏感（见 `runtime/opencode.py`），这类运行时
+        覆写本方法，不要把这种私有规则写进注册表。
+        """
+        extra = tuple(arg for arg in self.auto_approve_args if arg not in user_args)
+        return (self.executable, *extra, *user_args)
+
     def delete_session(self, session: SessionInfo) -> None:
         """彻底删除该会话在本地磁盘上的历史，不可恢复。
 

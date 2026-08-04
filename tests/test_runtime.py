@@ -174,7 +174,7 @@ class RuntimeTests(unittest.TestCase):
 
         plan = registry.build_launch_plan(LaunchRequest(session, "opencode", "修复会话接力"))
 
-        self.assertEqual(plan.argv, ("opencode", "-s", "session-123"))
+        self.assertEqual(plan.argv, ("opencode", "--auto", "-s", "session-123"))
         self.assertIsNone(plan.cwd)
 
     def test_opencode_continue_plan(self) -> None:
@@ -185,14 +185,14 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             plan.argv,
-            ("opencode", "run", "--dangerously-skip-permissions", "-s", "session-123", "继续处理未完成的任务"),
+            ("opencode", "run", "--auto", "-s", "session-123", "继续处理未完成的任务"),
         )
 
     def test_opencode_new_session_plan_has_no_handoff_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             plan = default_registry().build_new_session_plan(NewSessionRequest("opencode", td))
 
-        self.assertEqual(plan.argv, ("opencode",))
+        self.assertEqual(plan.argv, ("opencode", "--auto"))
         self.assertEqual(plan.cwd, td)
 
     def test_claude_session_can_handoff_to_opencode(self) -> None:
@@ -208,8 +208,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(plan.argv[0], "opencode")
             self.assertIn("--prompt", plan.argv)
             self.assertNotIn("-s", plan.argv)
-            # OpenCode 主命令不接受 --dangerously-skip-permissions（实测非 run 子命令下会报错退出）
-            self.assertNotIn("--dangerously-skip-permissions", plan.argv)
+            # 跨助手接力要读别处的历史，必然触发「外部目录」权限询问，必须自动放行。
+            self.assertIn("--auto", plan.argv)
             self.assertIn("修复会话接力", plan.argv[-1])
             self.assertIn("Claude Code JSONL", plan.argv[-1])
             self.assertEqual(plan.cwd, td)
@@ -421,6 +421,38 @@ class RuntimeTests(unittest.TestCase):
             plan.argv,
             ("codex", "--dangerously-bypass-approvals-and-sandbox", "resume"),
         )
+
+    def test_opencode_passthrough_prepends_auto_for_bare_tui(self) -> None:
+        plan = default_registry().build_passthrough_plan("opencode", [])
+
+        self.assertEqual(plan.argv, ("opencode", "--auto"))
+
+    def test_opencode_passthrough_puts_auto_after_run_subcommand(self) -> None:
+        """--auto 前置会让 OpenCode 把 run 当成项目路径，静默变成另一件事。"""
+        plan = default_registry().build_passthrough_plan(
+            "opencode", ["run", "把测试修到全绿"]
+        )
+
+        self.assertEqual(plan.argv, ("opencode", "run", "--auto", "把测试修到全绿"))
+
+    def test_opencode_passthrough_skips_auto_for_subcommands_that_reject_it(self) -> None:
+        """stats/export/auth 等子命令不认 --auto，垫上会用法错误退出。"""
+        for args in (["stats"], ["export", "ses_123"], ["auth", "login"]):
+            with self.subTest(args=args):
+                plan = default_registry().build_passthrough_plan("opencode", args)
+                self.assertEqual(plan.argv, ("opencode", *args))
+
+    def test_opencode_passthrough_treats_leading_path_as_project(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            for token in (td, "./proj", "../proj", "~/proj"):
+                with self.subTest(token=token):
+                    plan = default_registry().build_passthrough_plan("opencode", [token])
+                    self.assertEqual(plan.argv, ("opencode", "--auto", token))
+
+    def test_opencode_passthrough_respects_user_supplied_auto(self) -> None:
+        plan = default_registry().build_passthrough_plan("opencode", ["run", "--auto", "x"])
+
+        self.assertEqual(plan.argv, ("opencode", "run", "--auto", "x"))
 
     def test_passthrough_plan_dispatches_to_registered_runtime(self) -> None:
         registry = RuntimeRegistry((*default_registry(), FakeRuntime()))

@@ -219,7 +219,8 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     - `pickup claude subswap`：第二个位置参数不以 `-` 开头 → 项目名模糊匹配，
       在匹配目录下 `build_new_session_plan`（新建空白会话）。
     - `pickup claude --resume …` / 无额外参数：透传（`build_passthrough_plan` 只垫
-      默认全自动放行参数，用户已显式带了就不重复）。
+      默认全自动放行参数，用户已显式带了就不重复；放行参数的位置与适用子命令有
+      讲究的助手（OpenCode 的 `--auto`）由适配器的 `compose_passthrough_argv` 决定）。
 
     真实终端且内嵌可用时默认进入 TUI 侧边栏模式；非真实终端、`--no-keepalive`
     或内嵌不可用时保持直接启动。经 `import pickup as pkg` 取符号，便于测试 patch。
@@ -233,8 +234,23 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     # 别名（`agent` / `cursor-agent` → `cursor`）只在这里展开一次，后续全用 id。
     runtime_id, user_args = registry.resolve_id(rest[0]) or rest[0], rest[1:]
 
+    def _is_subcommand(token: str) -> bool:
+        """`pickup <运行时> run …` 这类首个词是子命令的直启属于透传，不是项目快捷启动。
+
+        只有 OpenCode 有子命令形态；其余运行时一律按旧语义（首个位置参数是项目名）。
+        """
+        if runtime_id != "opencode":
+            return False
+        from pickup.runtime import opencode as runtime_opencode
+
+        return token in runtime_opencode.OpenCodeRuntime._AUTO_APPROVE_SUBCOMMANDS
+
     project_query: str | None = None
-    if user_args and not user_args[0].startswith("-"):
+    if (
+        user_args
+        and not user_args[0].startswith("-")
+        and not _is_subcommand(user_args[0])
+    ):
         project_query = user_args[0]
         if user_args[1:]:
             print(

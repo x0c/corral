@@ -527,7 +527,7 @@ class SessionListView(ListView):
         nav,
         *,
         group_store: "SplitLayoutStore | None" = None,
-        on_group_changed: Callable[[], None] | None = None,
+        on_layout_change: Callable[[Callable[["SplitLayoutStore"], object]], "SplitLayoutStore"] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -535,8 +535,11 @@ class SessionListView(ListView):
         # 侧边栏搜索查询只认 nav.project_query 这一份，供 visible_sessions /
         # 页头占位文案 / 新建会话目录解析共用，禁止在本类另开一份状态。
         self.nav = nav
+        # `group_store` 是只读渲染快照，**禁止在本类里直接改它**：多窗口下改内存快照
+        # 等于把别人的改动一起覆盖掉。所有写操作都交给 `on_layout_change`，由主屏送进
+        # 侧边栏记忆库在事务里重放，返回最新快照。
         self.group_store = group_store
-        self.on_group_changed = on_group_changed
+        self.on_layout_change = on_layout_change
         self._multi_keys: list[str] = []
         # 右栏分屏在侧边栏的投影：用于定位当前组标题与当前激活子会话。
         self._split_keys: list[str] = []
@@ -924,12 +927,20 @@ class SessionListView(ListView):
         self._toggle_multi_key(pickup.session_key(session))
 
     def action_toggle_pin(self) -> None:
-        """用 p 切换独立会话或整个会话组的置顶状态。"""
-        if self.group_store is None:
+        """用 p 切换独立会话或整个会话组的置顶状态。
+
+        翻转结果以记忆库里的最新状态为准（返回的快照），不看本地那份可能已被别的
+        窗口改过的旧快照。
+        """
+        if self.group_store is None or self.on_layout_change is None:
             return
         group = self.selected_group()
         if group is not None:
-            pinned = self.group_store.toggle_group_pin(group.group_id)
+            group_id = group.group_id
+            snapshot = self.on_layout_change(
+                lambda store: store.toggle_group_pin(group_id)
+            )
+            pinned = group_id in snapshot.pinned_group_ids
         else:
             session = self.selected_session()
             if session is None:
@@ -941,9 +952,10 @@ class SessionListView(ListView):
                 self.notify(t("pin.group_member_hint"))
                 self.app.bell()
                 return
-            pinned = self.group_store.toggle_session_pin(key)
-        if self.on_group_changed is not None:
-            self.on_group_changed()
+            snapshot = self.on_layout_change(
+                lambda store: store.toggle_session_pin(key)
+            )
+            pinned = key in snapshot.pinned_session_keys
         self.notify(t("pin.enabled" if pinned else "pin.disabled"))
         self.call_next(self.rebuild)
 
@@ -966,15 +978,18 @@ class SessionListView(ListView):
         self._toggle_group(event.group_id)
 
     def _toggle_group(self, group_id: str) -> None:
-        if self.group_store is None:
+        if self.group_store is None or self.on_layout_change is None:
             return
         group = self.group_store.groups.get(group_id)
         if group is None:
             return
-        if not self.group_store.set_collapsed(group_id, not group.collapsed):
+        collapsed = not group.collapsed
+        snapshot = self.on_layout_change(
+            lambda store: store.set_collapsed(group_id, collapsed)
+        )
+        target = snapshot.groups.get(group_id)
+        if target is None or target.collapsed != collapsed:
             return
-        if self.on_group_changed is not None:
-            self.on_group_changed()
         self.call_next(self.rebuild)
 
     def select_session_key(self, session_key: str) -> bool:
