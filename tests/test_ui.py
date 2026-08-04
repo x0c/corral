@@ -2976,9 +2976,13 @@ class FooterActionGatingTests(unittest.TestCase):
 
 
 class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
-    """Ctrl+B / 顶栏开关显隐侧栏；偏好落盘；藏起后仍能点回来。"""
+    """Ctrl+Shift+B / 顶栏开关显隐侧栏；偏好落盘；藏起后仍能点回来。
 
-    async def test_ctrl_b_toggles_list_pane_display(self) -> None:
+    不用 Ctrl+B：机主在 Claude Code 里按 Ctrl+B 是「把任务转后台」，会与 pickup
+    抢键（2026-08-04 冲突实报后改键）。
+    """
+
+    async def test_ctrl_shift_b_toggles_list_pane_display(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
@@ -2987,13 +2991,13 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(list_pane.display)
             self.assertEqual(chip.render().plain, "◀")
 
-            await pilot.press("ctrl+b")
+            await pilot.press("ctrl+shift+b")
             self.assertFalse(app.screen.sidebar_visible)
             self.assertFalse(list_pane.display)
             self.assertEqual(chip.render().plain, "▶")
             self.assertFalse(_ui_prefs.load_sidebar_visible(default=True))
 
-            await pilot.press("ctrl+b")
+            await pilot.press("ctrl+shift+b")
             self.assertTrue(app.screen.sidebar_visible)
             self.assertTrue(list_pane.display)
             self.assertEqual(chip.render().plain, "◀")
@@ -3003,7 +3007,7 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             list_pane = app.screen.query_one("#list-pane")
-            await pilot.press("ctrl+b")
+            await pilot.press("ctrl+shift+b")
             self.assertFalse(list_pane.display)
 
             await pilot.click("#sidebar-toggle")
@@ -3175,6 +3179,39 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
         from pickup import embed
         self.assertTrue(embed.is_alive(self._hosted_names[0]))
+
+    async def test_ctrl_shift_b_toggles_sidebar_while_pane_has_input(self) -> None:
+        """实时终端持有输入时 Ctrl+Shift+B 仍可显隐侧栏，旧键 Ctrl+B 不再截胡。
+
+        改键背景（2026-08-04 机主实报）：Claude Code 里 Ctrl+B 是「把任务转后台」，
+        pickup 截走会把侧栏藏起来。新键与 Ctrl+\\ 同级属壳层键，EmbedPane 先拦截
+        不进托管会话；旧键则原样转发给助手。
+        """
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(
+            ("bash", "-c", "printf 'HELLO-UI-TEST\\n'; cat"), None
+        )
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            await pilot.press("enter")
+            await pilot.pause(delay=0.3)
+            pane = await _wait_for_embed_pane(app.screen)
+            await _wait_for_session_name(pane)
+            self._hosted_names.append(pane.session_name)
+            await _wait_for_pane_text(pane, "HELLO-UI-TEST")
+            await _wait_until(lambda: pane.has_focus)
+
+            list_pane = app.screen.query_one("#list-pane")
+            self.assertTrue(list_pane.display)
+            # 壳层键穿透：pane 持焦时仍能显隐侧栏。
+            await pilot.press("ctrl+shift+b")
+            self.assertFalse(list_pane.display)
+            await pilot.press("ctrl+shift+b")
+            self.assertTrue(list_pane.display)
+            # 旧键不再截胡：pane 持焦时按 Ctrl+B 转发给托管会话，侧栏不动。
+            await pilot.press("ctrl+b")
+            self.assertTrue(list_pane.display)
 
     async def test_reselecting_static_session_keeps_live_frame(self) -> None:
         """重复高亮同一个静止会话不能清空画面后永久停在“连接中…”。"""

@@ -353,15 +353,16 @@ agent workflows.
 | `x` | Permanently delete the selected local session (or every session in the selected group); press `x` again in the confirm dialog |
 | `c` | Close the focused right-side pane without ending its hosted session |
 | `p` | Pin / unpin the selected independent session or the selected session group |
-| `Ctrl+B` | Show / hide the sidebar (also the ◀/▶ control on the runtime top bar) |
+| `Ctrl+Shift+B` | Show / hide the sidebar (also the ◀/▶ control on the runtime top bar) |
 | `Ctrl+G` | Expand / collapse the session card floating in the top-right corner of a live pane (clicking it does the same) |
 | `Home` / `End` / `PgUp` / `PgDn` | Scroll the right-pane conversation preview (also mouse wheel over the pane) |
 | `F12` | Save a local diagnostic screenshot under `~/.cache/pickup/screenshots/` |
 | `Esc` | Clear search / close dialog, or quit (clicking outside a dialog closes it too) |
 
 `Enter` (or a click) hands input to a hosted agent; `Ctrl-\` returns keyboard focus to the sidebar
-without ending the process. `Ctrl+B` (or the ◀/▶ control on the left of the runtime top bar) toggles
+without ending the process. `Ctrl+Shift+B` (or the ◀/▶ control on the left of the runtime top bar) toggles
 the sidebar so the panes can use the full width; the preference is remembered across launches.
+(`Ctrl+B` is left free because Claude Code uses it to background a running task.)
 While a live pane has input, sidebar shortcuts step aside so the keys
 reach the agent. Mouse wheel over either pane works regardless of which side has focus.
 

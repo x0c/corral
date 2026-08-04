@@ -1,7 +1,7 @@
 """主屏：左栏会话列表 + 右栏预览/内嵌终端（pickup 唯一界面）。
 
 按键语义（/ 聚焦项目搜索 / a 高级操作 /
-q 结束会话 / x 删除会话 / c 关闭面板 / Ctrl+B 显隐侧栏 / Esc 退出）；选中非进行中会话时右栏直接
+q 结束会话 / x 删除会话 / c 关闭面板 / Ctrl+Shift+B 显隐侧栏 / Esc 退出）；选中非进行中会话时右栏直接
 展示完整对话预览。键盘焦点跟随明确意图：回车 / 单击会话卡打开、新建或直启托管成功后
 输入交给右栏那一格（仅限活着的实时会话），上下浏览不抢焦点；再点当前持有输入的那张
 会话卡则把焦点撤回侧边栏，与 `Ctrl+\\` 等价。右栏滚轮/预览翻页与焦点无关，鼠标在右栏
@@ -9,7 +9,7 @@ q 结束会话 / x 删除会话 / c 关闭面板 / Ctrl+B 显隐侧栏 / Esc 退
 多分屏时聚焦某一格会把侧边栏高亮切到对应会话。新建会话走侧边栏「＋ 新建」或
 右栏顶栏加格，不再提供底栏 `n` 快捷键。
 侧边栏顶部为搜索框，大小写无关模糊匹配组名、项目名与会话标题。
-`Ctrl+B` 与右栏顶栏左侧开关可显隐侧栏（无右栏时不可用）；该偏好与会话组、置顶一起
+`Ctrl+Shift+B` 与右栏顶栏左侧开关可显隐侧栏（无右栏时不可用）；该偏好与会话组、置顶一起
 存在侧边栏记忆库里（见 `split_layout`）。禁止再加第二套全屏预览或纯列表旧界面。
 """
 
@@ -145,7 +145,7 @@ _LIST_ONLY_ACTIONS = frozenset(
     {
         # 全文搜索是列表侧的检索动作，不是壳层开关：Ctrl+F 在助手里是常用键
         # （readline 前移光标、翻页搜索），右栏持有输入时必须原样转发给会话，
-        # 想搜就先 Ctrl+\ 回列表。这一点与 Ctrl+B 显隐侧栏刻意不同。
+        # 想搜就先 Ctrl+\ 回列表。这一点与 Ctrl+Shift+B 显隐侧栏刻意不同。
         "search_content",
         # 会话小窗的展开/收起：右栏实时格持有输入时让路给助手。小窗本来就是"扫一眼"
         # 用的，不值得为它从助手手里抢一个组合键；那种场景下点一下小窗本身即可
@@ -177,8 +177,9 @@ def _main_bindings() -> list[Binding]:
         # Footer 在右栏持有输入时把出口显示出来（见 check_action）。
         Binding("ctrl+backslash", "focus_list", t("action.focus_list")),
         # 与 Ctrl+\ 同级的壳层键：右栏持焦时仍可用，不得进 _LIST_ONLY_ACTIONS。
-        # EmbedPane 实时路径会先拦截 ctrl+b，避免键被转发给托管会话。
-        Binding("ctrl+b", "toggle_sidebar", t("action.toggle_sidebar")),
+        # EmbedPane 实时路径会先拦截 ctrl+shift+b，避免键被转发给托管会话。
+        # 不用 Ctrl+B：机主在 Claude Code 里用它「把任务转后台」（2026-08-04 冲突实报）。
+        Binding("ctrl+shift+b", "toggle_sidebar", t("action.toggle_sidebar")),
         # 会话小窗展开/收起。Footer 已经很挤，这个键不展示；小窗自身可点。
         Binding("ctrl+g", "toggle_hud", t("action.toggle_hud"), show=False),
         Binding("f12", "save_screenshot", t("action.screenshot"), show=False),
