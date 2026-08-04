@@ -28,6 +28,15 @@ class OpenCodeRuntime(BaseRuntime):
     # 了 --auto，旧名作为隐藏别名折叠进同一个开关），装不上 --auto 的旧版本按
     # 「该升级 opencode」处理，不为它保留降级分支。
     auto_approve_args = ("--auto",)
+    # OpenCode 的全部子命令（1.18.9 `--help`）。直启 `pickup opencode <词>` 时
+    # 首个词命中这里就按透传处理，否则会被当成项目名去模糊匹配。
+    SUBCOMMANDS = frozenset(
+        (
+            "completion", "acp", "mcp", "attach", "run", "debug", "providers",
+            "agent", "upgrade", "uninstall", "serve", "web", "models", "stats",
+            "export", "import", "github", "pr", "session", "plugin", "db",
+        )
+    )
     # 认 --auto 的子命令（其余子命令带上它会用法错误退出），见 compose_passthrough_argv。
     _AUTO_APPROVE_SUBCOMMANDS = ("run",)
 

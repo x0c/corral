@@ -268,6 +268,54 @@ class DirectLaunchProjectTests(unittest.TestCase):
             registry.build_passthrough_plan.assert_not_called()
             execute_launch.assert_called_once_with(new_plan)
 
+    def test_opencode_subcommand_is_passthrough_not_project_mode(self) -> None:
+        """`pickup opencode run …` 的首词是子命令，必须走透传而不是项目名匹配。
+
+        回归：子命令曾把 run/stats 当成项目名去模糊匹配（实测会匹配出十几个项目、
+        要求交互选择），导致 `pickup opencode run 提示` 这种日常用法被拦死。
+        """
+        plan = LaunchPlan(("opencode", "run", "--auto", "提示"), None)
+        registry = mock.Mock()
+        registry.resolve_id.side_effect = lambda token: token
+        registry.build_passthrough_plan.return_value = plan
+
+        with (
+            mock.patch.object(pickup, "keepalive") as keepalive_mock,
+            mock.patch.object(pickup, "execute_launch") as execute_launch,
+            mock.patch.object(pickup, "_require_tmux"),
+            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+        ):
+            keepalive_mock.enabled.return_value = False
+            keepalive_mock.new_session_ident.return_value = "xxxx"
+            pickup._dispatch_direct_launch(
+                ["opencode", "run", "提示"], registry,
+            )
+
+        registry.build_passthrough_plan.assert_called_once_with("opencode", ["run", "提示"])
+        execute_launch.assert_called_once_with(plan)
+
+    def test_opencode_other_subcommand_is_passthrough_too(self) -> None:
+        """`pickup opencode stats` 同样是透传（不带 --auto），不能被当成项目名。"""
+        plan = LaunchPlan(("opencode", "stats"), None)
+        registry = mock.Mock()
+        registry.resolve_id.side_effect = lambda token: token
+        registry.build_passthrough_plan.return_value = plan
+
+        with (
+            mock.patch.object(pickup, "keepalive") as keepalive_mock,
+            mock.patch.object(pickup, "execute_launch") as execute_launch,
+            mock.patch.object(pickup, "_require_tmux"),
+            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+        ):
+            keepalive_mock.enabled.return_value = False
+            keepalive_mock.new_session_ident.return_value = "xxxx"
+            pickup._dispatch_direct_launch(["opencode", "stats"], registry)
+
+        registry.build_passthrough_plan.assert_called_once_with("opencode", ["stats"])
+        execute_launch.assert_called_once_with(plan)
+
     def test_project_mode_rejects_extra_args(self) -> None:
         registry = mock.Mock()
         # 直启入口会先把第一个词按别名解析成运行时 id；假 registry 原样返回即可

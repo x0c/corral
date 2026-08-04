@@ -237,13 +237,14 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     def _is_subcommand(token: str) -> bool:
         """`pickup <运行时> run …` 这类首个词是子命令的直启属于透传，不是项目快捷启动。
 
-        只有 OpenCode 有子命令形态；其余运行时一律按旧语义（首个位置参数是项目名）。
+        只有 OpenCode 有子命令形态（见 `OpenCodeRuntime.SUBCOMMANDS`）；其余运行时
+        一律按旧语义（首个位置参数是项目名）。
         """
         if runtime_id != "opencode":
             return False
         from pickup.runtime import opencode as runtime_opencode
 
-        return token in runtime_opencode.OpenCodeRuntime._AUTO_APPROVE_SUBCOMMANDS
+        return token in runtime_opencode.OpenCodeRuntime.SUBCOMMANDS
 
     project_query: str | None = None
     if (
