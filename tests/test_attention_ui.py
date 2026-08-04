@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -16,8 +18,18 @@ from pickup.ui.main_screen import MainScreen
 from pickup.ui.session_list import SessionCard
 from textual.geometry import Size
 
+# 侧边栏记忆（会话组/置顶/折叠/焦点）是机器级共享的真实状态（sqlite3），测试若
+# 不隔离会读到机主真实的组与置顶，侧边栏布局被真实数据污染导致时序断言全挂
+# （v0.24.44 记忆库 sqlite3 化后本机必现，CI 干净环境不现）。`PICKUP_CACHE_DIR`
+# 是唯一的隔离开关，与 tests/test_ui.py 的既有做法一致。
+_SIDEBAR_STATE_DIR = tempfile.mkdtemp(prefix="pickup-test-attention-")
+os.environ["PICKUP_CACHE_DIR"] = _SIDEBAR_STATE_DIR
+
 
 def _make_store(*, sessions: list[dict] | None = None):
+    from pickup import split_layout
+
+    split_layout.reset_default_layout_db()
     sessions = sessions or [
         {
             "source": "claude",
@@ -193,7 +205,9 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
-                await pilot.press("down")
+                # 启动默认已高亮第一条会话（s0），再按一次 down 会落到 s1；
+                # 用例意图是观看 s0 预览，必须显式选中它。
+                app.screen.query_one("#session-list").select_session_key("claude:s0")
                 await pilot.pause(delay=0.12)
                 _set_attention(store, "claude:s0", "unread")
                 app.screen._begin_attention_read("claude:s0")
@@ -235,7 +249,7 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
-                await pilot.press("down")
+                app.screen.query_one("#session-list").select_session_key("claude:s0")
                 await pilot.pause(delay=0.12)
                 _set_attention(store, "claude:s0", "unread")
                 app.screen._begin_attention_read("claude:s0")
