@@ -7,6 +7,7 @@ import shutil
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
+from pickup.cache import scan_period
 from pickup.models import LaunchPlan, LaunchRequest, NewSessionRequest, SessionInfo
 from pickup.runtime.base import BaseRuntime, LaunchError
 from pickup.runtime.claude import ClaudeRuntime
@@ -124,26 +125,12 @@ class RuntimeRegistry:
 
         # 本轮扫描内每个运行时的元数据只查一次库，而不是每个候选文件查一次；
         # 快照必须随本轮扫描一起结束，否则后续扫描看不到新写入的会话。
-        try:
-            from pickup.cache import get_cache
-
-            get_cache().begin_scan()
-        except Exception:
-            pass  # 派生缓存永远不能影响原始会话扫描结果
-        try:
+        # 扫描期协议收敛在 cache.scan_period（见其 docstring），异常由它吞掉，
+        # 派生缓存永远不能影响原始会话扫描结果。
+        with scan_period():
             with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
                 scanned = pool.map(_scan_one, runtimes)
                 result = {runtime.id: sessions for runtime, sessions in zip(runtimes, scanned)}
-        finally:
-            # 扫描器只把缓存写意图放进内存队列；所有运行时完成后合成一次事务，
-            # 避免首次扫描为每条会话各做一次 SQLite 同步提交。
-            try:
-                from pickup.cache import get_cache
-
-                get_cache().end_scan()
-                get_cache().flush_pending()
-            except Exception:
-                pass  # 派生缓存永远不能影响原始会话扫描结果
         return result
 
     def build_launch_plan(self, request: LaunchRequest) -> LaunchPlan:

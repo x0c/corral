@@ -386,6 +386,34 @@ class PerformanceCache:
         return {"status": "cleared", **self.status()}
 
 
+class scan_period:
+    """派生缓存的一轮扫描期：进出自洽的上下文管理器，全程吞掉异常。
+
+    `begin_scan()` / `end_scan()` + `flush_pending()` 必须成对调用且 `end_scan`
+    放进 `finally`，快照严禁跨扫描长期持有（同进程后续扫描会看不到本轮新写入
+    的会话）。这条不变式此前在 `runtime/registry.py` 的 `scan_all` 和
+    `agent_api.py` 的 `_scan_runtimes` 各复制了一份，写反了不报错、只表现成
+    「列表少了会话」；这里收敛成唯一实现，两处都改用 `with scan_period():`。
+
+    派生缓存永远不能影响原始会话扫描结果：缓存本身不可用（PICKUP_CACHE=0、
+    数据库损坏）时整个扫描期直接跳过，与原先的 `except Exception: pass` 语义
+    完全一致。
+    """
+
+    def __enter__(self) -> None:
+        try:
+            get_cache().begin_scan()
+        except Exception:
+            pass
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            get_cache().end_scan()
+            get_cache().flush_pending()
+        except Exception:
+            pass
+
+
 _CACHE = PerformanceCache()
 
 

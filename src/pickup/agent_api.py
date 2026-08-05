@@ -20,7 +20,7 @@ from datetime import datetime
 
 from pickup import keepalive
 from pickup import titles
-from pickup.cache import get_cache
+from pickup.cache import get_cache, scan_period
 from pickup.models import format_message_time, session_key
 from pickup.runtime import LaunchError, default_registry
 from pickup.runtime.base import usable_cwd
@@ -211,24 +211,12 @@ def _scan_runtimes(runtimes: list, limit: int) -> dict[str, list[dict]]:
             return []
 
     # 与 scan_all 一样开一轮扫描期，让每个运行时的派生缓存元数据只查一次库。
-    try:
-        from pickup.cache import get_cache
-
-        get_cache().begin_scan()
-    except Exception:
-        pass  # 派生缓存永远不能影响原始会话扫描结果
-    try:
+    # 扫描期协议收敛在 cache.scan_period（见其 docstring），异常由它吞掉，
+    # 派生缓存永远不能影响原始会话扫描结果。
+    with scan_period():
         with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
             scanned = pool.map(_scan_one, runtimes)
         return {runtime.id: result for runtime, result in zip(runtimes, scanned)}
-    finally:
-        try:
-            from pickup.cache import get_cache
-
-            get_cache().end_scan()
-            get_cache().flush_pending()
-        except Exception:
-            pass  # 派生缓存永远不能影响原始会话扫描结果
 
 
 def resolve_ref(registry, ref: str, limit: int) -> dict:

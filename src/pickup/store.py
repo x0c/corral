@@ -302,124 +302,172 @@ class SessionStore:
         session["attention_updated_at"] = state.updated_at
 
     def _merge_scanned(self, scanned: dict[str, list[dict]]) -> None:
+        """把一轮扫描结果并入内存状态：墓碑过滤 → 占位卡 reconcile →
+        稳定排序与标题状态 → 关注态注入，四步严格按序执行。
+
+        拆分只是把原本挤在一个方法里的六件事分给四个私有步骤，`with self.lock:`
+        的进出位置逐字保持不变——`_reconcile_provisional_sessions()` 与
+        `_rebuild_order_and_titles()` 默认调用方已持锁，不会再自行加锁
+        （`threading.Lock` 不可重入，二次获取会直接死锁）。
+        """
         # 每个适配器负责按时间倒序返回，无需在界面层二次排序
-        with self.lock:
-            deleted = set(self._deleted)
-        if deleted:
-            scanned = {
-                runtime_id: [
-                    session
-                    for session in bucket
-                    if session_key(session) not in deleted
-                ]
-                for runtime_id, bucket in scanned.items()
-            }
+        scanned = self._drop_tombstoned_sessions(scanned)
         keepalive.annotate([session for bucket in scanned.values() for session in bucket])
 
-        attention_migrations: list[tuple[str, str, str]] = []
         with self.lock:
-            self.sessions.update(scanned)
-            claimed_keepalive = {
-                str(session.get("keepalive_name")): session
-                for bucket in self.sessions.values()
-                for session in bucket
-                if session.get("keepalive_name") and not session.get("provisional")
-            }
-            for key, provisional in list(self._provisional.items()):
-                name = self.hosted.get(key) or provisional.get("keepalive_name")
-                if name and name in claimed_keepalive:
-                    # 真实会话已挂上同一托管名：占位卡退役，避免双卡。
-                    real_session = claimed_keepalive[str(name)]
-                    runtime_id = str(provisional.get("source") or "")
-                    real_runtime_id = str(real_session.get("source") or "")
-                    if runtime_id and runtime_id == real_runtime_id:
-                        attention_migrations.append(
-                            (
-                                runtime_id,
-                                str(provisional.get("id") or ""),
-                                str(real_session.get("id") or ""),
-                            )
-                        )
-                    self._provisional.pop(key, None)
-                    self.hosted.pop(key, None)
-                    continue
-                if not name or not embed.is_alive(str(name)):
-                    self._provisional.pop(key, None)
-                    self.hosted.pop(key, None)
-                    continue
-                runtime_id = str(provisional.get("source") or "")
-                bucket = self.sessions.setdefault(runtime_id, [])
-                if any(session_key(session) == key for session in bucket):
-                    continue
-                provisional["keepalive_name"] = name
-                provisional["live"] = True
-                bucket.insert(0, provisional)
-            by_key: dict[str, dict] = {}
-            for bucket in self.sessions.values():
-                for session in bucket:
-                    by_key[session_key(session)] = session
-            # 稳定顺序：已展示的会话保持原位（只更新内容，不移动）。
-            # 新出现的会话：最近活跃的插到最前；「目录复活」等重新扫到的旧会话
-            # 追加到末尾——避免 /tmp 临时 cwd 重建时几天前的会话整批顶到侧边栏。
-            known = set(self._order)
-            fresh = [session for key, session in by_key.items() if key not in known]
-            now = time.time()
-            fresh_hot = [
-                session for session in fresh
-                if now - float(session.get("mtime") or 0) <= _FRESH_PREPEND_MAX_AGE
-            ]
-            fresh_cold = [
-                session for session in fresh
-                if now - float(session.get("mtime") or 0) > _FRESH_PREPEND_MAX_AGE
-            ]
-            fresh_hot.sort(key=lambda session: float(session.get("mtime") or 0), reverse=True)
-            fresh_cold.sort(key=lambda session: float(session.get("mtime") or 0), reverse=True)
-            self._order = (
-                [session_key(session) for session in fresh_hot]
-                + [key for key in self._order if key in by_key]
-                + [session_key(session) for session in fresh_cold]
-            )
-            # 已从扫描结果消失的会话不能继续占着生成状态，否则标题生成队列会
-            # 永久挂着不存在的会话键。
-            self.generating.intersection_update(by_key)
-            for session in by_key.values():
-                key = session_key(session)
-                # 用户刚结束的会话：进程可能还没退出，扫描仍报 live；强制已结束展示，
-                # 直到某次扫描确认 live=False 再解除（见 mark_hosted 清除分支）。
-                if key in self._force_ended:
-                    if session.get("live"):
-                        session["live"] = False
-                        session["pid"] = None
-                        session.pop("keepalive_name", None)
-                    else:
-                        self._force_ended.discard(key)
-                # annotate 没匹配上时，用本进程的内嵌托管记录兜底（见 __init__ 注释）；
-                # 托管会话已死则清掉记录，让状态回到真实的「已结束」
-                if "keepalive_name" not in session:
-                    hosted_name = self.hosted.get(key)
-                    if hosted_name:
-                        if embed.is_alive(hosted_name):
-                            session["keepalive_name"] = hosted_name
-                        else:
-                            self.hosted.pop(key, None)
-                title, needs = titles.resolve_initial_title(session, self.cache)
-                self.display_titles[key] = title
-                # 生成状态必须以标题状态机返回的 needs 为唯一依据。低价值会话、
-                # 已尝试失败的会话都可能没有模型标题，但它们不应继续转圈。
-                if needs:
-                    self.generating.add(key)
-                else:
-                    self.generating.discard(key)
-            self._projects = None
-
-            attention_sessions = [
-                dict(session)
-                for bucket in self.sessions.values()
-                for session in bucket
-            ]
+            attention_migrations = self._reconcile_provisional_sessions(scanned)
+            attention_sessions = self._rebuild_order_and_titles()
 
         # SQLite 与运行时历史探测均放在 SessionStore 锁外，避免界面读取被磁盘 I/O
         # 卡住。迁移必须先于真实会话 reconcile，确保占位状态无缝接到正式标识。
+        self._migrate_provisional_attention(attention_migrations)
+        states = self._reconcile_attention(attention_sessions)
+        self._inject_attention_states(states)
+
+    def _drop_tombstoned_sessions(
+        self, scanned: dict[str, list[dict]],
+    ) -> dict[str, list[dict]]:
+        """墓碑过滤：按 `x` 确认删除过的会话键滤掉本轮扫描结果，
+        阻止已删会话被重新灌回列表（见 `_deleted` 的说明）。"""
+        with self.lock:
+            deleted = set(self._deleted)
+        if not deleted:
+            return scanned
+        return {
+            runtime_id: [
+                session
+                for session in bucket
+                if session_key(session) not in deleted
+            ]
+            for runtime_id, bucket in scanned.items()
+        }
+
+    def _reconcile_provisional_sessions(
+        self, scanned: dict[str, list[dict]],
+    ) -> list[tuple[str, str, str]]:
+        """占位卡 reconcile：调用方必须已持有 `self.lock`。
+
+        把本轮扫描结果并入 `self.sessions`，判定跨运行时接力/空白新建插入的
+        占位卡是否已被真实会话取代（退役）或托管进程已死（清理），仍存活且
+        未被取代的占位卡继续插回列表最前。返回需要迁移关注态的
+        (运行时, 旧占位 id, 新真实 id) 三元组列表，供调用方在锁外执行迁移。
+        """
+        self.sessions.update(scanned)
+        claimed_keepalive = {
+            str(session.get("keepalive_name")): session
+            for bucket in self.sessions.values()
+            for session in bucket
+            if session.get("keepalive_name") and not session.get("provisional")
+        }
+        attention_migrations: list[tuple[str, str, str]] = []
+        for key, provisional in list(self._provisional.items()):
+            name = self.hosted.get(key) or provisional.get("keepalive_name")
+            if name and name in claimed_keepalive:
+                # 真实会话已挂上同一托管名：占位卡退役，避免双卡。
+                real_session = claimed_keepalive[str(name)]
+                runtime_id = str(provisional.get("source") or "")
+                real_runtime_id = str(real_session.get("source") or "")
+                if runtime_id and runtime_id == real_runtime_id:
+                    attention_migrations.append(
+                        (
+                            runtime_id,
+                            str(provisional.get("id") or ""),
+                            str(real_session.get("id") or ""),
+                        )
+                    )
+                self._provisional.pop(key, None)
+                self.hosted.pop(key, None)
+                continue
+            if not name or not embed.is_alive(str(name)):
+                self._provisional.pop(key, None)
+                self.hosted.pop(key, None)
+                continue
+            runtime_id = str(provisional.get("source") or "")
+            bucket = self.sessions.setdefault(runtime_id, [])
+            if any(session_key(session) == key for session in bucket):
+                continue
+            provisional["keepalive_name"] = name
+            provisional["live"] = True
+            bucket.insert(0, provisional)
+        return attention_migrations
+
+    def _rebuild_order_and_titles(self) -> list[dict]:
+        """稳定排序与标题状态：调用方必须已持有 `self.lock`。
+
+        重建跨运行时展示顺序（已展示的会话保持原位，新出现的按新鲜度分组
+        插入）、清理已消失会话的生成中标记、解析每条会话的展示标题。返回
+        本轮全部会话的快照副本，供调用方在锁外提取关注态证据。
+        """
+        by_key: dict[str, dict] = {}
+        for bucket in self.sessions.values():
+            for session in bucket:
+                by_key[session_key(session)] = session
+        # 稳定顺序：已展示的会话保持原位（只更新内容，不移动）。
+        # 新出现的会话：最近活跃的插到最前；「目录复活」等重新扫到的旧会话
+        # 追加到末尾——避免 /tmp 临时 cwd 重建时几天前的会话整批顶到侧边栏。
+        known = set(self._order)
+        fresh = [session for key, session in by_key.items() if key not in known]
+        now = time.time()
+        fresh_hot = [
+            session for session in fresh
+            if now - float(session.get("mtime") or 0) <= _FRESH_PREPEND_MAX_AGE
+        ]
+        fresh_cold = [
+            session for session in fresh
+            if now - float(session.get("mtime") or 0) > _FRESH_PREPEND_MAX_AGE
+        ]
+        fresh_hot.sort(key=lambda session: float(session.get("mtime") or 0), reverse=True)
+        fresh_cold.sort(key=lambda session: float(session.get("mtime") or 0), reverse=True)
+        self._order = (
+            [session_key(session) for session in fresh_hot]
+            + [key for key in self._order if key in by_key]
+            + [session_key(session) for session in fresh_cold]
+        )
+        # 已从扫描结果消失的会话不能继续占着生成状态，否则标题生成队列会
+        # 永久挂着不存在的会话键。
+        self.generating.intersection_update(by_key)
+        for session in by_key.values():
+            key = session_key(session)
+            # 用户刚结束的会话：进程可能还没退出，扫描仍报 live；强制已结束展示，
+            # 直到某次扫描确认 live=False 再解除（见 mark_hosted 清除分支）。
+            if key in self._force_ended:
+                if session.get("live"):
+                    session["live"] = False
+                    session["pid"] = None
+                    session.pop("keepalive_name", None)
+                else:
+                    self._force_ended.discard(key)
+            # annotate 没匹配上时，用本进程的内嵌托管记录兜底（见 __init__ 注释）；
+            # 托管会话已死则清掉记录，让状态回到真实的「已结束」
+            if "keepalive_name" not in session:
+                hosted_name = self.hosted.get(key)
+                if hosted_name:
+                    if embed.is_alive(hosted_name):
+                        session["keepalive_name"] = hosted_name
+                    else:
+                        self.hosted.pop(key, None)
+            title, needs = titles.resolve_initial_title(session, self.cache)
+            self.display_titles[key] = title
+            # 生成状态必须以标题状态机返回的 needs 为唯一依据。低价值会话、
+            # 已尝试失败的会话都可能没有模型标题，但它们不应继续转圈。
+            if needs:
+                self.generating.add(key)
+            else:
+                self.generating.discard(key)
+        self._projects = None
+
+        return [
+            dict(session)
+            for bucket in self.sessions.values()
+            for session in bucket
+        ]
+
+    def _migrate_provisional_attention(
+        self, attention_migrations: list[tuple[str, str, str]],
+    ) -> None:
+        """把退役占位卡的关注态迁移到真实会话 id 上；必须在锁外调用
+        （会触发 SQLite 写入），且必须先于 `_reconcile_attention`，确保占位
+        状态无缝接到正式标识。"""
         for runtime_id, old_session_id, new_session_id in attention_migrations:
             if not old_session_id or not new_session_id:
                 continue
@@ -429,7 +477,9 @@ class SessionStore:
                 )
             except Exception:
                 continue
-        states = self._reconcile_attention(attention_sessions)
+
+    def _inject_attention_states(self, states: dict[str, AttentionState]) -> None:
+        """关注态注入：把 `_reconcile_attention` 算出的结果写回当前会话快照。"""
         with self.lock:
             current_keys = {
                 session_key(session)
