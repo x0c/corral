@@ -89,6 +89,8 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 
 唯一界面是 Textual 左右分栏（`ui/main_screen.py`）：左栏会话列表 + 右栏对话预览/内嵌终端。旧 curses 全宽列表、Space 全屏预览页均已删除，禁止再加回第二套界面。改界面行为以 `ui/` 源码与 `test_ui.py` 为准。
 
+- **`MainScreen` 按领域拆分为 mixin 方法容器（2026-08-05，v0.24.53）**：主控已从 2200 行拆到约 1450 行，五个领域的方法迁到 `ui/controllers/` 下的 mixin（layout / attention / host / hud / update），`MainScreen` 多重继承它们。约定：① **状态仍挂在 MainScreen 实例上**（`__init__` 里的 `self._xxx` 一律不动），mixin 只是方法容器——不要为了"面向对象"把状态搬进 mixin 类；② 每个领域的模块级常量**跟随方法搬**（如 `_ATTENTION_READ_DELAY` 在 `attention_reader.py`），谁引用谁定义；③ `MainScreen.<method>` 经 MRO 仍全部可解析，文档锚点不失效；④ 测试用 `mock.patch` 注入的常量目标路径**必须随搬迁同步改**为控制器模块路径，否则 patch 打在旧命名空间上不生效（`test_attention_ui.py` 的 patch 目标即从 `main_screen._ATTENTION_READ_DELAY` 改为 `controllers.attention_reader._ATTENTION_READ_DELAY`）；⑤ Textual 的 `@work` 装饰器与 `action_*` / `on_*` 在 mixin 里照常生效（descriptor 沿 MRO 解析），新拆领域时可以直接把框架回调一起搬过去。
+
 - **TUI 多语言（`i18n.py`）**：界面默认英文；系统 locale 主语言为 `zh*`（`LANG`/`LC_ALL`/`LC_MESSAGES`/`LANGUAGE`）时自动中文。`PICKUP_LANG=en|zh` 可强制覆盖。机器接口（`pickup list` 等 JSON）不走翻译。新增用户可见文案必须进 `_MESSAGES` 并同时写 en/zh；测试固定 `i18n.set_lang("en")` 再断言，中文覆盖用 `test_i18n.py`。Textual 的 `BINDINGS` 在类创建时会冻结：`MainScreen` 在 `__init__` 里用 `dataclasses.replace` **只改 description**，禁止整表替换 `_bindings`（会丢掉 ListView 继承的 up/down/enter，表现为方向键失灵）。
 
 - **判定 Textual Pilot 用例是真回归还是既有偶发（2026-07-30）**：`AGENTS.md` 说「失败用例单独重跑一遍确认」，但**单跑一次不够**——`test_focusing_split_pane_highlights_matching_sidebar_session` 会在单跑时也失败（`_wait_until` 等满 5s），连续跑 5～8 次才出现 1 次，改动前后的偶发率一样。正确判定路径：① 同一用例在仓库目录内**重复采样 5 次以上**统计失败率；② 用 `git archive HEAD | tar -x -C <临时目录>` 拉出改动前的源码，**并显式 `PYTHONPATH=<临时目录>/src`** 再跑同样次数对比。注意第 ② 步不加 `PYTHONPATH` 会因 editable 安装的 `.pth` 仍指回工作区 `cli/src`，实际测的还是改动后的代码，得出「改动前能过」的错误结论。两边失败率相当即为既有偶发，可照常发版。**该偶发已于 2026-07-31 定位并根治**（实测 40 次全过，修复前 8/40 失败），根因与修法见下面「焦点竞态」一节；本条保留的是那套判定方法本身，仍然适用于将来任何新的 Pilot 偶发。补一条量化教训：**20 次一组的采样会被噪声骗到**（同一改动量到「前 3 挂 / 后 6 挂」像是翻倍回归，换 40 次一组则两边都是 8/40），判定回归至少用 40 次一组。
@@ -453,6 +455,14 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - **已知缺口（未修）**：用一键脚本装的用户属于 `pip` 渠道，应用内点更新执行的是 `pip install --upgrade git+https://github.com/x0c/pickup.git@v<tag>`——**从源码构建，需要用户本机有 Rust 工具链**，而他们当初装的是预编译包、多半没有。安装脚本本身会优先下预编译包，所以「装得上、却升不动」。要修就让 `update_command` 的 pip 分支也去 Release 里挑匹配当前平台的预编译包（与 `install.sh` 同一套匹配规则），失败再退回源码。
 
 ## CI 工作流（`.github/workflows/test.yml`）
+
+**Ruff 接入（2026-08-05，v0.24.47/54）**：lint 步骤固定 `ruff==0.16.1`（防自行升级后规则集变化），规则集 `E/F/I/UP/B` 并卡 CI。改 `pyproject.toml` 的 `[tool.ruff]` 后本机先 `ruff check src tests` 清零再提交。三个已知坑：
+
+- **E501 按显示宽度计数，CJK 字符算 2 格**——批量修改脚本用 Python 的 `len()`（按字符数）判断"超长行"会漏掉中文行，noqa 加不上、CI 照样挂；要按 ruff 报的行号精确处理，不要用字符数条件。
+- **E402 的豁免边界**：`sys.path.insert` 之后的模块级 import 被 ruff 豁免（常见 hack 模式），src 下不会报；测试文件里"先设环境变量/夹具、后 import"的刻意顺序用 `[tool.ruff.lint.per-file-ignores]` 的 `"tests/*.py" = ["E402"]` 豁免，不要逐行加 noqa。
+- **`mock.patch("模块.符号")` 的目标路径随符号搬迁同步改**——常量/函数从模块 A 搬到模块 B 后，patch 打在 A 的命名空间上不再影响 B 里的引用点，测试会静默变假（如 `test_attention_ui.py` 的 patch 目标已随关注常量迁到 `controllers.attention_reader`）。
+
+
 
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：
 
