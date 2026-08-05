@@ -72,7 +72,7 @@ def _read_head(path: str, max_lines: int = 300) -> list[dict]:
     """读取文件头部若干行，提取 cwd、首条用户消息和稍晚出现的 ai-title。"""
     entries: list[dict] = []
     try:
-        with open(path, "r", errors="replace") as f:
+        with open(path, errors="replace") as f:
             for i, line in enumerate(f):
                 if i >= max_lines:
                     break
@@ -386,7 +386,7 @@ def _peek_head_meta(path: str, max_lines: int = 40) -> tuple[str | None, str | N
     cwd: str | None = None
     first_user: str | None = None
     try:
-        with open(path, "r", errors="replace") as f:
+        with open(path, errors="replace") as f:
             for i, line in enumerate(f):
                 if i >= max_lines:
                     break
@@ -456,7 +456,7 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         return cached
 
     results: list[dict] = []
-    for mtime, fpath, proj in candidates:
+    for _mtime, fpath, proj in candidates:
         if len(results) >= limit:
             break
 

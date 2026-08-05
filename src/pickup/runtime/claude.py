@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 
-from pickup.scan import claude as scan_claude
 from pickup.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
 from pickup.runtime.base import BaseRuntime, usable_cwd
+from pickup.scan import claude as scan_claude
 
 
 class ClaudeRuntime(BaseRuntime):

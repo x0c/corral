@@ -41,23 +41,23 @@ os.environ["PICKUP_CACHE_DIR"] = _SIDEBAR_STATE_DIR
 _split_layout.reset_default_layout_db()
 _SIDEBAR_STATE_DB = os.path.join(_SIDEBAR_STATE_DIR, "sidebar-layout.sqlite3")
 
-from pickup import ui_prefs as _ui_prefs
-
-import pickup
-from pickup.models import LaunchPlan
 from textual import events
 from textual.color import Color
 from textual.geometry import Offset, Size
 from textual.widgets import Footer, Input, Label, ListView
+
+import pickup
+from pickup import ui_prefs as _ui_prefs
+from pickup.models import LaunchPlan
 from pickup.ui.app import PickupApp
 from pickup.ui.embed_pane import EmbedPane
-from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.modals import (
     ConfirmModal,
     NewSessionModal,
     RuntimeChoice,
     RuntimePickerModal,
 )
+from pickup.ui.runtime_top_bar import _SidebarToggleChip
 from pickup.ui.search_modal import FullTextSearchModal, SearchResultRow
 from pickup.ui.session_list import (
     GROUP_ID_PREFIX,
@@ -66,8 +66,8 @@ from pickup.ui.session_list import (
     SessionGroupCard,
     SessionListView,
 )
+from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.terminal_theme import TerminalBackgroundReport, TerminalThemeParser
-from pickup.ui.runtime_top_bar import _SidebarToggleChip
 
 HAS_TMUX = shutil.which("tmux") is not None
 
@@ -244,6 +244,7 @@ class OscProbeFlushTests(unittest.TestCase):
         import pty
         import select
         import threading
+
         from pickup import theme
 
         master, slave = pty.openpty()
@@ -317,6 +318,7 @@ class OscProbeFlushTests(unittest.TestCase):
         import pty
         import select
         import threading
+
         from pickup import theme
 
         master, slave = pty.openpty()
@@ -438,7 +440,9 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
     def test_theme_variable_defaults_cover_every_custom_variable(self) -> None:
         """自有主题里定义的变量，兜底表必须一个不落地覆盖。"""
         from pickup.ui.app import (
-            _PICKUP_DARK, _PICKUP_LIGHT, _THEME_VARIABLE_DEFAULTS,
+            _PICKUP_DARK,
+            _PICKUP_LIGHT,
+            _THEME_VARIABLE_DEFAULTS,
         )
 
         builtin = {"block-cursor-background", "block-cursor-blurred-background"}
@@ -943,8 +947,9 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
 
     def test_fatal_tui_exception_is_logged_before_exit(self) -> None:
         """非 compositor 自愈的致命异常必须写入 observe，不能只闪在终端。"""
-        from pickup import observe
         import tempfile
+
+        from pickup import observe
 
         store, _ = _make_store()
         with tempfile.TemporaryDirectory() as tmp:
@@ -983,8 +988,9 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("via WorkerFailed", last["traceback"])
 
     async def test_f12_saves_screenshot_under_cache(self) -> None:
-        from pickup import observe
         import tempfile
+
+        from pickup import observe
 
         store, _ = _make_store()
         with tempfile.TemporaryDirectory() as tmp:
@@ -3114,6 +3120,7 @@ class InputMaskFilterTests(unittest.TestCase):
         from rich.segment import Segment
         from rich.terminal_theme import DEFAULT_TERMINAL_THEME
         from textual.color import Color
+
         from pickup.ui.embed_pane import _InputMaskFilter
 
         f = _InputMaskFilter(DEFAULT_TERMINAL_THEME)
@@ -3518,7 +3525,10 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
 
         app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.host_session", side_effect=__import__("pickup.embed", fromlist=["EmbedError"]).EmbedError("boom")):
+        with mock.patch(
+            "pickup.embed.host_session",
+            side_effect=__import__("pickup.embed", fromlist=["EmbedError"]).EmbedError("boom"),
+        ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("enter")
@@ -3654,8 +3664,9 @@ class EmbedPaneSelectionSpanTests(unittest.IsolatedAsyncioTestCase):
     def _spans_ok(self, pane, strip, text):
         """穷举 [s,e) 字符区间，逐个断言不丢字、高亮精确。strip 已带 offset 元数据。"""
         from unittest.mock import PropertyMock
-        from textual.selection import Selection
+
         from textual.geometry import Offset
+        from textual.selection import Selection
 
         n = len(text)
         for s in range(n + 1):
@@ -3707,11 +3718,12 @@ class EmbedPaneSelectionSpanTests(unittest.IsolatedAsyncioTestCase):
         """多行选区里，非末行的 get_span 返回 (start, -1)（一直选到行尾）；
         end==-1 必须换算成整行 cell 宽度，且中英文都不能丢字。"""
         from unittest.mock import PropertyMock
+
         from rich.segment import Segment
         from rich.style import Style
-        from textual.strip import Strip
-        from textual.selection import Selection
         from textual.geometry import Offset
+        from textual.selection import Selection
+        from textual.strip import Strip
 
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
@@ -3738,9 +3750,10 @@ class EmbedPaneSelectionSpanTests(unittest.IsolatedAsyncioTestCase):
         """走真实解析管线（parse_screen -> _row_to_strip -> adjust_cell_length ->
         apply_offsets），端到端验证 render_line 的选区渲染，覆盖英文与混排。"""
         from unittest.mock import PropertyMock
+
+        from textual.geometry import Offset, Size
         from textual.selection import Selection
-        from textual.geometry import Offset
-        from textual.geometry import Size
+
         from pickup import embed
         from pickup.ui.embed_pane import _row_to_strip
 
@@ -3789,11 +3802,12 @@ class EmbedPaneSelectionSpanTests(unittest.IsolatedAsyncioTestCase):
         始下标都必须等于它前面所有 Segment 文本的累计字符数（即与"对同一文本重新
         apply_offsets"完全一致）。"""
         from unittest.mock import PropertyMock
+
         from rich.segment import Segment
         from rich.style import Style
-        from textual.strip import Strip
-        from textual.selection import Selection
         from textual.geometry import Offset, Size
+        from textual.selection import Selection
+        from textual.strip import Strip
 
         def offsets_consistent(strip):
             expect = 0
@@ -3878,11 +3892,12 @@ class EmbedPaneSelectionStyleTests(unittest.IsolatedAsyncioTestCase):
         背景色会把选区背景顶掉。`_apply_selection` 改用 `_overlay_style`（后置样式，
         `cell + selection`）后，选区背景强制覆盖，同时留空前景以保留原文字色。"""
         from unittest.mock import PropertyMock
+
         from rich.segment import Segment
         from rich.style import Style
-        from textual.strip import Strip
-        from textual.selection import Selection
         from textual.geometry import Offset
+        from textual.selection import Selection
+        from textual.strip import Strip
 
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
@@ -5585,8 +5600,7 @@ class SessionHudSummaryTests(unittest.TestCase):
 
     def test_expanded_shows_na_when_timestamp_missing(self) -> None:
         """Cursor 等没有逐条时间的历史：展开态用 N/A 占位，列宽与真实时间对齐。"""
-        from pickup.ui.session_hud import SessionHud, summarize_user_messages
-        from pickup.ui.session_hud import _MISSING_TIME
+        from pickup.ui.session_hud import _MISSING_TIME, SessionHud, summarize_user_messages
 
         hud = SessionHud()
         hud.update_data(

@@ -31,7 +31,7 @@ def _load_index() -> dict[str, str]:
     if not os.path.isfile(SESSION_INDEX):
         return index
     try:
-        with open(SESSION_INDEX, "r", errors="replace") as f:
+        with open(SESSION_INDEX, errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -98,7 +98,7 @@ def _read_session_head(path: str, max_lines: int = 30) -> list[dict]:
     found_meta = False
     found_user = False
     try:
-        with open(path, "r", errors="replace") as f:
+        with open(path, errors="replace") as f:
             for i, line in enumerate(f):
                 if i >= max_lines:
                     break
@@ -384,7 +384,8 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         if info is None:
             continue
         if info["thread_source"] == "subagent":
-            continue  # Codex 自身多智能体拆出的子代理线程，不是用户发起的顶层会话，会与父会话共享同一段历史开头造成列表重复
+            continue  # Codex 自身多智能体拆出的子代理线程，不是用户发起的顶层会话，
+            # 会与父会话共享同一段历史开头造成列表重复
         if not info["first_user_msg"] or info["fallback_title"] == "(无消息)":
             continue  # 无用户消息的空会话
         if info["first_user_msg"].startswith(titles.PROMPT_MARKER):

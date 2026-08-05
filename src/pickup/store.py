@@ -615,8 +615,8 @@ class SessionStore:
 
         返回写入列表的会话 dict；调用方应用其会话键选中左栏并挂右栏画面。
         """
-        from pickup.scan.common import shorten_cwd
         from pickup.models import format_message_time
+        from pickup.scan.common import shorten_cwd
 
         session_id = ident or keepalive_name.rsplit("-", 1)[-1]
         now = time.time()

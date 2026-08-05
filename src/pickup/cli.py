@@ -14,12 +14,11 @@ from dataclasses import dataclass
 
 # Kitty 键盘协议的关闭开关已上移到 `pickup/__init__.py`（包顶层，任何用法必经），
 # 这里不再重复设置：本模块的 `from pickup import ...` 一定先执行包初始化。
-
 from pickup import agent_api, cursor_observer, embed, keepalive, observe, titles, updater
+from pickup import theme as theme_mod
 from pickup.models import LaunchPlan, LaunchRequest, NewSessionRequest
 from pickup.runtime import LaunchError, RuntimeRegistry, default_registry, execute_launch
 from pickup.store import SessionStore
-from pickup import theme as theme_mod
 from pickup.theme import _probe_osc_colours
 
 

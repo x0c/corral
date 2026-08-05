@@ -6,7 +6,8 @@ import os
 import unicodedata
 from datetime import datetime
 
-from rich.cells import cell_len as _rich_cell_len, chop_cells as _rich_chop_cells
+from rich.cells import cell_len as _rich_cell_len
+from rich.cells import chop_cells as _rich_chop_cells
 
 from pickup.models import ConversationMessage, format_message_time, session_key
 

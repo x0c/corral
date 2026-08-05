@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from rich.text import Text
 from textual import events
@@ -567,7 +567,13 @@ class SplitPaneArea(Vertical):
         spec = PaneSpec(session_key="__hint__", cell_id=self._new_cell_id())
         self._panes = []
         self._schedule_mount(
-            [(spec, {"source": "", "id": "__hint__", "fallback_title": ""}, lambda: Text(t("detail.new_session_hint")))],
+            [
+                (
+                    spec,
+                    {"source": "", "id": "__hint__", "fallback_title": ""},
+                    lambda: Text(t("detail.new_session_hint")),
+                ),
+            ],
         )
 
     def show_single_preview(
@@ -645,7 +651,7 @@ class SplitPaneArea(Vertical):
     ) -> None:
         """同身份：更新 title / detail_renderer，保留 EmbedPane 的 live 画面。"""
         cells = self._cells()
-        for cell, (session, _kname, renderer) in zip(cells, entries):
+        for cell, (session, _kname, renderer) in zip(cells, entries, strict=False):
             cell.set_title(self._pane_title(session))
             pane = cell.embed_pane()
             if pane is None:

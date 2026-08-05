@@ -29,8 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pickup import titles
 from pickup.cache import get_cache
 from pickup.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
-from pickup.scan.common import is_ephemeral_agent_cwd
-from pickup.scan.common import live_pids_by_process_name
+from pickup.scan.common import is_ephemeral_agent_cwd, live_pids_by_process_name
 from pickup.scan.common import parse_timestamp as _parse_iso
 
 KIMI_HOME = os.path.expanduser("~/.kimi-code")
@@ -107,7 +106,7 @@ def _iter_message_entries(lines):
 def _read_head_lines(path: str, max_lines: int = 400) -> list[str]:
     lines: list[str] = []
     try:
-        with open(path, "r", errors="replace") as f:
+        with open(path, errors="replace") as f:
             for i, line in enumerate(f):
                 if i >= max_lines:
                     break

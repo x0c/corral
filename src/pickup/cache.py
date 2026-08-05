@@ -11,9 +11,9 @@ import sqlite3
 import stat
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from pickup.models import ConversationMessage
 

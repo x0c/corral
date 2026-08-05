@@ -11,11 +11,11 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 from pickup.attention import AttentionEvidence
-
 
 _JSONL_TAIL_BYTES = 512 * 1024
 _JSONL_TAIL_ENTRIES = 768

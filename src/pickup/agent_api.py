@@ -18,8 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from pickup import keepalive
-from pickup import titles
+from pickup import keepalive, titles
 from pickup.cache import get_cache, scan_period
 from pickup.models import format_message_time, session_key
 from pickup.runtime import LaunchError, default_registry
@@ -216,7 +215,7 @@ def _scan_runtimes(runtimes: list, limit: int) -> dict[str, list[dict]]:
     with scan_period():
         with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
             scanned = pool.map(_scan_one, runtimes)
-        return {runtime.id: result for runtime, result in zip(runtimes, scanned)}
+        return {runtime.id: result for runtime, result in zip(runtimes, scanned, strict=True)}
 
 
 def resolve_ref(registry, ref: str, limit: int) -> dict:
@@ -228,8 +227,8 @@ def resolve_ref(registry, ref: str, limit: int) -> dict:
         runtime_id, _, ident = ref.partition(":")
         try:
             runtime = registry.get(runtime_id)
-        except LaunchError:
-            raise ApiError("not_found", f"未注册的运行时：{runtime_id}", EXIT_NOT_FOUND)
+        except LaunchError as exc:
+            raise ApiError("not_found", f"未注册的运行时：{runtime_id}", EXIT_NOT_FOUND) from exc
         matches = _match_sessions(runtime.scan_sessions(limit), ident)
     else:
         runtimes = list(registry)
@@ -588,7 +587,7 @@ def cmd_context(args, registry) -> dict:
     try:
         handoff = runtime.export_handoff(session, title)
     except LaunchError as exc:
-        raise ApiError("history_unavailable", str(exc), EXIT_ERROR)
+        raise ApiError("history_unavailable", str(exc), EXIT_ERROR) from exc
 
     try:
         resume_plan = runtime.build_resume_plan(session)
@@ -668,10 +667,8 @@ def cmd_describe(args, registry) -> dict:
 
 def cmd_diagnose(args, registry) -> dict:
     """只读诊断：缓存路径、日志是否存在、runtime 配色自检、tmux 版本。不启动 TUI。"""
-    from pickup import embed
-    from pickup import observe
-    from pickup import updater
     import pickup
+    from pickup import embed, observe, updater
 
     shots_dir = os.path.join(observe.CACHE_DIR, observe.SCREENSHOTS_DIR_NAME)
     tmux_version = None
@@ -715,7 +712,10 @@ def _describe_command(spec: dict, full: bool) -> dict:
         "name": spec["name"],
         "help": spec["help"],
         "args": [
-            {"flags": arg["flags"], **{k: v for k, v in arg["kwargs"].items() if k in ("help", "default", "choices", "required", "nargs")}}
+            {
+                "flags": arg["flags"],
+                **{k: v for k, v in arg["kwargs"].items() if k in ("help", "default", "choices", "required", "nargs")},
+            }
             for arg in spec.get("args", [])
         ],
     }
@@ -730,10 +730,10 @@ COMMANDS = [
         "help": "结构化列出已注册运行时的会话",
         "args": [
             {"flags": ["--runtime"], "kwargs": {"help": "只看指定运行时（claude / codex / opencode / kimi / cursor）"}},
-            {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},
+            {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
-            {"flags": ["--status"], "kwargs": {"choices": ["done", "pending", "aborted", "unknown"], "help": "按状态过滤"}},
+            {"flags": ["--status"], "kwargs": {"choices": ["done", "pending", "aborted", "unknown"], "help": "按状态过滤"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--cwd"], "kwargs": {"help": "按工作目录子串过滤（大小写不敏感）"}},
             {"flags": ["--live"], "kwargs": {"action": "store_true", "help": "只返回进程仍在运行的会话"}},
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段"}},
@@ -751,7 +751,7 @@ COMMANDS = [
             "status": "英文状态枚举：done / pending / aborted / unknown",
             "status_tag": "中文状态标签（含图标），供人类展示用",
             "live": "进程是否真实运行中（true/false），不是文件时间推断",
-            "keepalive": "是否正挂在 pickup 的后台保活（tmux）里；为 true 时 resume_command 会另起一个竞争同一份会话文件的新进程，应改用 pickup 的 Enter/接回操作而不是 resume_command",
+            "keepalive": "是否正挂在 pickup 的后台保活（tmux）里；为 true 时 resume_command 会另起一个竞争同一份会话文件的新进程，应改用 pickup 的 Enter/接回操作而不是 resume_command",  # noqa: E501 - describe 字段文档，一行一条，拆行破坏输出
             "pid": "运行中会话的进程号；非运行中为 null，可用于定位/发信号给该进程",
             "last_user": "最后一条真人消息，硬截断精简，一眼看懂最近在聊什么",
             "last_agent": "助手最后一轮回复片段，硬截断精简",
@@ -765,7 +765,7 @@ COMMANDS = [
         "help": "按关键词搜会话；默认搜标题/首尾消息/目录，--deep 时额外全文搜索对话内容",
         "args": [
             {"flags": ["keywords"], "kwargs": {"nargs": "+", "help": "关键词（多个关键词为 AND 关系）"}},
-            {"flags": ["--deep"], "kwargs": {"action": "store_true", "help": "对未命中的会话额外读取完整对话内容再搜一遍（较慢）"}},
+            {"flags": ["--deep"], "kwargs": {"action": "store_true", "help": "对未命中的会话额外读取完整对话内容再搜一遍（较慢）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--runtime"], "kwargs": {"help": "只搜指定运行时"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条参与搜索"}},
             {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
@@ -791,11 +791,11 @@ COMMANDS = [
             {"flags": ["--out"], "kwargs": {"help": "把 show 结果写入指定 JSON 文件，stdout 只返回文件引用摘要"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "定位会话时的扫描深度"}},
-            {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段（覆盖 --compact 的默认字段集）"}},
+            {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段（覆盖 --compact 的默认字段集）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         ],
         "fields": {
             "...": "与 list 命令的字段相同",
-            "messages": "[{role: user|assistant, text, time, mtime}]，按时间顺序的用户消息和每轮最终答复；time 为人类可读发送时间、mtime 为对应 Unix 时间戳，历史格式解析不出时间时两者均为 null；Monitor/task-notification 等系统注入事件已过滤，不出现在这里",
+            "messages": "[{role: user|assistant, text, time, mtime}]，按时间顺序的用户消息和每轮最终答复；time 为人类可读发送时间、mtime 为对应 Unix 时间戳，历史格式解析不出时间时两者均为 null；Monitor/task-notification 等系统注入事件已过滤，不出现在这里",  # noqa: E501 - describe 字段文档，一行一条，拆行破坏输出
             "message_count_shown": "本次实际返回的消息条数",
             "message_count_total": "该会话可提取的消息总数",
             "output_path": "--out 模式下写入的 JSON 文件绝对路径",
@@ -805,12 +805,12 @@ COMMANDS = [
         "name": "export",
         "help": "导出某个时间范围内所有会话的完整对话，合并为一个 JSON",
         "args": [
-            {"flags": ["--since"], "kwargs": {"help": "起始时间（含）：2026-07-20 / '2026-07-20 15:30' / 7d、24h、30m（距今）/ Unix 时间戳；省略则不设下界"}},
-            {"flags": ["--until"], "kwargs": {"help": "结束时间（含）：格式同 --since；只给日期时按当天 23:59:59 计；省略则不设上界"}},
-            {"flags": ["--runtime"], "kwargs": {"help": "只导出指定运行时（claude / codex / opencode / kimi / cursor）"}},
-            {"flags": ["--status"], "kwargs": {"choices": ["done", "pending", "aborted", "unknown"], "help": "按状态过滤"}},
+            {"flags": ["--since"], "kwargs": {"help": "起始时间（含）：2026-07-20 / '2026-07-20 15:30' / 7d、24h、30m（距今）/ Unix 时间戳；省略则不设下界"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            {"flags": ["--until"], "kwargs": {"help": "结束时间（含）：格式同 --since；只给日期时按当天 23:59:59 计；省略则不设上界"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            {"flags": ["--runtime"], "kwargs": {"help": "只导出指定运行时（claude / codex / opencode / kimi / cursor）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            {"flags": ["--status"], "kwargs": {"choices": ["done", "pending", "aborted", "unknown"], "help": "按状态过滤"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--cwd"], "kwargs": {"help": "按工作目录子串过滤（大小写不敏感）"}},
-            {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},
+            {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--out"], "kwargs": {"help": "写入指定 JSON 文件；省略则打到 stdout。大范围导出建议用 --out"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON"}},
         ],
@@ -818,8 +818,8 @@ COMMANDS = [
             "range": "本次导出的时间范围；since/until 为 Unix 时间戳，*_display 为人类可读，null 表示该侧无界",
             "count": "命中的会话数",
             "scan_limit": "本次每个运行时的扫描深度（同 --limit）",
-            "sessions": "按最后更新时间正序排列的会话数组；每条含 list 的全部字段，外加 messages 完整对话（结构同 show --full）与 message_count_total",
-            "output_path": "--out 模式下写入的 JSON 文件绝对路径；此模式 stdout 只回文件引用摘要，sessions_omitted 为 true",
+            "sessions": "按最后更新时间正序排列的会话数组；每条含 list 的全部字段，外加 messages 完整对话（结构同 show --full）与 message_count_total",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            "output_path": "--out 模式下写入的 JSON 文件绝对路径；此模式 stdout 只回文件引用摘要，sessions_omitted 为 true",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         },
     },
     {
@@ -841,7 +841,7 @@ COMMANDS = [
             "cwd_exists": "该目录在当前机器上是否仍然存在",
             "history_path": "历史 JSONL 文件绝对路径",
             "history_reading_hint": "如何解读该运行时历史格式的提示",
-            "suggested_prompt": "跨运行时接力时建议使用的首条提示词（人类或 Agent 可直接复用）；内含会话状态和从原会话自动提取的对话摘录，原始历史文件仍是权威来源",
+            "suggested_prompt": "跨运行时接力时建议使用的首条提示词（人类或 Agent 可直接复用）；内含会话状态和从原会话自动提取的对话摘录，原始历史文件仍是权威来源",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             "resume_command": "同运行时原生恢复该会话的 shell 命令（可能为 null）",
         },
     },
@@ -873,7 +873,7 @@ COMMANDS = [
     },
     {
         "name": "diagnose",
-        "help": "只读诊断 TUI/缓存可观测性路径（events.log、embed-error.log、最近闪退、截图目录、tmux、安装路径）；不启动界面",
+        "help": "只读诊断 TUI/缓存可观测性路径（events.log、embed-error.log、最近闪退、截图目录、tmux、安装路径）；不启动界面",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         "args": [],
         "fields": {
             "cache_dir": "本地缓存目录（默认 ~/.cache/pickup）",
@@ -881,7 +881,7 @@ COMMANDS = [
             "events_log_exists": "events.log 是否已存在",
             "embed_error_log": "异常 traceback 日志路径（后台线程 + 致命闪退）",
             "embed_error_log_exists": "embed-error.log 是否已存在",
-            "last_error": "embed-error.log 末条解析结果（ts/where/exc_type/exc_msg/traceback；已展开 WorkerFailed 等包装）；无记录时为 null",
+            "last_error": "embed-error.log 末条解析结果（ts/where/exc_type/exc_msg/traceback；已展开 WorkerFailed 等包装）；无记录时为 null",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             "screenshots_dir": "F12 截图输出目录",
             "debug": "当前是否开启 PICKUP_DEBUG",
             "runtime_label_style_claude": "配色自检样例（应为 bold #D97757）",

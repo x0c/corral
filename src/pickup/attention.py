@@ -12,9 +12,10 @@ import sqlite3
 import stat
 import threading
 import time
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable, Literal, Mapping, Sequence
+from typing import Literal
 
 from pickup.models import SessionInfo, session_key
 
@@ -399,7 +400,7 @@ class AttentionStore:
             first_baseline = not self._baseline_complete(conn)
             store_created_at = self._store_created_at(conn)
             now = time.time()
-            for session, key in zip(sessions, keys):
+            for session, key in zip(sessions, keys, strict=True):
                 runtime_id = str(session.get("source") or "unknown")
                 session_id = str(session.get("id") or "")
                 if not session_id:

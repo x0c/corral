@@ -130,7 +130,7 @@ class RuntimeRegistry:
         with scan_period():
             with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
                 scanned = pool.map(_scan_one, runtimes)
-                result = {runtime.id: sessions for runtime, sessions in zip(runtimes, scanned)}
+                result = {runtime.id: sessions for runtime, sessions in zip(runtimes, scanned, strict=True)}
         return result
 
     def build_launch_plan(self, request: LaunchRequest) -> LaunchPlan:

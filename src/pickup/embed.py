@@ -517,7 +517,7 @@ class ControlChannel:
         # 第一项预留给 `tmux -C attach` 自身的启动响应。必须等这块响应完整消费后
         # 才能允许业务命令进入 FIFO，否则首条业务 waiter 会被 attach 的 %end
         # 错拿，随后所有响应整体错位。
-        self._pending: "collections.deque[queue.Queue | None | object]" = collections.deque(
+        self._pending: collections.deque[queue.Queue | None | object] = collections.deque(
             [_STARTUP_WAITER]
         )
         # reader 已从 FIFO 取出、但守卫块尚未结束的当前请求。close/通道死亡时
@@ -553,7 +553,7 @@ class ControlChannel:
         in_block = False
         block_lines: list[str] = []
         block_guard: tuple[str, str] | None = None
-        current_waiter: "queue.Queue | None | object" = None
+        current_waiter: queue.Queue | None | object = None
         try:
             for raw in self._proc.stdout:
                 line = raw.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
@@ -668,7 +668,7 @@ class ControlChannel:
             except Exception:
                 pass  # 回调（Event.set）不应失败；兜底保读线程不死
 
-    def _send_command(self, cmd: str, waiter: "queue.Queue | None") -> bool:
+    def _send_command(self, cmd: str, waiter: queue.Queue | None) -> bool:
         """写一条命令行并把 waiter 原子地登记进 FIFO 响应队列。
 
         waiter 为 None（command()/send() 的既有用法）表示调用方不关心响应，
@@ -714,7 +714,7 @@ class ControlChannel:
         """
         if self.dead:
             return None
-        waiter: "queue.Queue[tuple[bool, list[str]]]" = queue.Queue(maxsize=1)
+        waiter: queue.Queue[tuple[bool, list[str]]] = queue.Queue(maxsize=1)
         cmd = " ".join(_ctl_quote(a) for a in args)
         if not self._send_command(cmd, waiter):
             return None
@@ -888,7 +888,7 @@ def sgr_mouse_sequence(button: int, x: int, y: int) -> str:
 _WHEEL_SEND_INTERVAL = 0.02  # 发送限速（秒）：内层程序每个滚轮事件都要整屏重绘，更快没意义
 _WHEEL_QUEUE_MAX = 12        # 单会话积压上限，超出丢最旧
 _wheel_lock = threading.Lock()
-_wheel_queues: dict[str, "collections.deque[str]"] = {}
+_wheel_queues: dict[str, collections.deque[str]] = {}
 _wheel_wake = threading.Event()
 _wheel_thread: threading.Thread | None = None
 
@@ -1038,8 +1038,8 @@ class Cell:
     # 38/48;2;r;g;b 原样保留，不再量化）——curses 时代的 `_rgb_to_256` 量化是
     # curses 颜色对（256 个上限）的限制，不是现在 Textual/Rich 渲染端的限制；
     # Rich 用 `Color.from_rgb` 原样表达任意 RGB，量化到这里只是无谓降质。
-    fg: "int | tuple[int, int, int]" = -1
-    bg: "int | tuple[int, int, int]" = -1
+    fg: int | tuple[int, int, int] = -1
+    bg: int | tuple[int, int, int] = -1
     bold: bool = False
     dim: bool = False
     underline: bool = False
@@ -1063,8 +1063,8 @@ class _SgrState:
 
     def __init__(self) -> None:
         # 与 Cell.fg/bg 同语义：-1 默认色 / 0-255 索引色 / (r, g, b) 真彩色
-        self.fg: "int | tuple[int, int, int]" = -1
-        self.bg: "int | tuple[int, int, int]" = -1
+        self.fg: int | tuple[int, int, int] = -1
+        self.bg: int | tuple[int, int, int] = -1
         self.bold = False
         self.dim = False
         self.underline = False
@@ -1105,7 +1105,7 @@ class _SgrState:
             elif p in (38, 48):
                 # 38/48 ; 5 ; n  或  38/48 ; 2 ; r ; g ; b
                 if i + 2 < len(params) and params[i + 1] == 5:
-                    value: "int | tuple[int, int, int]" = params[i + 2]
+                    value: int | tuple[int, int, int] = params[i + 2]
                     i += 2
                 elif i + 4 < len(params) and params[i + 1] == 2:
                     value = (params[i + 2], params[i + 3], params[i + 4])

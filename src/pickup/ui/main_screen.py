@@ -33,12 +33,12 @@ from pickup.ui.controllers.host_controller import HostControllerMixin
 from pickup.ui.controllers.hud_controller import HUD_POLL_INTERVAL, HudControllerMixin
 from pickup.ui.controllers.layout_controller import LayoutControllerMixin
 from pickup.ui.controllers.update_controller import UpdateControllerMixin
-from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.modals import ConfirmModal, choose_target_runtime, new_session_flow
 from pickup.ui.nav import NavState
-from pickup.ui.session_list import SessionListView
-from pickup.ui.update_toast import UpdateToast
 from pickup.ui.runtime_top_bar import RuntimeTopBar
+from pickup.ui.session_list import SessionListView
+from pickup.ui.split_pane_area import SplitPaneArea
+from pickup.ui.update_toast import UpdateToast
 
 try:
     from textual.screen import Screen
@@ -710,8 +710,9 @@ class MainScreen(
         排版结果没法塞回单个 `Text`。`EmbedPane` 那条 Visual→Strip 管线本来就接受
         任意 Rich 可渲染对象，不需要为此特判。
         """
-        import pickup
         from rich.console import Group
+
+        import pickup
 
         # 详情 renderer 会被 EmbedPane 缓存并延后调用；后台重扫后闭包捕获的 dict
         # 已不是 Store 当前对象，必须每次按稳定会话键重新解析最新快照。
@@ -1244,8 +1245,8 @@ class MainScreen(
 
     @work
     async def action_kill_keepalive(self) -> None:
-        from pickup import keepalive
         import pickup
+        from pickup import keepalive
 
         session_list = self.query_one(SessionListView)
         session = session_list.selected_session()
@@ -1278,6 +1279,7 @@ class MainScreen(
         """
         import asyncio
         import sqlite3
+
         import pickup
         from pickup import keepalive
         from pickup.runtime import LaunchError
@@ -1347,6 +1349,7 @@ class MainScreen(
         """
         import asyncio
         import sqlite3
+
         from pickup import keepalive
         from pickup.runtime import LaunchError
 

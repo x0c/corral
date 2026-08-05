@@ -137,7 +137,7 @@ def find_checkout_root(start: str | None = None) -> str | None:
         init = os.path.join(cur, "src", "pickup", "__init__.py")
         if os.path.isfile(pyproject) and os.path.isfile(init):
             try:
-                with open(pyproject, "r", encoding="utf-8") as fh:
+                with open(pyproject, encoding="utf-8") as fh:
                     text = fh.read(400)
                 if 'name = "pickup"' in text or "name = 'pickup'" in text:
                     return cur
@@ -385,7 +385,7 @@ def _load_state() -> dict:
     if not os.path.isfile(STATE_FILE):
         return {}
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as fh:
+        with open(STATE_FILE, encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, json.JSONDecodeError):
         return {}

@@ -35,9 +35,10 @@ import os
 import shutil
 import sys
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 SHIM_API_VERSION = 1
 SHIM_SCRIPT_VERSION = 1  # 生成脚本内容有语义变化时 +1，status 据此判 outdated

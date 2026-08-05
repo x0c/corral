@@ -9,6 +9,8 @@ import time
 import unittest
 from unittest import mock
 
+from textual.geometry import Size
+
 import pickup
 from pickup import i18n
 from pickup.attention import AttentionState
@@ -16,7 +18,6 @@ from pickup.models import ConversationMessage
 from pickup.ui.app import PickupApp
 from pickup.ui.main_screen import MainScreen
 from pickup.ui.session_list import SessionCard
-from textual.geometry import Size
 
 # 侧边栏记忆（会话组/置顶/折叠/焦点）是机器级共享的真实状态（sqlite3），测试若
 # 不隔离会读到机主真实的组与置顶，侧边栏布局被真实数据污染导致时序断言全挂

@@ -201,10 +201,10 @@ class SidebarLayoutDBTests(_TempLayoutDB):
         """真并发写：每个进程各置顶一条，一条都不能少。"""
         script = (
             "import sys;"
-            "sys.path.insert(0, %r);"
+            f"sys.path.insert(0, {str(Path(split_layout.__file__).resolve().parents[1])!r});"
             "from pickup.split_layout import SidebarLayoutDB;"
             "SidebarLayoutDB().toggle_session_pin(sys.argv[1])"
-        ) % str(Path(split_layout.__file__).resolve().parents[1])
+        )
         keys = [f"claude:p{i}" for i in range(8)]
         env = dict(os.environ, PICKUP_CACHE_DIR=str(self.cache_dir))
 

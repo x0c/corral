@@ -49,7 +49,7 @@ class CompatExportsTests(unittest.TestCase):
 
     def test_unknown_attribute_still_raises(self) -> None:
         with self.assertRaises(AttributeError):
-            pickup._does_not_exist_anywhere
+            pickup._does_not_exist_anywhere  # noqa: B018 - 刻意求值触发 __getattr__
 
 
 class VersionConsistencyTests(unittest.TestCase):
@@ -90,7 +90,10 @@ class VersionConsistencyTests(unittest.TestCase):
 
         self.assertEqual(pickup.__version__, pyproject_version, "__init__.py 与 pyproject.toml 版本不一致")
         self.assertEqual(pickup.__version__, cargo_toml_version, "__init__.py 与 Cargo.toml 版本不一致")
-        self.assertEqual(pickup.__version__, cargo_lock_version, "__init__.py 与 Cargo.lock 里 pickup-native 版本不一致")
+        self.assertEqual(
+            pickup.__version__, cargo_lock_version,
+            "__init__.py 与 Cargo.lock 里 pickup-native 版本不一致",
+        )
 
 
 class SessionFieldContractTests(unittest.TestCase):

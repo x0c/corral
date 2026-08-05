@@ -4,8 +4,8 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 from pickup import titles
 from pickup.models import Handoff, LaunchPlan, LaunchRequest, NewSessionRequest, session_key

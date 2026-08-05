@@ -5,9 +5,9 @@ from __future__ import annotations
 import dataclasses
 import os
 
-from pickup.scan import opencode as scan_opencode
 from pickup.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
 from pickup.runtime.base import BaseRuntime, usable_cwd
+from pickup.scan import opencode as scan_opencode
 
 
 class OpenCodeRuntime(BaseRuntime):

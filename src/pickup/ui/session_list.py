@@ -33,7 +33,6 @@ if TYPE_CHECKING:
 
 from pickup.i18n import t
 
-
 NEW_SESSION_ID = "__new_session__"
 GROUP_ID_PREFIX = "__group__-"
 
@@ -108,7 +107,7 @@ class _SidebarRow:
     kind: str
     identity: str
     session: dict | None = None
-    group: "SplitGroup | None" = None
+    group: SplitGroup | None = None
     member_sessions: tuple[dict, ...] = ()
     tree_position: str | None = None
     pinned: bool = False
@@ -167,7 +166,7 @@ class SessionCard(Widget):
     def __init__(
         self,
         session: dict,
-        store: "pickup.SessionStore",
+        store: pickup.SessionStore,
         *,
         display_title: str | None = None,
         tree_position: str | None = None,
@@ -388,7 +387,7 @@ class SessionGroupCard(Widget):
 
     def __init__(
         self,
-        group: "SplitGroup",
+        group: SplitGroup,
         member_sessions: tuple[dict, ...],
         *,
         pinned: bool = False,
@@ -414,7 +413,7 @@ class SessionGroupCard(Widget):
 
     def apply_update(
         self,
-        group: "SplitGroup",
+        group: SplitGroup,
         member_sessions: tuple[dict, ...],
         *,
         pinned: bool = False,
@@ -536,11 +535,11 @@ class SessionListView(ListView):
 
     def __init__(
         self,
-        store: "pickup.SessionStore",
+        store: pickup.SessionStore,
         nav,
         *,
-        group_store: "SplitLayoutStore | None" = None,
-        on_layout_change: Callable[[Callable[["SplitLayoutStore"], object]], "SplitLayoutStore"] | None = None,
+        group_store: SplitLayoutStore | None = None,
+        on_layout_change: Callable[[Callable[[SplitLayoutStore], object]], SplitLayoutStore] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -660,7 +659,7 @@ class SessionListView(ListView):
             for item in self.children
             if item.id != NEW_SESSION_ID and item.children
         ]
-        for widget, row in zip(widgets, rows):
+        for widget, row in zip(widgets, rows, strict=False):
             if isinstance(widget, SessionGroupCard) and row.group is not None:
                 widget.apply_update(
                     row.group, row.member_sessions, pinned=row.pinned
@@ -716,7 +715,7 @@ class SessionListView(ListView):
         pinned_blocks: list[tuple[float, list[_SidebarRow]]] = []
         unpinned_by_id: dict[str, list[_SidebarRow]] = {}
         grouped_keys: set[str] = set()
-        group_for_key: dict[str, "SplitGroup"] = {}
+        group_for_key: dict[str, SplitGroup] = {}
 
         if self.group_store is not None:
             for group in self.group_store.ordered_groups():
@@ -844,7 +843,7 @@ class SessionListView(ListView):
         card = item.children[0] if item.children else None
         return card.session if isinstance(card, SessionCard) else None
 
-    def selected_group(self) -> "SplitGroup | None":
+    def selected_group(self) -> SplitGroup | None:
         """返回当前选中的会话组；普通会话或新建项返回 None。"""
         idx = self.index
         if idx is None or idx < 0 or idx >= len(self.children):

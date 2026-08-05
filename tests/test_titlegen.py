@@ -3,13 +3,12 @@
 
 from __future__ import annotations
 
-import os
 import json
+import os
 import unittest
 from unittest import mock
 
-from pickup import titlegen
-from pickup import titles
+from pickup import titlegen, titles
 
 
 class _FakeProc:

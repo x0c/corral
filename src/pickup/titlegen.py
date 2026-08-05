@@ -100,7 +100,7 @@ class CodexTitleGenerator(TitleGenerator):
             if _run(argv, prompt, timeout) is None:
                 return None
             try:
-                with open(out_path, "r", encoding="utf-8") as f:
+                with open(out_path, encoding="utf-8") as f:
                     return f.read()
             except OSError:
                 return None

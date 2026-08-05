@@ -9,24 +9,23 @@ import threading
 import time
 import unittest
 from datetime import datetime, timezone
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 from pickup import i18n
 
 i18n.set_lang("en")
 
-from pickup.scan import claude as scan_claude
-from pickup.scan import codex as scan_codex
-from pickup.scan import kimi as scan_kimi
-from pickup.scan import opencode as scan_opencode
 import pickup
-from pickup import agent_api
-from pickup import titles
+from pickup import agent_api, titles
 from pickup.models import ConversationMessage, Handoff, LaunchPlan, format_message_time
 from pickup.runtime.base import BaseRuntime
 from pickup.runtime.claude import ClaudeRuntime
 from pickup.runtime.codex import CodexRuntime
+from pickup.scan import claude as scan_claude
+from pickup.scan import codex as scan_codex
+from pickup.scan import kimi as scan_kimi
+from pickup.scan import opencode as scan_opencode
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -1322,8 +1321,11 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             self.assertEqual(info["fallback_title"], "帮我修复登录报错")
             self.assertEqual(info["mtime"], 1_700_000_500_000 / 1000)
             self.assertEqual(info["status_tag"], titles.STATUS_DONE)
-            self.assertEqual(info["size_bytes"], len(json.dumps({"type": "text", "text": "帮我修复登录报错"}, ensure_ascii=False))
-                              + len(json.dumps({"type": "text", "text": "已定位并修复"}, ensure_ascii=False)))
+            self.assertEqual(
+                info["size_bytes"],
+                len(json.dumps({"type": "text", "text": "帮我修复登录报错"}, ensure_ascii=False))
+                + len(json.dumps({"type": "text", "text": "已定位并修复"}, ensure_ascii=False)),
+            )
             self.assertEqual(info["path"], str(db_path))
 
     def test_filters_out_subagent_sessions(self) -> None:
@@ -1674,7 +1676,10 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
             self.assertEqual(info["status_tag"], titles.STATUS_DONE)
             self.assertEqual(info["first_user_msg"], "帮我修复登录报错")
             self.assertEqual(info["last_agent_msg"], "已定位并修复")
-            self.assertEqual(info["path"], str(sessions_dir / "wd_demo" / "session_abc" / "agents" / "main" / "wire.jsonl"))
+            self.assertEqual(
+                info["path"],
+                str(sessions_dir / "wd_demo" / "session_abc" / "agents" / "main" / "wire.jsonl"),
+            )
             # updatedAt 权威时间优先于文件 mtime
             self.assertEqual(info["mtime"], scan_kimi._parse_iso("2026-07-17T08:05:00.000Z"))
 
@@ -2706,8 +2711,8 @@ class ProjectSidebarTests(unittest.TestCase):
 
     def test_session_store_projects_resolves_project_groups(self) -> None:
         """SessionStore.projects 合并会话 cwd（并可扫 git 根），不能 NameError 闪退。"""
-        from pickup.store import SessionStore
         from pickup import projects as projects_mod
+        from pickup.store import SessionStore
 
         runtime = mock.Mock(id="claude", display_name="Claude")
         runtime.scan_signature.return_value = None

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 
-from pickup.scan import codex as scan_codex
 from pickup.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
 from pickup.runtime.base import BaseRuntime, usable_cwd
+from pickup.scan import codex as scan_codex
 
 
 class CodexRuntime(BaseRuntime):

@@ -20,7 +20,7 @@ Textual 基类同名的下划线前缀方法。
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from rich.text import Text
 from textual import events

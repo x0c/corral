@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 
-from pickup.scan import kimi as scan_kimi
 from pickup.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
 from pickup.runtime.base import BaseRuntime, usable_cwd
+from pickup.scan import kimi as scan_kimi
 
 
 class KimiRuntime(BaseRuntime):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Mapping
+from collections.abc import Mapping
 
 SUPPORTED = ("en", "zh")
 DEFAULT_LANG = "en"
@@ -378,7 +378,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "删除会话「{title}」？将永久抹掉本地历史，不可恢复",
     },
     "confirm.delete_running_session": {
-        "en": "Session “{title}” is still running. Deleting will end it first, then permanently erase the local history — this cannot be undone",
+        "en": "Session “{title}” is still running. Deleting will end it first, then permanently erase the local history — this cannot be undone",  # noqa: E501
         "zh": "会话「{title}」正在进行中。删除会先结束它，再永久抹掉本地历史，不可恢复",
     },
     "confirm.delete_group": {

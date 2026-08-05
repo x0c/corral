@@ -25,8 +25,8 @@ class HostControllerMixin:
         tmux 子进程调用甩给后台 worker（见 `_host_and_focus`），不在 Textual 事件
         循环所在线程上跑——tmux 卡顿（系统负载高/磁盘慢）时 `_CREATE_TIMEOUT` 上限
         有 5s，同步跑会把整个 UI 冻住那么久。"""
-        from pickup import keepalive
         import pickup
+        from pickup import keepalive
         from pickup.split_layout import MAX_PANES
 
         same_runtime = isinstance(request, pickup.LaunchRequest) and (
@@ -84,10 +84,10 @@ class HostControllerMixin:
     def _host_and_focus(
         self, request, plan, ident, same_runtime, width, height, *, add_pane: bool = False,
     ) -> None:
-        from pickup import embed
-        from pickup import observe
-        import pickup
         import time
+
+        import pickup
+        from pickup import embed, observe
 
         t0 = time.perf_counter()
         runtime = request.target_runtime_id
@@ -159,7 +159,9 @@ class HostControllerMixin:
                     cwd=str(request.session.get("cwd") or "") or None,
                 )
                 select_key = pickup.session_key(current)
-            fallback = lambda s=current: self._render_detail(s)
+
+            def fallback(s=current):
+                return self._render_detail(s)
         else:
             runtime = self.store.registry.get(request.target_runtime_id)
             current = self.store.register_hosted_session(
@@ -169,7 +171,9 @@ class HostControllerMixin:
                 cwd=request.cwd,
             )
             select_key = pickup.session_key(current)
-            fallback = lambda s=current: self._render_detail(s)
+
+            def fallback(s=current):
+                return self._render_detail(s)
         # 新建 / 接力托管成功同样是明确意图：用户就是来跟这个新会话说话的。
         autofocus = self._can_autofocus()
         if add_pane:
@@ -209,10 +213,10 @@ class HostControllerMixin:
 
     @work(thread=True, group="host")
     def _host_direct_worker(self, direct, width: int, height: int) -> None:
-        from pickup import embed
-        from pickup import observe
-        import pickup
         import time
+
+        import pickup
+        from pickup import embed, observe
 
         t0 = time.perf_counter()
         runtime = direct.runtime_id

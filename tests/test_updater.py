@@ -40,13 +40,19 @@ class ChannelDetectionTests(unittest.TestCase):
             self.assertEqual(updater.detect_channel(), "brew")
 
     def test_detects_pip_user_site_packages(self) -> None:
-        with mock.patch.object(updater.site, "getusersitepackages", return_value="/home/user/.local/lib/python3.12/site-packages"):
+        with mock.patch.object(
+            updater.site, "getusersitepackages",
+            return_value="/home/user/.local/lib/python3.12/site-packages",
+        ):
             with mock.patch.object(updater.site, "getsitepackages", return_value=[]):
                 with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/pickup"):
                     self.assertEqual(updater.detect_channel(), "pip")
 
     def test_detects_dev_source_checkout(self) -> None:
-        with mock.patch.object(updater.site, "getusersitepackages", return_value="/home/user/.local/lib/python3.12/site-packages"):
+        with mock.patch.object(
+            updater.site, "getusersitepackages",
+            return_value="/home/user/.local/lib/python3.12/site-packages",
+        ):
             with mock.patch.object(updater.site, "getsitepackages", return_value=[]):
                 with self._with_pkg_file("/Users/demo/Codes/pickup/cli/src/pickup"):
                     self.assertEqual(updater.detect_channel(), "dev")
@@ -106,7 +112,10 @@ class ChannelDetectionTests(unittest.TestCase):
         self.assertEqual(updater.update_command("0.21.0", "brew"), ["brew", "upgrade", "pickup"])
 
     def test_update_command_pip_user_site(self) -> None:
-        with mock.patch.object(updater.site, "getusersitepackages", return_value="/home/user/.local/lib/python3.12/site-packages"):
+        with mock.patch.object(
+            updater.site, "getusersitepackages",
+            return_value="/home/user/.local/lib/python3.12/site-packages",
+        ):
             with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/pickup"):
                 cmd = updater.update_command("0.21.0", "pip", spec="WHEEL_URL")
         self.assertIn("--user", cmd)

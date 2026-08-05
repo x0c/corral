@@ -84,7 +84,7 @@ def load_cache() -> dict:
     if not os.path.isfile(CACHE_FILE):
         return {}
     try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+        with open(CACHE_FILE, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
@@ -310,7 +310,11 @@ def _build_batch_prompt(sessions: list[dict]) -> str:
     )
 
 
-def generate_titles_batch(sessions: list[dict], generator: "titlegen.TitleGenerator | None", timeout: int = 90) -> dict[str, str]:
+def generate_titles_batch(
+    sessions: list[dict],
+    generator: titlegen.TitleGenerator | None,
+    timeout: int = 90,
+) -> dict[str, str]:
     """通过标题生成器批量生成标题,返回 {id: title}。失败时返回空字典。"""
     if not sessions or generator is None:
         return {}
@@ -360,7 +364,11 @@ def _persist_failed_sessions(sessions: list[dict], cache: dict) -> None:
         save_cache(cache)
 
 
-def refresh_titles(sessions: list[dict], cache: dict, generator: "titlegen.TitleGenerator | None" = None) -> dict[str, str]:
+def refresh_titles(
+    sessions: list[dict],
+    cache: dict,
+    generator: titlegen.TitleGenerator | None = None,
+) -> dict[str, str]:
     """对一批待生成的会话批量生成标题,写回缓存,返回 {会话键: title} 增量。
 
     内部按 _BATCH_SIZE 拆批，并以最多 _MAX_PARALLEL_BATCHES 批并行生成。

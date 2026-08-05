@@ -16,9 +16,10 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Iterator
+from typing import Any
 
 CACHE_DIR = os.path.expanduser("~/.cache/pickup")
 EVENTS_LOG = os.path.join(CACHE_DIR, "events.log")

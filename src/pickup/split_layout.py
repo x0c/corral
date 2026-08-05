@@ -142,7 +142,7 @@ class SplitLayoutStore:
     pinned_group_ids: dict[str, float] = field(default_factory=dict)
     revision: int = 0
 
-    def adopt(self, other: "SplitLayoutStore") -> None:
+    def adopt(self, other: SplitLayoutStore) -> None:
         """就地换成另一份快照的内容。
 
         必须就地更新而不是换实例：`SessionListView.group_store` 持有的是同一个引用，

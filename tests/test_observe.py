@@ -210,8 +210,8 @@ class PickupEmbedErrorBridgeTests(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
         cache = self._tmpdir.name
-        from pickup import observe
         import pickup
+        from pickup import observe
 
         self.observe = observe
         self.pickup = pickup

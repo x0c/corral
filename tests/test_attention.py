@@ -186,7 +186,7 @@ class AttentionStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get("codex", "old").kind, "none")
 
     def test_corrupt_database_degrades_without_raising(self):
-        self.path.write_bytes("这不是 SQLite 数据库".encode("utf-8"))
+        self.path.write_bytes("这不是 SQLite 数据库".encode())
         broken = AttentionStore(self.path)
         self.assertEqual(broken.get("codex", "one").kind, "none")
         self.assertEqual(

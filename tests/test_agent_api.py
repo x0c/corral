@@ -11,13 +11,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup import agent_api
-from pickup import titles
+from pickup import agent_api, titles
 from pickup.models import ConversationMessage, Handoff, LaunchPlan
-from pickup.runtime.claude import ClaudeRuntime
-from pickup.runtime.codex import CodexRuntime
 from pickup.runtime import RuntimeRegistry
 from pickup.runtime.base import BaseRuntime, LaunchError
+from pickup.runtime.claude import ClaudeRuntime
+from pickup.runtime.codex import CodexRuntime
 
 
 class FakeRuntime(BaseRuntime):

@@ -57,7 +57,12 @@ def main(argv: list[str]) -> int:
         return int(exc.code)
     except Exception as exc:  # noqa: BLE001 - 维护命令必须给稳定错误契约
         if "--json" in argv:
-            print(json.dumps(_envelope(error={"code": "cache_error", "message": f"缓存操作失败：{exc}"}), ensure_ascii=False))
+            print(
+                json.dumps(
+                    _envelope(error={"code": "cache_error", "message": f"缓存操作失败：{exc}"}),
+                    ensure_ascii=False,
+                )
+            )
         else:
             print(f"缓存操作失败：{exc}", file=sys.stderr)
         return 1

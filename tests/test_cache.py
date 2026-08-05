@@ -59,7 +59,7 @@ class PerformanceCacheTests(unittest.TestCase):
         self.assertEqual(before["session_count"], after["session_count"])
 
     def test_corrupt_database_degrades_to_cache_miss(self):
-        self.path.write_bytes("这不是 SQLite 数据库".encode("utf-8"))
+        self.path.write_bytes("这不是 SQLite 数据库".encode())
         history = Path(self.temp.name) / "session.jsonl"
         history.write_text("{}\n", encoding="utf-8")
         broken = PerformanceCache(self.path)

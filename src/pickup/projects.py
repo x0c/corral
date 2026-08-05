@@ -9,8 +9,9 @@ from __future__ import annotations
 import fnmatch
 import os
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable, TextIO
+from typing import TextIO
 
 from pickup.display import _disambiguate_labels, _fuzzy_match, _normalize_cwd
 from pickup.scan.common import is_ephemeral_agent_cwd

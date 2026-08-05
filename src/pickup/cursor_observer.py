@@ -15,9 +15,9 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
-
+from typing import Any
 
 OBSERVER_API_VERSION = 1
 CURSOR_HOOK_VERSION = 1
@@ -103,7 +103,7 @@ def _read_config(path: Path, *, missing_ok: bool = True) -> tuple[dict[str, Any]
             "config_not_found",
             "未找到 Cursor 用户级观察配置",
             exit_code=EXIT_NOT_FOUND,
-        )
+        ) from None
     except PermissionError as exc:
         raise ObserverError(
             "permission_denied",

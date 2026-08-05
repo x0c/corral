@@ -44,17 +44,17 @@ from __future__ import annotations
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from functools import lru_cache
-from typing import Callable
 
 from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
 from rich.terminal_theme import DEFAULT_TERMINAL_THEME
 from rich.text import Text
-from textual.filter import LineFilter
 from textual import events, work
 from textual.dom import NoScreen
+from textual.filter import LineFilter
 from textual.geometry import Region
 from textual.reactive import reactive
 from textual.strip import Strip
@@ -122,11 +122,11 @@ def _masked_style(style: Style | None, target: tuple[int, int, int], theme) -> S
         new_bg = (tr, tg, tb)
     else:
         new_bg = tuple(
-            round(t + (c - t) * _MASK_BG_FACTOR) for t, c in zip((tr, tg, tb), bg)
+            round(t + (c - t) * _MASK_BG_FACTOR) for t, c in zip((tr, tg, tb), bg, strict=True)
         )
     fg_src = fg if fg is not None else theme.foreground_color
     new_fg = tuple(
-        round(b + (c - b) * _MASK_FG_FACTOR) for b, c in zip(new_bg, fg_src)
+        round(b + (c - b) * _MASK_FG_FACTOR) for b, c in zip(new_bg, fg_src, strict=True)
     )
     masked = Style(
         color=RichColor.from_rgb(*new_fg),
@@ -184,7 +184,7 @@ _RESIZE_CAPTURE_STABLE_FRAMES = 2
 # 观感就是右栏闪一下。只存解析后的网格（原生路径下是紧凑的 ParsedRow），
 # 不存 Strip——Strip 按当前面板宽度编译，换格子/换宽度后必须重建。
 _SCREEN_CACHE_MAX = 6
-_screen_cache: "OrderedDict[str, tuple[list, tuple[int, int, bool] | None]]" = OrderedDict()
+_screen_cache: OrderedDict[str, tuple[list, tuple[int, int, bool] | None]] = OrderedDict()
 
 
 def _cache_screen(name: str | None, grid, cursor) -> None:
@@ -249,7 +249,7 @@ class EmbedPane(Widget):
     def __init__(
         self,
         *,
-        detail_renderer: Callable[[], "Text | str"] | None = None,
+        detail_renderer: Callable[[], Text | str] | None = None,
         on_focus_list: Callable[[], None] | None = None,
         on_restart: Callable[[bool], None] | None = None,
         osc_report: bytes | None = None,
@@ -348,7 +348,7 @@ class EmbedPane(Widget):
     def focus_session(
         self,
         name: str,
-        fallback_renderer: Callable[[], "Text | str"] | None = None,
+        fallback_renderer: Callable[[], Text | str] | None = None,
     ) -> None:
         """把面板切到托管会话；首帧到达前立即展示可用内容或空白终端。"""
         # 后台重扫和重复点击会再次选中同一个会话。已有画面时必须保持幂等，不能
@@ -406,7 +406,7 @@ class EmbedPane(Widget):
         # 有画面就不该再按静态回退钉底，否则新帧到达前会被当成对话预览排版。
         self._detail_stick_bottom = False
 
-    def show_detail(self, renderer: Callable[[], "Text | str"] | None) -> None:
+    def show_detail(self, renderer: Callable[[], Text | str] | None) -> None:
         """未托管会话：展示静态详情而非实时画面。
 
         默认钉在对话最新（底部）；异步暖加载把正文填进来后仍保持钉底，
@@ -641,7 +641,7 @@ class EmbedPane(Widget):
             return
         strips = self._strips
         regions = []
-        for y, (old_row, new_row) in enumerate(zip(old_grid, grid)):
+        for y, (old_row, new_row) in enumerate(zip(old_grid, grid, strict=True)):
             if old_row != new_row:
                 strips[y] = _row_to_strip(new_row)
                 regions.append(Region(0, y, width, 1))
@@ -951,7 +951,7 @@ class EmbedPane(Widget):
         self._static_strips_cache = strips
         return strips
 
-    def render(self) -> "Text":
+    def render(self) -> Text:
         """兼容方法：生产渲染已经完全走 `render_line`（Textual 8.x 的 Widget
         基类在个别内部路径——比如首次 `_render()` 缓存、无障碍访问树——仍可能
         调用 `self.render()`，且既有测试直接调用 `pane.render().plain` 断言
