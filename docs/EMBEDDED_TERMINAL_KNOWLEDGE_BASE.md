@@ -100,6 +100,7 @@ stateDiagram-v2
 
 - 普通字符经 `send_literal()` 原样发送；特殊键经 `translate_textual_key()` 转成 tmux 键名后由 `send_key()` 发送。仅在右栏持有键盘焦点时转发。
 - `Ctrl+C` 有选中文本时复制；没有选区时发送给助手中断运行，不能让终端界面自身退出。
+- **这一格没有活着的助手时，回车不转发、改为重启该会话**（`_is_restart_target()`：静态对话预览格与「会话已结束」格）。托管首帧尚未到达那种回退态**不算**——那条会话活着，回车必须原样发给助手。重启动作本身由界面层执行，见 [终端界面知识库](TERMINAL_UI_KNOWLEDGE_BASE.md) §6「已结束会话必须永远留着重启入口」。
 - 粘贴走 `set-buffer` + `paste-buffer -p`，保留 bracketed paste 语义。
 - pane 声明鼠标捕获时，滚轮以 press-only SGR 鼠标序列转发，并由后台队列限速、积压丢旧；否则滚轮调整 `history_offset`，以 `capture-pane -S/-E` 抓取真实历史窗口。
 - 滚轮命中右栏即处理，不要求右栏持有键盘焦点；命中左栏则滚会话列表。
@@ -232,7 +233,7 @@ stateDiagram-v2
 - **AI 易错点**【禁止】把托管窗缩到极窄（低于 `MIN_HOST_WIDTH`×`MIN_HOST_HEIGHT`）-> 创建用 `normalize_host_size` 抬下限，后续缩放用 `should_resize_host` 过滤；过窄直接跳过（原因：助手会按当前列数硬换行写入 scrollback，恢复宽度后往上滚仍是窄条历史，无法自动还原）。**代价要知道：格宽低于下限时托管窗停在下限宽度、右栏只画得下左边一部分列，助手输出右侧被裁掉（不是重排）。** 分屏格数上限提到 4 格后这已是常态——四格都不低于下限，终端大约要 200 列以上（左栏 39 + 间隔，再乘四格 40）；`Ctrl+Shift+B` 收起左栏能省回约 40 列。这是刻意取舍（裁显示 vs 污染 scrollback，选前者，可恢复），不要改成"跟着格宽一起缩"。
 - **AI 易错点**【禁止】`resize-window` 后立刻把每一帧 Cursor/Claude 重排中间态刷到右栏 -> 已有 live `_grid` 时必须 `_begin_resize_capture_hold`，连续稳定帧或超时后再一次跳到最新（原因：助手重排观感等同「疯狂滚动」数秒）。
 - **AI 易错点**【禁止】把自动聚焦挂到「选择跟随」上 -> 只有明确意图（回车、新建 / 直启托管成功、关掉持有输入的格）才交焦点，上下浏览必须留在列表（原因：浏览一抢焦点，方向键就都发给助手了，列表没法用）。
-- **AI 易错点**【禁止】自动把焦点交给静态预览格或已结束的格 -> `focus_session_key` 必须带 `only_live=True`（原因：那些格收不到输入，用户敲的字直接丢，比让他多点一下鼠标糟得多）。
+- **AI 易错点**【禁止】自动把焦点交给静态预览格或已结束的格 -> `focus_session_key` 必须带 `only_live=True`（原因：那些格收不到输入，用户敲的字直接丢，比让他多点一下鼠标糟得多）。**但用户自己点进这类格子是允许的**，此时回车不再是「丢掉的输入」而是「重启这条会话」（见上文输入与滚动分流），改这块时别把两件事混成一条「已结束的格不处理按键」。
 - **AI 易错点**【隐性依赖】实时格持有输入时，Screen 上 `priority=True` 的翻页 / Home / End 绑定会**先于**面板拿到按键。必须靠 `MainScreen.check_action` 返回 `False` 让路，`run_action` 才会跳过派发、把键透传给托管会话。
 - **AI 易错点**【隐性依赖】`_mount_panes_async` 默认会把焦点还给原先持有焦点的列表；带着 `focus_pane=True` 的调用必须绕开这段，否则自动聚焦会在挂载后被立刻撤销。
 - **AI 易错点**【隐性依赖】剪贴板图片粘贴走的哨兵协议（`␞PICKUP_IMG_BEGIN␞<base64>␞PICKUP_IMG_END␞`，`embed.py` 的 `_IMG_SENTINEL_BEGIN`/`_IMG_SENTINEL_END`）是与远程网页终端网关 `shell-gate`（另一仓库，`internal/server/web/enhance.js`）之间的跨仓库约定 —— 改任一侧的哨兵字符串都必须同步另一侧，否则粘贴的图片会被当成普通文本整段发给 agent，不会报错也不会落盘，只能靠肉眼发现。本域看不到 `shell-gate` 侧代码，改动前先确认对方现状。
