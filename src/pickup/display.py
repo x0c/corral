@@ -126,42 +126,189 @@ def _wrap_preview_text(text: str, width: int) -> list[str]:
     return lines
 
 
-def _preview_lines(
-    messages: list[ConversationMessage], runtime_name: str, width: int,
-) -> list[tuple[str, str, str]]:
-    """把真实会话消息整理为带角色样式的聊天记录行。
+# 预览正文的 Markdown 配色：**刻意只用 bold/dim/italic，不引入任何颜色**。
+# Rich 自带的 markdown.* 默认主题是洋红标题 + 青色代码，而且内联代码与代码块
+# 都写死了 `on black` 底色——套进右栏既跟面板底色打架（浅色终端下就是一块黑），
+# 满屏高饱和色也正是机主 2026-08-05 说的「看起来很刺眼」。颜色在这份预览里只
+# 承担一件事：区分「谁说的」（角色抬头与分隔线）。
+_MARKDOWN_QUIET_THEME_STYLES = {
+    "markdown.h1": "bold",
+    "markdown.h2": "bold",
+    "markdown.h3": "bold",
+    "markdown.h4": "bold",
+    "markdown.h5": "bold",
+    "markdown.h6": "bold",
+    "markdown.code": "bold",
+    "markdown.code_block": "none",
+    "markdown.item.bullet": "dim",
+    "markdown.item.number": "dim",
+    "markdown.list": "none",
+    "markdown.block_quote": "dim",
+    "markdown.link": "underline",
+    "markdown.link_url": "dim underline",
+    "markdown.table.border": "dim",
+    "markdown.table.header": "bold",
+    "markdown.hr": "dim",
+}
 
-    每行是 (kind, text, dim_suffix) 三元组。**每条消息占两块**：一行「角色」抬头
-    （`kind` 为 user/assistant，带角色色；`dim_suffix` 是发送时间，淡色叠绘，缺
-    时间戳则为空），随后正文从下一行起顶格排，`kind` 一律是 `body`、不着色。
 
-    这个版式是 2026-08-05 按机主实测反馈定下的，两条都别改回去：正文跟在
-    「角色: 」后面会被前缀宽度吃掉一大截行宽，长消息在窄格里几乎排不下，时间戳
-    还会被挤到抬头行末尾折下来；正文整段套角色色（尤其助手的品牌橙）满屏都是
-    高饱和色块，读长对话很刺眼。颜色只用来区分"谁说的"，正文交回正常前景色。
+def _markdown_renderable(text: str, width: int):
+    """把一条消息正文渲染成可直接交给右栏的 Rich 可渲染对象。
+
+    两处必须保留的偏差，改动前先看清楚：
+
+    1. **关掉 HTML 解析**（`{"html": False}`）。CommonMark 默认把 `<foo>…</foo>`
+       当 HTML 块，而 Rich 的 markdown 没有 HTML 元素处理器，整段会被**静默丢弃**
+       ——助手和用户消息里 `<system-reminder>`、`<Thinking>`、`<urlopen error>`
+       这类尖括号内容极常见，实测整条消息会变成空白。关掉之后它们按普通文字原样
+       显示。历史查看器丢内容比不支持 markdown 严重得多，这条不能省。
+    2. **代码块不要 Rich 默认的 monokai**：那是写死的深色背景块，浅色终端下突兀，
+       也盖掉了面板自己的底色。这里换成跟随终端调色板的 ANSI 主题 + 透明背景。
+
+    已知且接受的取舍：`__init__.py` 这类没包反引号的双下划线标识符，会按
+    CommonMark 语义被解析成加粗的 `init.py`（GitHub 上同样如此）。文字不会丢，
+    只是下划线被当成了标记；要根治只能整体关掉强调语法，代价更大。
     """
-    content_width = max(1, width - 2)
+    from rich.console import Console
+    from rich.theme import Theme
+
+    width = max(1, width)
+    console = Console(
+        width=width,
+        theme=Theme(_MARKDOWN_QUIET_THEME_STYLES, inherit=True),
+        color_system="truecolor",
+        legacy_windows=False,
+    )
+    markdown = _QuietMarkdown(text)
+    return _PreRenderedLines(
+        console.render_lines(markdown, console.options.update(width=width), pad=False)
+    )
+
+
+class _PreRenderedLines:
+    """把「已经渲染好的 Segment 行」原样交给上层（Textual 的 Visual 管线接受它）。
+
+    预览的 markdown 必须用我们自己的 Theme 渲染（见 `_markdown_renderable`），
+    而那份 Theme 只能挂在自己的 Console 上；渲染结果用这个壳带出来，Textual
+    再照常把它编译成 Strip，不需要在界面层特判。
+    """
+
+    def __init__(self, lines) -> None:
+        self._lines = lines
+
+    def __rich_console__(self, console, options):
+        from rich.segment import Segment
+
+        newline = Segment.line()
+        for line in self._lines:
+            yield from line
+            yield newline
+
+
+def _quiet_markdown_class():
+    """惰性构造 Markdown 子类：`rich.markdown` 导入不便宜，只有真渲染时才付。"""
+    from markdown_it import MarkdownIt
+    from rich.markdown import CodeBlock, Markdown
+    from rich.syntax import Syntax
+
+    class _CodeBlock(CodeBlock):
+        def __rich_console__(self, console, options):
+            yield Syntax(
+                str(self.text).rstrip(),
+                self.lexer_name,
+                theme="ansi_dark",
+                background_color="default",  # 透明：跟随面板/终端底色
+                word_wrap=True,
+                padding=0,
+            )
+
+    class _Markdown(Markdown):
+        elements = {**Markdown.elements, "fence": _CodeBlock, "code_block": _CodeBlock}
+
+        def __init__(self, markup: str) -> None:
+            super().__init__(markup)
+            self.parsed = (
+                MarkdownIt("commonmark", {"html": False})
+                .enable("strikethrough")
+                .enable("table")
+                .parse(markup)
+            )
+
+    return _Markdown
+
+
+class _LazyQuietMarkdown:
+    """`_QuietMarkdown(text)` 首次调用时才真正建类（见 `_quiet_markdown_class`）。"""
+
+    _cls = None
+
+    def __call__(self, markup: str):
+        if _LazyQuietMarkdown._cls is None:
+            _LazyQuietMarkdown._cls = _quiet_markdown_class()
+        return _LazyQuietMarkdown._cls(markup)
+
+
+_QuietMarkdown = _LazyQuietMarkdown()
+
+
+def _rule_style(role_style: str) -> str:
+    """消息分隔线的样式：取角色色但压暗，别让整条横线抢过正文。"""
+    color = role_style.replace("bold", "").strip()
+    return f"dim {color}" if color else "dim"
+
+
+def _preview_blocks(
+    messages: list[ConversationMessage],
+    runtime_name: str,
+    width: int,
+    *,
+    user_style: str = "bold cyan",
+    assistant_style: str = "dim",
+):
+    """把真实会话消息整理成右栏可直接渲染的块序列（Rich 可渲染对象列表）。
+
+    每条消息三块：**角色色的分隔横线**（第一条不画）→ **角色抬头**（着色，右挂
+    淡色时间）→ **Markdown 正文**（顶格、吃满整格宽、不着角色色）。
+
+    这套版式是 2026-08-05 按机主看真机截图后的反馈定下的，几条都别改回去：
+    正文跟在「角色: 」后面会被前缀吃掉一大截行宽，长消息在窄格里几乎排不下，
+    时间戳还会被挤到抬头行末折下来；正文整段套品牌色读长对话很刺眼；消息之间
+    用空行分隔在长对话里几乎看不出边界，换成角色色的横线才一眼分得清谁在说话。
+    """
+    from rich.text import Text
+
     from pickup.i18n import t
 
+    content_width = max(1, width - 2)
     if not messages:
-        return [("dim", t("detail.empty_preview"), "")]
+        return [Text(t("detail.empty_preview"), style="dim")]
 
-    lines: list[tuple[str, str, str]] = []
+    blocks: list[object] = []
     for message in messages:
-        if lines:
-            lines.append(("blank", "", ""))
-        time_suffix = f"  · {format_message_time(message.timestamp)}" if message.timestamp else ""
         if message.role == "user":
-            kind = "user"
-            role = t("preview.you")
+            role, role_style = t("preview.you"), user_style
         else:
-            kind = "assistant"
-            role = f"◆ {runtime_name}"
-        # 抬头只截断不补齐：补出来的尾随空格会把后面淡色叠绘的时间推到行外。
-        lines.append((kind, _fit_cell(role, content_width).rstrip(), time_suffix))
-        for part in _wrap_preview_text(message.text.strip(), content_width) or [""]:
-            lines.append(("body", part, ""))
-    return lines
+            role, role_style = f"◆ {runtime_name}", assistant_style
+        if blocks:
+            blocks.append(Text("─" * content_width, style=_rule_style(role_style)))
+        head = Text(_fit_cell(role, content_width).rstrip(), style=role_style)
+        if message.timestamp:
+            head.append(f"  · {format_message_time(message.timestamp)}", style="dim")
+        blocks.append(head)
+        blocks.append(_markdown_renderable(_clean_preview_text(message.text), content_width))
+    return blocks
+
+
+def _clean_preview_text(text: str) -> str:
+    """去掉会破坏 TUI 的控制字符；制表符按四空格展开后再交给 markdown。
+
+    ZWNJ/ZWJ 虽属 Cf，但是文字连写和 emoji grapheme 的有效组成字符，不能像其他
+    控制字符一样替换成空格（与 `_wrap_preview_text` 同一条约束）。
+    """
+    return "".join(
+        ch if ch in "\n\t\u200c\u200d" or unicodedata.category(ch)[0] != "C" else " "
+        for ch in text.strip()
+    ).replace("\t", "    ")
 
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # braille 转圈圈，每帧占 1 列宽

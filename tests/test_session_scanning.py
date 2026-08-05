@@ -2324,6 +2324,19 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertEqual(short.rstrip(), "短")
         self.assertEqual(pickup._text_width(short), 8)
 
+    @staticmethod
+    def _preview_text(messages, runtime_name, width, **kw):
+        """把预览块渲染成纯文本行，供断言使用（与右栏真实渲染同一条路径）。"""
+        import io
+
+        from rich.console import Console
+
+        blocks = pickup._preview_blocks(messages, runtime_name, width, **kw)
+        console = Console(width=width, file=io.StringIO(), color_system=None)
+        for block in blocks:
+            console.print(block)
+        return [line.rstrip() for line in console.file.getvalue().splitlines()]
+
     def test_preview_renders_messages_as_chronological_chat(self) -> None:
         messages = [
             pickup.ConversationMessage("user", "请分析启动速度"),
@@ -2332,53 +2345,100 @@ class TuiLayoutTests(unittest.TestCase):
             pickup.ConversationMessage("assistant", "已经完成实现和验证"),
         ]
 
-        lines = pickup._preview_lines(messages, "Codex", 40)
-        text_lines = [line for _, line, _ in lines]
+        lines = self._preview_text(messages, "Codex", 40)
 
         # 角色抬头独占一行，正文顶格另起一行（不带「角色: 」前缀）
-        self.assertEqual(text_lines[0], "● You")
-        self.assertEqual(text_lines[1], "请分析启动速度")
-        self.assertEqual(sum(1 for line in text_lines if line == "● You"), 2)
-        self.assertEqual(sum(1 for line in text_lines if line == "◆ Codex"), 2)
-        self.assertEqual(
-            [kind for kind, _, _ in lines[:2]], ["user", "body"],
-            "正文必须标成 body，渲染层才知道不给它上角色色",
-        )
-        self.assertTrue(all(pickup._text_width(line) <= 40 for line in text_lines))
+        self.assertEqual(lines[0], "● You")
+        self.assertEqual(lines[1], "请分析启动速度")
+        self.assertEqual(sum(1 for line in lines if line == "● You"), 2)
+        self.assertEqual(sum(1 for line in lines if line == "◆ Codex"), 2)
+        self.assertTrue(all(pickup._text_width(line) <= 40 for line in lines))
 
-    def test_preview_lines_show_timestamp_suffix_only_when_available(self) -> None:
+    def test_preview_separates_messages_with_a_rule_not_a_blank_line(self) -> None:
+        """消息之间用横线分隔（取后一条消息的角色色），不再是看不出边界的空行。"""
+        from rich.text import Text
+
+        messages = [
+            pickup.ConversationMessage("user", "第一条"),
+            pickup.ConversationMessage("assistant", "第二条"),
+        ]
+        blocks = pickup._preview_blocks(
+            messages, "Codex", 24, assistant_style="bold #D97757",
+        )
+        rules = [
+            b for b in blocks
+            if isinstance(b, Text) and set(b.plain) == {"─"}
+        ]
+        self.assertEqual(len(rules), 1, "两条消息之间恰好一条分隔线，首条之前不画")
+        self.assertEqual(pickup._text_width(rules[0].plain), 22)
+        self.assertEqual(
+            str(rules[0].style), "dim #D97757",
+            "分隔线取后一条消息的角色色并压暗",
+        )
+
+    def test_preview_puts_timestamp_on_the_role_line_only_when_available(self) -> None:
         ts = 1_780_000_000.0
         messages = [
             pickup.ConversationMessage("user", "带时间戳的消息", ts),
             pickup.ConversationMessage("assistant", "老格式缺时间戳的消息"),
         ]
 
-        lines = pickup._preview_lines(messages, "Claude", 40)
-        role_lines = [(kind, line, suffix) for kind, line, suffix in lines if kind in ("user", "assistant")]
-        bodies = [line for kind, line, _ in lines if kind == "body"]
+        lines = self._preview_text(messages, "Claude", 40)
 
         # 时间戳挂在角色抬头行，不再跟正文抢首行宽度
-        self.assertEqual(role_lines[0][1], "● You")
-        self.assertIn(pickup.format_message_time(ts), role_lines[0][2])
-        self.assertIn("带时间戳的消息", bodies)
-        self.assertEqual(role_lines[1][1], "◆ Claude")
-        self.assertEqual(role_lines[1][2], "")
-        self.assertIn("老格式缺时间戳的消息", bodies)
+        self.assertEqual(lines[0], f"● You  · {pickup.format_message_time(ts)}")
+        self.assertIn("带时间戳的消息", lines)
+        self.assertIn("◆ Claude", lines)
+        self.assertIn("老格式缺时间戳的消息", lines)
 
-    def test_preview_lines_wrap_body_full_width_without_role_indent(self) -> None:
+    def test_preview_wraps_body_full_width_without_role_indent(self) -> None:
         """正文顶格折行、吃满整格宽度，续行不再按「角色: 」前缀缩进。"""
         messages = [
             pickup.ConversationMessage("user", "这是一条需要折行的很长很长的用户消息内容"),
             pickup.ConversationMessage("assistant", "这是一条需要折行的很长很长的助手回复内容"),
         ]
-        lines = pickup._preview_lines(messages, "Codex", 24)
-        bodies = [line for kind, line, _ in lines if kind == "body"]
+        lines = self._preview_text(messages, "Codex", 24)
+        bodies = [
+            line for line in lines
+            if line and line not in ("● You", "◆ Codex") and set(line) != {"─"}
+        ]
         self.assertGreaterEqual(len(bodies), 4, "两条消息都应折成多行")
-        self.assertFalse(
-            any(line.startswith(" ") for line in bodies), "正文行不得有缩进",
-        )
-        self.assertEqual([kind for kind, _, _ in lines][0], "user")
-        self.assertTrue(all(pickup._text_width(line) <= 22 for _, line, _ in lines if line))
+        self.assertFalse(any(line.startswith(" ") for line in bodies), "正文行不得有缩进")
+        self.assertTrue(all(pickup._text_width(line) <= 24 for line in lines))
+
+    def test_preview_renders_markdown_structure(self) -> None:
+        """正文按 Markdown 排版：标题去掉 #、列表变项目符号、反引号不再露出来。"""
+        messages = [
+            pickup.ConversationMessage(
+                "assistant",
+                "### 结论\n\n用的是 `getAccountSetting`，**已确认**。\n\n- 第一点\n- 第二点\n",
+            ),
+        ]
+        lines = self._preview_text(messages, "Claude", 60)
+        body = "\n".join(lines)
+        self.assertIn("结论", body)
+        self.assertNotIn("###", body)
+        self.assertNotIn("`", body)
+        self.assertNotIn("**", body)
+        self.assertIn("getAccountSetting", body)
+        self.assertTrue(any("•" in line and "第一点" in line for line in lines))
+
+    def test_preview_markdown_never_swallows_angle_bracket_text(self) -> None:
+        """回归：CommonMark 默认把 <foo> 当 HTML，Rich 没有 HTML 处理器会整段丢内容。
+
+        助手/用户消息里 `<system-reminder>`、`<Thinking>` 这类文本极常见，真丢过
+        整条消息；`_markdown_renderable` 因此关掉了 HTML 解析。
+        """
+        messages = [
+            pickup.ConversationMessage(
+                "assistant", "<system-reminder>\n这段必须还在\n</system-reminder>",
+            ),
+            pickup.ConversationMessage("user", "报错 <urlopen error> 出现了"),
+        ]
+        body = "\n".join(self._preview_text(messages, "Claude", 60))
+        self.assertIn("这段必须还在", body)
+        self.assertIn("system-reminder", body)
+        self.assertIn("urlopen error", body)
 
     def test_all_sessions_keep_stable_order_and_prepend_new_on_refresh(self) -> None:
         """列表展示出来后已有会话位置固定：内容更新（mtime 变新）不再跳到顶上；

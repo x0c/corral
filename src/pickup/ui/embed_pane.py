@@ -788,9 +788,13 @@ class EmbedPane(Widget):
         # text_selection 动态叠加高亮，不需要重编译整屏 Cell/Visual。
         self.refresh()
 
-    def _static_renderable(self) -> "Text":
-        """未托管/已结束/尚无首帧这几种非实时状态下要展示的内容，逻辑与旧版
-        `render()` 完全一致（只是从"每次渲染都现算"搬到"状态变化时算一次"）。
+    def _static_renderable(self):
+        """未托管/已结束/尚无首帧这几种非实时状态下要展示的内容。
+
+        返回值可以是 `Text`，**也可以是任意 Rich 可渲染对象**——对话预览的正文走
+        Markdown 排版，交回来的是 `Group`（见 `MainScreen._render_detail`）。下游
+        的 `visualize()` 本来就吃任意 Rich 可渲染对象；这里唯一要当心的是别再把
+        非 `Text` 的结果 `str()` 掉，那会把整篇排版压成一行对象 repr。
         """
         from pickup.i18n import t
 
@@ -798,7 +802,7 @@ class EmbedPane(Widget):
             return Text(t("detail.session_ended"))
         if self._detail_renderer is not None:
             rendered = self._detail_renderer()
-            return rendered if isinstance(rendered, Text) else Text(str(rendered))
+            return Text(rendered) if isinstance(rendered, str) else rendered
         if self.session_name is None:
             return Text(t("detail.pick_session"))
         # 会话已聚焦但还没有第一帧：连接/抓帧是后台实现细节，不能暴露成用户
@@ -971,7 +975,13 @@ class EmbedPane(Widget):
           `.plain`，所以这条路径同样保持原有契约。
         """
         if self.session_name is None or self.dead or self._grid is None:
-            return self._static_renderable()
+            rendered = self._static_renderable()
+            if isinstance(rendered, Text):
+                return rendered
+            # 对话预览是 Markdown 排版后的 Group，没有 `.plain`。这里按当前宽度
+            # 整篇编译成纯文本（**不切窗口**）：调用方要的是"这一格现在写着什么"，
+            # 不是可见的那几行。
+            return Text("\n".join(strip.text.rstrip() for strip in self._detail_full_strips()))
         height = max(1, self.size.height or 1)
         return Text("\n".join(self.render_line(y).text for y in range(height)))
 

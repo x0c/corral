@@ -1039,42 +1039,48 @@ class MainScreen(Screen):
             out.append("\n" + t("detail.restart_hint"), style="dim")
         return out
 
-    def _render_detail(self, session: dict) -> Text:
+    def _render_detail(self, session: dict):
+        """右栏静态预览的整篇内容：详情头 + 逐条消息（角色抬头 + Markdown 正文）。
+
+        返回的是 Rich 可渲染对象（`Group`），不是 `Text`——正文要按 Markdown 排版，
+        排版结果没法塞回单个 `Text`。`EmbedPane` 那条 Visual→Strip 管线本来就接受
+        任意 Rich 可渲染对象，不需要为此特判。
+        """
         import pickup
+        from rich.console import Group
 
         # 详情 renderer 会被 EmbedPane 缓存并延后调用；后台重扫后闭包捕获的 dict
         # 已不是 Store 当前对象，必须每次按稳定会话键重新解析最新快照。
         session = self.store.find_session(pickup.session_key(session)) or session
-        out = self._detail_header(session)
+        head = self._detail_header(session)
         messages = self.store.peek_conversation(session)
         if messages is None:
-            return out
+            return head
         runtime = self.store.registry.get(str(session.get("source") or ""))
-        runtime_name = runtime.display_name
-        runtime_style = pickup.runtime_label_style(runtime.id)
+        width = self._preview_width(pickup.session_key(session))
+        blocks = pickup._preview_blocks(
+            messages,
+            runtime.display_name,
+            width,
+            assistant_style=pickup.runtime_label_style(runtime.id),
+        )
+        return Group(head, Text(""), *blocks)
+
+    def _preview_width(self, session_key: str) -> int:
+        """这条会话的预览该按多少列排版：优先用它自己那一格的宽度。
+
+        Markdown 正文是预排好的（不会再被上层重新折行），拿错宽度就会出现「分隔线
+        和格子对不上、正文早折或超宽」。取不到时退回第一格，再退回 40。
+        """
         try:
             area = self._split_area()
-            cells = area.cells()
-            if cells:
-                width = max(20, (cells[0].embed_pane().size.width or 40) - 2)
-            else:
-                width = 40
+            width = area.pane_width_for(session_key)
+            if width is None:
+                cells = area.cells()
+                width = (cells[0].embed_pane().size.width if cells else 0) or 40
         except Exception:
             width = 40
-        lines = pickup._preview_lines(messages, runtime_name, width)
-        out.append("\n")
-        for i, (kind, line, suffix) in enumerate(lines):
-            out.append("\n")
-            # 只有角色抬头着色（user 用 cyan、assistant 用该 runtime 品牌色），正文
-            # `body` 一律走正常前景——整段套品牌色读长对话太刺眼，见 `_preview_lines`。
-            if kind == "assistant":
-                style = runtime_style
-            else:
-                style = {"user": "bold cyan", "dim": "dim"}.get(kind, "")
-            out.append(line, style=style)
-            if suffix:
-                out.append(suffix, style="dim")
-        return out
+        return max(20, width - 2)
 
     @work(thread=True)
     def _warm_conversation(self, session: dict, gen: int) -> None:

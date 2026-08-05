@@ -429,6 +429,22 @@ class SplitPaneArea(Vertical):
     def cells(self) -> list[PaneCell]:
         return self._cells()
 
+    def pane_width_for(self, session_key: str) -> int | None:
+        """某条会话此刻挂在哪一格、那一格多宽（列）。找不到或尚未布局则 None。
+
+        静态预览的 Markdown 是**按宽度预排好**再交出去的，不会再被上层重新折行，
+        所以必须拿"真正要渲染它的那一格"的宽度——早先图省事取第一格，多分屏且
+        各格不等宽时，分隔线和正文就会按别人的宽度排（真机上表现为横线长短对不上
+        格子）。
+        """
+        for cell in self._cells():
+            if cell.spec.session_key != session_key:
+                continue
+            pane = cell.embed_pane()
+            width = pane.size.width if pane is not None else 0
+            return width or None
+        return None
+
     def any_embed_focused(self) -> bool:
         for cell in self._cells():
             pane = cell.embed_pane()

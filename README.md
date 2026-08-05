@@ -195,6 +195,10 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
   live terminal there) **and hands keyboard input to that pane** — start typing to the agent
   right away, no click needed. Arrow-key browsing never steals focus (and never starts an agent),
   so the list stays usable; `Ctrl-\` gives input back to it.
+- Transcripts are rendered as Markdown: headings, lists, tables, emphasis and fenced code all come
+  out formatted rather than as raw `#`/`*`/backtick noise. Colour is reserved for telling speakers
+  apart — each message starts with a rule and a role line in that speaker's colour, and the body
+  itself stays in the normal foreground so long transcripts don't glare.
 - An ended session shows its transcript instead of a live screen, and **selecting it never starts
   anything** — clicking its card just brings the transcript up, exactly like arrow-key browsing.
   `Enter` is what restarts it: from the sidebar, and also with focus already in the right-hand pane
