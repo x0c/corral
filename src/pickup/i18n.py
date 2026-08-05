@@ -299,8 +299,12 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "选择一个会话查看详情",
     },
     "detail.session_ended": {
-        "en": "Session ended (Enter to open another)",
-        "zh": "会话已结束（回车打开其他会话）",
+        "en": "Session ended — press Enter to restart it",
+        "zh": "会话已结束 — 按回车重启",
+    },
+    "detail.restart_hint": {
+        "en": "Press Enter to restart this session",
+        "zh": "按回车重启该会话",
     },
     "detail.running_external": {
         "en": (

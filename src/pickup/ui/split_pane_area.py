@@ -183,6 +183,7 @@ class PaneCell(Vertical):
         osc_report: bytes | None,
         detail_renderer: Callable[[], Text | str] | None = None,
         on_pane_focused: Callable[[str], None] | None = None,
+        on_restart: Callable[[str, bool], None] | None = None,
         on_sync_mask: Callable[[], None] | None = None,
         on_hud_toggle: Callable[[], None] | None = None,
         **kwargs,
@@ -192,6 +193,7 @@ class PaneCell(Vertical):
         self._on_close = on_close
         self._on_focus_list = on_focus_list
         self._on_pane_focused = on_pane_focused
+        self._on_restart = on_restart
         self._on_sync_mask = on_sync_mask
         self._on_hud_toggle = on_hud_toggle
         self._osc_report = osc_report
@@ -202,10 +204,16 @@ class PaneCell(Vertical):
     def _close_self(self) -> None:
         self._on_close(self.spec)
 
+    def _restart_self(self, dead: bool) -> None:
+        # 必须读此刻绑着的 spec：格子会就地改绑到别的会话（见 rebind）。
+        if self._on_restart is not None:
+            self._on_restart(self.spec.session_key, dead)
+
     def compose(self):
         yield _PaneHeader(self._title, self._close_self, classes="header")
         yield EmbedPane(
             on_focus_list=self._on_focus_list,
+            on_restart=self._restart_self,
             osc_report=self._osc_report,
             id=f"embed-{self.spec.cell_id}",
         )
@@ -368,6 +376,7 @@ class SplitPaneArea(Vertical):
         on_pane_close: Callable[[str], None],
         on_focus_list: Callable[[], None],
         on_pane_focused: Callable[[str], None] | None = None,
+        on_pane_restart: Callable[[str, bool], None] | None = None,
         on_hud_toggle: Callable[[], None] | None = None,
         osc_report: bytes | None = None,
         render_detail: Callable[[dict], Text] | None = None,
@@ -380,6 +389,7 @@ class SplitPaneArea(Vertical):
         self._on_pane_close = on_pane_close
         self._on_focus_list = on_focus_list
         self._on_pane_focused = on_pane_focused
+        self._on_pane_restart = on_pane_restart
         self._on_hud_toggle = on_hud_toggle
         self._osc_report = osc_report
         self._render_detail = render_detail
@@ -893,6 +903,7 @@ class SplitPaneArea(Vertical):
                 on_close=self._close_spec,
                 on_focus_list=self._on_focus_list,
                 on_pane_focused=self._handle_pane_focused,
+                on_restart=self._on_pane_restart,
                 on_sync_mask=self.sync_input_mask,
                 on_hud_toggle=self._on_hud_toggle,
                 osc_report=self._osc_report,

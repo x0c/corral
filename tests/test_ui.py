@@ -536,6 +536,37 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(second.styles.border_right[0], "")
             self.assertEqual(second.styles.border_bottom[0], "")
 
+    async def test_mouse_down_on_detached_widget_does_not_crash(self) -> None:
+        """全量重建的中间态：合成器命中表还留着刚被移出 DOM 的控件。
+
+        Textual 8.2.8 的文本选择分支会对它取 `parent.region`，parent 已是 None
+        → 未捕获 AttributeError 直接掀掉整个 TUI（真机 2026-08-03 / 08-05 各闪退
+        一次，都发生在启动首屏重建期间点鼠标）。
+        """
+        from textual.widgets import Static
+
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            screen = app.screen
+            hint = Static("待选文本")
+            await screen.mount(hint)
+            await pilot.pause()
+            self.assertTrue(hint.allow_select)  # 命中前提：该控件允许文本选择
+            hint._parent = None  # noqa: SLF001  模拟「已移出 DOM、命中表未更新」
+            with mock.patch.object(
+                screen._compositor,  # noqa: SLF001
+                "get_widget_and_offset_at",
+                return_value=(hint, Offset(0, 0)),
+            ):
+                await pilot.mouse_down(offset=(60, 10))
+                await pilot.pause()
+                await pilot.mouse_up(offset=(60, 10))
+                await pilot.pause()
+            self.assertTrue(app.is_running)
+            hint._parent = screen  # noqa: SLF001  还回去，别让拆卸阶段踩空
+
     async def test_split_supports_max_panes_and_refuses_one_more(self) -> None:
         """分屏上限（当前 4 格）：满格都要能均分挂上，且不再允许加格。"""
         from pickup.split_layout import MAX_PANES
@@ -4151,6 +4182,139 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(search.value, "")
             self.assertEqual(app.screen.nav.project_query, "")
             self.assertEqual(len(list_view.visible_sessions()), before)
+
+
+class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
+    """已结束会话的重启入口：右栏预览格 / 已结束格 / 组内成员都得能回车重启。
+
+    背景（2026-08-05 用户反馈）：已结束会话点开只有历史预览，重启没有任何可见
+    入口——组内成员那条路当时更是彻底走不通（只会把会话组再摆一遍）。
+    """
+
+    async def test_enter_on_preview_pane_restarts_session(self) -> None:
+        """焦点在右栏静态预览格上按回车 = 重启这条会话。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch(
+                "pickup.embed.host_session", return_value="pickup-claude-s0",
+            ) as host,
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                pane = _primary_embed_pane(app.screen)
+                self.assertTrue(pane._is_restart_target())  # noqa: SLF001
+                app.screen.set_focus(pane)
+                await pilot.pause()
+
+                await pilot.press("enter")
+                await _wait_until(lambda: host.called)
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+
+    async def test_enter_on_ended_pane_restarts_and_clears_stale_hosting(self) -> None:
+        """会话就在这一格里跑完退出：画面变「会话已结束」，回车原地重启。
+
+        托管标记要等下一轮重扫才撤，重启前必须自己撤掉，否则会被当成"还托管着"
+        直接把那张死画面又摆回来。
+        """
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch(
+                "pickup.embed.host_session", return_value="pickup-claude-again",
+            ) as host,
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                key = pickup.session_key(store.all_sessions()[0])
+                store.mark_hosted(key, "pickup-claude-old")
+                pane = _primary_embed_pane(app.screen)
+                pane.session_name = "pickup-claude-old"
+                pane.dead = True
+                app.screen.set_focus(pane)
+                await pilot.pause()
+                self.assertIn(i18n.t("detail.session_ended"), pane.render().plain)
+
+                await pilot.press("enter")
+                await _wait_until(lambda: host.called)
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                await _wait_for_embed_session(app.screen, "pickup-claude-again")
+                self.assertEqual(
+                    store.find_session(key).get("keepalive_name"), "pickup-claude-again",
+                )
+
+    async def test_enter_restarts_ended_member_of_session_group(self) -> None:
+        """会话组里的已结束成员：回车必须重启它，而不是把会话组再摆一遍。
+
+        会话组在成员结束后仍然保留，所以这条路会被长期撞上；修复前它是死胡同。
+        """
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch(
+                "pickup.embed.host_session", return_value="pickup-claude-s0",
+            ) as host,
+            mock.patch("pickup.embed.is_alive", return_value=False),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
+                list_view.on_layout_change(
+                    lambda s: s.set_group("/tmp", keys, focus_key=keys[0])
+                )
+                await list_view.rebuild()
+                await pilot.pause(delay=0.2)
+                self.assertTrue(list_view.select_session_key(keys[0]))
+                await pilot.pause(delay=0.2)
+
+                await pilot.press("enter")
+                await _wait_until(lambda: host.called)
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                area = app.screen.query_one(SplitPaneArea)
+                self.assertEqual(
+                    set(area.ordered_session_keys()), set(keys),
+                    "重启组成员不得把用户的分屏组合拆成单格",
+                )
+
+    async def test_live_pane_still_forwards_enter_to_assistant(self) -> None:
+        """活着的格子里回车照常发给助手，不能被重启逻辑截走。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+                pane._grid = [[]]  # noqa: SLF001 — 首帧已到达，不再是回退态
+                self.assertFalse(pane._is_restart_target())  # noqa: SLF001
+                with mock.patch("pickup.embed.send_key") as send_key:
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertTrue(send_key.called)
+
+    async def test_preview_header_shows_restart_hint(self) -> None:
+        """已结束会话的详情头要写明回车可重启，否则用户找不到入口。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.3)
+            pane = _primary_embed_pane(app.screen)
+            hint = i18n.t("detail.restart_hint")
+            await _wait_until(lambda: hint in pane.render().plain)
 
 
 class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):

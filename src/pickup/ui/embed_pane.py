@@ -251,6 +251,7 @@ class EmbedPane(Widget):
         *,
         detail_renderer: Callable[[], "Text | str"] | None = None,
         on_focus_list: Callable[[], None] | None = None,
+        on_restart: Callable[[bool], None] | None = None,
         osc_report: bytes | None = None,
         name: str | None = None,
         id: str | None = None,
@@ -274,6 +275,8 @@ class EmbedPane(Widget):
         self._selection_style_cache: tuple[str, Style] | None = None
         self._detail_renderer = detail_renderer
         self._on_focus_list = on_focus_list
+        # 静态预览格 / 已结束格上按回车 = 重启这条会话（见 `_is_restart_target`）。
+        self._on_restart = on_restart
         self._osc_report = osc_report
         # 静态预览是否跟随底部（最新消息）。选中/异步加载完成时为 True；
         # 用户上滚或 Home 后为 False，此后 invalidate 只保当前位置不强制钉回。
@@ -815,6 +818,15 @@ class EmbedPane(Widget):
             and not self.dead
         )
 
+    def _is_restart_target(self) -> bool:
+        """这一格眼下没有活的助手，回车应当理解成「把它重新拉起来」。
+
+        两种形态：一是从未托管的历史会话（右栏是静态对话预览），二是刚在这一格里
+        跑完退出的会话（画面已换成「会话已结束」）。托管首帧尚未到达那种回退态
+        不算——那条会话正活着，回车必须原样转发给助手。
+        """
+        return self.dead or self._is_detail_view()
+
     def _uses_detail_window(self) -> bool:
         """需要整篇排版 + detail_offset 窗口的静态内容（含托管首帧前回退）。"""
         return self._is_detail_view() or self._is_hosted_fallback()
@@ -1043,6 +1055,13 @@ class EmbedPane(Widget):
     # ---- 输入转发 ----
 
     async def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter" and self._is_restart_target():
+            # 已结束会话的右栏是唯一入口时也要能重启，不能只有侧边栏那一条路。
+            event.stop()
+            event.prevent_default()
+            if self._on_restart is not None:
+                self._on_restart(bool(self.dead))
+            return
         if self._uses_detail_window():
             # 面板聚焦时方向键/翻页也滚预览（列表聚焦时由 MainScreen 优先级绑定处理）
             # 含托管首帧前的对话回退：同样钉底窗口，避免顶裁后只能看最早消息。

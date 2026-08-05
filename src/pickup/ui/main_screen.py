@@ -277,6 +277,7 @@ class MainScreen(Screen):
                     on_pane_close=self._on_pane_close,
                     on_focus_list=self._focus_list,
                     on_pane_focused=self._on_pane_focused,
+                    on_pane_restart=self._restart_session_from_pane,
                     on_hud_toggle=self.action_toggle_hud,
                     osc_report=self.osc_report,
                     sidebar_visible=self.sidebar_visible,
@@ -1032,6 +1033,10 @@ class MainScreen(Screen):
         # 在别的窗口跑的会话右栏永远只有静态对话，不说明原因就会被当成"会话已断"。
         if is_external_running(session):
             out.append("\n" + t("detail.running_external"), style="#B8860B")
+        elif not session.get("keepalive_name") and not session.get("provisional"):
+            # 已结束会话默认只给历史预览，重启没有任何可见入口——用户会以为
+            # 这条会话再也接不上了。把回车这条路写在头上。
+            out.append("\n" + t("detail.restart_hint"), style="dim")
         return out
 
     def _render_detail(self, session: dict) -> Text:
@@ -1239,11 +1244,41 @@ class MainScreen(Screen):
         if self._click_returns_focus_to_list(focus_before_click, session_key):
             self._focus_list()
             return
-        if self._split_store.get_group(session_key) is not None:
+        if (
+            self._split_store.get_group(session_key) is not None
+            and self._is_session_active(session_key)
+        ):
+            # 还活着的组成员：回车 = 把输入交给它那一格。已结束的成员必须往下走
+            # 到启动那一支——否则组里的历史会话点进去永远只有静态预览，再没有任何
+            # 重启入口（会话组结束后仍然保留，这条路会一直被撞上）。
             self._show_session_group(
                 session_key, focus_pane=True, include_inactive=True
             )
             return
+        request = pickup.LaunchRequest(
+            session, str(session.get("source") or self.nav.source), self.store.get_title(session)
+        )
+        await self._open_or_exit(request)
+
+    @work
+    async def _restart_session_from_pane(self, session_key: str, dead: bool) -> None:
+        """右栏静态预览格 / 已结束格上按回车：就地把这条会话重新拉起来。
+
+        与侧边栏回车走的是同一条启动路径（含"在别的窗口跑"的二次确认），区别只是
+        触发入口在右栏——已结束会话的右栏往往是用户当下唯一在看的地方。
+        """
+        import pickup
+
+        session = self.store.find_session(session_key)
+        if session is None or session.get("provisional"):
+            # 占位卡（接力 / 空白新建还没落盘历史就退出了）没有可恢复的会话，
+            # 拿它去生成启动计划只会失败；这条会话卡本身下一轮重扫也会消失。
+            self.app.bell()
+            return
+        if dead:
+            # 这一格里的会话刚跑完退出，但 store 里的托管标记要等下一轮重扫才撤。
+            # 不先撤掉的话 `_embed_open` 会认定它"已托管"，转身把那格死画面又摆一遍。
+            session = self.store.mark_hosted(session_key, None) or session
         request = pickup.LaunchRequest(
             session, str(session.get("source") or self.nav.source), self.store.get_title(session)
         )
@@ -1466,6 +1501,12 @@ class MainScreen(Screen):
             area.add_hosted_pane(
                 current, name, fallback, focus=True, focus_pane=autofocus,
             )
+        elif self._split_store.get_group(pickup.session_key(current)) is not None:
+            # 重启的是会话组里的成员：整组一起摆回去，只是它那一格从静态预览换成
+            # 实时画面。退回单格会把用户的分屏组合当场拆掉。
+            self._show_session_group(
+                pickup.session_key(current), focus_pane=True, include_inactive=True
+            )
         else:
             import pickup as pickup_mod
 
@@ -1626,6 +1667,26 @@ class MainScreen(Screen):
             return self._split_area().any_embed_focused()
         except Exception:
             return False
+
+    def get_widget_and_offset_at(self, x: int, y: int):
+        """命中表里可能还留着刚被移出 DOM 的控件，这种命中一律当作没命中。
+
+        合成器的命中表按帧更新，全量重建列表 / 换格的那一两帧里，它给出的控件
+        `parent` 已经是 `None`。Textual 8.2.8 的鼠标按下分支拿到这种控件后会直接
+        取 `parent.region`（`screen.py` 的文本选择状态初始化），抛出未捕获的
+        `AttributeError: 'NoneType' object has no attribute 'region'`，整个 TUI
+        当场退出——真机两次都发生在**启动首屏重建期间点鼠标**（2026-08-03、
+        2026-08-05）。上游同类问题（Textualize/textual#5629）至今未修，8.2.8 已是
+        最新版，只能在这里兜。
+
+        只有允许文本选择的控件才会走进那个分支（右栏内嵌终端刻意保留划词复制），
+        但这里对所有命中一视同仁：拿一个已脱离 DOM 的控件去派发任何鼠标事件都是
+        错的。回归：`test_mouse_down_on_detached_widget_does_not_crash`。
+        """
+        widget, offset = super().get_widget_and_offset_at(x, y)
+        if widget is not None and widget.parent is None:
+            return None, None
+        return widget, offset
 
     def check_action(self, action: str, parameters) -> bool | None:
         """按当前焦点裁剪可用动作：右栏持有输入时，列表侧快捷键必须整体让路。
