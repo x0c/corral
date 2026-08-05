@@ -16,8 +16,8 @@ from itertools import groupby
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pickup import titles
-from pickup.models import ConversationMessage, format_message_time
-from pickup.scan.common import live_pids_by_process_name, shorten_cwd as _shorten_cwd
+from pickup.models import ConversationMessage, SessionInfo, make_session_info
+from pickup.scan.common import live_pids_by_process_name
 
 DB_FILENAME = "opencode.db"
 
@@ -130,29 +130,24 @@ def _build_session_info(row: sqlite3.Row, db_path: str) -> dict | None:
     mtime = row["time_updated"] / 1000
     size_bytes = int(row["content_bytes"] or 0)
 
-    return {
-        "source": "opencode",
-        "id": session_id,
-        "short_id": session_id[:12],
-        "cwd": cwd,
-        "cwd_display": _shorten_cwd(cwd),
-        "mtime": mtime,
-        "display_time": format_message_time(mtime),
-        "time_source": "db_time_updated",
-        "event_time": mtime,
-        "file_mtime": mtime,
-        "size_bytes": size_bytes,
-        "size_kb": round(size_bytes / 1024, 1),
-        "native_title": native_title,
-        "fallback_title": fallback,
-        "status_tag": _status_tag(row["last_msg_data"]),
-        "live": False,  # scan_sessions 统一按 live_pids_by_process_name() 回填
-        "pid": None,
-        "first_user_msg": first_user[:300],
-        "last_user_msg": str(row["last_user_text"] or "")[:300],
-        "last_agent_msg": str(row["last_agent_text"] or "")[:300],
-        "path": db_path,
-    }
+    return make_session_info(
+        source="opencode",
+        id=session_id,
+        short_id=session_id[:12],
+        cwd=cwd,
+        mtime=mtime,
+        time_source="db_time_updated",
+        event_time=mtime,
+        file_mtime=mtime,
+        size_bytes=size_bytes,
+        native_title=native_title,
+        fallback_title=fallback,
+        status_tag=_status_tag(row["last_msg_data"]),
+        path=db_path,
+        first_user_msg=first_user,
+        last_user_msg=str(row["last_user_text"] or ""),
+        last_agent_msg=str(row["last_agent_text"] or ""),
+    )
 
 
 def scan_signature() -> tuple | None:
@@ -184,7 +179,7 @@ def scan_signature() -> tuple | None:
     return (tuple(file_signature), live_signature)
 
 
-def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[dict]:
+def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:
     """扫描所有 OpenCode 数据目录下的会话，返回统一结构列表，按 mtime 降序。
 
     每个数据目录一条 SQL 拿 top-limit 条候选（已过滤子代理会话和已归档会话），

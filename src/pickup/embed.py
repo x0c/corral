@@ -800,10 +800,11 @@ def open_channel(name: str, on_output=None) -> ControlChannel | None:
     return ch
 
 
-# 通道池上限。分屏最多 3 格，多留几条给「刚切走、可能马上切回」的会话：右栏改成
-# 就地改绑后，切走的格子不再卸载、也就不再顺手关掉它的通道，没有上限的话用户在
-# 侧边栏一路翻下去就会攒出几十个 `tmux -C attach` 子进程。
-_MAX_CHANNELS = 6
+# 通道池上限。分屏最多 4 格（`split_layout.MAX_PANES`），多留几条给「刚切走、可能
+# 马上切回」的会话：右栏改成就地改绑后，切走的格子不再卸载、也就不再顺手关掉它的
+# 通道，没有上限的话用户在侧边栏一路翻下去就会攒出几十个 `tmux -C attach` 子进程。
+# 上限必须严格大于分屏格数，否则满屏分屏时新开的格会挤掉在用格的通道。
+_MAX_CHANNELS = 8
 _channel_used: dict[str, float] = {}
 
 

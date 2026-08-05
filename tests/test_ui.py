@@ -536,6 +536,36 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(second.styles.border_right[0], "")
             self.assertEqual(second.styles.border_bottom[0], "")
 
+    async def test_split_supports_max_panes_and_refuses_one_more(self) -> None:
+        """分屏上限（当前 4 格）：满格都要能均分挂上，且不再允许加格。"""
+        from pickup.split_layout import MAX_PANES
+
+        sessions = [
+            {
+                "source": "claude", "id": f"m{i}", "short_id": f"m{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp", "live": False,
+            }
+            for i in range(MAX_PANES)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(160, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            area = app.screen.query_one(SplitPaneArea)
+            self.assertTrue(area.can_add_pane())
+            area.show_hosted_group(
+                "/tmp",
+                [(session, None, lambda: "") for session in sessions],
+            )
+            await _wait_until(lambda: len(area._cells()) == MAX_PANES)  # noqa: SLF001
+            await pilot.pause()
+            widths = [cell.size.width for cell in area._cells()]  # noqa: SLF001
+            self.assertTrue(all(w > 0 for w in widths), widths)
+            self.assertLessEqual(max(widths) - min(widths), 1, widths)
+            self.assertFalse(area.can_add_pane())
+
     async def test_footer_does_not_bind_n_for_new_session(self) -> None:
         """底栏不再暴露 n 新建快捷键；新建只走侧边栏项 / 顶栏加格。"""
         store, _ = _make_store()

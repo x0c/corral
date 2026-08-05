@@ -50,15 +50,14 @@ class SplitLayoutStoreTests(unittest.TestCase):
         self.assertEqual(group.session_keys, ["claude:a", "codex:b"])
         self.assertEqual(store.get_group("codex:b"), group)
 
-    def test_max_three_panes(self) -> None:
+    def test_group_truncates_to_max_panes(self) -> None:
         store = split_layout.SplitLayoutStore()
-        store.set_group(
-            "/p",
-            ["claude:1", "codex:2", "kimi:3", "cursor:4"],
-        )
-        group = store.get_group("claude:1")
+        # 多给一个成员，确认超出上限的部分被截掉（而不是恰好等于上限，测不出截断）。
+        keys = [f"rt{i}:s{i}" for i in range(split_layout.MAX_PANES + 1)]
+        store.set_group("/p", keys)
+        group = store.get_group(keys[0])
         assert group is not None
-        self.assertEqual(len(group.session_keys), split_layout.MAX_PANES)
+        self.assertEqual(group.session_keys, keys[: split_layout.MAX_PANES])
 
     def test_remove_session_dissolves_group_with_one_member_left(self) -> None:
         store = split_layout.SplitLayoutStore()

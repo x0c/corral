@@ -32,7 +32,7 @@ from pickup.titles import CACHE_DIR
 
 LAYOUT_VERSION = 2
 _SCHEMA_VERSION = 1
-MAX_PANES = 3
+MAX_PANES = 4
 
 logger = logging.getLogger(__name__)
 

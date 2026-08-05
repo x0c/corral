@@ -17,10 +17,9 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pickup import titles
 from pickup.cache import file_signature, get_cache
-from pickup.models import ConversationMessage, effective_session_time, format_message_time
+from pickup.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
 from pickup.scan.common import is_ephemeral_agent_cwd
 from pickup.scan.common import parse_timestamp as _parse_timestamp
-from pickup.scan.common import shorten_cwd as _shorten_cwd
 
 SESSIONS_DIR = os.path.expanduser("~/.codex/sessions")
 SESSION_INDEX = os.path.expanduser("~/.codex/session_index.jsonl")
@@ -219,37 +218,31 @@ def _build_session_info(path: str, index: dict[str, str]) -> dict | None:
     resolved_event_time = event_time or (dt.timestamp() if dt else None)
     session_time, time_source = effective_session_time(mtime, resolved_event_time)
     size_bytes = os.path.getsize(path)
-    size_kb = size_bytes / 1024
     fallback = (first_user_msg or "").split("\n")[0].strip()
     if len(fallback) > 60:
         fallback = fallback[:60] + "…"
     if not fallback:
         fallback = "(无消息)"
 
-    return {
-        "source": "codex",
-        "id": uuid,
-        "short_id": uuid[:8],
-        "thread_source": thread_source,
-        "cwd": cwd or "",
-        "cwd_display": _shorten_cwd(cwd or ""),
-        "mtime": session_time,
-        "display_time": format_message_time(session_time),
-        "time_source": time_source,
-        "event_time": resolved_event_time,
-        "file_mtime": mtime,
-        "size_bytes": size_bytes,
-        "size_kb": round(size_kb, 1),
-        "native_title": index.get(uuid),
-        "fallback_title": fallback,
-        "status_tag": _status_tag(last_event_type),
-        "live": False,  # scan_sessions 统一按 _live_session_ids() 回填
-        "pid": None,  # 同上，运行中会话的进程号
-        "first_user_msg": (first_user_msg or "")[:300],
-        "last_user_msg": (last_user_msg or "")[:300],
-        "last_agent_msg": (last_agent_msg or "")[:300],
-        "path": path,
-    }
+    return make_session_info(
+        source="codex",
+        id=uuid,
+        short_id=uuid[:8],
+        cwd=cwd or "",
+        mtime=session_time,
+        time_source=time_source,
+        event_time=resolved_event_time,
+        file_mtime=mtime,
+        size_bytes=size_bytes,
+        native_title=index.get(uuid),
+        fallback_title=fallback,
+        status_tag=_status_tag(last_event_type),
+        path=path,
+        first_user_msg=first_user_msg,
+        last_user_msg=last_user_msg,
+        last_agent_msg=last_agent_msg,
+        thread_source=thread_source,  # 运行时私有字段，见 SessionInfo 的 total=False 部分
+    )
 
 
 def _live_uuids_from_proc_fd(pid_str: str) -> list[str]:
@@ -343,7 +336,7 @@ def _live_session_ids() -> dict[str, int]:
     return _live_uuids_from_lsof(pids)
 
 
-def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[dict]:
+def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:
     """扫描 Codex 会话，返回统一结构列表，按 mtime 降序。
 
     历史会话可能有上千个，但调用方只要最近 limit 条。_build_session_info 要

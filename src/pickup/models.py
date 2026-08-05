@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Literal, TypedDict
 
 
-class SessionInfo(TypedDict):
+class _SessionInfoRequired(TypedDict):
     """所有运行时扫描器必须返回的统一会话结构。"""
 
     source: str
@@ -33,6 +33,27 @@ class SessionInfo(TypedDict):
     path: str
 
 
+class SessionInfo(_SessionInfoRequired, total=False):
+    """在必填字段之外，追加运行时私有或运行期才由 SessionStore 注入、
+    scan_sessions() 不一定产出的可选字段。
+
+    - ``thread_source``：目前只有 Codex 扫描器产出（子 agent 线程来源标记）。
+    - ``keepalive_name`` / ``provisional``：扫描完成后由 SessionStore 的保活
+      匹配 / 占位卡逻辑注入，不是扫描器的原始产出。
+    - ``attention_kind`` / ``attention_token`` / ``attention_updated_at``：
+      扫描完成后由 SessionStore 的关注态 reconcile 注入（见 attention.py
+      ``AttentionState``；这里用 str 而非其 Literal 类型，避免 models.py
+      反向依赖 attention.py 造成循环导入）。
+    """
+
+    thread_source: str | None
+    keepalive_name: str
+    provisional: bool
+    attention_kind: str
+    attention_token: str | None
+    attention_updated_at: float
+
+
 _STALE_MTIME_GAP_SECONDS = 3600
 
 
@@ -50,6 +71,71 @@ def effective_session_time(file_mtime: float, event_time: float | None) -> tuple
     if event_time is not None and file_mtime - event_time > _STALE_MTIME_GAP_SECONDS:
         return event_time, "event_time_stale_mtime"
     return file_mtime, "file_mtime"
+
+
+def make_session_info(
+    *,
+    source: str,
+    id: str,
+    short_id: str,
+    cwd: str,
+    mtime: float,
+    time_source: str,
+    event_time: float | None,
+    file_mtime: float,
+    size_bytes: int,
+    native_title: str | None,
+    fallback_title: str,
+    status_tag: str,
+    path: str,
+    first_user_msg: str | None = "",
+    last_user_msg: str | None = "",
+    last_agent_msg: str | None = "",
+    **extra: object,
+) -> SessionInfo:
+    """拼装一条统一结构的会话信息，收敛 5 份扫描器里逐字重复的字典拼装。
+
+    只收「5 个运行时的 `_build_session_info` 后半段完全相同」的那部分：
+    `cwd_display`/`display_time`/`size_kb` 的派生、`live`/`pid` 的扫描期占位
+    （由各 `scan_sessions()` 事后统一按 `_live_session_ids()` 等回填，行为不变）、
+    以及三条预览文本的 `[:300]` 截断。`mtime`/`time_source`/`event_time` 等
+    「各运行时算法不同」的字段仍由调用方算好后传入，工厂不重新推导。
+
+    `short_id` 故意不在工厂里派生：5 个运行时的截断规则互不相同
+    （`[:8]` / `[:12]` / 去横线 / 去 `session_` 前缀），塞进工厂反而会把
+    运行时私有规则错误地统一掉。
+
+    `**extra` 收运行时私有字段（目前只有 Codex 的 `thread_source`），原样并入
+    结果——不在这层做白名单校验，交给 `SessionInfo`（`total=False` 部分）和
+    `tests/test_contracts.py` 的字段契约测试兜底。
+    """
+    from pickup.scan.common import shorten_cwd  # 延迟导入，避免 models.py 反向依赖 scan 包
+
+    session: SessionInfo = {
+        "source": source,
+        "id": id,
+        "short_id": short_id,
+        "cwd": cwd,
+        "cwd_display": shorten_cwd(cwd),
+        "mtime": mtime,
+        "display_time": format_message_time(mtime),
+        "time_source": time_source,
+        "event_time": event_time,
+        "file_mtime": file_mtime,
+        "size_bytes": size_bytes,
+        "size_kb": round(size_bytes / 1024, 1),
+        "native_title": native_title,
+        "fallback_title": fallback_title,
+        "status_tag": status_tag,
+        "live": False,  # scan_sessions 统一按各运行时的判活逻辑回填
+        "pid": None,  # 同上，运行中会话的进程号
+        "first_user_msg": (first_user_msg or "")[:300],
+        "last_user_msg": (last_user_msg or "")[:300],
+        "last_agent_msg": (last_agent_msg or "")[:300],
+        "path": path,
+    }
+    session.update(extra)  # type: ignore[typeddict-item]
+    return session
 
 
 def format_message_time(timestamp: float) -> str:

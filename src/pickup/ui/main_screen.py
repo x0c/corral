@@ -546,10 +546,11 @@ class MainScreen(Screen):
 
     def _on_runtime_pick(self, runtime_id: str) -> None:
         import pickup
+        from pickup.split_layout import MAX_PANES
 
         area = self._split_area()
         if not area.can_add_pane():
-            self.notify(t("split.full"))
+            self.notify(t("split.full", n=MAX_PANES))
             self.app.bell()
             return
         session_list = self.query_one(SessionListView)
@@ -1333,21 +1334,21 @@ class MainScreen(Screen):
                 self.app.bell()
                 return
             if add_pane and (area.pane_count() + self._host_pending) >= MAX_PANES:
-                self.notify(t("split.full"))
+                self.notify(t("split.full", n=MAX_PANES))
                 self.app.bell()
                 return
             plan = self.store.registry.build_launch_plan(request)
             ident = request.session["id"] if same_runtime else keepalive.new_session_ident()
         else:
             if not add_pane and area.pane_count() > 0 and not area.can_add_pane():
-                self.notify(t("split.full"))
+                self.notify(t("split.full", n=MAX_PANES))
                 self.app.bell()
                 return
             if self._host_pending > 0 and not add_pane:
                 self.app.bell()
                 return
             if add_pane and (area.pane_count() + self._host_pending) >= MAX_PANES:
-                self.notify(t("split.full"))
+                self.notify(t("split.full", n=MAX_PANES))
                 self.app.bell()
                 return
             plan = self.store.registry.build_new_session_plan(request)

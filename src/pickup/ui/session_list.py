@@ -918,7 +918,7 @@ class SessionListView(ListView):
             self._multi_keys.remove(session_key)
         else:
             if len(self._multi_keys) >= MAX_PANES:
-                self.notify(t("split.multi_full"))
+                self.notify(t("split.multi_full", n=MAX_PANES))
                 self.app.bell()
                 return
             self._multi_keys.append(session_key)

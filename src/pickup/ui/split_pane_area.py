@@ -1,4 +1,4 @@
-"""右侧分屏区：助手顶栏 + 最多三格均分内嵌终端。"""
+"""右侧分屏区：助手顶栏 + 最多四格均分内嵌终端。"""
 
 from __future__ import annotations
 
@@ -340,7 +340,7 @@ class PaneCell(Vertical):
 
 
 class SplitPaneArea(Vertical):
-    """右侧：顶栏 + 动态 1~3 格。"""
+    """右侧：顶栏 + 动态 1~4 格。"""
 
     DEFAULT_CSS = """
     SplitPaneArea {

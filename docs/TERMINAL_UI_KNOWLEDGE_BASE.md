@@ -1,6 +1,6 @@
 # 终端界面领域知识库
 
-终端界面是 pickup 面向人的唯一交互入口：用户在左栏会话列表与右栏（最多三格均分）中浏览会话、筛选项目、预览已结束会话的完整对话，并可新建、恢复、接力或结束会话。主实现是 Textual 的 `MainScreen` / `PickupApp`；文档正文统一称为“终端界面”。
+终端界面是 pickup 面向人的唯一交互入口：用户在左栏会话列表与右栏（最多四格均分）中浏览会话、筛选项目、预览已结束会话的完整对话，并可新建、恢复、接力或结束会话。主实现是 Textual 的 `MainScreen` / `PickupApp`；文档正文统一称为“终端界面”。
 
 ## §0 目录索引
 
@@ -26,8 +26,8 @@ pickup 的价值是让用户从一个终端界面中继续或接力不同 Coding
 
 | 主称谓 | 用户可见含义 | 实现别名 / 边界 |
 |---|---|---|
-| 终端界面 | 左栏列表 + 右栏（顶栏助手按钮 + 最多三格内嵌） | `PickupApp` 承载应用，`MainScreen` 承载主屏；`SplitPaneArea` 管右栏 |
-| 会话组 | 两到三个分屏会话组成的持久分组；结束后仍保留，运行中的成员可自动恢复 | `split_layout.py` → `~/.cache/pickup/sidebar-layout.sqlite3`；随机水果名、折叠态、置顶态与侧栏显隐一起持久化，多窗口共享并实时同步 |
+| 终端界面 | 左栏列表 + 右栏（顶栏助手按钮 + 最多四格内嵌） | `PickupApp` 承载应用，`MainScreen` 承载主屏；`SplitPaneArea` 管右栏 |
+| 会话组 | 两到四个分屏会话组成的持久分组；结束后仍保留，运行中的成员可自动恢复 | `split_layout.py` → `~/.cache/pickup/sidebar-layout.sqlite3`；随机水果名、折叠态、置顶态与侧栏显隐一起持久化，多窗口共享并实时同步 |
 | 侧边栏会话列表 | 左栏的搜索框、新建入口、会话组三行卡和会话三行卡 | `SessionListView`、`SessionGroupCard`、`SessionCard`、`NewSessionCard` |
 | 筛选项目 | 顶部输入框按组名、项目名、路径和标题筛选会话 | `NavState.project_query`；不是独立项目列表页；**不搜对话正文** |
 | 全文搜索 | `Ctrl+F` 弹窗，在所有会话的对话正文里找关键词并展示命中行 | `ui/search_modal.py` + `search.py` 的 `ConversationIndex`；与筛选项目是两条路，不是同一个输入框的两种模式 |
@@ -154,7 +154,7 @@ stateDiagram-v2
 
 ### 侧边栏会话组与置顶
 
-- 两到三个会话以分屏打开后立即形成会话组；组名在创建时从水果表随机生成，例如 `Group Apple`、`Group Pineapple`，之后保持不变。未置顶区的组与独立会话顺序跟 `SessionStore` 稳定顺序走——进入 pickup 后已有项位置固定，不会因成员 mtime 更新而上下飘；**新出现**的会话仍由 store 插到最前（可把更旧的组顶下去）。只有按 `p` 置顶的组/会话才固定在最上。
+- 两到四个会话以分屏打开后立即形成会话组；组名在创建时从水果表随机生成，例如 `Group Apple`、`Group Pineapple`，之后保持不变。未置顶区的组与独立会话顺序跟 `SessionStore` 稳定顺序走——进入 pickup 后已有项位置固定，不会因成员 mtime 更新而上下飘；**新出现**的会话仍由 store 插到最前（可把更旧的组顶下去）。只有按 `p` 置顶的组/会话才固定在最上。
 - 组卡固定三行（与会话卡同高）：第一行只有 `▼/▶ + 可选置顶标记 + 组名`，**没有关注圆点**；第二行是项目与成员数（与第一行 `Group …` **同列左对齐**，不靠右）；第三行**留白**——成员卡已各自显示时间，组卡不再重复。关注圆点只画在缩进的会话子项上。
 - 展开后成员以贴侧栏左缘的半角框线 `├─ `/`└─ `（续行同列 `│  `，总宽 3 列、无前导空格）连接，并从顶层列表摘除，禁止同一会话同时出现两份。必须整套半角框线——混用全角 `｜`/`－` 会和 `├` 错列，三行卡片之间竖线断开。树线用 `$foreground 80%`（与卡片基础色同亮），**不用**终端 `dim`。组内子项首行只显示「可选圆点 + 标题」，**不再重复项目名**（项目已写在组卡第二行）。组卡上按 `Space` 或点击三角可收起/展开；搜索组名时即使原先收起，也临时展示全部成员。
 - 分屏高亮只落在**当前会话组标题**和**当前激活的子会话**上；其余组员不再整块铺底。光标落到这两类高亮项上时，仍要使用更重一档的合成色。**光标停在组卡本身时只高亮组标题，不标任何子会话**（点组卡是在看整组，不是选中某一个成员）。
@@ -169,12 +169,12 @@ stateDiagram-v2
 | 回车或单击会话卡 | 侧边栏选中已有会话 | 构建恢复或接力计划；优先打开已有托管会话 | 右栏内嵌展示；输入直接交给该格（仅限活着的实时会话） |
 | 单击或回车会话组卡 | 侧边栏选中会话组 | 右栏跟随展示该组合；焦点留在侧边栏 | 进成员会话卡才把输入交给右栏 |
 | “＋ 新建会话” | 用户需选择项目或运行时 | 先选项目，再选运行时 | 创建空白会话 |
-| 右栏顶栏点助手 | 当前项目目录已知且未满三格 | `_on_runtime_pick` 在当前项目下加一格托管 | 新格进入分屏组合 |
+| 右栏顶栏点助手 | 当前项目目录已知且未满四格 | `_on_runtime_pick` 在当前项目下加一格托管 | 新格进入分屏组合 |
 | `a` 高级操作 | 当前选中已有会话 | 弹窗列出运行时；同运行时为原生恢复，其他运行时为读取历史后新建会话 | 形成启动请求 |
 | `q` 结束会话 | 当前会话是运行中(托管) | 确认弹窗确认后结束托管并立即标记为已结束 | 不等待下次扫描才更新状态 |
 | `x` 删除会话 | 侧边栏选中任意会话 | 确认弹窗（确认键为 `x`）确认的瞬间摘卡；结束托管进程与 `delete_session()` 抹磁盘全部在后台线程完成（先结束进程再抹历史） | 卡片在确认那一帧就消失，不等磁盘；失败（如磁盘/数据库异常）则提示失败原因并把卡片恢复回列表 |
 | `x` 删除整个会话组 | 侧边栏选中会话组卡 | 同上，但确认文案写组名 + 成员数（含运行中成员时换成"先结束再删"那版），确认后把全部成员一起摘卡并逐条抹磁盘 | 整组消失、组自动解散；个别成员删除失败时只把那一条捞回列表并提示，其余照删 |
-| Ctrl/Cmd+点击或 Space | 侧边栏会话卡（非「＋ 新建」） | toggle 多选集（`▸` 标记；最多 3 项）；右栏暂不跟随 | 多选 ≥2 时 Enter 开分屏；Esc 先清多选；↑↓/普通点击清空 |
+| Ctrl/Cmd+点击或 Space | 侧边栏会话卡（非「＋ 新建」） | toggle 多选集（`▸` 标记；最多 4 项）；右栏暂不跟随 | 多选 ≥2 时 Enter 开分屏；Esc 先清多选；↑↓/普通点击清空 |
 | Space | 侧边栏会话组卡 | 切换展开 / 收起 | 只改变树形展示，不改变右栏布局 |
 | `p` | 独立会话卡或会话组卡 | 切换持久置顶 | 组内单个成员不允许单独置顶 |
 | 再次点击当前持有输入的会话卡 | 右栏那一格正持有输入 | 焦点撤回侧边栏，不重新打开会话 | 与 `Ctrl+\` 等价；再点一次又进去，鼠标开关对称 |
@@ -270,7 +270,7 @@ stateDiagram-v2
 - **AI 易错点**【禁止】恢复旧的全屏预览或纯列表第二套界面。非进行中会话在右栏直接展示完整对话，已托管会话在右栏挂接内嵌实时终端；「运行中(其他窗口)」走完整对话那一路（它不在任何 tmux 里，抓不到画面）。Space 全屏预览已经退役。原因：双入口会使按键、滚动、选择和展示语义重新分叉。
 - **AI 易错点**【侧边栏末行间隔与关注圆点】搜索框、新建会话项和未来新增的左栏控件，最后一行必须是控件自身高度内的间隔空行；搜索框高 2、新建项高 2。会话卡固定高 3，三行正文（首行「圆点 项目 标题」，无圆点时标题顶到最左、不留占位空格 / 运行时靠右 / 时间靠右），不再另加末行空行；禁止恢复整行绿色标题。禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔，因为点击空隙不会命中本项，选中高亮也不完整。
 - **AI 易错点**【时间行是四档亮度，不是二值 dim】第三行时间按「多久以前」分四档（半小时 / 三小时 / 一天为界），最新一档与标题同色以示着重，越旧越暗。档位色必须用 `$foreground` + 透明度经组件样式解析（深浅色主题各自与背景混合），不要写死灰值、也不要退回单级 `dim`；`SessionCard._time_style()` 只取混色后的**前景**，带上背景色会把整行的选中/分屏底色盖出一块缺口。档位本身要进 `_compute_signature()`：`mtime` 不变但会话「变旧」跨档时，原地更新路径不重绘就会一直亮着。
-- **AI 易错点**【会话组树、圆点和高亮不要重复表达】右栏形成两到三格后，侧边栏必须出现独立三行组卡，并把成员从顶层移到树形子项；组卡第一行只有三角、可选置顶标记和组名，**绝不能再画关注圆点**。右栏 ≥2 格时给当前组卡铺 `-in-split`；**光标停在组卡上时 `active_key` 必须是 `None`**（`_sync_split_marks` 看 `selected_group()`），不要把组的 `focus_key` 继续投成子会话的 `-split-active`——否则点组卡会像选中了某一个成员。光标在成员或右栏持有输入时才给该子项铺 `-split-active`。**光标停到组卡 / 激活子项上时必须比不停更重**：列表自身的 `block-cursor-background` 比组合底色弱，仍需 `:focus > ListItem.-in-split.-highlight` / `.-split-active.-highlight` 两条合成色，由 `_SIDEBAR_SPLIT_LADDER` 统一给值。组卡在 `active is None` 时仍要能贴 `-in-split`（`_apply_split_marks` 只看 keys ⊆ group，不要再要求 `active in group_keys`）。全量重建会换掉全部 `ListItem`，末尾必须重新贴标。回归：`SessionGroupSidebarTests`、`SidebarSplitHighlightTests.test_selecting_group_card_clears_member_split_active`。
+- **AI 易错点**【会话组树、圆点和高亮不要重复表达】右栏形成两到四格后，侧边栏必须出现独立三行组卡，并把成员从顶层移到树形子项；组卡第一行只有三角、可选置顶标记和组名，**绝不能再画关注圆点**。右栏 ≥2 格时给当前组卡铺 `-in-split`；**光标停在组卡上时 `active_key` 必须是 `None`**（`_sync_split_marks` 看 `selected_group()`），不要把组的 `focus_key` 继续投成子会话的 `-split-active`——否则点组卡会像选中了某一个成员。光标在成员或右栏持有输入时才给该子项铺 `-split-active`。**光标停到组卡 / 激活子项上时必须比不停更重**：列表自身的 `block-cursor-background` 比组合底色弱，仍需 `:focus > ListItem.-in-split.-highlight` / `.-split-active.-highlight` 两条合成色，由 `_SIDEBAR_SPLIT_LADDER` 统一给值。组卡在 `active is None` 时仍要能贴 `-in-split`（`_apply_split_marks` 只看 keys ⊆ group，不要再要求 `active in group_keys`）。全量重建会换掉全部 `ListItem`，末尾必须重新贴标。回归：`SessionGroupSidebarTests`、`SidebarSplitHighlightTests.test_selecting_group_card_clears_member_split_active`。
 - **AI 易错点**【改会话卡文案要同步 selftest】`selftest.sh` 用 `grep` 匹配侧边栏卡片原文来判定首屏、筛选和退出（`workA 修复切换体验` 等）。卡片格式一变（2026-07-31 发现：首行去掉冒号后，脚本仍在等 `workA: …`），第一条断言就卡死 60 秒然后整个冒烟脚本失败——更坏的是 `grep -q "workB:"` 那种**否定**判断会永远成立，变成一条静默假通过。改卡片首行格式、分隔符或字段顺序时，必须回头改这几处断言并真跑一遍 `bash selftest.sh`。
 - **AI 易错点**【关注状态优先级固定】只显示一个圆点，必须按等待回答黄 > 执行中绿 > 未读新结果红 > 无裁决；等待回答必须来自结构化问题，不可用普通问号或自然语言关键词猜测。黄绿不重叠：黄点只在真正等待用户输入时覆盖绿点，普通执行过程仍显示绿点。
 - **AI 易错点**【红点不是选中即已读】只有右侧对应内容成功加载且稳定可见 0.5 秒才清红；快速掠过、加载失败、选择变化和应用失焦都必须取消计时。查看不能清黄点/绿点。首次升级的历史结果按已读基线处理，但当前执行/等待仍照常显示。
@@ -308,7 +308,7 @@ stateDiagram-v2
 - **AI 易错点**【小窗对每个实时托管格都画，不只激活格】已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文，故跳过静态预览格；多分屏时每一格画自己的提问摘要。判定入口是 `MainScreen._hud_live_targets()`（遍历 `pane_specs()`，要求 `keepalive_name` + store 能找到会话），不要下放到 `SplitPaneArea` 或 `PaneCell` 里各判一次。占位卡（直启/空白新建后还没写出真实历史）在扫描快照里找不到会话，此时不画。回归：`test_every_live_pane_draws_its_own_hud`。
 - **AI 易错点**【侧边栏未置顶区禁止按 mtime 重排】`SessionStore._order` 已保证进入后已有会话位置固定；`_sidebar_rows()` 必须跟这份顺序走（组卡落在最先出现的成员位置），不要再按成员当前 mtime / `group.updated_at` 对未置顶块排序——否则运行中会话一写盘，组卡就会在侧边栏里上下飘。新会话仍由 store 插最前。回归：`test_sidebar_order_stable_when_member_mtime_updates`、`test_newer_independent_session_sorts_above_unpinned_group`。
 - **AI 易错点**【侧边栏记忆禁止「启动读一次、之后整份覆盖」】会话组、置顶、折叠、上次焦点和侧栏显隐是**多窗口共享**的（`SidebarLayoutDB` → `~/.cache/pickup/sidebar-layout.sqlite3`）。界面手上的 `SplitLayoutStore` 只是**只读快照**，任何写入都必须经 `MainScreen._apply_layout_change()` 送进库，由库在 `BEGIN IMMEDIATE` 里重读最新状态再重放这次改动，最后整表写回并自增 `revision`。直接改快照再落盘就是 v0.24.x 之前那个缺陷：同时开两个窗口时后动手的那个会把先动手那个的改动**整份抹掉**（丢的不是一条，而是全部置顶 + 全部分组），两个窗口也永远看不到对方。**右栏只切焦点必须走 `_persist_split_focus()`（`set_focus`），不能走 `_persist_split_composition()`（`set_group`）**——后者会把当前组合整份重新断言一遍，另一个窗口刚把某成员移出去时这边一切焦点就又把组重建回来，组名还重新随机，两个窗口来回打架。跨窗口同步靠每秒读一次 `revision`（`PRAGMA data_version` 只对长连接有效，这里是用完即关的短连接，所以用持久化计数器），且只有 `sidebar_fingerprint()`（不含焦点字段）变了才重建列表——全量重建是秒级重活。回归：`SidebarLayoutDBTests.test_interleaved_windows_do_not_clobber_each_other`、`test_multiple_processes_can_write_concurrently`、`test_follows_sidebar_memory_changed_by_another_window`。
-- **AI 易错点**【碰侧边栏记忆的测试/验证脚本必须设 `PICKUP_CACHE_DIR`】库路径认 `PICKUP_CACHE_DIR` > `XDG_CACHE_HOME` > `~/.cache`，但**旧版 JSON 的一次性迁移**会额外去 `titles.CACHE_DIR`（写死 `~/.cache/pickup`）找文件——设了 `PICKUP_CACHE_DIR` 时这条回落必须关掉，否则临时库会把机主真实的历史记忆一起吃进去。真出过事（2026-08-04）：一个只想验证并发写的脚本没设该变量，把本机 `ui-prefs.json` 迁走了。同理，**迁移只读不动旧文件**：不改名、不删除——升级期间机器上很可能还开着跑旧代码的窗口，它仍在按秒往那两个文件里写，动它们既互相打架，回退版本时还会凭空丢记忆。回归：`test_imports_legacy_json_once_without_touching_the_files`、`test_ignores_legacy_files_outside_the_overridden_cache_dir`。**实测实例（2026-08-04，v0.24.45 修）：`test_attention_ui.py` 一直没设隔离，sqlite3 记忆库落地前侥幸不挂；v0.24.44 起本机必现「已读判定时序断言 Called 0 times」——真实组/置顶污染了测试的侧边栏布局，CI 干净环境不现，所以 CI 全绿、本机连挂 5 次。修复=测试文件顶部 `os.environ["PICKUP_CACHE_DIR"] = tempfile.mkdtemp(...)` + `_make_store` 里 `reset_default_layout_db()`。顺带：任何「按一次方向键就选中第一条会话」的测试假设都过时了——进入 pickup 默认高亮第一条会话（跳过「＋ 新建」），`down` 一次落到第二条，要显式 `select_session_key()`。
+- **AI 易错点**【碰侧边栏记忆的测试/验证脚本必须设 `PICKUP_CACHE_DIR`】库路径认 `PICKUP_CACHE_DIR` > `XDG_CACHE_HOME` > `~/.cache`，但**旧版 JSON 的一次性迁移**会额外去 `titles.CACHE_DIR`（写死 `~/.cache/pickup`）找文件——设了 `PICKUP_CACHE_DIR` 时这条回落必须关掉，否则临时库会把机主真实的历史记忆一起吃进去。真出过事（2026-08-04）：一个只想验证并发写的脚本没设该变量，把本机 `ui-prefs.json` 迁走了。同理，**迁移只读不动旧文件**：不改名、不删除——升级期间机器上很可能还开着跑旧代码的窗口，它仍在按秒往那两个文件里写，动它们既互相打架，回退版本时还会凭空丢记忆。回归：`test_imports_legacy_json_once_without_touching_the_files`、`test_ignores_legacy_files_outside_the_overridden_cache_dir`。**实测实例（2026-08-04，v0.24.45 修）：`test_attention_ui.py` 一直没设隔离，sqlite3 记忆库落地前侥幸不挂；v0.24.44 起本机必现「已读判定时序断言 Called 0 times」——真实组/置顶污染了测试的侧边栏布局，CI 干净环境不现，所以 CI 全绿、本机连挂 5 次。修复=测试文件顶部 `os.environ["PICKUP_CACHE_DIR"] = tempfile.mkdtemp(...)` + `_make_store` 里 `reset_default_layout_db()`。顺带：任何「按一次方向键就选中第一条会话」的测试假设都过时了——进入 pickup 默认高亮第一条会话（跳过「＋ 新建」），`down` 一次落到第二条，要显式 `select_session_key()`。**端到端脚本 `selftest.sh` 就是最后一处漏网（2026-08-05，v0.24.48 修）**：它启动后先按一次 `Down` 再回车托管，实际托管的是第二条会话，脚本却在等第一条的画面，于是 16 项断言只跑到第 2 项就退出——症状是「刚改的东西一跑冒烟就挂」，很容易误判成自己改坏了。这类脚本级过时假设不会被单测覆盖，改右栏 / 内嵌相关代码前先确认冒烟脚本在**未改动的 HEAD** 上也能跑通再归因。
 - **AI 易错点**【小窗的快捷键必须让路】`toggle_hud`（`Ctrl+G`）留在 `_LIST_ONLY_ACTIONS` 里：小窗是"扫一眼"用的，不值得从助手手里抢一个组合键。右栏实时格持有输入时该键原样转发给助手，用户想展开就点小窗本身——点浮层不会改变键盘焦点（浮层与其祖先都不可聚焦，Textual 只会把焦点给命中点位上可聚焦的控件）。这点与 `Ctrl+Shift+B` 显隐侧栏那类壳层键刻意不同。回归：`SessionHudGatingTests`。
 - **AI 易错点**【运行中会话的对话不落盘缓存】`SessionStore.get_conversation()` 对 `live` 会话跳过 `put_conversation`：助手每写一次历史签名就变一次，落盘必然立刻失效。小窗和「在别的窗口跑」的对话都会每隔几秒重读一次运行中会话，真落盘就变成几秒一次的整份 JSON 写库 + `prune()`（缓存到上限后还要删行 + WAL checkpoint）。内存缓存照常按 mtime 更新，会话结束后第一次读取补上落盘。回归：`test_live_session_conversation_is_not_written_to_disk_cache`。
 - **AI 易错点**【小窗刷新不能每秒重解析】1 秒定时器只做 `stat` + 内存缓存判定（`peek_conversation`）；缓存失效才按 `HUD_WARM_INTERVAL` 节流起一次后台线程解析。解析期间必须继续显示上一版摘要（`MainScreen._hud_cache`），否则助手一边写历史小窗就一秒空一下再闪回来。本机实测：最近 15 个真实会话解析中位 4ms，最大的 18MB 会话 203ms——正因为尾部这么重，才必须节流且放后台。

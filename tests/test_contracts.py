@@ -13,8 +13,7 @@ from pathlib import Path
 
 import pickup
 from pickup import updater
-from pickup.models import SessionInfo
-from pickup.runtime import default_registry
+from pickup.models import SessionInfo, make_session_info
 
 
 class CompatExportsTests(unittest.TestCase):
@@ -95,42 +94,57 @@ class VersionConsistencyTests(unittest.TestCase):
 
 
 class SessionFieldContractTests(unittest.TestCase):
-    """扫描器返回的会话字典目前完全靠 5 份手写字面量各自拼装，没有任何校验
-    （`scan_sessions` 标注 `list[dict]`，适配器层标注 `list[SessionInfo]`，
-    中间是个信任跳跃）。这里对本机真实历史做一次抽查：字段必须覆盖
-    `SessionInfo` 声明的全部键，多出的键必须在已知白名单内（目前只有 codex
-    的 `thread_source`，其余运行时的私有字段——如 keepalive_name、
-    attention_*——是扫描之后由 SessionStore 注入的，不出现在 scan_sessions()
-    的原始产出里）。
-
-    阶段二引入 `models.make_session_info` 工厂后，这条测试应改为直接断言
-    工厂输出的键集合，不再依赖本机是否恰好有某个运行时的真实历史。
+    """会话字段契约现在由 `models.make_session_info` 工厂统一收口（5 个扫描器
+    的 `_build_session_info` 都改为调用它，见 `scan/{claude,codex,kimi,cursor,
+    opencode}.py`），这里直接断言工厂输出的键集合，不再依赖本机是否恰好有
+    某个运行时的真实历史——工厂本身就是全部扫描器共用的唯一产出路径，测它
+    等价于测全部 5 个扫描器的字段契约。
     """
 
-    _KNOWN_EXTRA_FIELDS = {"codex": {"thread_source"}}
+    _MINIMAL_KWARGS = dict(
+        source="claude",
+        id="s1",
+        short_id="s1",
+        cwd="/tmp/proj",
+        mtime=1000.0,
+        time_source="file_mtime",
+        event_time=999.0,
+        file_mtime=1000.0,
+        size_bytes=100,
+        native_title=None,
+        fallback_title="fallback",
+        status_tag="pending",
+        path="/tmp/proj/s1.jsonl",
+    )
 
-    def test_scanned_sessions_cover_required_fields(self) -> None:
-        required = set(SessionInfo.__annotations__)
-        registry = default_registry()
-        checked_any = False
-        for runtime in registry:
-            try:
-                sessions = runtime.scan_sessions(3)
-            except Exception:
-                continue
-            if not sessions:
-                continue
-            checked_any = True
-            allowed_extra = self._KNOWN_EXTRA_FIELDS.get(runtime.id, set())
-            for session in sessions:
-                with self.subTest(runtime=runtime.id, session_id=session.get("id")):
-                    keys = set(session)
-                    missing = required - keys
-                    self.assertFalse(missing, f"{runtime.id} 扫描结果缺少字段：{missing}")
-                    unexpected = keys - required - allowed_extra
-                    self.assertFalse(unexpected, f"{runtime.id} 扫描结果出现未登记字段：{unexpected}")
-        if not checked_any:
-            self.skipTest("本机没有任何运行时的真实会话历史，无法抽查字段契约")
+    def test_factory_output_covers_exactly_the_required_fields(self) -> None:
+        session = make_session_info(**self._MINIMAL_KWARGS)
+        self.assertEqual(set(session), SessionInfo.__required_keys__)
+
+    def test_factory_extra_kwargs_land_in_optional_fields(self) -> None:
+        """`**extra` 收的运行时私有字段（如 codex 的 thread_source）必须落在
+        `SessionInfo` 声明的可选字段集合内，不能是随手拼错的野字段。"""
+        session = make_session_info(**self._MINIMAL_KWARGS, thread_source="subagent")
+        self.assertEqual(set(session), SessionInfo.__required_keys__ | {"thread_source"})
+        self.assertIn("thread_source", SessionInfo.__optional_keys__)
+
+    def test_first_user_last_user_last_agent_msg_truncated_to_300_chars(self) -> None:
+        session = make_session_info(
+            **self._MINIMAL_KWARGS,
+            first_user_msg="a" * 400,
+            last_user_msg="b" * 400,
+            last_agent_msg="c" * 400,
+        )
+        self.assertEqual(len(session["first_user_msg"]), 300)
+        self.assertEqual(len(session["last_user_msg"]), 300)
+        self.assertEqual(len(session["last_agent_msg"]), 300)
+
+    def test_live_and_pid_default_to_scan_time_placeholders(self) -> None:
+        """`live`/`pid` 由各运行时的 `scan_sessions()` 事后按判活逻辑回填，
+        工厂只负责给出安全占位值。"""
+        session = make_session_info(**self._MINIMAL_KWARGS)
+        self.assertIs(session["live"], False)
+        self.assertIsNone(session["pid"])
 
 
 if __name__ == "__main__":

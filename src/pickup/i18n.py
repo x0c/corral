@@ -255,16 +255,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "选择会话，或点击上方助手",
     },
     "split.full": {
-        "en": "At most 3 panes — close one first",
-        "zh": "最多三格 — 请先关闭一格",
+        "en": "At most {n} panes — close one first",
+        "zh": "最多 {n} 格 — 请先关闭一格",
     },
     "split.no_project": {
         "en": "Select a session in a project first",
         "zh": "请先选择某个项目下的会话",
     },
     "split.multi_full": {
-        "en": "At most 3 panes in a split",
-        "zh": "分屏最多三格",
+        "en": "At most {n} panes in a split",
+        "zh": "分屏最多 {n} 格",
     },
     "action.toggle_multi": {
         "en": "Toggle multi-select",

@@ -28,11 +28,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pickup import titles
 from pickup.cache import get_cache
-from pickup.models import ConversationMessage, effective_session_time, format_message_time
+from pickup.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
 from pickup.scan.common import is_ephemeral_agent_cwd
 from pickup.scan.common import live_pids_by_process_name
 from pickup.scan.common import parse_timestamp as _parse_iso
-from pickup.scan.common import shorten_cwd as _shorten_cwd
 
 KIMI_HOME = os.path.expanduser("~/.kimi-code")
 SESSIONS_DIR = os.path.join(KIMI_HOME, "sessions")
@@ -220,32 +219,27 @@ def _build_session_info(session_dir: str, session_id: str) -> dict | None:
     if not first_user_msg and not native_title and not fallback:
         return None  # 空会话（刚创建、还没任何用户消息），无展示价值
 
-    return {
-        "source": "kimi",
-        "id": session_id,
-        "short_id": session_id.replace("session_", "")[:12],
-        "cwd": cwd,
-        "cwd_display": _shorten_cwd(cwd),
-        "mtime": session_time,
-        "display_time": format_message_time(session_time),
-        "time_source": time_source,
-        "event_time": event_time,
-        "file_mtime": file_mtime,
-        "size_bytes": stat.st_size,
-        "size_kb": round(stat.st_size / 1024, 1),
-        "native_title": native_title,
-        "fallback_title": fallback or "(无消息)",
-        "status_tag": status_tag,
-        "live": False,  # scan_sessions 统一按 live_pids_by_process_name() 回填
-        "pid": None,
-        "first_user_msg": (first_user_msg or "")[:300],
-        "last_user_msg": (last_user_msg or "")[:300],
-        "last_agent_msg": (last_agent_msg or "")[:300],
-        "path": wire_path,
-    }
+    return make_session_info(
+        source="kimi",
+        id=session_id,
+        short_id=session_id.replace("session_", "")[:12],
+        cwd=cwd,
+        mtime=session_time,
+        time_source=time_source,
+        event_time=event_time,
+        file_mtime=file_mtime,
+        size_bytes=stat.st_size,
+        native_title=native_title,
+        fallback_title=fallback or "(无消息)",
+        status_tag=status_tag,
+        path=wire_path,
+        first_user_msg=first_user_msg,
+        last_user_msg=last_user_msg,
+        last_agent_msg=last_agent_msg,
+    )
 
 
-def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[dict]:
+def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:
     """扫描所有 Kimi Code 会话，返回统一结构列表，按 mtime 降序。
 
     先用一次廉价的 os.stat（按 wire.jsonl 文件 mtime）排序，只对最可能入选的

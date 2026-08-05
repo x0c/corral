@@ -17,10 +17,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pickup import titles
 from pickup.cache import get_cache
-from pickup.models import ConversationMessage, effective_session_time, format_message_time
+from pickup.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
 from pickup.scan.common import is_ephemeral_agent_cwd
 from pickup.scan.common import parse_timestamp as _parse_timestamp
-from pickup.scan.common import shorten_cwd as _shorten_cwd
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects/")
 
@@ -319,29 +318,24 @@ def _build_session_info(fpath: str, proj: str) -> dict:
     else:
         status_tag = titles.STATUS_NONE
 
-    return {
-        "source": "claude",
-        "id": session_id,
-        "short_id": session_id[:8],
-        "cwd": cwd or "",
-        "cwd_display": _shorten_cwd(cwd or ""),
-        "mtime": session_time,
-        "display_time": format_message_time(session_time),
-        "time_source": time_source,
-        "event_time": event_time,
-        "file_mtime": stat.st_mtime,
-        "size_bytes": stat.st_size,
-        "size_kb": round(stat.st_size / 1024, 1),
-        "native_title": ai_title,
-        "fallback_title": fallback,
-        "status_tag": status_tag,
-        "live": False,  # scan_sessions 统一按 _live_session_ids() 回填
-        "pid": None,  # 同上，运行中会话的进程号
-        "first_user_msg": (first_user_msg or "")[:300],
-        "last_user_msg": (last_user_msg or "")[:300],
-        "last_agent_msg": (last_agent_msg or "")[:300],
-        "path": fpath,
-    }
+    return make_session_info(
+        source="claude",
+        id=session_id,
+        short_id=session_id[:8],
+        cwd=cwd or "",
+        mtime=session_time,
+        time_source=time_source,
+        event_time=event_time,
+        file_mtime=stat.st_mtime,
+        size_bytes=stat.st_size,
+        native_title=ai_title,
+        fallback_title=fallback,
+        status_tag=status_tag,
+        path=fpath,
+        first_user_msg=first_user_msg,
+        last_user_msg=last_user_msg,
+        last_agent_msg=last_agent_msg,
+    )
 
 
 SESSIONS_DIR = os.path.expanduser("~/.claude/sessions/")
@@ -416,7 +410,7 @@ def _peek_head_meta(path: str, max_lines: int = 40) -> tuple[str | None, str | N
     return cwd, first_user
 
 
-def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[dict]:
+def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:
     """扫描所有项目下的 Claude Code 会话，返回统一结构列表，按 mtime 降序。
 
     历史会话可能有成百上千个，但调用方只要最近 limit 条。真正耗时的

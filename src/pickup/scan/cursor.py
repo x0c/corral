@@ -26,14 +26,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pickup import titles
 from pickup.cache import file_signature, get_cache
-from pickup.models import ConversationMessage, effective_session_time, format_message_time
+from pickup.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
 from pickup.scan.common import (
     is_ephemeral_agent_cwd,
     live_processes,
     process_command_line,
     process_environ,
 )
-from pickup.scan.common import shorten_cwd as _shorten_cwd
 
 CHATS_DIR = os.path.expanduser("~/.cursor/chats")
 
@@ -180,32 +179,27 @@ def _build_session_info(chat_dir: str, chat_id: str) -> dict | None:
     size_bytes = _chat_size_bytes(chat_dir)
     store_db = os.path.join(chat_dir, "store.db")
     history_path = store_db if os.path.isfile(store_db) else chat_dir
-    return {
-        "source": "cursor",
-        "id": chat_id,
-        "short_id": chat_id.replace("-", "")[:12],
-        "cwd": cwd,
-        "cwd_display": _shorten_cwd(cwd),
-        "mtime": session_time,
-        "display_time": format_message_time(session_time),
-        "time_source": time_source,
-        "event_time": event_time,
-        "file_mtime": file_mtime,
-        "size_bytes": size_bytes,
-        "size_kb": round(size_bytes / 1024, 1),
-        "native_title": native_title,
-        "fallback_title": _fallback_title(native_title, first_user_msg, last_user_msg),
-        "status_tag": status_tag,
-        "live": False,
-        "pid": None,
-        "first_user_msg": first_user_msg[:300],
-        "last_user_msg": last_user_msg[:300],
-        "last_agent_msg": "",
-        "path": history_path,
-    }
+    return make_session_info(
+        source="cursor",
+        id=chat_id,
+        short_id=chat_id.replace("-", "")[:12],
+        cwd=cwd,
+        mtime=session_time,
+        time_source=time_source,
+        event_time=event_time,
+        file_mtime=file_mtime,
+        size_bytes=size_bytes,
+        native_title=native_title,
+        fallback_title=_fallback_title(native_title, first_user_msg, last_user_msg),
+        status_tag=status_tag,
+        path=history_path,
+        first_user_msg=first_user_msg,
+        last_user_msg=last_user_msg,
+        # Cursor 历史里没有独立的「助手最终答复」字段可提取，保持空串。
+    )
 
 
-def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[dict]:
+def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:
     """扫描 Cursor CLI 会话，按 mtime 降序；只读 meta/prompt_history，不打开 store.db。"""
     if not os.path.isdir(CHATS_DIR):
         return []
