@@ -200,8 +200,8 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
         app = PickupApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.ui.main_screen._ATTENTION_READ_DELAY", 0.12),
-            mock.patch("pickup.ui.main_screen._ATTENTION_READY_POLL", 0.01),
+            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READ_DELAY", 0.12),
+            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -222,8 +222,8 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
         app = PickupApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.ui.main_screen._ATTENTION_READ_DELAY", 0.15),
-            mock.patch("pickup.ui.main_screen._ATTENTION_READY_POLL", 0.01),
+            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READ_DELAY", 0.15),
+            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -244,8 +244,8 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
         app = PickupApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.ui.main_screen._ATTENTION_READ_DELAY", 0.14),
-            mock.patch("pickup.ui.main_screen._ATTENTION_READY_POLL", 0.01),
+            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READ_DELAY", 0.14),
+            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -268,8 +268,8 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
         app = PickupApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.ui.main_screen._ATTENTION_READ_DELAY", 0.08),
-            mock.patch("pickup.ui.main_screen._ATTENTION_READY_POLL", 0.01),
+            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READ_DELAY", 0.08),
+            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -288,7 +288,7 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
                 store = _make_store()
                 store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
                 app = PickupApp(store, embed_ok=True)
-                with mock.patch("pickup.ui.main_screen._ATTENTION_READY_POLL", 0.01):
+                with mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01):
                     async with app.run_test(size=(120, 30)) as pilot:
                         await pilot.pause(delay=0.08)
                         _set_attention(store, "claude:s0", kind)

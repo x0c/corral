@@ -16,8 +16,7 @@ q 结束会话 / x 删除会话 / c 关闭面板 / Ctrl+Shift+B 显隐侧栏 / E
 from __future__ import annotations
 
 import asyncio
-import os
-import time
+import dataclasses
 
 from rich.text import Text
 from textual import events, work
@@ -27,14 +26,16 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Input
 from textual.worker import get_current_worker
 
-import dataclasses
-
-from pickup import i18n, updater, ui_prefs
+from pickup import i18n, ui_prefs
 from pickup.i18n import t
+from pickup.ui.controllers.attention_reader import AttentionReaderMixin
+from pickup.ui.controllers.host_controller import HostControllerMixin
+from pickup.ui.controllers.hud_controller import HUD_POLL_INTERVAL, HudControllerMixin
+from pickup.ui.controllers.layout_controller import LayoutControllerMixin
+from pickup.ui.controllers.update_controller import UpdateControllerMixin
 from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.modals import ConfirmModal, choose_target_runtime, new_session_flow
 from pickup.ui.nav import NavState
-from pickup.ui.session_hud import summarize_user_messages
 from pickup.ui.session_list import SessionListView
 from pickup.ui.update_toast import UpdateToast
 from pickup.ui.runtime_top_bar import RuntimeTopBar
@@ -51,11 +52,6 @@ CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重
 # 秒，侧边栏记忆的跨窗口同步间隔。每次只读一个版本号（单行 SELECT），版本号没变就什么都不做；
 # 变了才重新读快照，且只有「看得见的部分」真的变了才重建列表（全量重建是秒级重活）。
 LAYOUT_POLL_INTERVAL = 1.0
-
-# 秒，右上角会话小窗的同步间隔。每次只做一次 stat + 内存缓存命中判断（`peek_conversation`），
-# 真正解析历史另有节流（HUD_WARM_INTERVAL），不会因为助手在狂写历史就每秒重解析一遍。
-HUD_POLL_INTERVAL = 1.0
-HUD_WARM_INTERVAL = 3.0  # 秒，同一会话两次重新解析对话之间的最小间隔
 LIST_PANE_WIDTH = 39  # 分栏时左栏固定宽度，对应旧版 EMBED_LEFT_BAND
 # 活跃判定可接受的存活证据陈旧上限（秒）。右栏在显示的会话每轮抓帧都会刷新证据，
 # 所以这条路几乎永远命中缓存；只有久未露面的会话才真去 fork 一次 has-session。
@@ -64,10 +60,6 @@ _ALIVE_EVIDENCE_TTL = 3.0
 # 选择跟随的节流窗口（秒）。单次方向键立即生效（无额外延迟），连按时窗口内只
 # 保留最后一次——否则连按 N 下就实打实重建 N 次右栏，每次约 180ms。
 _FOLLOW_THROTTLE = 0.12
-# 红点只有在右侧内容真实可见并连续稳定一段时间后才算已读；等待首帧或对话缓存
-# 时做轻量轮询，不能把「选中过」误当成「看过了」。
-_ATTENTION_READ_DELAY = 0.5
-_ATTENTION_READY_POLL = 0.1
 # 首屏画完到开始预热全文搜索索引的间隔（秒）。见 _schedule_search_index_warm。
 _SEARCH_INDEX_WARM_DELAY = 1.5
 
@@ -207,7 +199,14 @@ def _localize_binding_descriptions(node) -> None:
         ]
 
 
-class MainScreen(Screen):
+class MainScreen(
+    Screen,
+    LayoutControllerMixin,
+    AttentionReaderMixin,
+    HostControllerMixin,
+    HudControllerMixin,
+    UpdateControllerMixin,
+):
     BINDINGS = _main_bindings()
 
     def __init__(self, store, embed_ok: bool, direct=None, osc_report: bytes | None = None) -> None:
@@ -402,148 +401,10 @@ class MainScreen(Screen):
                 return True
         return False
 
-    def _reconcile_split_session_keys(self) -> dict[str, str]:
-        """占位卡转正后 session_key 会变；按 keepalive 对齐分屏并返回键迁移。"""
-        import pickup
 
-        key_by_keepalive: dict[str, str] = {}
-        for bucket in self.store.sessions.values():
-            for session in bucket:
-                kname = session.get("keepalive_name")
-                if kname:
-                    key_by_keepalive[str(kname)] = pickup.session_key(session)
-        for key, kname in self.store.hosted.items():
-            if kname:
-                key_by_keepalive.setdefault(str(kname), key)
-        area = self._split_area()
-        migrated: dict[str, str] = {}
-        for spec in area.pane_specs():
-            kname = spec.keepalive_name
-            if not kname:
-                continue
-            new_key = key_by_keepalive.get(kname)
-            if new_key and new_key != spec.session_key:
-                migrated[spec.session_key] = new_key
-                old_key = spec.session_key
-                self._apply_layout_change(
-                    lambda store, o=old_key, n=new_key: store.migrate_session_key(o, n)
-                )
-        area.reconcile_session_keys(key_by_keepalive)
-        return migrated
-
-    def _sync_split_marks(self) -> None:
-        """把右栏当前分屏组合与激活格投影到组标题和激活子会话底色。
-
-        右栏格数、格内绑定的会话、激活格都可能变；这里统一取一次现状交给列表，
-        列表内部会跟上次比对，没变就不动 DOM。
-
-        光标停在会话组卡上时：只给组标题铺底，不标任何子会话为「激活」——点组卡
-        是在看整组，不是选中某一个成员。
-        """
-        if not self.embed_ok:
-            return
-        try:
-            area = self._split_area()
-            session_list = self.query_one(SessionListView)
-        except Exception:  # noqa: BLE001 分栏/列表重建中间态查不到，下一轮兜底同步会补上
-            return
-        active = area.focus_key
-        if session_list.selected_group() is not None:
-            active = None
-        session_list.set_split_marks(area.ordered_session_keys(), active)
-
-    def _apply_layout_change(self, mutate):
-        """把一次侧边栏记忆改动交给记忆库，并把返回的最新快照就地采纳。
-
-        **所有写侧边栏记忆的路径都必须走这里**，不要直接改 `self._split_store`：
-        本地快照可能已经落后于别的窗口，直接改再整份写盘就是当初那个「多开窗口互相
-        抹掉对方置顶和分组」的缺陷。库会在事务里重读最新状态再重放这次改动。
-        """
-        snapshot = self._layout_db.apply(mutate)
-        self._adopt_layout(snapshot)
-        return self._split_store
-
-    def _adopt_layout(self, snapshot) -> None:
-        # 就地更新：SessionListView.group_store 持有的是同一个引用，换实例会让侧边栏渲染旧对象。
-        self._split_store.adopt(snapshot)
-        self._layout_revision = snapshot.revision
-
-    def _poll_layout_state(self) -> None:
-        """跟上别的 pickup 窗口对侧边栏记忆的改动。
-
-        只读一个版本号；版本没变直接返回。版本变了才读整份快照，并且只有「看得见的
-        部分」（组成员/组名/折叠/置顶）真的变了才重建列表——只切焦点不该触发秒级重建。
-        """
-        from pickup import split_layout
-
-        try:
-            revision = self._layout_db.read_revision()
-        except Exception:  # noqa: BLE001 记忆库是可降级能力，任何异常都不该打断界面
-            return
-        if revision == self._layout_revision:
-            return
-        before = split_layout.sidebar_fingerprint(self._split_store)
-        self._adopt_layout(self._layout_db.read())
-        if split_layout.sidebar_fingerprint(self._split_store) == before:
-            return
-        self._sync_split_marks()
-        self.call_next(self._rebuild_sidebar_projection)
-
-    def _persist_split_composition(self) -> None:
-        """右栏格数/成员变了：把当前组合断言进侧边栏记忆。
-
-        已结束成员仍属于会话组，因此持久化不按活跃状态裁剪。顺手把侧边栏的当前组与
-        激活会话底色对齐。
-        """
-        if not self.embed_ok:
-            return
-        self._sync_split_marks()
-        area = self._split_area()
-        keys = [
-            k for k in area.ordered_session_keys()
-            if not k.startswith("__")
-        ]
-        if len(keys) < 2:
-            # 单格不构成会话组；组的解散由 _on_pane_close / 删除会话那条路负责。
-            return
-        focus = area.focus_key if area.focus_key in keys else keys[0]
-        project = area.current_project
-        self._apply_layout_change(
-            lambda store: store.set_group(project, keys, focus_key=focus)
-        )
-
-    def _persist_split_focus(self) -> None:
-        """只换了焦点格：更新焦点记忆，**不重写会话组**。
-
-        这里绝不能退回 `set_group()`：那会把当前右栏组合整份重新断言一遍，另一个窗口
-        刚把某个成员移出去时，这边一切焦点就又把组重建回来（组名还会重新随机），两个
-        窗口来回打架。
-        """
-        if not self.embed_ok:
-            return
-        self._sync_split_marks()
-        area = self._split_area()
-        focus = area.focus_key
-        if not focus or focus.startswith("__"):
-            return
-        if self._split_store.get_group(focus) is None:
-            return
-        project = area.current_project
-        self._apply_layout_change(lambda store: store.set_focus(project, focus))
-
-    def _on_pane_close(self, session_key: str) -> None:
-        self._apply_layout_change(lambda store: store.remove_session(session_key))
-        self._sync_split_marks()
-        self.call_next(self._rebuild_sidebar_projection)
         # 焦点由 SplitPaneArea 收尾：还有剩余实时格就接着用，最后一格被关掉才
         # 回列表。这里再调一次 _focus_list() 会把焦点提前抢走，让接力落空。
 
-    async def _rebuild_sidebar_projection(self) -> None:
-        """只重建会话组树，不触发右栏跟随，避免关格时重挂仍存活的同伴格。"""
-        session_list = self.query_one(SessionListView)
-        await session_list.rebuild()
-        self._update_header()
-        self._sync_split_marks()
 
     def _on_runtime_pick(self, runtime_id: str) -> None:
         import pickup
@@ -566,88 +427,6 @@ class MainScreen(Screen):
         request = pickup.NewSessionRequest(runtime_id, cwd)
         self._embed_open(request, add_pane=True)
 
-    def _try_restore_startup_layout(self) -> None:
-        """启动时从持久会话组中恢复仍活跃/托管的成员。"""
-        if not self.embed_ok or self.direct is not None:
-            return
-        # 扫描未完成时 _is_session_active 全假；此时 prune+save 会把磁盘上的
-        # 分屏记忆整份清空，且后续首屏也不会再恢复（真机：重启后组合丢失）。
-        if not self.store.loaded:
-            return
-        # 首扫期间别的窗口可能已经改过记忆，恢复前先取一份最新的。
-        self._adopt_layout(self._layout_db.read())
-        self._reconcile_split_session_keys()
-        focus = self._split_store.last_focus_key
-        if focus and self._is_session_active(focus):
-            self._show_session_group(focus)
-            return
-        project = self._split_store.last_project
-        if not project:
-            return
-        for group in self._split_store.groups.values():
-            if group.project_cwd != project:
-                continue
-            alive = [k for k in group.session_keys if self._is_session_active(k)]
-            if alive:
-                self._show_session_group(alive[0])
-                return
-
-    def _show_session_group(
-        self,
-        focus_key: str,
-        *,
-        focus_pane: bool = False,
-        include_inactive: bool = False,
-    ) -> None:
-        if not self.embed_ok:
-            return
-        from pickup import split_layout
-
-        group = self._split_store.get_group(focus_key)
-        if include_inactive and group is not None:
-            project = group.project_cwd
-            keys = [
-                key
-                for key in group.session_keys
-                if self.store.find_session(key) is not None
-            ]
-        else:
-            project, keys = split_layout.resolve_active_group(
-                self._split_store,
-                focus_key,
-                is_active=self._is_session_active,
-                find_session=self.store.find_session,
-            )
-        entries = self._build_hosted_entries(keys)
-        if not entries:
-            return
-        self._split_area().show_hosted_group(
-            project, entries, focus_key=focus_key, focus_pane=focus_pane and self._can_autofocus(),
-        )
-        self._persist_split_composition()
-        self._begin_attention_read(focus_key)
-
-    def _build_hosted_entries(
-        self, keys: list[str],
-    ) -> list[tuple[dict, str | None, object]]:
-        entries: list[tuple[dict, str | None, object]] = []
-        for key in keys:
-            session = self.store.find_session(key)
-            if session is None:
-                continue
-            kname = session.get("keepalive_name")
-            if kname:
-                entries.append(
-                    (session, str(kname), lambda s=session: self._render_detail(s)),
-                )
-                continue
-            entries.append((session, None, lambda s=session: self._render_detail(s)))
-            if session.get("live"):
-                # 在别的窗口跑的会话没有实时画面，右栏就是这份对话；助手还在写
-                # 历史文件，mtime 一变 peek_conversation 就失效（正文会空掉），
-                # 必须每轮重扫后台补读一次，"下方对话持续更新"才成立。
-                self._warm_conversation(session, self._preview_gen)
-        return entries
 
     # ---- 首屏异步加载：main() 把 store.load() 挪到后台线程异步跑，这里等它跑完
     # 再渲染真实列表（骨架已经在 compose() 时就显示出来了：空列表 + "＋ 新建会话"） ----
@@ -818,121 +597,6 @@ class MainScreen(Screen):
             self._follow_timer = None
         self._cancel_attention_read()
 
-    def _on_app_focus_changed(self, focused: bool) -> None:
-        """终端应用失焦即作废连续查看；重新聚焦后从零开始计算。"""
-        self._app_focused = bool(focused)
-        self._cancel_attention_read()
-        if focused:
-            self.call_next(self._begin_selected_attention_read)
-
-    def _cancel_attention_read(self) -> None:
-        timer = self._attention_read_timer
-        self._attention_read_timer = None
-        if timer is not None:
-            timer.stop()
-        self._attention_read_key = None
-        self._attention_read_token = None
-        self._attention_visible_since = None
-
-    def _begin_selected_attention_read(self) -> None:
-        if not self.embed_ok:
-            return
-        key = self.query_one(SessionListView)._displayed_selected_key()
-        if key is None:
-            return
-        self._begin_attention_read(key)
-
-    def _begin_attention_read(self, key: str) -> None:
-        """开始观察一条红点会话；此时不等于已读，先等右侧内容真实就绪。"""
-        self._cancel_attention_read()
-        if not self.embed_ok or not self._app_focused:
-            return
-        session = self.store.find_session(key)
-        if session is None or session.get("attention_kind") != "unread":
-            return
-        self._attention_read_key = key
-        self._attention_read_token = session.get("attention_token")
-        self._attention_read_timer = self.set_timer(
-            _ATTENTION_READY_POLL, self._check_attention_read,
-        )
-
-    def _attention_view_ready(self, key: str) -> bool:
-        """目标会话是否仍被选中，且右侧已画出可读的预览或真实终端首帧。"""
-        if not self.embed_ok or not self._app_focused:
-            return False
-        if self.query_one(SessionListView)._displayed_selected_key() != key:
-            return False
-        session = self.store.find_session(key)
-        if session is None or session.get("attention_kind") != "unread":
-            return False
-        area = self._split_area()
-        for cell in area.cells():
-            if cell.spec.session_key != key:
-                continue
-            pane = cell.embed_pane()
-            if pane is None or pane.size.width <= 0 or pane.size.height <= 0:
-                return False
-            keepalive_name = cell.spec.keepalive_name
-            if keepalive_name:
-                # 仅挂上控件或正在显示静态回退都不算；首帧成功写入网格后，用户
-                # 才真正看到了这个托管终端。
-                return (
-                    pane.session_name == keepalive_name
-                    and not pane.dead
-                    and pane._grid is not None  # noqa: SLF001
-                )
-            # 静态详情只有对话缓存已成功填充后才算就绪；加载异常会一直保持 None，
-            # 因而不会因为右栏只出现标题或空白回退而误清红点。
-            return pane.session_name is None and self.store.peek_conversation(session) is not None
-        return False
-
-    def _check_attention_read(self) -> None:
-        """轮询首帧/预览就绪，并在连续可见 0.5 秒后清除红点。"""
-        import time as _time
-
-        self._attention_read_timer = None
-        key = self._attention_read_key
-        if key is None:
-            return
-        session = self.store.find_session(key)
-        if session is None or session.get("attention_kind") != "unread":
-            self._cancel_attention_read()
-            return
-        token = session.get("attention_token")
-        if token != self._attention_read_token:
-            # 正在看的 0.5 秒内又到了一条新结果：旧计时不能顺手把新结果也标成
-            # 已读，必须从新内容真实可见的时刻重新完整计算。
-            self._attention_read_token = token
-            self._attention_visible_since = None
-        if not self._attention_view_ready(key):
-            self._attention_visible_since = None
-            if self._app_focused:
-                self._attention_read_timer = self.set_timer(
-                    _ATTENTION_READY_POLL, self._check_attention_read,
-                )
-            return
-        now = _time.monotonic()
-        if self._attention_visible_since is None:
-            self._attention_visible_since = now
-            self._attention_read_timer = self.set_timer(
-                _ATTENTION_READ_DELAY, self._check_attention_read,
-            )
-            return
-        remaining = _ATTENTION_READ_DELAY - (now - self._attention_visible_since)
-        if remaining > 0:
-            self._attention_read_timer = self.set_timer(
-                remaining, self._check_attention_read,
-            )
-            return
-
-        self._attention_read_key = None
-        self._attention_read_token = None
-        self._attention_visible_since = None
-        state = self.store.mark_session_read(key)
-        if state.kind == "none":
-            # mark_session_read 已原地更新会话快照；重建只会刷新发生变化的卡片，
-            # 同时让详情头的可访问文字与红点一起消失。
-            self.call_next(self._rebuild_list, key)
 
     def _follow_current_selection(self) -> None:
         if not self.embed_ok:
@@ -1103,112 +767,6 @@ class MainScreen(Screen):
 
     # ---- 右上角会话小窗：每个实时托管格各自一份 ----
 
-    def _hud_live_targets(self) -> list[tuple[str, dict]]:
-        """返回该画小窗的 (会话键, 会话) 列表；只含实时托管格。
-
-        已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文，故跳过。
-        占位卡（直启/空白新建后尚未写出真实历史）在快照里找不到，也先不画。
-        """
-        if not self.embed_ok:
-            return []
-        try:
-            area = self._split_area()
-        except Exception:
-            # 内嵌不可用时右栏根本不在 DOM 里（纯列表模式），不能裸 query_one。
-            return []
-        targets: list[tuple[str, dict]] = []
-        for spec in area.pane_specs():
-            if not spec.keepalive_name:
-                continue
-            session = self.store.find_session(spec.session_key)
-            if session is None:
-                continue
-            targets.append((spec.session_key, session))
-        return targets
-
-    def _sync_hud(self) -> None:
-        """把每个实时托管格的小窗刷成各自最新摘要。主线程调用，只做 stat + 内存缓存判定。"""
-        if not self.embed_ok:
-            return
-        try:
-            area = self._split_area()
-        except Exception:
-            return
-        payloads: dict[str, object | None] = {}
-        to_warm: list[tuple[dict, str]] = []
-        for key, session in self._hud_live_targets():
-            messages = self.store.peek_conversation(session)
-            if messages is None:
-                # 助手正在写历史，内存缓存已按 mtime 失效：继续显示上一次的摘要，
-                # 同时按节流去后台重解析，避免小窗每秒空一下再闪回来。
-                payloads[key] = self._hud_cache.get(key)
-                to_warm.append((session, key))
-            else:
-                data = summarize_user_messages(messages)
-                self._hud_cache[key] = data
-                payloads[key] = data or None
-        area.sync_hud(payloads, expanded=self._hud_expanded)
-        if to_warm:
-            self._schedule_hud_warm(to_warm)
-
-    def _schedule_hud_warm(self, items: list[tuple[dict, str]]) -> None:
-        now = time.monotonic()
-        due: list[tuple[dict, str]] = []
-        for session, key in items:
-            if now - self._hud_warm_at.get(key, 0.0) < HUD_WARM_INTERVAL:
-                continue
-            self._hud_warm_at[key] = now
-            due.append((session, key))
-        if due:
-            self._warm_hud(due)
-
-    @work(thread=True, exclusive=True, group="hud-warm")
-    def _warm_hud(self, items: list[tuple[dict, str]]) -> None:
-        """后台解析对话（超大会话可到 200ms 量级），完成后回主线程刷小窗。"""
-        for session, _key in items:
-            try:
-                self.store.get_conversation(session)
-            except Exception:
-                continue
-        self.app.call_from_thread(self._sync_hud)
-
-    def action_toggle_hud(self) -> None:
-        """展开/收起会话小窗；展开状态所有格共用一份。"""
-        if not self.embed_ok:
-            return
-        self._hud_expanded = not self._hud_expanded
-        self._sync_hud()
-
-    def _open_split_from_selection(self, keys: list[str]) -> None:
-        """按侧边栏多选组合开分屏（活跃会话内嵌，已结束会话预览）。"""
-        if not self.embed_ok or len(keys) < 2:
-            return
-        import pickup
-        from pickup.split_layout import MAX_PANES
-
-        keys = keys[:MAX_PANES]
-        focus_key = keys[0]
-        focus_session = self.store.find_session(focus_key)
-        project = pickup._normalize_cwd(focus_session.get("cwd")) if focus_session else ""
-        entries = self._build_hosted_entries(keys)
-        if len(entries) < 2:
-            self.app.bell()
-            return
-        area = self._split_area()
-        area.show_hosted_group(
-            project, entries, focus_key=focus_key, focus_pane=self._can_autofocus(),
-        )
-        self._begin_attention_read(focus_key)
-        self._sync_split_marks()
-        self._apply_layout_change(
-            lambda store: store.set_group(project, keys, focus_key=focus_key)
-        )
-        self.call_next(self._rebuild_list, focus_key)
-        self._preview_gen += 1
-        for key in keys:
-            session = self.store.find_session(key)
-            if session is not None:
-                self._warm_conversation(session, self._preview_gen)
 
     # ---- 会话选择/新建 ----
 
@@ -1347,106 +905,6 @@ class MainScreen(Screen):
             )
         )
 
-    def _embed_open(self, request, *, add_pane: bool = False) -> None:
-        """准备启动计划（不涉及阻塞 I/O）后，把 `embed.host_session` 这个真正阻塞的
-        tmux 子进程调用甩给后台 worker（见 `_host_and_focus`），不在 Textual 事件
-        循环所在线程上跑——tmux 卡顿（系统负载高/磁盘慢）时 `_CREATE_TIMEOUT` 上限
-        有 5s，同步跑会把整个 UI 冻住那么久。"""
-        from pickup import keepalive
-        import pickup
-        from pickup.split_layout import MAX_PANES
-
-        same_runtime = isinstance(request, pickup.LaunchRequest) and (
-            request.session.get("source") == request.target_runtime_id
-        )
-        area = self._split_area()
-        if isinstance(request, pickup.LaunchRequest):
-            key = pickup.session_key(request.session)
-            current = self.store.find_session(key) or request.session
-            request = pickup.LaunchRequest(current, request.target_runtime_id, request.title)
-            existing = request.session.get("keepalive_name") if same_runtime else None
-            if existing:
-                # 回车打开已托管会话 = 明确意图，直接把输入交给右栏那一格。
-                if add_pane:
-                    area.add_hosted_pane(
-                        current, str(existing),
-                        lambda s=current: self._render_detail(s),
-                        focus=True,
-                        focus_pane=self._can_autofocus(),
-                    )
-                else:
-                    self._show_session_group(key, focus_pane=True)
-                return
-            if self._host_pending > 0 and not add_pane:
-                self.app.bell()
-                return
-            if add_pane and (area.pane_count() + self._host_pending) >= MAX_PANES:
-                self.notify(t("split.full", n=MAX_PANES))
-                self.app.bell()
-                return
-            plan = self.store.registry.build_launch_plan(request)
-            ident = request.session["id"] if same_runtime else keepalive.new_session_ident()
-        else:
-            if not add_pane and area.pane_count() > 0 and not area.can_add_pane():
-                self.notify(t("split.full", n=MAX_PANES))
-                self.app.bell()
-                return
-            if self._host_pending > 0 and not add_pane:
-                self.app.bell()
-                return
-            if add_pane and (area.pane_count() + self._host_pending) >= MAX_PANES:
-                self.notify(t("split.full", n=MAX_PANES))
-                self.app.bell()
-                return
-            plan = self.store.registry.build_new_session_plan(request)
-            ident = keepalive.new_session_ident()
-
-        width, height = area.host_pane_size()
-        self._host_pending += 1
-        self._host_and_focus(
-            request, plan, ident, same_runtime, width, height, add_pane=add_pane,
-        )
-
-    @work(thread=True, group="host")
-    def _host_and_focus(
-        self, request, plan, ident, same_runtime, width, height, *, add_pane: bool = False,
-    ) -> None:
-        from pickup import embed
-        from pickup import observe
-        import pickup
-        import time
-
-        t0 = time.perf_counter()
-        runtime = request.target_runtime_id
-        try:
-            name = embed.host_session(
-                plan, request.target_runtime_id, ident, width, height, osc_report=self.osc_report,
-            )
-        except Exception as exc:
-            observe.event(
-                "host_session",
-                duration_ms=int((time.perf_counter() - t0) * 1000),
-                runtime=runtime,
-                ok=False,
-            )
-            pickup._log_embed_error("内嵌会话启动线程", exc)
-            self.app.call_from_thread(self._on_host_failed)
-            return
-        observe.event(
-            "host_session",
-            duration_ms=int((time.perf_counter() - t0) * 1000),
-            runtime=runtime,
-            ok=True,
-        )
-        self.app.call_from_thread(
-            self._on_embed_hosted, request, name, same_runtime, add_pane,
-        )
-
-    def _on_host_failed(self) -> None:
-        """host worker 失败收尾：释放托管计数并给用户终端响铃。"""
-        self._host_pending = max(0, self._host_pending - 1)
-        self._restore_direct_search_focus()
-        self.app.bell()
 
     def _restore_direct_search_focus(self) -> None:
         """直启托管结束（成功或失败）后恢复搜索框可聚焦，并清掉 OSC 泄漏垃圾。"""
@@ -1458,152 +916,6 @@ class MainScreen(Screen):
             search.value = ""
             self.nav.project_query = ""
 
-    def _on_embed_hosted(
-        self, request, name: str, same_runtime: bool, add_pane: bool = False,
-    ) -> None:
-        """`_host_and_focus` worker 成功后的收尾：只在主线程操作 Textual/store 状态。
-
-        `request` 可能是 `LaunchRequest`（恢复/接力）或 `NewSessionRequest`（空白新建）。
-        后者没有关联会话，不能读 `.session`——空白新建路径曾经因此闪退。
-
-        跨运行时接力 / 空白新建时目标助手可能尚未落盘历史（例如 Cursor 卡在
-        Workspace Trust），扫描器看不到条目；必须立刻插入托管占位卡并选中它，
-        否则左栏空白、随后的 `_rebuild_list` 还会按仍选中的源会话把右栏盖回去。
-        """
-        import pickup
-
-        self._host_pending = max(0, self._host_pending - 1)
-        area = self._split_area()
-        fallback = None
-        select_key = None
-        if isinstance(request, pickup.LaunchRequest):
-            current = request.session
-            if same_runtime:
-                key = pickup.session_key(request.session)
-                marked = self.store.mark_hosted(key, name)
-                if marked is None:
-                    request.session["keepalive_name"] = name
-                current = marked or request.session
-            else:
-                source_name = self.store.registry.get(
-                    str(request.session.get("source") or "")
-                ).display_name
-                title = request.title or f"接力自 {source_name}"
-                current = self.store.register_hosted_session(
-                    runtime_id=request.target_runtime_id,
-                    keepalive_name=name,
-                    title=title,
-                    cwd=str(request.session.get("cwd") or "") or None,
-                )
-                select_key = pickup.session_key(current)
-            fallback = lambda s=current: self._render_detail(s)
-        else:
-            runtime = self.store.registry.get(request.target_runtime_id)
-            current = self.store.register_hosted_session(
-                runtime_id=request.target_runtime_id,
-                keepalive_name=name,
-                title=f"新{runtime.display_name}会话",
-                cwd=request.cwd,
-            )
-            select_key = pickup.session_key(current)
-            fallback = lambda s=current: self._render_detail(s)
-        # 新建 / 接力托管成功同样是明确意图：用户就是来跟这个新会话说话的。
-        autofocus = self._can_autofocus()
-        if add_pane:
-            area.add_hosted_pane(
-                current, name, fallback, focus=True, focus_pane=autofocus,
-            )
-        elif self._split_store.get_group(pickup.session_key(current)) is not None:
-            # 重启的是会话组里的成员：整组一起摆回去，只是它那一格从静态预览换成
-            # 实时画面。退回单格会把用户的分屏组合当场拆掉。
-            self._show_session_group(
-                pickup.session_key(current), focus_pane=True, include_inactive=True
-            )
-        else:
-            import pickup as pickup_mod
-
-            key = pickup.session_key(current)
-            project = pickup_mod._normalize_cwd(current.get("cwd"))
-            area.show_hosted_group(
-                project,
-                [(current, name, fallback)],
-                focus_key=key,
-                focus_pane=autofocus,
-            )
-        self._persist_split_composition()
-        self._begin_attention_read(pickup.session_key(current))
-        self.call_next(self._rebuild_list, select_key)
-
-    def _host_direct_launch(self) -> None:
-        if self._host_pending >= 3:
-            self.app.bell()
-            return
-        direct = self.direct
-        area = self._split_area()
-        width, height = area.host_pane_size()
-        self._host_pending += 1
-        self._host_direct_worker(direct, width, height)
-
-    @work(thread=True, group="host")
-    def _host_direct_worker(self, direct, width: int, height: int) -> None:
-        from pickup import embed
-        from pickup import observe
-        import pickup
-        import time
-
-        t0 = time.perf_counter()
-        runtime = direct.runtime_id
-        try:
-            name = embed.host_session(
-                direct.plan, direct.runtime_id, direct.ident, width, height, osc_report=self.osc_report,
-            )
-        except Exception as exc:
-            observe.event(
-                "host_session",
-                duration_ms=int((time.perf_counter() - t0) * 1000),
-                runtime=runtime,
-                ok=False,
-            )
-            pickup._log_embed_error("直启会话启动线程", exc)
-            self.app.call_from_thread(self._on_host_failed)
-            return
-        observe.event(
-            "host_session",
-            duration_ms=int((time.perf_counter() - t0) * 1000),
-            runtime=runtime,
-            ok=True,
-        )
-        self.app.call_from_thread(self._on_direct_hosted, name)
-
-    def _on_direct_hosted(self, name: str) -> None:
-        self._host_pending = max(0, self._host_pending - 1)
-        self._restore_direct_search_focus()
-        area = self._split_area()
-        direct = self.direct
-        runtime = self.store.registry.get(direct.runtime_id)
-        cwd = direct.plan.cwd or os.getcwd()
-        session = self.store.register_hosted_session(
-            runtime_id=direct.runtime_id,
-            keepalive_name=name,
-            title=f"新{runtime.display_name}会话",
-            cwd=cwd,
-            ident=direct.ident,
-        )
-        from pickup import _normalize_cwd, session_key
-
-        key = session_key(session)
-        area.show_hosted_group(
-            _normalize_cwd(cwd),
-            [(session, name, None)],
-            focus_key=key,
-        )
-        self._persist_split_composition()
-        self.call_next(self._rebuild_list, key)
-        cells = area.cells()
-        if cells:
-            pane = cells[0].embed_pane()
-            pane.focus_session(name)
-            self.set_focus(pane)
 
     def _focus_list(self) -> None:
         # 用户主动回列表：撤销右栏还没兑现的自动聚焦意图，别让它随后把焦点抢回去。
@@ -2151,53 +1463,6 @@ class MainScreen(Screen):
     # 直接跳过，不弹窗打扰。检查/升级全程跑在 worker 线程，任何异常都不能
     # 拖垮 UI 或阻塞首屏——updater 模块本身已把网络/子进程异常全部吞掉。
 
-    @work(thread=True, group="update-check")
-    def _check_for_update(self) -> None:
-        channel = updater.detect_channel()
-        if not updater.is_updatable(channel):
-            return
-        latest = updater.fetch_latest()
-        if latest is None or not updater.should_prompt(latest):
-            return
-        self._update_channel = channel
-        self._update_latest = latest
-        worker = get_current_worker()
-        if not worker.is_cancelled:
-            self.app.call_from_thread(lambda: self.query_one(UpdateToast).show_available(latest))
-
-    def _on_update_toast_update(self) -> None:
-        toast = self.query_one(UpdateToast)
-        toast.show_updating()
-        self._run_update_worker()
-
-    @work(thread=True, group="update-apply")
-    def _run_update_worker(self) -> None:
-        from pickup import observe
-
-        latest = self._update_latest
-        ok, output = updater.run_update(latest, self._update_channel)
-        observe.event("self_update", ok=ok, latest=latest, channel=self._update_channel)
-        if not ok:
-            observe.debug("self_update_output", output=output)
-        worker = get_current_worker()
-        if worker.is_cancelled:
-            return
-        toast = self.query_one(UpdateToast)
-        if ok:
-            self.app.call_from_thread(lambda: toast.show_done(latest))
-        else:
-            self.app.call_from_thread(lambda: toast.show_failed(output))
-
-    def _on_update_toast_restart(self) -> None:
-        # 交给 cli.main()：用新装好的磁盘代码 re-exec 一个全新 pickup 进程。
-        self.app.exit(result=updater.RestartRequest())
-
-    def _on_update_toast_retry(self) -> None:
-        self._on_update_toast_update()
-
-    def _on_update_toast_dismiss(self, version: str) -> None:
-        updater.mark_dismissed(version)
-        self.query_one(UpdateToast).hide()
 
     def action_quit_app(self) -> None:
         # 搜索框聚焦时 Esc 先清空查询，再交回列表；列表上 Esc 才真正退出
