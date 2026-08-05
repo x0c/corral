@@ -195,14 +195,15 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
   live terminal there) **and hands keyboard input to that pane** — start typing to the agent
   right away, no click needed. Arrow-key browsing never steals focus (and never starts an agent),
   so the list stays usable; `Ctrl-\` gives input back to it.
-- An ended session shows its transcript instead of a live screen, and `Enter` restarts it — from
-  the sidebar, and also with focus already in the right-hand pane (both the transcript preview and
-  the `Session ended` screen you get when an agent exits inside a pane). Restarting a member of a
-  split group keeps the rest of the split in place.
-- Click a session card to do the same thing as `Enter`. Clicking is a symmetric toggle: click the
-  card of the pane that currently holds input and keyboard control goes back to the sidebar
-  (same as `Ctrl-\`, the session keeps running); click it again to step back in. Clicking a pane
-  directly is an equivalent way to take it over.
+- An ended session shows its transcript instead of a live screen, and **selecting it never starts
+  anything** — clicking its card just brings the transcript up, exactly like arrow-key browsing.
+  `Enter` is what restarts it: from the sidebar, and also with focus already in the right-hand pane
+  (both the transcript preview and the `Session ended` screen you get when an agent exits inside a
+  pane). Restarting a member of a split group keeps the rest of the split in place.
+- Click the card of a session that is still running to do the same thing as `Enter`. Clicking is a
+  symmetric toggle: click the card of the pane that currently holds input and keyboard control goes
+  back to the sidebar (same as `Ctrl-\`, the session keeps running); click it again to step back in.
+  Clicking a pane directly is an equivalent way to take it over.
 - When focus is on the sidebar, live panes are dimmed and their status bar says input is not
   going there — so you never type into a pane that isn't listening.
 - While the right pane has focus, `Ctrl-\` returns keyboard focus to the list. Hosted sessions keep
@@ -351,7 +352,7 @@ agent workflows.
 | `Up` / `Down` / `j` / `k` | Move selection |
 | `/` | Focus the sidebar filter box (case-insensitive fuzzy match on group name, project name, path and session title) |
 | `Ctrl+F` | Full-text search across session conversations; results show the matching lines, newest session first. `Enter` opens the selected session in the sidebar |
-| `Enter` | Resume selected session with the native runtime (reattach if it's already running in the background); on the pinned first row `+ New session` (Chinese: `＋ 新建会话`), start the new-session flow instead. Also works with focus in the right-hand pane whenever that pane holds a conversation preview or a `Session ended` screen — restarting an ended session never requires going back to the sidebar |
+| `Enter` | Resume selected session with the native runtime (reattach if it's already running in the background); on the pinned first row `+ New session` (Chinese: `＋ 新建会话`), start the new-session flow instead. For a session whose process is gone this is the **only** way to restart it — clicking its card only shows the transcript. Also works with focus in the right-hand pane whenever that pane holds a conversation preview or a `Session ended` screen |
 | `a` | Open advanced handoff actions |
 | `q` | End a backgrounded / in-progress (keep-alive) session; press `q` again in the confirm dialog |
 | `x` | Permanently delete the selected local session (or every session in the selected group); press `x` again in the confirm dialog |

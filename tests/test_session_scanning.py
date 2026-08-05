@@ -2335,11 +2335,15 @@ class TuiLayoutTests(unittest.TestCase):
         lines = pickup._preview_lines(messages, "Codex", 40)
         text_lines = [line for _, line, _ in lines]
 
-        self.assertTrue(text_lines[0].startswith("● You: "))
-        self.assertIn("请分析启动速度", text_lines[0])
-        self.assertTrue(any(line.startswith("◆ Codex: ") for line in text_lines))
-        self.assertEqual(sum(1 for line in text_lines if line.startswith("● You: ")), 2)
-        self.assertEqual(sum(1 for line in text_lines if line.startswith("◆ Codex: ")), 2)
+        # 角色抬头独占一行，正文顶格另起一行（不带「角色: 」前缀）
+        self.assertEqual(text_lines[0], "● You")
+        self.assertEqual(text_lines[1], "请分析启动速度")
+        self.assertEqual(sum(1 for line in text_lines if line == "● You"), 2)
+        self.assertEqual(sum(1 for line in text_lines if line == "◆ Codex"), 2)
+        self.assertEqual(
+            [kind for kind, _, _ in lines[:2]], ["user", "body"],
+            "正文必须标成 body，渲染层才知道不给它上角色色",
+        )
         self.assertTrue(all(pickup._text_width(line) <= 40 for line in text_lines))
 
     def test_preview_lines_show_timestamp_suffix_only_when_available(self) -> None:
@@ -2351,28 +2355,29 @@ class TuiLayoutTests(unittest.TestCase):
 
         lines = pickup._preview_lines(messages, "Claude", 40)
         role_lines = [(kind, line, suffix) for kind, line, suffix in lines if kind in ("user", "assistant")]
+        bodies = [line for kind, line, _ in lines if kind == "body"]
 
-        self.assertTrue(role_lines[0][1].startswith("● You: "))
-        self.assertIn("带时间戳的消息", role_lines[0][1])
+        # 时间戳挂在角色抬头行，不再跟正文抢首行宽度
+        self.assertEqual(role_lines[0][1], "● You")
         self.assertIn(pickup.format_message_time(ts), role_lines[0][2])
-        self.assertTrue(role_lines[1][1].startswith("◆ Claude: "))
-        self.assertIn("老格式缺时间戳的消息", role_lines[1][1])
+        self.assertIn("带时间戳的消息", bodies)
+        self.assertEqual(role_lines[1][1], "◆ Claude")
         self.assertEqual(role_lines[1][2], "")
+        self.assertIn("老格式缺时间戳的消息", bodies)
 
-    def test_preview_lines_wrap_keeps_role_kind_on_continuations(self) -> None:
-        """折行后续行仍标 user/assistant，便于渲染层整段同色。"""
+    def test_preview_lines_wrap_body_full_width_without_role_indent(self) -> None:
+        """正文顶格折行、吃满整格宽度，续行不再按「角色: 」前缀缩进。"""
         messages = [
             pickup.ConversationMessage("user", "这是一条需要折行的很长很长的用户消息内容"),
             pickup.ConversationMessage("assistant", "这是一条需要折行的很长很长的助手回复内容"),
         ]
         lines = pickup._preview_lines(messages, "Codex", 24)
-        user_parts = [line for kind, line, _ in lines if kind == "user"]
-        assistant_parts = [line for kind, line, _ in lines if kind == "assistant"]
-        self.assertGreaterEqual(len(user_parts), 2)
-        self.assertTrue(user_parts[0].startswith("● You: "))
-        self.assertTrue(user_parts[1].startswith(" " * pickup._text_width("● You: ")))
-        self.assertGreaterEqual(len(assistant_parts), 2)
-        self.assertTrue(assistant_parts[0].startswith("◆ Codex: "))
+        bodies = [line for kind, line, _ in lines if kind == "body"]
+        self.assertGreaterEqual(len(bodies), 4, "两条消息都应折成多行")
+        self.assertFalse(
+            any(line.startswith(" ") for line in bodies), "正文行不得有缩进",
+        )
+        self.assertEqual([kind for kind, _, _ in lines][0], "user")
         self.assertTrue(all(pickup._text_width(line) <= 22 for _, line, _ in lines if line))
 
     def test_all_sessions_keep_stable_order_and_prepend_new_on_refresh(self) -> None:

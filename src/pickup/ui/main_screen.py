@@ -1065,7 +1065,8 @@ class MainScreen(Screen):
         out.append("\n")
         for i, (kind, line, suffix) in enumerate(lines):
             out.append("\n")
-            # 角色与正文同色：user 用 cyan，assistant 用该 runtime 品牌色，整段（含续行）一致。
+            # 只有角色抬头着色（user 用 cyan、assistant 用该 runtime 品牌色），正文
+            # `body` 一律走正常前景——整段套品牌色读长对话太刺眼，见 `_preview_lines`。
             if kind == "assistant":
                 style = runtime_style
             else:
@@ -1210,6 +1211,7 @@ class MainScreen(Screen):
         session_list = self.query_one(SessionListView)
         # 每次「打开」都要消费掉按下前的持有输入会话，避免上一次点击的旧值留到下一次判定。
         focus_before_click = session_list.take_focus_before_click()
+        selected_by_key = session_list.take_selected_by_key()
         multi = session_list.multi_keys()
         if len(multi) >= 2:
             session_list.clear_multi()
@@ -1244,16 +1246,20 @@ class MainScreen(Screen):
         if self._click_returns_focus_to_list(focus_before_click, session_key):
             self._focus_list()
             return
-        if (
-            self._split_store.get_group(session_key) is not None
-            and self._is_session_active(session_key)
-        ):
+        active = self._is_session_active(session_key)
+        if self._split_store.get_group(session_key) is not None and active:
             # 还活着的组成员：回车 = 把输入交给它那一格。已结束的成员必须往下走
             # 到启动那一支——否则组里的历史会话点进去永远只有静态预览，再没有任何
             # 重启入口（会话组结束后仍然保留，这条路会一直被撞上）。
             self._show_session_group(
                 session_key, focus_pane=True, include_inactive=True
             )
+            return
+        if not active and not selected_by_key:
+            # 进程早就没了的会话：鼠标单击只把历史消息摆出来（高亮跟随已经做完了），
+            # 恢复会话必须显式回车。误点一下就真去起一个助手进程、真去烧账号额度，
+            # 代价和"看一眼历史"完全不对等（机主 2026-08-05 拍板）。
+            self._focus_list()
             return
         request = pickup.LaunchRequest(
             session, str(session.get("source") or self.nav.source), self.store.get_title(session)

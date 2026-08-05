@@ -2148,7 +2148,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         展示型 Widget 被点击时触发该逻辑，在某些时序下 container 解析为 None，
         访问 .region 抛 AttributeError 崩溃整个应用。修法：子卡片 + 外层
         NoSelectListItem + SessionListView 都关 ALLOW_SELECT；EmbedPane 保留。
-        这里钉死「点击等价于 Enter」的行为不能再回归成崩溃。"""
+        这里钉死点击会话卡不能再回归成崩溃；已结束会话点击只选中、回车才恢复。"""
         from pickup.ui.session_list import NoSelectListItem
 
         store, _ = _make_store()
@@ -2160,10 +2160,18 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(
                 all(isinstance(item, NoSelectListItem) for item in list_view.children)
             )
-            card = app.screen.query(SessionCard).first()
-            clicked = await pilot.click(card, offset=(5, 0))
+            cards = list(app.screen.query(SessionCard))
+            clicked = await pilot.click(cards[1], offset=(5, 0))
             await pilot.pause()
             self.assertTrue(clicked)
+            self.assertEqual(
+                pickup.session_key(list_view.selected_session()),
+                pickup.session_key(cards[1].session),
+                "点击必须把选中挪到这张卡上",
+            )
+            self.assertIsNone(app.return_value, "点已结束会话只看历史，不许直接恢复")
+            await pilot.press("enter")
+            await pilot.pause()
         self.assertIsInstance(app.return_value, pickup.LaunchRequest)
 
     async def test_clicking_group_card_does_not_crash(self) -> None:
@@ -2303,13 +2311,17 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("padding-bottom:", PickupApp.CSS)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            card = app.screen.query(SessionCard).first()
-            self.assertEqual(card.region.height, 3)
-            # 点第三行时间行，应等价于点该会话卡
-            clicked = await pilot.click(card, offset=(5, 2))
+            list_view = app.screen.query_one(SessionListView)
+            cards = list(app.screen.query(SessionCard))
+            self.assertEqual(cards[0].region.height, 3)
+            # 点第三行时间行，应等价于点该会话卡（选中要挪过去）
+            clicked = await pilot.click(cards[1], offset=(5, 2))
             await pilot.pause()
             self.assertTrue(clicked)
-        self.assertIsInstance(app.return_value, pickup.LaunchRequest)
+            self.assertEqual(
+                pickup.session_key(list_view.selected_session()),
+                pickup.session_key(cards[1].session),
+            )
 
     async def test_rebuild_updates_in_place_when_session_set_unchanged(self) -> None:
         """性能优化回归：会话集合（顺序+成员）没变、只是某个会话内容变了（比如
@@ -4305,6 +4317,52 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("enter")
                     await pilot.pause()
                     self.assertTrue(send_key.called)
+
+    async def test_clicking_ended_session_only_previews_enter_restarts(self) -> None:
+        """进程早就没了的会话：单击只摆历史，回车才恢复（机主 2026-08-05 拍板）。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch(
+                "pickup.embed.host_session", return_value="pickup-claude-s1",
+            ) as host,
+            mock.patch("pickup.embed.is_alive", return_value=False),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                list_view = app.screen.query_one(SessionListView)
+                cards = list(app.screen.query(SessionCard))
+
+                await pilot.click(cards[1])
+                await pilot.pause(delay=0.3)
+                self.assertFalse(host.called, "单击已结束会话不许启动助手进程")
+                self.assertTrue(list_view.has_focus, "焦点应留在侧边栏")
+                self.assertEqual(
+                    pickup.session_key(list_view.selected_session()),
+                    pickup.session_key(cards[1].session),
+                )
+
+                await pilot.press("enter")
+                await _wait_until(lambda: host.called)
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                await _wait_for_embed_session(app.screen, "pickup-claude-s1")
+
+    async def test_clicking_live_session_still_opens_it(self) -> None:
+        """还活着的会话不受影响：单击仍等于回车，直接接管那一格。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        for session in store.all_sessions():
+            session["keepalive_name"] = f"pickup-{session['id']}"
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.is_alive", return_value=True):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                cards = list(app.screen.query(SessionCard))
+                await pilot.click(cards[1])
+                await pilot.pause(delay=0.3)
+                pane = await _wait_for_embed_session(app.screen, "pickup-s1")
+                await _wait_until(lambda: pane.has_focus)
 
     async def test_preview_header_shows_restart_hint(self) -> None:
         """已结束会话的详情头要写明回车可重启，否则用户找不到入口。"""

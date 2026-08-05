@@ -166,7 +166,9 @@ stateDiagram-v2
 
 | 用户动作 | 前置条件 | 流程 | 结果 |
 |---|---|---|---|
-| 回车或单击会话卡 | 侧边栏选中已有会话 | 构建恢复或接力计划；优先打开已有托管会话。**已结束的会话组成员也走这一支重启**，不再只把会话组摆一遍 | 右栏内嵌展示；输入直接交给该格（仅限活着的实时会话） |
+| 回车或单击会话卡 | 侧边栏选中**仍活着**的会话（托管中 / 在别的窗口跑） | 构建恢复或接力计划；优先打开已有托管会话 | 右栏内嵌展示；输入直接交给该格（仅限活着的实时会话） |
+| 单击会话卡 | 该会话的进程早已不存在 | **只把历史消息摆到右栏，不启动任何进程**，焦点留在侧边栏 | 与方向键浏览同效；恢复必须显式回车 |
+| 回车 | 侧边栏选中已结束的会话（含已结束的会话组成员） | 构建原生恢复计划并托管；**已结束的组成员也走这一支**，不再只把会话组摆一遍 | 组成员重启后整组保持原样，只换它那一格 |
 | 回车 | 焦点在右栏静态预览格或「会话已结束」格 | `EmbedPane._is_restart_target()` → `MainScreen._restart_session_from_pane()`，与侧边栏回车同一条启动路径（含"在别的窗口跑"的二次确认） | 就地重启该会话；原属会话组的成员整组摆回、只换它那一格 |
 | 单击或回车会话组卡 | 侧边栏选中会话组 | 右栏跟随展示该组合；焦点留在侧边栏 | 进成员会话卡才把输入交给右栏 |
 | “＋ 新建会话” | 用户需选择项目或运行时 | 先选项目，再选运行时 | 创建空白会话 |
@@ -218,7 +220,7 @@ stateDiagram-v2
 | 右栏静态预览和实时画面挂接 | `ui/embed_pane.py` | `show_detail()`、`focus_session()`、`scroll_detail()` | 本域仅管理呈现切换、焦点与详情滚动；不描述 tmux 实现 |
 | 会话小窗（右上角浮层） | `ui/session_hud.py`、`ui/split_pane_area.py`、`ui/main_screen.py` | `SessionHud`、`summarize_user_messages()`、`PaneCell.update_hud()`、`SplitPaneArea.sync_hud()`、`MainScreen._sync_hud()` / `_hud_live_targets()` / `action_toggle_hud()` | 默认展开；每个实时托管格各自一份；浮层只负责画，数据与展开状态统一由主屏喂；`PaneCell` 的 `layers: default hud` + `dock: right` 决定它贴在标题栏下一行、命中区只有胶囊本身 |
 | 多语言文案 | `i18n.py` | `_MESSAGES`、`detect_lang()`、`t()` | 新增用户可见文案必须同时给 en / zh；环境优先级在此定义 |
-| 宽字符与预览正文格式 | `src/pickup/display.py` 等 | `_text_width()`、`_fit_cell()`、`_preview_lines()` | 中文、emoji 和组合字符按终端显示宽度处理；预览为「角色: 正文」同行，角色与正文同色，可选时间后缀 |
+| 宽字符与预览正文格式 | `src/pickup/display.py` 等 | `_text_width()`、`_fit_cell()`、`_preview_lines()` | 中文、emoji 和组合字符按终端显示宽度处理；预览按「角色抬头一行（着色，右挂淡色时间）+ 正文顶格另起（`body`，不着色，吃满整格宽）」排版 |
 | 本地截图与界面观测 | `observe.py`、`ui/main_screen.py` | `save_tui_screenshot()`、`action_save_screenshot()` | F12 导出当前真实 TUI；对话内容仅由用户主动截图，不能提交 |
 | 截图夹具验收 | `docs/screenshots/capture.py` | `_demo_store()`、`_capture()` | 用虚构会话生成左右栏截图，不读真实会话历史 |
 | 界面回归验证 | `test_ui.py` | `MainScreenNavigationTests`、`RightPanePreviewTests`、`SidebarVisualLayoutTests` 等 | Textual Pilot 覆盖导航、预览、弹窗、卡片、刷新和内嵌接线 |
@@ -324,8 +326,10 @@ stateDiagram-v2
 - 【隐性依赖】截图验收分两类：`docs/screenshots/capture.py` 使用虚构数据，适合提交和回归；F12 截图反映真实 TUI，可能含私密对话，只能本地诊断。夹具图灰阶的常见根因是环境 `NO_COLOR=1`（Textual Monochrome），不是 cairosvg；`capture.py` 会在创建 App 前清除 `NO_COLOR` 并去掉 Rich 假窗口铬。仍可用真机或 `SessionCard.render_line` segment 交叉确认配色。
 - 【消歧】侧边栏关注圆点表示「此刻最需要用户知道的状态」，与标题模块状态标签、机器接口英文 `status` 以及单纯进程判活都不是同一套语义，不能互相替换。标题始终使用基础样式；「托管中」和「在别的窗口跑」的区别仍由右栏详情头说明。
 - 【消歧】“对话预览”固定在右栏，旧 Space 全屏预览入口不得复活；`e` 全屏接管已删除。默认展示最新消息（底部），不是会话开头。
+- **AI 易错点**【预览版式：角色抬头独占一行，正文不着色】`_preview_lines()` 每条消息产出「一行角色抬头（`user` / `assistant`，右挂淡色时间）+ 若干行顶格正文（`body`）」。**不要改回「角色: 正文」同行**：前缀会吃掉一大截行宽，长消息在窄格里几乎排不下，时间戳还会被挤到抬头行末尾折下来。**也不要给正文套角色色**：整段品牌色（尤其助手的橙）满屏高饱和，读长对话很刺眼；颜色只用来区分「谁说的」。两条都是 2026-08-05 机主看真机截图后定的。回归：`test_preview_renders_messages_as_chronological_chat`、`test_preview_lines_wrap_body_full_width_without_role_indent`。
 - 【焦点归属】焦点跟随**明确意图**：回车或单击会话卡打开、新建 / 顶栏加格 / 直启托管成功、关掉持有输入的那格 → 输入交给右栏；上下浏览（含方向键选择跟随）、单击/回车会话组卡、后台重扫一律不抢焦点。进入 pickup 时默认高亮列表第一条会话或会话组（跳过「＋ 新建」），焦点在侧边栏。自动聚焦只认活着的实时会话，且弹窗或筛选框正持有输入时不抢（`MainScreen._can_autofocus()`）。右栏滚轮与焦点无关。
-- **AI 易错点**【禁止】把自动聚焦挂到 `_follow_current_selection()` 上 -> 浏览必须留在列表（原因：一抢焦点方向键就全发给助手，列表没法继续用）。单击会话卡不属于浏览：Textual 的 `ListView` 点击就发 `Selected`，与回车同一条打开路径（真的会拉起 / 接管会话），必须一样自动聚焦。会话组卡例外：Selected 只展示组合、`focus_pane=False` 并 `_focus_list()`，不要跟会话卡共用「打开即聚焦」。
+- **AI 易错点**【禁止】把自动聚焦挂到 `_follow_current_selection()` 上 -> 浏览必须留在列表（原因：一抢焦点方向键就全发给助手，列表没法继续用）。单击**活着的**会话卡不属于浏览：Textual 的 `ListView` 点击就发 `Selected`，与回车同一条打开路径（真的会接管会话），必须一样自动聚焦。会话组卡例外：Selected 只展示组合、`focus_pane=False` 并 `_focus_list()`，不要跟会话卡共用「打开即聚焦」。
+- **AI 易错点**【单击和回车对已结束会话不是同一件事】进程早就没了的会话，**单击只把历史摆出来、绝不启动任何进程**，恢复必须显式回车（机主 2026-08-05 拍板：误点一下就真去起一个助手进程、真去烧账号额度，代价和"看一眼历史"完全不对等）。活着的会话不受影响，单击仍等于回车（那只是接管已有画面，没有额外代价）。`ListView.Selected` 不带来源，唯一还分得清的位置是 `SessionListView.action_select_cursor()`——它置位 `_selected_by_key`，主屏用 `take_selected_by_key()` 消费一次；`focus_on_click()`（MouseDown）必须把该标记清零，否则"按了回车但列表没有高亮项、`Selected` 压根没发出来"会让标记挂到下一次鼠标点击上，单击又变成启动。回归：`test_clicking_session_card_selects_and_launches_without_crashing`、`RestartEndedSessionTests`。
 - **AI 易错点**【已结束会话必须永远留着重启入口】已结束会话默认只给历史预览，这是对的；但**任何一条分支都不许把它变成没有重启出口的死胡同**。历史上踩过的两处：①「属于持久会话组的成员」在 `on_list_view_selected()` 里被 `_show_session_group()` 直接吞掉 return，而会话组在成员结束后仍然保留，于是组内历史会话点进去永远只有静态预览——现在这条分支加了 `_is_session_active()` 门槛，只有活着的成员才走「把输入交给它那一格」，已结束的往下走启动那一支；②右栏本身没有按键入口，用户看着预览却无从下手。现在 `EmbedPane` 的静态预览格与「会话已结束」格都把回车解释成重启（`_is_restart_target()`；托管首帧未到的回退态不算，那条会话活着，回车必须原样转发给助手），详情头也写明 `detail.restart_hint`。**重启组成员后必须整组摆回**（`_on_embed_hosted` 判 `_split_store.get_group()`），退回单格会把用户的分屏组合当场拆掉。已结束格重启前要先 `store.mark_hosted(key, None)` 撤掉过期托管标记，否则 `_embed_open` 认定它「已托管」，转身把那张死画面又摆一遍。占位卡（`provisional`，接力/空白新建还没落盘历史就退出了）没有可恢复的会话，只响铃不启动。回归：`RestartEndedSessionTests`。
 - **AI 易错点**【初次填充的 index 会被 Textual 打回 0】`SessionListView` 在 `clear()+extend()` 后立刻设 `index=1` 当场看着对，下一帧 refresh 会被 ListView 异步重置到 0（落到「＋ 新建」）。必须经 `_apply_index_after_rebuild()`：当场赋值后再 `call_after_refresh` 钉一次；只在仍停在 0 且目标非 0 时纠正。回归：`test_startup_selects_first_session_not_new_row`、`test_startup_selects_first_group_when_list_starts_with_group`。
 - 【点击是对称开关】点会话卡 → 输入交给右栏；再点同一张卡（该格正持有输入）→ 焦点撤回侧边栏、不重新打开会话；点别的会话卡仍是「打开」（右栏切到该会话、焦点留在右栏）。判定依据是 `SessionListView.focus_on_click()` 记下的**按下前焦点**（`take_focus_before_click()` 一次性消费），不能事后现查——Textual 在 MouseDown 阶段先 `set_focus(列表)` 再把事件发下来，处理 `ListView.Selected` 时焦点早已是列表。
@@ -366,7 +370,7 @@ python3 docs/screenshots/capture.py
 python3 -m pickup --limit 5
 ```
 
-人工进入终端界面确认：回车打开运行中会话后可直接打字（无需点鼠标），`Ctrl+\` 回列表后再**单击**该会话卡同样能直接打字（不必先点右栏），**再点同一张卡焦点撤回侧边栏、又点一次再进去**（点击开关必须对称），`Ctrl+\` 回列表后该格压暗且底条提示输入未接管，底部快捷键栏在两种焦点下分别显示右栏 / 列表侧动作；Footer 显示高级操作；高级操作动态列出运行时且默认选中第一个已安装的其他运行时；Esc 先关闭弹窗再退出；**每个弹窗（高级操作、新建会话、结束/删除确认、`Ctrl+F` 全文搜索）都点一次框外空白确认能关掉，点框内的标题、输入框、列表项则不能关**；选择已结束会话时右栏展示完整对话（`角色: 消息` 同行且同色）且详情头写着回车可重启，**在预览格上点一下再按回车能就地把它拉起来**，会话在某一格里跑完退出后（画面变「会话已结束」）按回车同样能原地重启；`/`、Down、Enter 与搜索框 Esc 的焦点行为正确。用户本人还应在真实终端点一次关键路径，这是本域最终的体验验收。
+人工进入终端界面确认：回车打开运行中会话后可直接打字（无需点鼠标），`Ctrl+\` 回列表后再**单击**该会话卡同样能直接打字（不必先点右栏），**再点同一张卡焦点撤回侧边栏、又点一次再进去**（点击开关必须对称），`Ctrl+\` 回列表后该格压暗且底条提示输入未接管，底部快捷键栏在两种焦点下分别显示右栏 / 列表侧动作；Footer 显示高级操作；高级操作动态列出运行时且默认选中第一个已安装的其他运行时；Esc 先关闭弹窗再退出；**每个弹窗（高级操作、新建会话、结束/删除确认、`Ctrl+F` 全文搜索）都点一次框外空白确认能关掉，点框内的标题、输入框、列表项则不能关**；选择已结束会话时右栏展示完整对话（角色抬头独占一行且着色、正文顶格另起一行不着色）且详情头写着回车可重启，**在预览格上点一下再按回车能就地把它拉起来**，会话在某一格里跑完退出后（画面变「会话已结束」）按回车同样能原地重启；`/`、Down、Enter 与搜索框 Esc 的焦点行为正确。用户本人还应在真实终端点一次关键路径，这是本域最终的体验验收。
 
 焦点类问题（谁持有输入、点击后跳没跳过去）**不要靠真机反复肉眼试**：写一次性 Pilot 脚本复现最快——`await pilot.click(card)` 能精确模拟点会话卡，配合把 `SplitPaneArea` / `MainScreen` 的相关方法临时包一层打印（入参、返回值、`app.focused`）就能看清整条异步时序。真机 `selftest.sh` 里注入 SGR 假鼠标偶发不触发命中，自动化点击一律走 Pilot，`selftest.sh` 只用 Tab / 按键覆盖键盘路径。另外 `selftest.sh` 末尾「直启光标锚定」那步的等待窗口只有 6s，机器负载高时会假失败——重跑确认再判定是否真回归，别直接当成自己改坏了。
 

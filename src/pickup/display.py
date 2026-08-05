@@ -131,9 +131,14 @@ def _preview_lines(
 ) -> list[tuple[str, str, str]]:
     """把真实会话消息整理为带角色样式的聊天记录行。
 
-    每行是 (kind, text, dim_suffix) 三元组：首行格式为「角色: 消息内容」，续行按角色
-    前缀宽度缩进对齐正文；kind 为 user/assistant，渲染时整段（含正文）同色。
-    dim_suffix 只挂在首行（发送时间，淡色叠绘）；消息缺时间戳或续行留空。
+    每行是 (kind, text, dim_suffix) 三元组。**每条消息占两块**：一行「角色」抬头
+    （`kind` 为 user/assistant，带角色色；`dim_suffix` 是发送时间，淡色叠绘，缺
+    时间戳则为空），随后正文从下一行起顶格排，`kind` 一律是 `body`、不着色。
+
+    这个版式是 2026-08-05 按机主实测反馈定下的，两条都别改回去：正文跟在
+    「角色: 」后面会被前缀宽度吃掉一大截行宽，长消息在窄格里几乎排不下，时间戳
+    还会被挤到抬头行末尾折下来；正文整段套角色色（尤其助手的品牌橙）满屏都是
+    高饱和色块，读长对话很刺眼。颜色只用来区分"谁说的"，正文交回正常前景色。
     """
     content_width = max(1, width - 2)
     from pickup.i18n import t
@@ -152,15 +157,10 @@ def _preview_lines(
         else:
             kind = "assistant"
             role = f"◆ {runtime_name}"
-        prefix = f"{role}: "
-        body_width = max(1, content_width - _text_width(prefix))
-        wrapped = _wrap_preview_text(message.text.strip(), body_width) or [""]
-        indent = " " * _text_width(prefix)
-        for i, part in enumerate(wrapped):
-            if i == 0:
-                lines.append((kind, f"{prefix}{part}", time_suffix))
-            else:
-                lines.append((kind, f"{indent}{part}", ""))
+        # 抬头只截断不补齐：补出来的尾随空格会把后面淡色叠绘的时间推到行外。
+        lines.append((kind, _fit_cell(role, content_width).rstrip(), time_suffix))
+        for part in _wrap_preview_text(message.text.strip(), content_width) or [""]:
+            lines.append(("body", part, ""))
     return lines
 
 

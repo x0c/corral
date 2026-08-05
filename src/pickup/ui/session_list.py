@@ -559,6 +559,8 @@ class SessionListView(ListView):
         self._split_active_key: str | None = None
         # 鼠标按下前，右栏哪一格正持有输入（会话键），见 focus_on_click()。
         self.focus_before_click = None
+        # 这次 `Selected` 是回车发出来的还是鼠标点出来的，见 action_select_cursor()。
+        self._selected_by_key = False
         # rebuild() 的并发闸门：见该方法注释，多条 pump 上的调用方必须串行进 DOM。
         self._rebuild_lock = asyncio.Lock()
         self._rebuild_seq = 0
@@ -575,6 +577,9 @@ class SessionListView(ListView):
         self.focus_before_click = _focused_live_session_key(
             getattr(self.app, "focused", None)
         )
+        # 这一下是鼠标按的：把上一次回车可能留下的标记清掉（比如按了回车但列表
+        # 里没有高亮项，`Selected` 根本没发出来，标记会一直挂着）。
+        self._selected_by_key = False
         return True
 
     def take_focus_before_click(self):
@@ -582,6 +587,22 @@ class SessionListView(ListView):
         before = self.focus_before_click
         self.focus_before_click = None
         return before
+
+    def action_select_cursor(self) -> None:
+        """回车打开：标记这次 `Selected` 来自键盘，随后由主屏消费一次。
+
+        鼠标单击和回车走的是同一条 `ListView.Selected`，但两者语义已经分家——
+        已结束的会话单击只看历史，必须显式回车才恢复（机主 2026-08-05 拍板）。
+        `ListView` 没有把来源带进消息里，这里是唯一还分得清的位置。
+        """
+        self._selected_by_key = True
+        super().action_select_cursor()
+
+    def take_selected_by_key(self) -> bool:
+        """读取并清空「本次 Selected 来自回车」标记，保证一次按键只判定一次。"""
+        by_key = self._selected_by_key
+        self._selected_by_key = False
+        return by_key
 
     async def on_mount(self) -> None:
         await self.rebuild()
