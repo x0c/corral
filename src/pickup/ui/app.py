@@ -19,6 +19,10 @@ from pickup.ui.terminal_theme import (
     query_runtime_theme,
     supports_runtime_theme_tracking,
 )
+from pickup.ui.textual_patches import install_textual_patches
+
+# Textual 上游缺口（LRUCache 驱逐 KeyError 等）在进界面前打上，避免长跑闪退。
+install_textual_patches()
 
 # 窗口拖动时 SIGWINCH 会连续触发。布局跟随 Textual 自带的 ~120fps 合并即可；
 # 整屏全量重绘（用来清掉终端 reflow 残影）必须另行防抖，等尺寸停稳再做一次，

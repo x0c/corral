@@ -945,6 +945,29 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(logged.call_args.args[0], "TUI 未捕获异常")
         self.assertEqual(forced, [1], "额度耗尽后不应再尝试整屏重绘")
 
+    def test_lru_cache_set_survives_desynced_eviction(self) -> None:
+        """Textual LRUCache 链表/dict 不同步时，set 驱逐不得再 KeyError 掀掉 TUI。
+
+        真机 2026-08-06：双分屏 PaneCell._get_box_model 写入 _box_model_cache
+        时在 textual/cache.py:126 的 del self._cache[last[2]] 闪退。
+        """
+        from textual.cache import LRUCache
+
+        from pickup.ui.textual_patches import install_textual_patches
+
+        install_textual_patches()
+        cache = LRUCache(2)
+        cache["a"] = 1
+        cache["b"] = 2
+        # 模拟上游偶发的不同步：dict 里没有最老项，链表里还挂着。
+        del cache._cache["a"]  # noqa: SLF001
+        cache._full = True  # noqa: SLF001
+        # 无补丁时下一行必炸 KeyError；有补丁应清空后写入新项。
+        cache["c"] = 3
+        self.assertEqual(cache["c"], 3)
+        self.assertIn("c", cache)
+        self.assertNotIn("a", cache)
+
     def test_fatal_tui_exception_is_logged_before_exit(self) -> None:
         """非 compositor 自愈的致命异常必须写入 observe，不能只闪在终端。"""
         import tempfile
