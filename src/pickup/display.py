@@ -297,6 +297,16 @@ def _preview_blocks(
             head.append(f"  · {format_message_time(message.timestamp)}", style="dim")
         blocks.append(head)
         blocks.append(_markdown_renderable(_clean_preview_text(message.text), content_width))
+    # 三行尾：空行 → 居中 ── END ── → 空行。`content_width` 是面板内容宽；
+    # 居中线段左右用 `─` 补到整行宽——`str.center` 把 `─` 拆成 bytes，宽度会错。
+    blocks.append(Text(""))
+    end_text = t("detail.preview_end")
+    end_w = _text_width(end_text)
+    left_dashes = (content_width - end_w) // 2
+    end_line = Text("─" * left_dashes + end_text, style="dim")
+    end_line.append("─" * (content_width - _text_width(end_line.plain)), style="dim")
+    blocks.append(end_line)
+    blocks.append(Text(""))
     return blocks
 
 

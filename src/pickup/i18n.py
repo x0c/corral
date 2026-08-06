@@ -317,6 +317,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "No user messages or final replies to preview",
         "zh": "没有可预览的用户消息或最终答复",
     },
+    "detail.preview_end": {
+        "en": "──── END ────",
+        "zh": "──── END ────",
+    },
     "preview.you": {
         "en": "● You",
         "zh": "● 你",

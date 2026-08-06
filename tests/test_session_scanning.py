@@ -2445,6 +2445,16 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertIn("system-reminder", body)
         self.assertIn("urlopen error", body)
 
+    def test_preview_ends_with_END_marker_and_blank_guard_lines(self) -> None:
+        """预览尾部三行：空行 → 居中 ── END ── → 空行。"""
+        messages = [
+            pickup.ConversationMessage("user", "最后一条"),
+        ]
+        lines = self._preview_text(messages, "Codex", 40)
+        self.assertTrue("END" in lines[-2], "倒数第二行应为 END 标记行")
+        self.assertEqual(lines[-1], "", "最后一行应为空行")
+        self.assertEqual(lines[-3], "", "END 上一行应为空行")
+
     def test_all_sessions_keep_stable_order_and_prepend_new_on_refresh(self) -> None:
         """列表展示出来后已有会话位置固定：内容更新（mtime 变新）不再跳到顶上；
         后台重扫只把「最近」新出现的会话按 mtime 倒序插到最前；更旧的 fresh
