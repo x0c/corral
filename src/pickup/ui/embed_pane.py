@@ -196,8 +196,16 @@ _SCREEN_CACHE_MAX = _LAYOUT_MAX_PANES * 4
 _screen_cache: OrderedDict[str, tuple[list, tuple[int, int, bool] | None]] = OrderedDict()
 
 
+def _is_screen_grid(grid) -> bool:
+    """屏缓存只收解析后的行网格，拒绝 capture 原文（str）等脏数据。"""
+    if not isinstance(grid, list) or not grid:
+        return False
+    first = grid[0]
+    return isinstance(first, (list, embed.ParsedRow))
+
+
 def _cache_screen(name: str | None, grid, cursor) -> None:
-    if not name or not grid:
+    if not name or not _is_screen_grid(grid):
         return
     _screen_cache[name] = (grid, cursor)
     _screen_cache.move_to_end(name)
@@ -209,24 +217,52 @@ def _take_cached_screen(name: str):
     """取出缓存的画面（保留条目，切回同一会话多次都能用）。"""
     hit = _screen_cache.get(name)
     if hit is not None:
+        grid, _cursor = hit
+        if not _is_screen_grid(grid):
+            # 脏条目（例如早期把 capture 原文塞进来）立刻丢掉，别炸恢复路径。
+            _screen_cache.pop(name, None)
+            return None
         _screen_cache.move_to_end(name)
     return hit
 
 
 def has_cached_screen(name: str | None) -> bool:
     """侧栏预热 / 测试：该托管名是否已有可立即摆上的一屏。"""
-    return bool(name) and name in _screen_cache
+    if not name:
+        return False
+    hit = _screen_cache.get(name)
+    if hit is None:
+        return False
+    return _is_screen_grid(hit[0])
 
 
-def prefetch_cached_screen(name: str | None) -> bool:
-    """空闲时抓一帧写入屏缓存，供下次切回零闪。失败或无需抓取返回 False。"""
-    if not name or name in _screen_cache:
+def prefetch_cached_screen(
+    name: str | None,
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> bool:
+    """空闲时抓一帧并解析成行网格写入屏缓存，供下次切回零闪。
+
+    `embed.capture` 返回的是带 SGR 的原文；屏缓存与 `_sync_strips` 只认
+    `parse_screen_rows` 的产物。把原文直接塞进去会在恢复时对字符串逐字符
+    `_row_to_strip`，直接 AttributeError 崩掉界面（v0.24.61 真机）。
+    """
+    if not name or has_cached_screen(name):
         return False
     try:
-        grid = embed.capture(name)
+        text = embed.capture(name)
     except Exception:  # noqa: BLE001 预热失败不得影响界面
         return False
-    if not grid:
+    if not isinstance(text, str) or not text:
+        return False
+    pane_w = width if width > 0 else embed.MIN_HOST_WIDTH
+    pane_h = height if height > 0 else 24
+    try:
+        grid = embed.parse_screen_rows(text, pane_w, pane_h)
+    except Exception:  # noqa: BLE001
+        return False
+    if not _is_screen_grid(grid):
         return False
     _cache_screen(name, grid, None)
     return True

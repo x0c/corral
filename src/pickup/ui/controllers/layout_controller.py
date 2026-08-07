@@ -239,15 +239,30 @@ class LayoutControllerMixin:
     def _prefetch_group_screens(self, entries: list[tuple[dict, str | None, object]]) -> None:
         """空闲时给当前组缺屏缓存的托管会话抓一帧，下次切回少闪。"""
         names = [str(kname) for _session, kname, _renderer in entries if kname]
-        if names:
-            self._prefetch_screens_worker(names)
+        if not names:
+            return
+        width, height = 0, 0
+        try:
+            area = self._split_area()
+            for cell in area.cells():
+                pane = cell.embed_pane()
+                if pane is not None and pane.size.width > 0 and pane.size.height > 0:
+                    width, height = int(pane.size.width), int(pane.size.height)
+                    break
+            if width <= 0:
+                width, height = area.host_pane_size()
+        except Exception:  # noqa: BLE001 尺寸探测失败仍用默认解析宽高
+            width, height = 0, 0
+        self._prefetch_screens_worker(names, width, height)
 
     @work(thread=True, group="screen-prefetch", exclusive=True)
-    def _prefetch_screens_worker(self, names: list[str]) -> None:
+    def _prefetch_screens_worker(
+        self, names: list[str], width: int = 0, height: int = 0,
+    ) -> None:
         from pickup.ui import embed_pane as embed_pane_mod
 
         for name in names:
-            embed_pane_mod.prefetch_cached_screen(name)
+            embed_pane_mod.prefetch_cached_screen(name, width=width, height=height)
 
     def _build_hosted_entries(
         self, keys: list[str],

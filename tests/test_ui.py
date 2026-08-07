@@ -4235,6 +4235,46 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(pane._strips, "只恢复网格不重建 Strip 会渲染成空白")
                 self.assertEqual(pane._strips[0].text.strip(), "A")
 
+    async def test_prefetch_parses_capture_text_before_caching(self) -> None:
+        """预抓帧必须 parse 成行网格；把 capture 原文塞进缓存会在恢复时崩掉。"""
+        import pickup.ui.embed_pane as embed_pane_mod
+        from pickup.embed import Cell
+
+        embed_pane_mod._screen_cache.clear()
+        ansi = "\x1b[38;5;29mhello\x1b[0m\nworld"
+        with mock.patch("pickup.embed.capture", return_value=ansi), \
+             mock.patch(
+                 "pickup.embed.parse_screen_rows",
+                 return_value=[[Cell("h")], [Cell("w")]],
+             ) as parse_mock:
+            self.assertTrue(
+                embed_pane_mod.prefetch_cached_screen("pickup-prefetch-x", width=40, height=10)
+            )
+            parse_mock.assert_called_once()
+        hit = embed_pane_mod._take_cached_screen("pickup-prefetch-x")
+        self.assertIsNotNone(hit)
+        grid, _ = hit
+        self.assertIsInstance(grid, list)
+        self.assertIsInstance(grid[0], list)
+
+    async def test_restore_rejects_raw_capture_string_in_cache(self) -> None:
+        """脏缓存（capture 原文）恢复时必须丢弃，不得 AttributeError 崩界面。"""
+        import pickup.ui.embed_pane as embed_pane_mod
+
+        embed_pane_mod._screen_cache.clear()
+        # 模拟 v0.24.61 错误写入：把 ANSI 原文当 grid
+        embed_pane_mod._screen_cache["pickup-dirty"] = ("\x1b[31mraw\x1b[0m", None)
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.open_channel", return_value=None), \
+             mock.patch("pickup.embed.should_resize_host", return_value=False):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                pane = _primary_embed_pane(app.screen)
+                pane.focus_session("pickup-dirty")
+                self.assertIsNone(pane._grid)
+                self.assertNotIn("pickup-dirty", embed_pane_mod._screen_cache)
+
     async def test_dead_session_drops_cached_screen(self) -> None:
         """确认结束的会话必须丢掉缓存画面，别用旧屏幕伪装成还在跑。"""
         import pickup.ui.embed_pane as embed_pane_mod
