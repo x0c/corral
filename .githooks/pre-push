@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# 推送前门禁：日常只拦与 CI 同源的 ruff；发版提交 / v* 标签推送跑全量 ci-test。
+# 安装：bash scripts/install-git-hooks.sh
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if [ "${PICKUP_SKIP_PUSH_GATE:-0}" = "1" ]; then
+  echo "==> 跳过推送门禁（PICKUP_SKIP_PUSH_GATE=1）"
+  exit 0
+fi
+
+need_full=0
+# Git 约定：新建远端引用时 remote sha 为全 0
+zero="0000000000000000000000000000000000000000"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # 删除远端引用：无本地对象可检
+  if [ "$local_sha" = "$zero" ]; then
+    continue
+  fi
+  case "$local_ref" in
+    refs/tags/v*) need_full=1 ;;
+  esac
+  if [ "$remote_sha" = "$zero" ]; then
+    # 新建分支：不要 git log $sha（会扫完整祖先、误把历史 release: 当成本次发版）
+    # 只看「尚未出现在任何远端跟踪分支上」的提交
+    subjects="$(git log --format=%s "$local_sha" --not --remotes 2>/dev/null || true)"
+  else
+    subjects="$(git log --format=%s "${remote_sha}..${local_sha}" 2>/dev/null || true)"
+  fi
+  if printf '%s\n' "$subjects" | grep -qE '^release:'; then
+    need_full=1
+  fi
+done
+
+export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}src"
+# 复现 CI：清掉本机常驻的 Kitty 开关，避免掩盖真实失败
+run_ci() {
+  env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py "$@"
+}
+
+if [ "$need_full" -eq 1 ]; then
+  echo "==> 发版推送：跑与 CI 同源的完整检查（ruff + 单测）"
+  run_ci
+else
+  echo "==> 推送门禁：只跑 ruff（与 CI Lint 同源）；发版请用 release: 提交说明或推 v* 标签以触发全量"
+  run_ci --lint-only
+fi

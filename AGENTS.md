@@ -126,6 +126,12 @@ env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py
 
 `scripts/ci-test.py` 会**先跑与 CI 相同的 `ruff check`**（固定 `ruff==0.16.1`），再跑全量单测（另加挂死打栈与已知偶发自动重跑一次）。本机只跑 `unittest discover` 会漏掉 lint——2026-08-07 起连续多个版本就因一处 import 排序在 CI Lint 步全矩阵报红、天天发失败邮件，单测根本没跑到。细则见 `docs/MAINTAINER_GUIDE.md`「CI 工作流」节。**复现 CI 环境时必须 `env -u TEXTUAL_DISABLE_KITTY_KEY`**——开发机 shell 里通常已导出该变量，会掩盖掉真实失败。
 
+**推送 / 发版门禁（防再狂发失败邮件）：** 克隆后先跑一次 `bash scripts/install-git-hooks.sh`（写入 `.git/hooks`，不改 git config）。之后：
+
+- 日常 `git push`：自动只跑 `python3 scripts/ci-test.py --lint-only`（几秒）；不过则推送被拦。
+- 提交说明以 `release:` 开头，或推送 `v*` 标签：自动跑**完整** `ci-test.py`（与线上同源）；不过则推送被拦。
+- `scripts/publish-release.sh` 开头再强制跑一遍完整检查（防 `--no-verify` 绕过）；应急才用 `PICKUP_SKIP_CI_GATE=1` / `PICKUP_SKIP_PUSH_GATE=1`。
+
 全量单测约 560 项、**耗时 10 分钟量级**（含真实 tmux 与 Textual 集成用例），别按"几十秒跑完"预期设超时。机器负载高时，涉及真实 tmux 回显和 Textual Pilot 等待的用例（`ControlChannelIntegrationTests`、`MainScreenEmbedFlowTests` 等）会因 4s 级等待超时而假失败：**先把失败用例单独重跑一遍确认，再判定是否真回归**，不要直接当成自己改坏了去查。
 
 涉及界面时还要运行一次真实终端冒烟。标题后台生成会调用本机 agent CLI、消耗对应账号额度；只验证界面时，在临时目录把 `claude`、`codex` 指向本机 `true`，放到 `PATH` 最前面，再启动 `python3 -m pickup --limit 5`（或已安装的 `pickup --limit 5`），确认：

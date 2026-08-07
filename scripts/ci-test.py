@@ -24,9 +24,13 @@ timeout，于是整整占着 runner 6 小时直到被平台按上限杀掉。免
 matching_sidebar_session` 约十次一遇）不再污染 CI 结论。
 
 用法与 CI 的 Lint+Test 两步等价，退出码同语义。
+
+``--lint-only``：只跑 ruff（推送前门禁用，几秒级）；完整入口留给发版推送与
+``publish-release.sh``。
 """
 from __future__ import annotations
 
+import argparse
 import faulthandler
 import os
 import subprocess
@@ -75,10 +79,23 @@ def _run_ruff() -> int:
     return 1
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="与 CI 同源的 lint + 单测入口")
+    parser.add_argument(
+        "--lint-only",
+        action="store_true",
+        help="只跑 ruff check（推送前门禁）；不加则再跑全量单测",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
     lint_code = _run_ruff()
     if lint_code != 0:
         return lint_code
+    if args.lint_only:
+        return 0
 
     faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
 

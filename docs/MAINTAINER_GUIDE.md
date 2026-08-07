@@ -466,6 +466,14 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 
 **本机验证漏跑 ruff → 天天发失败邮件（2026-08-07，v0.24.57～0.24.65）**：不是旧的 Kitty / macOS 挂死复发。`v0.24.57` 给 `tests/test_cache.py` 加 WAL 用例时把 `import sqlite3` 插在 stdlib 与第三方之间的空行后，触发 I001（import 排序）；此后每次 `main` 推送 7 个矩阵作业全在 **Lint 步**红掉，单测一步都没跑到，邮件却照发。根因是本机发版只跑了当时只管 unittest 的 `ci-test.py`，与 CI「先 Lint 再 Test」不同源。已修：① 纠正 import 排序；② `scripts/ci-test.py` 开头先跑与 workflow 同版本的 `ruff check`，本机绿才算过。以后看见「整矩阵 ~1 分钟就失败、Test 步 skipped」优先查 Lint 日志，不要先怀疑单测偶发。
 
+**推送 / 发版门禁 + 矩阵 fail-fast（2026-08-07）**：单靠文档不够——Agent 仍可能漏跑验证就推。落地三道：
+
+1. **`.githooks/pre-push`**（`bash scripts/install-git-hooks.sh` 装到 `.git/hooks`）：日常推送只跑 `ci-test.py --lint-only`；提交说明以 `release:` 开头或推 `v*` 标签时跑完整 `ci-test.py`。应急跳过：`PICKUP_SKIP_PUSH_GATE=1` 或 `git push --no-verify`（应极少用）。
+2. **`publish-release.sh` 开头**再跑完整 `ci-test.py`，挡住「推送被绕过、收尾脚本仍把配方指到未验证版本」；`PICKUP_SKIP_CI_GATE=1` 仅应急。
+3. **`test.yml` 矩阵 `fail-fast: true`**：一路挂了就取消其余作业，少收重复失败邮件、少占免费并发。排查「只在某一 OS / Python 挂」时可临时改 `false` 看全貌，修完改回。
+
+仍无法保证永远零邮件（平台专属挂死、偶发竞态、GitHub 自身异常），但「本机以为绿、一推整矩阵 Lint 红」这类应被门禁拦在推送前。
+
 
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：
 

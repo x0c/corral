@@ -22,6 +22,7 @@
 # 可选环境变量：
 #   PICKUP_SKIP_WHEELS=1   跳过构建/上传安装包
 #   PICKUP_SKIP_TAP=1      跳过更新 Homebrew 配方
+#   PICKUP_SKIP_CI_GATE=1  跳过发版前完整 ci-test（仅应急；默认必须过）
 #   HOMEBREW_TAP_TOKEN     写 tap 仓库用的令牌（默认取 `gh auth token`）
 set -euo pipefail
 
@@ -46,6 +47,16 @@ print(re.search(r"^version = \"([^\"]+)\"", text, re.M).group(1))
 fi
 VERSION="${TAG#v}"
 echo "==> 发布 ${TAG}"
+
+# 发版硬门槛：与 CI 同源的 ruff + 全量单测。推送门禁若被 --no-verify 绕过，
+# 这里仍拦住「装坏包 / 把配方指到未经验证的 tag」。
+if [ "${PICKUP_SKIP_CI_GATE:-0}" = "1" ]; then
+  echo "==> 跳过发版前 CI 同源检查（PICKUP_SKIP_CI_GATE=1）"
+else
+  echo "==> 发版前强制跑 CI 同源检查"
+  env -u TEXTUAL_DISABLE_KITTY_KEY PYTHONPATH=src python3 scripts/ci-test.py \
+    || die "CI 同源检查未过，禁止发版收尾"
+fi
 
 git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null \
   || die "本地没有 ${TAG} 标签，先打好标签再跑本脚本"

@@ -20,7 +20,9 @@ jobs:
     # 上限——macOS 免费并发少，两个僵尸作业就能把后面的排队拖到十几小时。
     timeout-minutes: 40
     strategy:
-      fail-fast: false
+      # 一路挂了就取消其余矩阵，少收重复失败邮件、少占免费并发。
+      # 排查「只在某一 Python / OS 挂」时可临时改 false 看全矩阵，修完改回。
+      fail-fast: true
       matrix:
         include:
           - { os: ubuntu-latest, python-version: "3.10" }
