@@ -9,6 +9,8 @@ revision 轮询跟上别的窗口。状态（`_layout_db` / `_split_store` /
 
 from __future__ import annotations
 
+from textual import work
+
 from pickup.ui.session_list import SessionListView
 
 
@@ -195,6 +197,7 @@ class LayoutControllerMixin:
     ) -> None:
         if not self.embed_ok:
             return
+        import pickup
         from pickup import split_layout
 
         group = self._split_store.get_group(focus_key)
@@ -215,11 +218,36 @@ class LayoutControllerMixin:
         entries = self._build_hosted_entries(keys)
         if not entries:
             return
-        self._split_area().show_hosted_group(
+        area = self._split_area()
+        # 浏览已有会话组只换焦点记忆，禁止 set_group：后者会抬 updated_at、
+        # 整表写盘，还会在多窗口下把对方刚改过的组合整份断言回来。
+        stored = self._split_store.get_group(focus_key)
+        target_keys = [pickup.session_key(session) for session, _, _ in entries]
+        composition_unchanged = (
+            stored is not None and list(stored.session_keys) == target_keys
+        )
+        area.show_hosted_group(
             project, entries, focus_key=focus_key, focus_pane=focus_pane and self._can_autofocus(),
         )
-        self._persist_split_composition()
+        if composition_unchanged:
+            self._persist_split_focus()
+        else:
+            self._persist_split_composition()
         self._begin_attention_read(focus_key)
+        self._prefetch_group_screens(entries)
+
+    def _prefetch_group_screens(self, entries: list[tuple[dict, str | None, object]]) -> None:
+        """空闲时给当前组缺屏缓存的托管会话抓一帧，下次切回少闪。"""
+        names = [str(kname) for _session, kname, _renderer in entries if kname]
+        if names:
+            self._prefetch_screens_worker(names)
+
+    @work(thread=True, group="screen-prefetch", exclusive=True)
+    def _prefetch_screens_worker(self, names: list[str]) -> None:
+        from pickup.ui import embed_pane as embed_pane_mod
+
+        for name in names:
+            embed_pane_mod.prefetch_cached_screen(name)
 
     def _build_hosted_entries(
         self, keys: list[str],

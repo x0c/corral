@@ -3407,12 +3407,19 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(120, 30)):
                 pane = _primary_embed_pane(app.screen)
 
-                pane.focus_session("已有会话", lambda: "即时会话详情")
+                pane.focus_session(
+                    "已有会话", lambda: "即时会话详情", detail_until_frame=True,
+                )
                 self.assertEqual(pane.render().plain, "即时会话详情")
 
                 pane.focus_session("刚启动的新会话")
                 self.assertEqual(pane.render().plain, "")
                 self.assertNotIn("连接中", pane.render().plain)
+
+                # 默认冷切换不跑 Markdown 回退，避免跨组切屏卡顿/闪屏
+                pane.focus_session("冷切换", lambda: "不应出现")
+                self.assertEqual(pane.render().plain, "")
+                self.assertFalse(pane._is_hosted_fallback())
 
     async def test_hosted_fallback_pins_long_conversation_to_bottom(self) -> None:
         """托管首帧前的长对话回退必须钉底，可见区不得出现最早消息。"""
@@ -3842,11 +3849,13 @@ class EmbedPaneWheelTests(unittest.TestCase):
         self.assertNotIn("连接中", pane.render().plain)
 
     def test_focus_session_with_fallback_enables_stick_bottom(self):
-        """有对话回退时 focus_session 必须开启钉底。"""
+        """显式要求首帧前对话回退时 focus_session 必须开启钉底。"""
         pane = EmbedPane()
         with mock.patch("pickup.embed.open_channel", return_value=None), \
              mock.patch("pickup.embed.should_resize_host", return_value=False):
-            pane.focus_session("pickup-cursor-x", lambda: "fallback")
+            pane.focus_session(
+                "pickup-cursor-x", lambda: "fallback", detail_until_frame=True,
+            )
         self.assertTrue(pane._detail_stick_bottom)
         self.assertTrue(pane._is_hosted_fallback())
         self.assertTrue(pane._uses_detail_window())

@@ -38,8 +38,8 @@ pickup 的热路径分为四层：
 v0.24.17 又补了三项，把上面表里「整排重建 + 重铺回退 + 重开通道」那三段基本消掉：
 
 - **格子就地改绑，不再整排重建**（`PaneCell.rebind` / `SplitPaneArea._mount_panes_async`）：新旧格数相同就复用现有格子，只有多出来的才新挂、超出的才卸。`EmbedPane.focus_session` 本来就支持切换会话（提升抓帧代次、拦住旧回调），不需要靠销毁控件来换会话。**`cell_id` 必须沿用旧的**——格子里 `EmbedPane` 的 DOM id 是 compose 时按它生成的。关格回调也必须改成「按此刻绑着的 spec」解析（`PaneCell._close_self`），构造时闭包捕获的那一个在改绑后就过期了，会关错会话。
-- **按会话缓存最后一屏**（`embed_pane._screen_cache`，上限 6）：切走时把网格存起来，切回来先摆上去、后台抓帧几毫秒后用新帧覆盖。恢复必须走 `_sync_strips` 而不是直接赋 `_grid`——`render_line` 的实时分支只认 `_strips`，只设网格会渲染成整片空白。会话确认结束时必须 `forget_cached_screen`，否则再选中它会先摆一屏「像还在跑」的旧画面。
-- **控制通道池加 LRU 上限**（`embed._MAX_CHANNELS`=6）：格子不再卸载，也就不再顺手关掉自己的通道；没有上限的话在侧边栏一路翻下去会攒出几十个 `tmux -C attach` 子进程。淘汰按最久未用，正在显示的格子每轮抓帧都会经 `_active_channel` 续期，天然不会被淘汰。
+- **按会话缓存最后一屏**（`embed_pane._screen_cache`，上限曾为 6）：切走时把网格存起来，切回来先摆上去、后台抓帧几毫秒后用新帧覆盖。恢复必须走 `_sync_strips` 而不是直接赋 `_grid`——`render_line` 的实时分支只认 `_strips`，只设网格会渲染成整片空白。会话确认结束时必须 `forget_cached_screen`，否则再选中它会先摆一屏「像还在跑」的旧画面。
+- **控制通道池加 LRU 上限**（`embed._MAX_CHANNELS`=8，须严格大于 `MAX_PANES`）：格子不再卸载，也就不再顺手关掉自己的通道；没有上限的话在侧边栏一路翻下去会攒出几十个 `tmux -C attach` 子进程。淘汰按最久未用，正在显示的格子每轮抓帧都会经 `_active_channel` 续期，天然不会被淘汰。
 
 A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径「按下方向键 → 新画面出现在屏上」）：
 
@@ -51,7 +51,18 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 
 「右栏换好」在冷缓存下反而略高，是因为改绑把 `focus_session`（开通道 / resize）搬进了挂载协程内同步做完，旧实现是挂完再 `call_after_refresh` 补——所以只看这一列会误判，以「画面就绪」为准。
 
-**仍未做的**：`add_hosted_pane` 加格、关格仍走整排路径的一部分（格数变化时只复用前缀）；跨项目切换时格数常常也变，收益不如同格数切换明显。
+### 分组切换丝滑化（接续）
+
+跨**会话组**切换时身份必变，走改绑而非 inplace；若屏缓存未命中，旧逻辑会同步铺 Markdown 对话回退，观感就像 runtime 整窗重载。另外浏览已有组时误走 `set_group` 会抬 `updated_at` 并整表写盘，堵主线程。
+
+已落地：
+
+- **浏览已有组只 `set_focus`**（`layout_controller._show_session_group`）：目标 keys 与 store 里该组成员一致时走 `_persist_split_focus()`；只有组合真的变了（加格/关格/多选开屏等）才 `_persist_split_composition()` → `set_group`。禁止浏览路径抬 `updated_at`。
+- **固定格池**（`SplitPaneArea`）：首次挂满 `MAX_PANES` 个 `PaneCell`，多余格 `-spare` 隐藏；跨组 2↔4 只 rebind/显隐，关格 `park()` 回收进池，不 `remove`。`cells()` / `hosted_identity()` / `ordered_session_keys()` 只报绑定中的可见格。可见最左格用 `-leading` 去左边距（闲置格仍占 DOM，不能靠 `:first-child`）。
+- **屏缓存扩到 `MAX_PANES * 4`（16）**：覆盖约四个最近分组。冷切换默认空白画布等首帧（`focus_session` 不跑 Markdown 回退）；`detail_until_frame=True` 保留旧回退行为给测试/特例。跟随稳定后后台 `prefetch_cached_screen` 预抓当前组缺缓存的托管帧。
+- **格池已满时同步改绑**（`_schedule_mount`）：无需新建控件时直接 `_apply_pane_bindings`，少一帧旧画面停顿。
+
+回归：`test_browsing_existing_groups_persists_focus_not_composition`、`test_pane_count_change_reuses_pool_without_remount`、`test_cold_hosted_switch_skips_markdown_fallback`。
 
 ## 全文搜索索引
 

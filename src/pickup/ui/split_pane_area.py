@@ -161,8 +161,13 @@ class PaneCell(Vertical):
         margin: 0 0 0 1;
         padding: 0;
     }
-    PaneCell:first-child {
+    PaneCell.-leading {
         margin-left: 0;
+    }
+    PaneCell.-spare {
+        display: none;
+        width: 0;
+        margin: 0;
     }
     PaneCell EmbedPane {
         height: 1fr;
@@ -200,6 +205,31 @@ class PaneCell(Vertical):
         self._title = title
         self._detail_renderer = detail_renderer
         self._input_masked = False
+        self._pooled = False
+
+    def set_pooled(self, pooled: bool) -> None:
+        """闲置格：隐藏且不占宽，保留控件供下次改绑（跨组切屏免 remount）。"""
+        self._pooled = pooled
+        self.set_class(pooled, "-spare")
+        if pooled:
+            self.set_class(False, "-leading")
+            self.display = False
+        else:
+            self.display = True
+
+    def set_leading(self, leading: bool) -> None:
+        if not self._pooled:
+            self.set_class(leading, "-leading")
+
+    def park(self) -> None:
+        """收回进格池：清画面、关通道绑定，不销毁控件。"""
+        pane = self.embed_pane()
+        if pane is not None:
+            pane.clear()
+        self.spec = PaneSpec(session_key="__spare__", cell_id=self.spec.cell_id)
+        self._detail_renderer = None
+        self.set_title("")
+        self.set_pooled(True)
 
     def _close_self(self) -> None:
         self._on_close(self.spec)
@@ -222,6 +252,9 @@ class PaneCell(Vertical):
         yield SessionHud(self._on_hud_toggle, classes="hud")
 
     def on_mount(self) -> None:
+        # 格池闲置格挂上时不启动会话；真正绑定走 rebind → _start_session。
+        if self._pooled:
+            return
         self.call_after_refresh(self._start_session)
 
     def rebind(
@@ -242,6 +275,7 @@ class PaneCell(Vertical):
         spec.cell_id = self.spec.cell_id
         self.spec = spec
         self._detail_renderer = detail_renderer
+        self.set_pooled(False)
         self.set_title(title)
         self._start_session()
 
@@ -740,11 +774,16 @@ class SplitPaneArea(Vertical):
                 spec.session_key = mapped
 
     def _cells(self) -> list[PaneCell]:
+        """当前绑定中的可见格（不含格池闲置格）。"""
+        return [c for c in self._pool_cells() if not c._pooled]  # noqa: SLF001
+
+    def _pool_cells(self) -> list[PaneCell]:
+        """右栏格子池：含闲置隐藏格，跨组切换时复用。"""
         row = self.query_one("#pane-row", Horizontal)
         return [c for c in row.children if isinstance(c, PaneCell)]
 
     def _cell_for_spec(self, spec: PaneSpec) -> PaneCell | None:
-        for cell in self._cells():
+        for cell in self._pool_cells():
             if cell.spec.cell_id == spec.cell_id:
                 return cell
         return None
@@ -765,30 +804,66 @@ class SplitPaneArea(Vertical):
         title = self.store.get_title(session)
         return f"{runtime.display_name} · {title}"
 
+    def _sync_leading_cells(self) -> None:
+        """可见格里最左一格去左边距；闲置格不参与 :first-child，故用手写标记。"""
+        active = self._cells()
+        for index, cell in enumerate(active):
+            cell.set_leading(index == 0)
+
+    def _make_cell(
+        self,
+        spec: PaneSpec,
+        *,
+        title: str,
+        renderer: Callable[[], Text | str] | None,
+    ) -> PaneCell:
+        return PaneCell(
+            spec,
+            title=title,
+            on_close=self._close_spec,
+            on_focus_list=self._on_focus_list,
+            on_pane_focused=self._handle_pane_focused,
+            on_restart=self._on_pane_restart,
+            on_sync_mask=self.sync_input_mask,
+            on_hud_toggle=self._on_hud_toggle,
+            osc_report=self._osc_report,
+            detail_renderer=renderer,
+        )
+
     def _close_spec(self, spec: PaneSpec, *, notify: bool = True) -> None:
         self._panes = [p for p in self._panes if p.cell_id != spec.cell_id]
         if self._focus_key == spec.session_key:
             self._focus_key = self._panes[-1].session_key if self._panes else None
         if notify:
             self._on_pane_close(spec.session_key)
-        # 只卸被关的那一格，勿整排 remount——否则同伴格会闪断、预览格丢失 renderer。
-        self.call_next(self._remove_cell_async, spec)
+        # 只把该格收回池里，勿销毁——同伴格与格池本身都要留下来供下次改绑。
+        self.call_next(self._park_cell_async, spec)
 
-    async def _remove_cell_async(self, spec: PaneSpec) -> None:
+    async def _park_cell_async(self, spec: PaneSpec) -> None:
         row = self.query_one("#pane-row", Horizontal)
-        # 被关掉的这格原先是否持有输入：决定关完后焦点该落到剩余格还是不动。
-        # 焦点本来就在列表时不得因为关格子把它抢到右栏。
         closing_had_focus = False
-        for cell in list(self._cells()):
+        target: PaneCell | None = None
+        for cell in list(self._pool_cells()):
             if cell.spec.cell_id == spec.cell_id:
                 closing_had_focus = cell.has_focus_within
-                await cell.remove()
+                target = cell
                 break
+        if target is not None:
+            target.park()
         if not self._panes:
-            await row.remove_children()
-            await row.mount(Static(t("split.empty_hint"), id="pane-row-empty"))
+            for cell in self._pool_cells():
+                if not cell._pooled:  # noqa: SLF001
+                    cell.park()
+            if row.query("#pane-row-empty"):
+                pass
+            else:
+                await row.mount(Static(t("split.empty_hint"), id="pane-row-empty"))
             self.call_after_refresh(self._on_focus_list)
             return
+        empty = row.query("#pane-row-empty")
+        if empty:
+            await empty[0].remove()
+        self._sync_leading_cells()
         if closing_had_focus:
             self.call_after_refresh(self._focus_after_close)
         self.call_after_refresh(self.sync_input_mask)
@@ -872,10 +947,62 @@ class SplitPaneArea(Vertical):
     ) -> None:
         if focus_pane:
             self._focus_intent_key = focus_key
+        # 格池已够用且无需新建控件时同步改绑，少一帧「旧画面停住 / 空一帧」。
+        # 首次建池或空态清场仍走 async（要 await mount/remove）。
+        pool = self._pool_cells()
+        need_async = (
+            not entries
+            or len(pool) < MAX_PANES
+            or bool(self.query("#pane-row-empty"))
+        )
+        if not need_async and entries:
+            self._mount_pending += 1
+            self._apply_pane_bindings(
+                entries, focus_key=focus_key, focus_pane=focus_pane, sync=True,
+            )
+            return
         self._mount_pending += 1
         self.call_next(
             self._mount_panes_async, entries, focus_key=focus_key, focus_pane=focus_pane,
         )
+
+    def _apply_pane_bindings(
+        self,
+        entries: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]],
+        *,
+        focus_key: str | None = None,
+        focus_pane: bool = False,
+        sync: bool = False,
+    ) -> None:
+        """在已有格池上改绑 / 显隐。`sync=True` 表示同步路径（已计入 _mount_pending）。"""
+        focused = getattr(self.app, "focused", None)
+        list_had_focus = not focus_pane and focused is not None and (
+            getattr(focused, "id", None) == "session-list"
+            or type(focused).__name__ == "SessionListView"
+        )
+        serial = self._focus_intent_serial
+        self._mount_pending = max(0, self._mount_pending - 1)
+        pool = self._pool_cells()
+        # 先把要用的前缀解冻并改绑，其余收回池里。
+        self._panes = [s for s, _, _ in entries]
+        for index, (spec, session, renderer) in enumerate(entries):
+            title = self._pane_title(session)
+            pool[index].rebind(spec, title=title, detail_renderer=renderer)
+        for spare in pool[len(entries):]:
+            if not spare._pooled:  # noqa: SLF001
+                spare.park()
+            else:
+                spare.set_pooled(True)
+        self._sync_leading_cells()
+        if self._focus_intent_key or list_had_focus:
+            self.call_after_refresh(
+                lambda: self._settle_focus_intent(list_had_focus, serial)
+            )
+        elif focus_key:
+            self.call_after_refresh(
+                lambda: self.focus_session_key(focus_key, only_live=False)
+            )
+        self.call_after_refresh(self.sync_input_mask)
 
     async def _mount_panes_async(
         self,
@@ -896,42 +1023,39 @@ class SplitPaneArea(Vertical):
         self._mount_pending = max(0, self._mount_pending - 1)
         row = self.query_one("#pane-row", Horizontal)
         if not entries:
-            await row.remove_children()
-            await row.mount(Static(t("split.empty_hint"), id="pane-row-empty"))
+            for cell in self._pool_cells():
+                cell.park()
+            if not row.query("#pane-row-empty"):
+                # 清掉非格子子节点（旧空态），保留格池控件。
+                for child in list(row.children):
+                    if not isinstance(child, PaneCell):
+                        await child.remove()
+                await row.mount(Static(t("split.empty_hint"), id="pane-row-empty"))
             self._panes = []
             self._focus_intent_key = None
             if list_had_focus:
                 self.call_after_refresh(self._on_focus_list)
             return
-        # 能复用的格子就地改绑，只有多出来的才新挂、超出的才卸掉。整排
-        # remove_children + mount 是切换会话时最大的一块开销，且会连带丢掉
-        # 上一格的实时画面和控制通道（见 PaneCell.rebind）。
-        reusable = self._cells()
-        for surplus in reusable[len(entries):]:
-            await surplus.remove()
-        reusable = reusable[: len(entries)]
-        if not reusable:
-            # 只有空态占位（或什么都没有）时才需要清场
-            await row.remove_children()
+        # 格池：一次挂满 MAX_PANES，之后跨组只改绑/显隐，2↔4 也不再 remove/mount。
+        for child in list(row.children):
+            if not isinstance(child, PaneCell):
+                await child.remove()
+        pool = self._pool_cells()
+        while len(pool) < MAX_PANES:
+            spare_spec = PaneSpec(
+                session_key="__spare__", cell_id=self._new_cell_id(),
+            )
+            cell = self._make_cell(spare_spec, title="", renderer=None)
+            cell.set_pooled(True)
+            await row.mount(cell)
+            pool = self._pool_cells()
         self._panes = [s for s, _, _ in entries]
         for index, (spec, session, renderer) in enumerate(entries):
             title = self._pane_title(session)
-            if index < len(reusable):
-                reusable[index].rebind(spec, title=title, detail_renderer=renderer)
-                continue
-            cell = PaneCell(
-                spec,
-                title=title,
-                on_close=self._close_spec,
-                on_focus_list=self._on_focus_list,
-                on_pane_focused=self._handle_pane_focused,
-                on_restart=self._on_pane_restart,
-                on_sync_mask=self.sync_input_mask,
-                on_hud_toggle=self._on_hud_toggle,
-                osc_report=self._osc_report,
-                detail_renderer=renderer,
-            )
-            await row.mount(cell)
+            pool[index].rebind(spec, title=title, detail_renderer=renderer)
+        for spare in pool[len(entries):]:
+            spare.park()
+        self._sync_leading_cells()
         if self._focus_intent_key or list_had_focus:
             # 明确意图（可能是这次挂载排队期间才发生的点击/回车）压过「把焦点还回
             # 列表」；意图已在挂载期间兑现时也不能再抢回来，两种情况都由 settle 判。

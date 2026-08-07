@@ -63,6 +63,7 @@ from textual.visual import Visual, visualize
 from textual.widget import Widget
 
 from pickup import embed
+from pickup.split_layout import MAX_PANES as _LAYOUT_MAX_PANES
 
 
 def _row_to_strip(row: list) -> Strip:
@@ -183,7 +184,8 @@ _RESIZE_CAPTURE_STABLE_FRAMES = 2
 # 用新帧覆盖；否则每次切回都要先退回静态对话回退、等首帧到了才跳成实时画面，
 # 观感就是右栏闪一下。只存解析后的网格（原生路径下是紧凑的 ParsedRow），
 # 不存 Strip——Strip 按当前面板宽度编译，换格子/换宽度后必须重建。
-_SCREEN_CACHE_MAX = 6
+# 上限按「最近约 4 个分组 × MAX_PANES」留余量，跨组来回切才不易挤爆。
+_SCREEN_CACHE_MAX = _LAYOUT_MAX_PANES * 4
 _screen_cache: OrderedDict[str, tuple[list, tuple[int, int, bool] | None]] = OrderedDict()
 
 
@@ -202,6 +204,25 @@ def _take_cached_screen(name: str):
     if hit is not None:
         _screen_cache.move_to_end(name)
     return hit
+
+
+def has_cached_screen(name: str | None) -> bool:
+    """侧栏预热 / 测试：该托管名是否已有可立即摆上的一屏。"""
+    return bool(name) and name in _screen_cache
+
+
+def prefetch_cached_screen(name: str | None) -> bool:
+    """空闲时抓一帧写入屏缓存，供下次切回零闪。失败或无需抓取返回 False。"""
+    if not name or name in _screen_cache:
+        return False
+    try:
+        grid = embed.capture(name)
+    except Exception:  # noqa: BLE001 预热失败不得影响界面
+        return False
+    if not grid:
+        return False
+    _cache_screen(name, grid, None)
+    return True
 
 
 def forget_cached_screen(name: str | None) -> None:
@@ -349,8 +370,16 @@ class EmbedPane(Widget):
         self,
         name: str,
         fallback_renderer: Callable[[], Text | str] | None = None,
+        *,
+        detail_until_frame: bool = False,
     ) -> None:
-        """把面板切到托管会话；首帧到达前立即展示可用内容或空白终端。"""
+        """把面板切到托管会话；首帧到达前立即展示可用内容或空白终端。
+
+        默认冷切换（无屏缓存）用空白画布等首帧，不跑 Markdown 对话回退——跨组
+        切屏时同步排版整篇对话是卡顿主因，观感也像「runtime 整窗重载」。
+        `detail_until_frame=True` 保留旧行为（首帧前钉底展示对话），仅测试或
+        明确需要回退内容时使用。
+        """
         # 后台重扫和重复点击会再次选中同一个会话。已有画面时必须保持幂等，不能
         # 前台清空 _grid、后台却因 tmux 静止帧未变化而跳过解析，永久卡在“连接中…”。
         # 若尚无画面，则提升版本强制后台重新解析，兼顾从旧异常状态自愈。
@@ -363,16 +392,24 @@ class EmbedPane(Widget):
             self._cursor = None
             self._clear_resize_capture_hold()
         self.session_name = name
-        self._detail_renderer = fallback_renderer
         self.dead = False
-        # 首帧前若有对话回退，必须钉底：否则 `_ensure_static_strips` 顶裁一屏会
-        # 闪出最早消息，Cursor 持续输出时 remount 后就像「跳回会话开头再滚回最新」。
-        self._detail_stick_bottom = fallback_renderer is not None
         self.detail_offset = 0
-        self.invalidate_detail()
         self.history_offset = 0
         if reset_capture:
             self._restore_cached_screen(name)
+        if self._grid is not None:
+            # 缓存命中：已有实时画面，对话回退用不上。
+            self._detail_renderer = fallback_renderer
+            self._detail_stick_bottom = False
+        elif detail_until_frame and fallback_renderer is not None:
+            # 显式要求首帧前展示对话：必须钉底，否则顶裁会闪出最早消息。
+            self._detail_renderer = fallback_renderer
+            self._detail_stick_bottom = True
+        else:
+            # 冷切换：空白终端底，等首帧；禁止同步 Markdown 回退。
+            self._detail_renderer = None
+            self._detail_stick_bottom = False
+        self.invalidate_detail()
         channel = embed.open_channel(name, on_output=self._on_pane_output)
         pane_w, pane_h = self._pane_size()
         # 过窄时不 resize：布局尚未稳定或用户把终端缩得很小时，避免 agent
