@@ -2243,6 +2243,52 @@ class TuiLayoutTests(unittest.TestCase):
             self.assertEqual(store.get_conversation(session)[0].text, "新内容")
             self.assertEqual(runtime.load_conversation.call_count, 2)
 
+    def test_conversation_cache_invalidates_when_sqlite_wal_changes(self) -> None:
+        """内存预览缓存必须把 path-wal 算进版本，否则 Cursor 最新消息一直吃旧缓存。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "store.db"
+            conn = sqlite3.connect(str(path))
+            self.assertEqual(conn.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+            conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)")
+            conn.execute("INSERT INTO blobs VALUES ('u1', ?)", (b'{"role":"user","content":"x"}',))
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            session = {
+                "source": "claude",
+                "id": "abc",
+                "short_id": "abc",
+                "path": str(path),
+                "mtime": 1,
+                "size_bytes": 1,
+                "size_kb": 1,
+                "native_title": None,
+                "fallback_title": "测试会话",
+            }
+            runtime = mock.Mock()
+            runtime.id = "claude"
+            runtime.display_name = "Claude"
+            runtime.scan_sessions.return_value = [session]
+            runtime.load_conversation.side_effect = [
+                [pickup.ConversationMessage("assistant", "旧内容")],
+                [pickup.ConversationMessage("assistant", "WAL 新内容")],
+            ]
+            registry = pickup.RuntimeRegistry((runtime,))
+            with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+                store = pickup.SessionStore(limit=20, registry=registry)
+                store.load()
+
+            self.assertEqual(store.get_conversation(session)[0].text, "旧内容")
+            # 主库 mtime/size 不动，只往 WAL 写——旧实现会继续命中「旧内容」。
+            main_before = (path.stat().st_mtime_ns, path.stat().st_size)
+            conn.execute("INSERT INTO blobs VALUES ('u2', ?)", (b'{"role":"user","content":"y"}',))
+            conn.commit()
+            self.assertEqual((path.stat().st_mtime_ns, path.stat().st_size), main_before)
+            self.assertGreater((Path(str(path) + "-wal")).stat().st_size, 0)
+
+            self.assertEqual(store.get_conversation(session)[0].text, "WAL 新内容")
+            self.assertEqual(runtime.load_conversation.call_count, 2)
+            conn.close()
+
     def test_live_session_conversation_is_not_written_to_disk_cache(self) -> None:
         """还在写的会话不落盘：签名每写一次就变，落盘只是白写。
 
@@ -3438,6 +3484,71 @@ class CursorScanTests(unittest.TestCase):
                     ("assistant", "先摸清现有运行时适配器的模式"),
                 ],
             )
+
+    def test_load_conversation_reads_uncheckpointed_wal_tail(self) -> None:
+        """Cursor store.db 长期 WAL：最新轮次常只在 -wal 里，immutable 会漏掉尾巴。
+
+        真机：预览和小窗都缺最后几条；主库几乎空时甚至读不到 blobs 表。
+        """
+        from pickup.scan import cursor as scan_cursor
+
+        with tempfile.TemporaryDirectory() as td:
+            chat = Path(td) / "chat"
+            chat.mkdir()
+            db = chat / "store.db"
+            conn = sqlite3.connect(str(db))
+            self.assertEqual(conn.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+            conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)")
+            # 先落一条并 checkpoint，主库有表结构；再追加尾巴且故意不 checkpoint。
+            conn.execute(
+                "INSERT INTO blobs VALUES ('u1', ?)",
+                (
+                    json.dumps(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "<user_query>\n旧问\n</user_query>"}],
+                        }
+                    ).encode(),
+                ),
+            )
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute(
+                "INSERT INTO blobs VALUES ('u2', ?)",
+                (
+                    json.dumps(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "<user_query>\n最新一句\n</user_query>"}],
+                        }
+                    ).encode(),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO blobs VALUES ('a2', ?)",
+                (json.dumps({"role": "assistant", "content": "最新答复"}).encode(),),
+            )
+            conn.commit()
+            # 保持写连接未 checkpoint，模拟 agent 仍占用 / 刚写完的真实状态。
+            self.assertTrue((chat / "store.db-wal").is_file())
+            self.assertGreater((chat / "store.db-wal").stat().st_size, 0)
+
+            # 对照：immutable=1 看不到 WAL 尾巴（本回归要修掉的旧行为）。
+            uri_imm = f"file:{db.resolve()}?mode=ro&immutable=1"
+            with sqlite3.connect(uri_imm, uri=True) as frozen:
+                frozen_n = frozen.execute("SELECT count(*) FROM blobs").fetchone()[0]
+            self.assertEqual(frozen_n, 1)
+
+            messages = scan_cursor.load_conversation(str(chat))
+            self.assertEqual(
+                [(m.role, m.text) for m in messages],
+                [
+                    ("user", "旧问"),
+                    ("user", "最新一句"),
+                    ("assistant", "最新答复"),
+                ],
+            )
+            conn.close()
 
     def test_live_flags_bind_resume_and_open_store_separately_in_same_cwd(self) -> None:
         """同 cwd 下旧 --resume 与打开了新 store.db 的 agent 不得串台。

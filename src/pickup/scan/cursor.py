@@ -244,9 +244,12 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         if len(results) >= limit:
             break
         meta_path = os.path.join(chat_dir, "meta.json")
+        store_db = os.path.join(chat_dir, "store.db")
         extra_version = repr((
             file_signature(os.path.join(chat_dir, "prompt_history.json")),
-            file_signature(os.path.join(chat_dir, "store.db")),
+            file_signature(store_db),
+            # WAL 里的未 checkpoint 写入不会 bump 主库 mtime；签名必须带上。
+            file_signature(store_db + "-wal"),
         ))
         cache = get_cache()
         info = cache.get_session("cursor", meta_path, extra_version)
@@ -441,6 +444,20 @@ def delete_session(path: str) -> None:
         shutil.rmtree(chat_dir)
 
 
+def _connect_store_ro(store_path: str) -> sqlite3.Connection | None:
+    """只读打开 Cursor store.db；必须能看见 WAL，不能加 immutable=1。
+
+    Cursor 长期开着 WAL，最新轮次常常还停在 ``store.db-wal`` 里、主库尚未
+    checkpoint。``immutable=1`` 会假设主文件不变并跳过 WAL，表现为预览和小窗
+    都缺最后几条消息；主库几乎为空时甚至 ``no such table: blobs``。
+    """
+    try:
+        uri = f"file:{os.path.abspath(store_path)}?mode=ro"
+        return sqlite3.connect(uri, uri=True, timeout=0.5)
+    except sqlite3.Error:
+        return None
+
+
 def load_conversation(path: str) -> list[ConversationMessage]:
     """按 store.db 中 JSON 消息 blob 的 rowid 顺序提取 user/assistant 正文。
 
@@ -456,17 +473,20 @@ def load_conversation(path: str) -> list[ConversationMessage]:
 
     if os.path.isfile(store_path):
         messages: list[ConversationMessage] = []
-        try:
-            uri = f"file:{os.path.abspath(store_path)}?mode=ro&immutable=1"
-            with sqlite3.connect(uri, uri=True) as conn:
+        conn = _connect_store_ro(store_path)
+        rows: list = []
+        if conn is not None:
+            try:
                 # 跳过二进制 DAG blob，只读 JSON 消息行（大 store.db 预览提速）。
                 rows = conn.execute(
                     "SELECT rowid, data FROM blobs "
                     "WHERE substr(data, 1, 1) = X'7B' "
                     "ORDER BY rowid"
                 ).fetchall()
-        except sqlite3.Error:
-            rows = []
+            except sqlite3.Error:
+                rows = []
+            finally:
+                conn.close()
         for _, data in rows:
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 continue

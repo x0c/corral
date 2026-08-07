@@ -483,7 +483,10 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
     observed_at = _stable_observed_at(session, store_path)
     if not store_path or not os.path.isfile(store_path):
         return _evidence(observed_at=observed_at)
-    connection = _connect_ro(store_path, immutable=not live)
+    # 有 WAL 时绝不能 immutable：冷会话若刚结束、最新轮次还在 wal 里，
+    # immutable 会读到过期尾巴，关注圆点/已读基线都会偏。
+    has_wal = os.path.isfile(store_path + "-wal")
+    connection = _connect_ro(store_path, immutable=not live and not has_wal)
     if connection is None:
         return _evidence(observed_at=observed_at)
     try:

@@ -11,7 +11,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup.cache import PerformanceCache
+import sqlite3
+
+from pickup.cache import PerformanceCache, history_signature
 from pickup.models import ConversationMessage
 
 
@@ -46,6 +48,24 @@ class PerformanceCacheTests(unittest.TestCase):
         self.assertEqual(self.cache.get_conversation("claude", "claude:abc", str(history)), messages)
         self.assertEqual(self.cache.clear()["status"], "cleared")
         self.assertEqual(self.cache.clear()["status"], "unchanged")
+
+    def test_conversation_cache_misses_when_sqlite_wal_grows(self):
+        db = Path(self.temp.name) / "store.db"
+        conn = sqlite3.connect(str(db))
+        self.assertEqual(conn.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        conn.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)")
+        conn.execute("INSERT INTO blobs VALUES ('a', ?)", (b"{}",))
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        messages = [ConversationMessage("user", "旧", 1.0)]
+        self.cache.put_conversation("cursor", "cursor:abc", str(db), messages)
+        self.assertEqual(self.cache.get_conversation("cursor", "cursor:abc", str(db)), messages)
+        before = history_signature(str(db))
+        conn.execute("INSERT INTO blobs VALUES ('b', ?)", (b"{}",))
+        conn.commit()
+        self.assertNotEqual(history_signature(str(db)), before)
+        self.assertIsNone(self.cache.get_conversation("cursor", "cursor:abc", str(db)))
+        conn.close()
 
     def test_dry_run_does_not_change_database(self):
         history = Path(self.temp.name) / "session.jsonl"

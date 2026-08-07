@@ -191,7 +191,7 @@ flowchart TD
 | 修改 OpenCode 查询或刷新跳过 | OpenCode 扫描器 | `scan.opencode.scan_sessions()`、`scan_signature()` | 历史为 SQLite；签名需同时覆盖 DB/WAL 和进程活性快照 |
 | 修改 OpenCode 完整预览 | OpenCode 扫描器 | `scan.opencode.load_conversation()` | 从 `message` 与 `part` 表合并同一消息的多个 text part |
 | 修改 Kimi 事件过滤或预览 | Kimi 扫描器 | `scan.kimi._iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent |
-| 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；同 cwd 多 `agent` 必须按打开的 store.db / 完整 PICKUP_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底 |
+| 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；对话缓存签名含 `store.db-wal`；同 cwd 多 `agent` 必须按打开的 store.db / 完整 PICKUP_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底 |
 | 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`is_cursor_agent_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`） |
 | 修改跨运行时并发或扫描复用 | 注册表 | `runtime.registry.RuntimeRegistry.scan_all()` | 各运行时并发、异常隔离、结果副本隔离、签名命中跳过 |
 | 修改异步首屏、列表合并或预览缓存 | 会话存储 | `pickup.SessionStore.load()`、`refresh()`、`get_conversation()` | `store.load` 在后台线程，预览缓存按 mtime 失效 |
@@ -254,6 +254,7 @@ flowchart TD
 - **AI 易错点**【必须】OpenCode 的扫描签名同时包含 `opencode.db`、可选 `opencode.db-wal` 的 mtime 与按 cwd 排序的 pid 快照（原因：只看数据库文件会漏掉进程退出后的运行中状态变更）。
 - **AI 易错点**【禁止】把 OpenCode 当作 JSONL，或在只读失败时静默返回“没有会话” → 它是 SQLite；发现数据库但全部只读连接/查询失败时抛出错误，让注册表保留上一份成功结果。
 - **AI 易错点**【必须】Cursor 只扫描 `~/.cursor/chats/` 的 CLI 历史，列表阶段只读 `meta.json` 和 `prompt_history.json`，完整预览才读 `store.db`（原因：IDE agent transcripts 不属于本域，过早读大 SQLite 会破坏首屏预算）。
+- **AI 易错点**【禁止】Cursor 预览打开 `store.db` 时加 `immutable=1`，或对话缓存只签主库不签 `-wal` → 会漏掉未 checkpoint 的最新消息（原因：Cursor 长期 WAL；预览与 HUD 小窗都走 `load_conversation`）。
 - **AI 易错点**【禁止】Cursor 判活按「同 cwd 最新会话」猜测 → 只能用 `--resume`、已打开的 `store.db` 路径或完整 `PICKUP_SESSION_ID`（原因：空白新建的临时 8 位标识与历史 chatId 无关，cwd 兜底会把空壳欢迎页绑到同目录旧会话，侧边栏标题与右栏画面串台）。
 - **AI 易错点**【必须】Cursor/`live_processes("agent")` 不能只靠 `pgrep -x agent`：新版 agent 的 `comm` 是 `MainThread`，必须按 cmdline 兜底；同一 chat 同时有无 resume 原托管与二次 `--resume` 时优先绑前者，否则占位卡退不掉会双卡（原因：2026-07-23 真机双份会话）。
 - **AI 易错点**【必须】过滤标题生成自产会话：Claude 和 Codex 的首条用户消息命中 `titles.PROMPT_MARKER` 时丢弃（原因：否则后台标题生成反向污染用户会话列表）。

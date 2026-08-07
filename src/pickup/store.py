@@ -730,29 +730,41 @@ class SessionStore:
         with self.lock:
             return self.display_titles.get(session_key(session), session["fallback_title"])
 
+    @staticmethod
+    def _conversation_version(path: str) -> object | None:
+        """内存对话缓存版本：主历史 + 可选 SQLite WAL，任一端变化即失效。"""
+        if not path:
+            return None
+        try:
+            main = os.stat(path)
+        except OSError:
+            return None
+        try:
+            wal = os.stat(path + "-wal")
+            return (main.st_mtime_ns, main.st_size, wal.st_mtime_ns, wal.st_size)
+        except OSError:
+            return (main.st_mtime_ns, main.st_size, None, None)
+
     def get_conversation(self, session: dict) -> list[ConversationMessage]:
         """按需读取并缓存选中会话的真实聊天记录；历史文件 mtime 变化（有新写入）时自动
         重读，供预览页关闭重开和停留期间的轮询刷新使用。"""
         key = session_key(session)
         path = str(session.get("path") or "")
-        try:
-            mtime = os.stat(path).st_mtime if path else None
-        except OSError:
-            mtime = None
+        version = self._conversation_version(path)
         with self.lock:
             cached = self.conversations.get(key)
-            if cached is not None and cached[0] == mtime:
+            if cached is not None and cached[0] == version:
                 return list(cached[1])
         runtime_id = str(session.get("source") or "")
         persistent = get_cache().get_conversation(runtime_id, key, path) if path else None
         if persistent is not None:
             with self.lock:
-                self.conversations[key] = (mtime, list(persistent))
+                self.conversations[key] = (version, list(persistent))
             return list(persistent)
         runtime = self.registry.get(runtime_id)
         messages = runtime.load_conversation(session)
         with self.lock:
-            self.conversations[key] = (mtime, list(messages))
+            self.conversations[key] = (version, list(messages))
         # 还在写的会话不落盘：助手每写一次历史，签名就变一次、缓存必然失效，落盘
         # 只是白写。右栏小窗和"在别的窗口跑"的对话都会每隔几秒重读一次，真按 mtime
         # 落盘就变成几秒一次的整份 JSON 写库 + prune（缓存到上限后还要删行、
@@ -765,13 +777,10 @@ class SessionStore:
         """若缓存仍有效则返回对话副本，否则返回 None（不触发磁盘读取）。"""
         key = session_key(session)
         path = str(session.get("path") or "")
-        try:
-            mtime = os.stat(path).st_mtime if path else None
-        except OSError:
-            mtime = None
+        version = self._conversation_version(path)
         with self.lock:
             cached = self.conversations.get(key)
-            if cached is not None and cached[0] == mtime:
+            if cached is not None and cached[0] == version:
                 return list(cached[1])
         return None
 

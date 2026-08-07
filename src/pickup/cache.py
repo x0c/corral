@@ -54,6 +54,24 @@ def file_signature(path: str) -> tuple[int, int, int, int] | None:
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
 
+def history_signature(path: str) -> tuple[int, int, int, int] | None:
+    """历史文件缓存签名；SQLite 旁路 WAL 有变更时必须失效。
+
+    Cursor / OpenCode 等 WAL 库的最新写入常只更新 ``path-wal``，主文件 size/mtime
+    不动。对话预览若只签主文件，会一直命中缺尾消息的旧缓存。
+    返回值仍是 4 元组，兼容现有 conversation 表列；identity 取自主文件，
+    size/mtime_ns 与 WAL 混折后写入，任一端变化都会 miss。
+    """
+    main = file_signature(path)
+    if main is None:
+        return None
+    wal = file_signature(path + "-wal")
+    if wal is None:
+        return main
+    # wal[0]/wal[1]（dev/ino）不参与：WAL 重建后 ino 会变，但内容等价于「有旁路」。
+    return (main[0], main[1], (main[2] + wal[2]) & 0x7FFFFFFFFFFFFFFF, main[3] ^ wal[3])
+
+
 class PerformanceCache:
     """多进程安全的 SQLite 派生缓存；失败时始终按未命中处理。"""
 
@@ -267,7 +285,7 @@ class PerformanceCache:
     def get_conversation(
         self, runtime: str, session_key: str, path: str,
     ) -> list[ConversationMessage] | None:
-        signature = file_signature(path)
+        signature = history_signature(path)
         if signature is None:
             return None
         row = None
@@ -294,7 +312,7 @@ class PerformanceCache:
     def put_conversation(
         self, runtime: str, session_key: str, path: str, messages: list[ConversationMessage],
     ) -> None:
-        signature = file_signature(path)
+        signature = history_signature(path)
         if signature is None:
             return
         raw = [[item.role, item.text, item.timestamp] for item in messages]
