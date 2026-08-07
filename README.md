@@ -184,7 +184,8 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
   when there are more than six, the middle is dropped (never the first one) and the card says how many
   it left out. Expanded prompts are **wrapped in full rather than cut off with an ellipsis**, with
   continuation lines aligned under the first; if that runs past the card's maximum height, the body
-  scrolls under a pinned header and footer. It is drawn on every live hosted pane — a finished
+  scrolls under a pinned header and footer, sticking to the latest prompts by default (scroll up to
+  read earlier ones). It is drawn on every live hosted pane — a finished
   session already shows its full conversation there, so static previews stay clear. Note that
   whatever it covers is hidden from the agent's screen and the mouse wheel cannot reach through it;
   click it or press `Ctrl+G` whenever you want the compact three-line view.

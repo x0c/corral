@@ -166,9 +166,11 @@ class SessionHud(Widget):
         self._expanded = False
         self._on_toggle = on_toggle
         # 展开态正文的滚动位置（行）。`lines()` 每次按实际可见高度重算上限并夹紧，
-        # 所以窗口变小、内容变少都不会滚出界；新提问追加在末尾，不打断当前位置。
+        # 所以窗口变小、内容变少都不会滚出界。默认钉在最底（最新提问）；用户上滚
+        # 后取消钉底，新内容到来不再强行跳回；滚回底部或重新展开后恢复钉底。
         self._scroll = 0
         self._max_scroll = 0
+        self._stick_bottom = True
 
     # ---- 外部驱动 ----
 
@@ -176,7 +178,8 @@ class SessionHud(Widget):
         """喂新数据；data 为空（没有提问）时整个小窗不出现。"""
         changed = (data or HudData(0, ())) != self._data or expanded != self._expanded
         if expanded != self._expanded:
-            # 每次重新展开都从头看起；沿用上次的滚动位置会让人以为内容丢了。
+            # 每次重新展开都钉在最新；沿用上次的上滚位置会让人以为最新提问丢了。
+            self._stick_bottom = True
             self._scroll = 0
         self._data = data or HudData(0, ())
         self._expanded = expanded
@@ -260,7 +263,7 @@ class SessionHud(Widget):
 
         展开态超过 `max_height` 时不截断内容，而是**只画一个窗口**（页眉与页脚始终
         可见，中间正文按 `_scroll` 滚动）——页脚是唯一写着"点击收起"的地方，被滚出去
-        用户就找不到出口了。
+        用户就找不到出口了。默认窗口钉在最底，保证最新提问始终在视野里。
         """
         data = self._data
         if not data:
@@ -288,7 +291,10 @@ class SessionHud(Widget):
         body = self._expanded_body(width)
         capacity = len(body) if max_height is None else max(1, max_height - 2)
         self._max_scroll = max(0, len(body) - capacity)
-        self._scroll = max(0, min(self._scroll, self._max_scroll))
+        if self._stick_bottom:
+            self._scroll = self._max_scroll
+        else:
+            self._scroll = max(0, min(self._scroll, self._max_scroll))
         window = body[self._scroll:self._scroll + capacity]
         hint = t("hud.collapse_hint_scroll") if self._max_scroll else t("hud.collapse_hint")
         return [
@@ -354,6 +360,7 @@ class SessionHud(Widget):
         if target == self._scroll:
             return False
         self._scroll = target
+        self._stick_bottom = target >= self._max_scroll
         self.refresh()
         return True
 

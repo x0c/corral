@@ -5956,17 +5956,42 @@ class SessionHudRenderTests(unittest.TestCase):
         capped = hud.lines(40, 10)
         self.assertEqual(len(capped), 10, "超出高度必须封顶，不能盖满整格")
         self.assertGreater(hud._max_scroll, 0)  # noqa: SLF001
+        self.assertEqual(hud._scroll, hud._max_scroll, "默认钉底，视野里是最新提问")  # noqa: SLF001
         self.assertIn("Your prompts", capped[0].plain, "页眉必须常驻")
         self.assertIn("Click to collapse", capped[-1].plain, "页脚（唯一的收起出口）必须常驻")
         self.assertIn("scroll for more", capped[-1].plain)
+        # 封顶窗口默认贴底：可见正文应包含最新那条，而不是最早那条
+        body = " ".join(line.plain for line in capped[1:-1])
+        self.assertIn("第5条", body)
+        self.assertNotIn("第0条", body)
 
-        top = [line.plain for line in capped[1:-1]]
-        self.assertTrue(hud._scroll_by(3))  # noqa: SLF001
+        bottom = [line.plain for line in capped[1:-1]]
+        self.assertTrue(hud._scroll_by(-3))  # noqa: SLF001
         scrolled = [line.plain for line in hud.lines(40, 10)[1:-1]]
-        self.assertNotEqual(top, scrolled, "滚动必须换到另一段正文")
-        # 到底之后不再动，也不会滚出界
+        self.assertNotEqual(bottom, scrolled, "上滚必须换到更早的正文")
+        self.assertFalse(hud._stick_bottom)  # noqa: SLF001
+        # 滚回底部后重新钉底，也不会滚出界
         for _ in range(50):
             hud._scroll_by(3)  # noqa: SLF001
+        self.assertEqual(hud._scroll, hud._max_scroll)  # noqa: SLF001
+        self.assertTrue(hud._stick_bottom)  # noqa: SLF001
+
+    def test_new_prompts_keep_viewport_pinned_to_latest(self) -> None:
+        """新提问追加在末尾时，钉底状态必须跟着贴到最新，不能停在旧位置。"""
+        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+
+        short = [pickup.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(3)]
+        hud = SessionHud()
+        hud.update_data(summarize_user_messages(short), expanded=True)
+        hud.lines(40, 10)
+        self.assertTrue(hud._stick_bottom)  # noqa: SLF001
+
+        longer = short + [
+            pickup.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(3, 6)
+        ]
+        hud.update_data(summarize_user_messages(longer), expanded=True)
+        visible = " ".join(line.plain for line in hud.lines(40, 10)[1:-1])
+        self.assertIn("第5条", visible)
         self.assertEqual(hud._scroll, hud._max_scroll)  # noqa: SLF001
 
     def test_collapsing_resets_scroll(self) -> None:
@@ -5977,11 +6002,14 @@ class SessionHudRenderTests(unittest.TestCase):
         hud = SessionHud()
         hud.update_data(data, expanded=True)
         hud.lines(40, 10)
-        hud._scroll_by(6)  # noqa: SLF001
-        self.assertGreater(hud._scroll, 0)  # noqa: SLF001
+        hud._scroll_by(-6)  # noqa: SLF001
+        self.assertLess(hud._scroll, hud._max_scroll)  # noqa: SLF001
+        self.assertFalse(hud._stick_bottom)  # noqa: SLF001
         hud.update_data(data, expanded=False)
         hud.update_data(data, expanded=True)
-        self.assertEqual(hud._scroll, 0, "重新展开必须从头看起")  # noqa: SLF001
+        hud.lines(40, 10)
+        self.assertTrue(hud._stick_bottom, "重新展开必须重新钉底")  # noqa: SLF001
+        self.assertEqual(hud._scroll, hud._max_scroll, "重新展开必须落到最新")  # noqa: SLF001
 
     def test_hide_clears_data(self) -> None:
         hud = self._hud(3, expanded=False)
