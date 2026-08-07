@@ -55,6 +55,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Not receiving input — press Enter or click here",
         "zh": "当前输入不会进入这里 · 回车或点击接管",
     },
+    "pane.restart_hint": {
+        "en": "Enter restart",
+        "zh": "Enter 重启",
+    },
+    "pane.restart_focus_hint": {
+        "en": "Enter restart · Ctrl+\\ back to list",
+        "zh": "Enter 重启 · Ctrl+\\ 回列表",
+    },
     "action.toggle_hud": {
         "en": "Session card",
         "zh": "会话小窗",

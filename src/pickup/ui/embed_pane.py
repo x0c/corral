@@ -56,6 +56,7 @@ from textual import events, work
 from textual.dom import NoScreen
 from textual.filter import LineFilter
 from textual.geometry import Region
+from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
 from textual.style import Style as VisualStyle
@@ -64,6 +65,12 @@ from textual.widget import Widget
 
 from pickup import embed
 from pickup.split_layout import MAX_PANES as _LAYOUT_MAX_PANES
+
+
+class ModeChanged(Message):
+    """静态预览 / 托管 / 已结束等模式切换：父格据此刷新顶底 chrome 提示。"""
+
+    bubble = True
 
 
 def _row_to_strip(row: list) -> Strip:
@@ -421,6 +428,7 @@ class EmbedPane(Widget):
         if channel is not None and self._osc_report and embed.supports_theme_report():
             embed.report_theme(channel, self._osc_report)
         self._poke.set()
+        self.post_message(ModeChanged())
         return channel  # noqa: RET504 - 测试里需要断言通道对象，保留返回值
 
     def _stash_screen(self) -> None:
@@ -461,6 +469,7 @@ class EmbedPane(Widget):
         self._detail_stick_bottom = True
         self.detail_offset = 0
         self.invalidate_detail()
+        self.post_message(ModeChanged())
 
     def clear(self) -> None:
         self._stash_screen()
@@ -478,6 +487,7 @@ class EmbedPane(Widget):
         if old_name:
             embed.close_channel(old_name)
         self.invalidate_detail()
+        self.post_message(ModeChanged())
 
     def invalidate_detail(self) -> None:
         """让静态详情/占位缓存失效，并在当前显示静态内容时立即重绘。
@@ -710,6 +720,7 @@ class EmbedPane(Widget):
         self.input_masked = False  # 已结束的画面不再压暗，否则像"还能输入只是没聚焦"
         self.invalidate_detail()
         self._update_app_cursor()  # 会话结束后没有可见光标，收起外层真实光标
+        self.post_message(ModeChanged())
 
     # ---- 渲染（Line API：render_line 是真正的绘制入口，见类 docstring）----
 

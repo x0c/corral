@@ -13,7 +13,7 @@ from textual.widgets import Static
 from pickup.i18n import t
 from pickup.models import session_key as make_session_key
 from pickup.split_layout import MAX_PANES
-from pickup.ui.embed_pane import EmbedPane
+from pickup.ui.embed_pane import EmbedPane, ModeChanged
 from pickup.ui.runtime_top_bar import RuntimeTopBar
 from pickup.ui.session_hud import SessionHud
 
@@ -84,6 +84,15 @@ class _PaneHeader(Horizontal):
         padding: 0;
         text-overflow: ellipsis;
     }}
+    _PaneHeader Static.restart-hint {{
+        width: auto;
+        height: 1;
+        content-align: right middle;
+        margin: 0;
+        padding: 0 1;
+        color: auto 70%;
+        text-overflow: ellipsis;
+    }}
     """
 
     def __init__(
@@ -95,15 +104,24 @@ class _PaneHeader(Horizontal):
         super().__init__(**kwargs)
         self._title = title
         self._title_widget = Static(title, classes="title")
+        # 默认藏起：空 hint 若仍占 padding，会在标题和 ✕ 之间留出空隙。
+        self._hint_widget = Static("", classes="restart-hint")
+        self._hint_widget.display = False
         self._on_close = on_close
 
     def compose(self):
         yield self._title_widget
+        yield self._hint_widget
         yield _PaneClose(self._on_close)
 
     def set_title(self, title: str) -> None:
         self._title = title
         self._title_widget.update(title)
+
+    def set_restart_hint(self, text: str) -> None:
+        """预览/已结束格在标题旁常驻短提示；非预览态传空串清空。"""
+        self._hint_widget.update(text)
+        self._hint_widget.display = bool(text)
 
     def set_active(self, active: bool) -> None:
         self.set_class(active, "-active")
@@ -113,7 +131,8 @@ class _PaneFooter(Static):
     """分栏底条：与标题栏同步高亮当前激活格；持有输入时提示怎么回列表。
 
     自动聚焦上线后，用户可能在没点过右栏的情况下就发现按键都进了内嵌会话；出口
-    （`Ctrl+\\`）必须常驻可见，否则只能靠猜。非激活格保持无文字，避免多格时刷屏。
+    （`Ctrl+\\`）必须常驻可见，否则只能靠猜。预览/已结束格另写 Enter 重启——
+    详情头里的同款提示会随钉底滚动滚出视野，底条不滚。非激活且非预览时保持无文字。
     """
 
     ALLOW_SELECT = False
@@ -136,10 +155,17 @@ class _PaneFooter(Static):
     def __init__(self, **kwargs) -> None:
         super().__init__("", **kwargs)
 
-    def set_state(self, active: bool, masked: bool) -> None:
+    def set_state(
+        self, active: bool, masked: bool, *, restart_target: bool = False
+    ) -> None:
         """active=本格持有输入；masked=本格是实时会话但输入在别处。"""
         self.set_class(active, "-active")
-        if active:
+        if restart_target:
+            if active:
+                self.update(t("pane.restart_focus_hint"))
+            else:
+                self.update(t("pane.restart_hint"))
+        elif active:
             self.update(t("pane.focus_hint"))
         elif masked:
             self.update(t("pane.masked_hint"))
@@ -295,6 +321,9 @@ class PaneCell(Vertical):
             # 改绑过来的格子可能还留着上一个会话的实时画面，renderer 为空也必须
             # 显式切回静态视图；新挂载的格子本来就是这个状态，重复调用无副作用。
             pane.show_detail(self._detail_renderer)
+        # show_detail/focus_session 会发 ModeChanged；此处再钉一次，覆盖 compose
+        # 后尚未挂齐顶底条、消息早到的竞态。
+        self._sync_active_marker()
 
     def embed_pane(self) -> EmbedPane | None:
         for child in self.children:
@@ -363,22 +392,42 @@ class PaneCell(Vertical):
     def _on_descendant_blur(self, event: events.DescendantBlur) -> None:
         self.call_after_refresh(self._sync_active_marker)
 
+    def on_mode_changed(self, event: ModeChanged) -> None:
+        """静态预览 ↔ 托管 ↔ 已结束：顶底 Enter 重启提示要跟着变。"""
+        event.stop()
+        self._sync_active_marker()
+
     def _notify_pane_focused(self) -> None:
         if not self.has_focus_within or self._on_pane_focused is None:
             return
         self._on_pane_focused(self.spec.session_key)
+
+    def _is_restart_chrome_target(self) -> bool:
+        """预览/已结束格才在顶底 chrome 写 Enter 重启；占位格与托管中不算。"""
+        if self.spec.session_key.startswith("__"):
+            return False
+        pane = self.embed_pane()
+        return pane is not None and pane._is_restart_target()  # noqa: SLF001
 
     def _sync_active_marker(self) -> None:
         # 双击顶栏助手、快速增删分栏时，焦点回调可能落在「标题栏/底条尚未 compose
         # / 旧格已卸下」的中间态；真机复现：NoMatches: '_PaneHeader'。缺件时
         # 静默跳过即可，下一轮焦点事件会再同步。
         active = self.has_focus_within
+        restart_target = self._is_restart_chrome_target()
         header = self._pane_header()
         if header is not None:
             header.set_active(active)
+            header.set_restart_hint(
+                t("pane.restart_hint") if restart_target else ""
+            )
         footer = self._pane_footer()
         if footer is not None:
-            footer.set_state(active, self._input_masked and not active)
+            footer.set_state(
+                active,
+                self._input_masked and not active,
+                restart_target=restart_target,
+            )
 
 
 class SplitPaneArea(Vertical):

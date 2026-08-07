@@ -264,7 +264,7 @@ stateDiagram-v2
 | 分屏焦点同步 | 右栏 → 侧边栏 | `PaneCell._notify_pane_focused`、`MainScreen._on_pane_focused`、`SessionListView.select_session_key` | 聚焦某一分屏时侧边栏高亮切到对应会话；不得因此 remount 右栏 |
 | 按键路由 | 搜索与焦点 | `MainScreen.on_key()`、`on_input_submitted()` | `/` 聚焦筛选项目；`Ctrl+F` 打开全文搜索弹窗（右栏实时格持焦时让位给助手）；Down/Enter 回列表；Esc 先清空查询再退出 |
 | 选择事件 | 会话操作 | `MainScreen.on_list_view_selected()` | 回车针对新建项 / 会话组 / 当前会话分流；组成员只在还活着时走「展示组合」，已结束的照常重启 |
-| 已结束会话重启 | 右栏 → 启动 | `EmbedPane._is_restart_target()`、`PaneCell._restart_self()`、`MainScreen._restart_session_from_pane()` | 静态预览格与「会话已结束」格上的回车 = 重启；与侧边栏回车共用 `_open_or_exit()` |
+| 已结束会话重启 | 右栏 → 启动 | `EmbedPane._is_restart_target()`、`PaneCell._restart_self()`、`MainScreen._restart_session_from_pane()` | 静态预览格与「会话已结束」格上的回车 = 重启；与侧边栏回车共用 `_open_or_exit()`；**顶栏/底栏 chrome 常驻 Enter 重启提示**（详情头同款文案会随钉底滚动滚出视野，`_PaneHeader`/`_PaneFooter` 不滚；占位格与托管中不显示） |
 | 模态流程 | 高级操作 / 新建 / 确认 | `ui/modals.py` | 接力运行时选择（`RuntimePickerModal`）、新建会话双栏选择（`NewSessionModal`）和结束确认；未安装运行时不可确认 |
 | 右栏流程 | 静态预览 / 实时画面 | `EmbedPane.show_detail()`、`EmbedPane.focus_session()` | 根据会话是否托管选择展示模式 |
 | 截图脚本 | 演示截图 | `docs/screenshots/capture.py` | 生成可提交的虚构数据截图 `docs/screenshots/list.png`（主界面）与 `search.png`（全文搜索弹窗） |

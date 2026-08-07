@@ -4624,6 +4624,50 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             hint = i18n.t("detail.restart_hint")
             await _wait_until(lambda: hint in pane.render().plain)
 
+    async def test_preview_pane_chrome_shows_enter_restart_hint(self) -> None:
+        """预览默认钉底，详情头提示会滚出视野；顶/底 chrome 必须常驻 Enter 重启。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch(
+                "pickup.embed.host_session", return_value="pickup-claude-s0",
+            ),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                cell = app.screen.query_one(SplitPaneArea)._cells()[0]  # noqa: SLF001
+                header = cell.query_one(".header")
+                footer = cell.query_one(".footer")
+                short = i18n.t("pane.restart_hint")
+                focused = i18n.t("pane.restart_focus_hint")
+
+                await _wait_until(lambda: short in footer.render().plain)
+                self.assertTrue(header.query_one(".restart-hint").display)
+                self.assertEqual(
+                    header.query_one(".restart-hint").render().plain.strip(),
+                    short,
+                )
+
+                # 焦点进预览格：底栏换成「重启 + 回列表」
+                pane = _primary_embed_pane(app.screen)
+                pane.focus()
+                await pilot.pause()
+                await _wait_until(lambda: focused in footer.render().plain)
+
+                # 托管起来后顶底提示都要消失（Enter 此时转发给助手）
+                list_view = app.screen.query_one(SessionListView)
+                list_view.focus()
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(
+                    lambda: short not in footer.render().plain
+                    and focused not in footer.render().plain
+                )
+                self.assertFalse(header.query_one(".restart-hint").display)
+
 
 class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
     """选中即完整预览：右栏展示对话全文。"""
