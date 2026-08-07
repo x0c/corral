@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pickup import titlegen
@@ -20,6 +22,8 @@ _LEGACY_CACHE_DIR = os.path.expanduser("~/.cache/session-continue")
 CACHE_FILE = os.path.join(CACHE_DIR, "titles.json")
 TITLE_CACHE_VERSION = 4
 _GENERATION_STATE_FAILED = "failed"
+# 失败终态冷却后再允许入队，避免瞬时超时/网络抖动把会话永久钉在临时标题上。
+FAILED_RETRY_COOLDOWN_SECONDS = 6 * 3600
 
 
 def _migrate_legacy_cache_dir() -> None:
@@ -67,17 +71,28 @@ def _cached_entry(session: dict, cache: dict) -> dict | None:
     return cache.get(session_key(session)) or cache.get(session["id"])
 
 
-def _failed_in_current_version(cached: dict | None) -> bool:
-    """当前缓存版本里已经尝试失败的标题不再自动请求模型。
+def _failed_in_current_version(cached: dict | None, *, now: float | None = None) -> bool:
+    """当前缓存版本里、仍在冷却期内的失败终态不再自动请求模型。
 
-    失败终态带独立版本号；以后提升 TITLE_CACHE_VERSION 时会自然失效，届时
-    可以按新规则重新尝试，不需要迁移或清理用户已有缓存。
+    失败终态带独立版本号与 failed_at；冷却过期后允许再试。没有 failed_at 的
+    历史条目视为已到期，顺带消化积压。提升 TITLE_CACHE_VERSION 时失败标记
+    自然失效，不需要迁移用户已有缓存。
     """
-    return bool(
+    if not (
         cached
         and cached.get("generation_state") == _GENERATION_STATE_FAILED
         and cached.get("generation_version") == TITLE_CACHE_VERSION
-    )
+    ):
+        return False
+    failed_at = cached.get("failed_at")
+    if failed_at is None:
+        return False
+    clock = time.time() if now is None else now
+    try:
+        age = clock - float(failed_at)
+    except (TypeError, ValueError):
+        return False
+    return age < FAILED_RETRY_COOLDOWN_SECONDS
 
 
 def load_cache() -> dict:
@@ -255,6 +270,8 @@ def resolve_initial_title(session: dict, cache: dict) -> tuple[str, bool]:
     策略：
     - 缓存命中生成标题 → 直接用，后续会话内容增长也不重新生成。
     - 缓存缺失或标题无效 → 显示临时兜底，并提交后台生成。
+    - 当前版本失败且仍在冷却期内 → 保留本地标题，不自动再试。
+    - 失败已过冷却 / 无 failed_at 的历史失败 / 旧缓存版本失败 → 可再次入队。
     - 会话没有可提炼的任务信息 → 保留本地标题，不提交无意义的生成请求。
     - 原生标题只在兜底标题不可用时作为临时占位，不作为最终展示来源。
     """
@@ -264,7 +281,7 @@ def resolve_initial_title(session: dict, cache: dict) -> tuple[str, bool]:
         # 内容计算，避免会话后来补充了更清楚的任务信息却一直显示旧兜底。
         return _temporary_title(session) or "(待生成标题)", False
     if cached and cached.get("generation_state") == _GENERATION_STATE_FAILED:
-        # 旧缓存版本的失败终态已经失效，其中保存的本地兜底不能冒充模型标题。
+        # 冷却已过或旧缓存版本的失败终态：其中保存的本地兜底不能冒充模型标题。
         cached = None
     cached_title = _normalize_title(cached.get("title") if cached else None)
     if cached and not _is_low_value_title(cached_title) and not _is_machine_slug(cached_title):
@@ -346,13 +363,14 @@ _BATCH_SIZE = 5  # 每次模型调用处理 5 条会话，控制单条提示词�
 _MAX_PARALLEL_BATCHES = 5  # 最多同时运行 5 批，即至多并行补全 25 条标题。
 
 
-def _failed_cache_entry(session: dict) -> dict:
+def _failed_cache_entry(session: dict, *, failed_at: float | None = None) -> dict:
     """构造当前缓存版本的生成失败终态，并保留可直接展示的本地标题。"""
     return {
         "fp": _fingerprint(session),
         "title": _temporary_title(session) or "(待生成标题)",
         "generation_state": _GENERATION_STATE_FAILED,
         "generation_version": TITLE_CACHE_VERSION,
+        "failed_at": time.time() if failed_at is None else failed_at,
     }
 
 
@@ -388,6 +406,9 @@ def refresh_titles(
 
     chunks = [sessions[i: i + _BATCH_SIZE] for i in range(0, len(sessions), _BATCH_SIZE)]
     merged: dict[str, str] = {}
+    # 并行批次共享同一份 cache 字典；落盘必须互斥，避免 json.dump 遍历时
+    # 被另一线程改字典大小，或写出去半一致快照。
+    persist_lock = threading.Lock()
 
     def usable_results(chunk: list[dict], raw: dict[str, str]) -> dict[str, str]:
         """只保留当前批次里可作为最终标题的模型结果。"""
@@ -402,17 +423,18 @@ def refresh_titles(
     def persist_chunk(chunk: list[dict], raw: dict[str, str]) -> None:
         """把一个已处理批次的成功或失败终态完整落盘。"""
         valid = usable_results(chunk, raw)
-        for session in chunk:
-            key = session_key(session)
-            title = valid.get(key)
-            if title:
-                merged[key] = title
-                cache[key] = {"fp": _fingerprint(session), "title": title}
-                continue
-            cache[key] = _failed_cache_entry(session)
-        # 成功、失败、非法结果和部分缺项都必须写入终态；否则 TUI 不知道后台
-        # 已经结束，下一次启动还会把同一批会话重新提交给模型。
-        save_cache(cache)
+        with persist_lock:
+            for session in chunk:
+                key = session_key(session)
+                title = valid.get(key)
+                if title:
+                    merged[key] = title
+                    cache[key] = {"fp": _fingerprint(session), "title": title}
+                    continue
+                cache[key] = _failed_cache_entry(session)
+            # 成功、失败、非法结果和部分缺项都必须写入终态；否则 TUI 不知道后台
+            # 已经结束，下一次启动还会把同一批会话重新提交给模型。
+            save_cache(cache)
 
     # 先用第一批串行探测候选生成器。旧实现直接启动 5 个 worker，坏首选会在
     # 熔断标记写入前被并发调用 5 次；现在每个坏候选最多只消耗一次探测调用。

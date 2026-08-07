@@ -8,16 +8,18 @@
 - 无缓存时必须先生成本地短标题，再交给后台模型优化。首屏不能依赖后台生成器（`claude`/`codex` 无头调用）是否及时返回。
 - Claude 标题生成必须使用 `--no-session-persistence`，从源头禁止一次性标题请求写入 Claude 会话历史；扫描侧仍须过滤历史版本已落盘的自产标题 prompt 和只有低价值消息的记录，避免旧噪音反过来进入列表。
 - 标题生成以 5 条会话为一批。第一批先**串行**探测候选生成器：首选失败、超时或返回无有效标题时才试备用，避免坏首选在并发 worker 启动后重复消耗 5 次；选出健康生成器后，其余批次最多 5 路并发。每次后端调用仍以 90 秒为上限，当前首选 + 备用两级在第一批全部失败时最坏约 180 秒，但只发生一次串行健康探测；后续不会再探测已失败候选。每批完成立即原子写缓存，界面可陆续显示结果。生成出的有效标题一旦写入缓存即为该会话的固定标题，后续对话内容增长不能让它再次排队。会话只有“在吗”等无任务信息时保留本地标题且不调用模型。
-- **标题生成的失败也是必须落盘的终态，不是“下次启动再试”**：调用失败、超时、不可解析/低价值/机器 slug、批量结果部分缺项，以及本机没有任何可用生成器时，都给受影响会话写入当前 `TITLE_CACHE_VERSION` 的 `generation_state=failed`，保留本地兜底并立即清掉 `generating` 状态。同一缓存版本后续启动不再自动提交模型，避免反复排队花额度；提升缓存版本后失败标记自然失效，才允许按新规则重新尝试。成功、失败和部分缺项都要逐批 `save_cache`，不能只保存成功项，否则缺项会永远重新排队。
-- 标题生成后端已抽象为 `titlegen.py` 的 `TitleGenerator`（当前有 claude、codex 两个实现）。`titles.py` 只负责批量 prompt、JSON 解析和缓存，不感知具体 CLI；新增生成器只在 `titlegen.py` 加实现并注册进 `_GENERATORS`，禁止在 `titles.py` 里写 `subprocess` 调用。选择顺序：`PICKUP_TITLE_GENERATOR` 环境变量（旧名 `SC_TITLE_GENERATOR` 仍生效）→ 按注册顺序取已安装候选；环境变量只决定首选，第一批探测失败才降级到下一个候选。`PICKUP_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）覆盖模型。缓存与生成器无关，换生成器不重算已有成功标题，也不绕过当前缓存版本的失败终态。
+- **标题生成的失败是带冷却的终态，不是“永远不再试”，也不是“下次启动立刻再试”**：调用失败、超时、不可解析/低价值/机器 slug、批量结果部分缺项，以及本机没有任何可用生成器时，都给受影响会话写入当前 `TITLE_CACHE_VERSION` 的 `generation_state=failed` 与 `failed_at`，保留本地兜底并立即清掉 `generating` 状态。冷却期内（默认 6 小时）同一缓存版本不再自动提交模型，避免瞬时故障反复排队花额度；冷却过期或历史失败条目缺少 `failed_at` 时允许再入队。提升缓存版本后失败标记也会自然失效。成功、失败和部分缺项都要逐批 `save_cache`，不能只保存成功项，否则缺项会永远重新排队。
+- 标题生成后端已抽象为 `titlegen.py` 的 `TitleGenerator`（当前有 claude、codex 两个实现）。`titles.py` 只负责批量 prompt、JSON 解析和缓存，不感知具体 CLI；新增生成器只在 `titlegen.py` 加实现并注册进 `_GENERATORS`，禁止在 `titles.py` 里写 `subprocess` 调用。选择顺序：`PICKUP_TITLE_GENERATOR` 环境变量（旧名 `SC_TITLE_GENERATOR` 仍生效）→ 按注册顺序取已安装候选；环境变量只决定首选，第一批探测失败才降级到下一个候选。`PICKUP_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）覆盖模型。缓存与生成器无关，换生成器不重算已有成功标题；冷却期内也不绕过当前缓存版本的失败终态。
 - 自产噪音会话的过滤，每个可能被生成器落盘的运行时扫描器都要有：Claude 侧生成用 `claude -p --no-session-persistence` 不落盘，`PROMPT_MARKER` 预探过滤（见「扫描性能」）负责兜住历史版本已经产生的噪音；Codex 侧生成用 `codex exec --ephemeral` 不落盘，扫描过滤同样只是兜底。接入没有 ephemeral 类开关的 CLI 后端（如 opencode run，每次调用必然真实落一条会话）时，对应扫描器的 `PROMPT_MARKER` 过滤是必需项，漏掉会让标题生成会话刷屏列表。
-- **`titles.save_cache` 是原子写（临时文件 + `os.replace`），不是直接覆写**：后台标题生成进程逐批写、TUI 每约 1 秒轮询读同一份 `titles.json`；直接 `open(..., "w")` 覆写会被并发读到半截 JSON（`load_cache` 解析失败静默退回 `{}`，界面标题短暂回退临时兜底）。改这个函数前确认没有退回裸覆写。
+- **`titles.save_cache` 是原子写（临时文件 + `os.replace`），不是直接覆写**：后台标题生成进程逐批写、TUI 每约 1 秒轮询读同一份 `titles.json`；直接 `open(..., "w")` 覆写会被并发读到半截 JSON（`load_cache` 解析失败静默退回 `{}`，界面标题短暂回退临时兜底）。并行批次落盘时必须对共享 cache 字典加锁后再 `save_cache`。改这个函数前确认没有退回裸覆写。
 
 ## 标题生成进程
 
 - 标题生成必须由脱离当前终端的独立进程承载，不能放回 TUI 进程内线程。
 - `execute_launch` 会用 `os.execvp` 替换当前进程；按 `Esc` 退出也会结束 TUI 进程。TUI 内线程会在这些路径上丢失未完成标题。
 - 当前模型是：`_spawn_title_daemon` 拉起 `pickup --generate-titles` 后台进程，后台进程用缓存目录下的文件锁保证全机单实例；TUI 侧只读缓存并轮询缓存文件变化。
+- **界面运行中也会按需再拉后台**：`SessionStore` 合并扫描或轮询缓存后若 `generating` 非空，经短防抖调用注入的 `_title_spawn_fn`（生产路径赋值为 `_spawn_title_daemon`）。只靠启动时 spawn 一次会漏掉运行期间新出现的会话。撞锁时新进程立即退出，不重复烧额度；`generating` 仍非空且缓存长时间无变化时也会再请求一次，兜住上一轮 daemon 已死的窗口。
+- 后台进程在持锁期间最多 drain 若干轮（扫 pending → 生成 → 再扫），避免生成耗时期间新冒出的会话因「只扫一次就退出」被永久漏掉。
 - 后台进程内的候选生成器选择发生在 `refresh_titles`；本机一个 agent CLI 都没有时保留临时兜底标题，并把本批会话写成当前缓存版本的失败终态，不能静默返回后让会话永远留在 `generating`、下次启动再次排队。不要在 TUI 首屏路径做可用性探测。
 
 ## 跨扫描器共享 helper（scan/common.py）

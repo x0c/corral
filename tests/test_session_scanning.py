@@ -621,6 +621,7 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
             entry = cache[titles.session_key(session)]
             self.assertEqual(entry["generation_state"], "failed")
             self.assertEqual(entry["generation_version"], titles.TITLE_CACHE_VERSION)
+            self.assertIn("failed_at", entry)
             self.assertFalse(titles.resolve_initial_title(session, cache)[1])
 
         expired_cache = {
@@ -774,6 +775,60 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
         self.assertNotIn("error", outcome)
         self.assertEqual(len(outcome["result"]), len(sessions))
         self.assertEqual(state["calls"], titles._MAX_PARALLEL_BATCHES + 1)
+
+    def test_title_daemon_drains_additional_pending_rounds(self) -> None:
+        """持锁期间生成后再扫一轮，避免只扫一次就退出漏掉新会话。"""
+        from pickup import cli as pickup_cli
+
+        first = {
+            "source": "claude",
+            "id": "first",
+            "mtime": 1,
+            "size_kb": 1,
+            "fallback_title": "第一轮待生成",
+        }
+        second = {
+            "source": "claude",
+            "id": "second",
+            "mtime": 1,
+            "size_kb": 1,
+            "fallback_title": "第二轮才出现",
+        }
+        runtime = mock.Mock()
+        runtime.id = "claude"
+        scans = [{"claude": [first]}, {"claude": [first, second]}, {"claude": [first, second]}]
+        runtime.scan_sessions.side_effect = lambda limit=None: scans.pop(0)["claude"]
+        registry = pickup.RuntimeRegistry((runtime,))
+        refresh_calls: list[list[str]] = []
+        shared_cache: dict = {}
+
+        def fake_load_cache() -> dict:
+            return dict(shared_cache)
+
+        def fake_refresh(pending, cache, generator=None):
+            refresh_calls.append([s["id"] for s in pending])
+            for session in pending:
+                key = titles.session_key(session)
+                entry = {
+                    "fp": titles._fingerprint(session),
+                    "title": f"标题-{session['id']}",
+                }
+                cache[key] = entry
+                shared_cache[key] = entry
+            return {titles.session_key(s): f"标题-{s['id']}" for s in pending}
+
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.object(titles, "CACHE_DIR", td),
+            mock.patch.object(pickup_cli, "_TITLE_LOCK_FILE", os.path.join(td, "titles.lock")),
+            mock.patch.object(titles, "load_cache", side_effect=fake_load_cache),
+            mock.patch.object(titles, "refresh_titles", side_effect=fake_refresh),
+            mock.patch.object(pickup_cli, "_TITLE_DRAIN_MAX_ROUNDS", 3),
+        ):
+            with mock.patch.object(registry, "scan_all", side_effect=scans):
+                pickup_cli._run_title_daemon(registry, limit=20)
+
+        self.assertEqual(refresh_calls, [["first"], ["second"]])
 
     def test_scan_sessions_memoizes_cwd_isdir_and_peek_skips_noise_and_dead_cwd(self) -> None:
         # 首屏 ≤1s 的回归防退化用例：不依赖真实数据。构造大量会话共享极少数
@@ -2155,6 +2210,7 @@ class TuiLayoutTests(unittest.TestCase):
                 "title": "排查标题生成卡死",
                 "generation_state": "failed",
                 "generation_version": titles.TITLE_CACHE_VERSION,
+                "failed_at": time.time(),
             }
         }
         with (
@@ -2167,12 +2223,116 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertNotIn(key, store.generating)
         self.assertTrue(store.dirty.is_set())
 
-        # 模拟重新启动 pickup：同一缓存版本的失败终态不能再次进入待生成队列。
+        # 模拟重新启动 pickup：冷却期内的失败终态不能再次进入待生成队列。
         with mock.patch.object(pickup.titles, "load_cache", return_value=failed_cache):
             restarted = pickup.SessionStore(limit=20, registry=registry)
             restarted.load()
         self.assertNotIn(key, restarted.generating)
         self.assertFalse(titles.resolve_initial_title(session, failed_cache)[1])
+
+    def test_failed_title_without_failed_at_can_retry(self) -> None:
+        """历史失败条目没有时间戳：视为已到期，允许再入队消化积压。"""
+        session = {
+            "source": "claude",
+            "id": "legacy-fail",
+            "mtime": 1,
+            "size_kb": 1,
+            "fallback_title": "整理失败标题重试",
+        }
+        cache = {
+            "claude:legacy-fail": {
+                "fp": "v4:1",
+                "title": "整理失败标题重试",
+                "generation_state": "failed",
+                "generation_version": titles.TITLE_CACHE_VERSION,
+            }
+        }
+        title, needs = titles.resolve_initial_title(session, cache)
+        self.assertEqual(title, "整理失败标题重试")
+        self.assertTrue(needs)
+
+    def test_failed_title_after_cooldown_can_retry(self) -> None:
+        session = {
+            "source": "claude",
+            "id": "cooled",
+            "mtime": 1,
+            "size_kb": 1,
+            "fallback_title": "冷却后重新生成标题",
+        }
+        cache = {
+            "claude:cooled": {
+                "fp": "v4:1",
+                "title": "冷却后重新生成标题",
+                "generation_state": "failed",
+                "generation_version": titles.TITLE_CACHE_VERSION,
+                "failed_at": time.time() - titles.FAILED_RETRY_COOLDOWN_SECONDS - 1,
+            }
+        }
+        self.assertTrue(titles.resolve_initial_title(session, cache)[1])
+
+    def test_merge_requests_title_spawn_when_pending(self) -> None:
+        """合并扫出待生成会话时会防抖拉起标题后台。"""
+        session = {
+            "source": "claude",
+            "id": "spawn-me",
+            "short_id": "spawn",
+            "mtime": time.time(),
+            "size_bytes": 1,
+            "size_kb": 1,
+            "native_title": None,
+            "fallback_title": "新出现的会话需要生成标题",
+        }
+        runtime = mock.Mock()
+        runtime.id = "claude"
+        runtime.display_name = "Claude"
+        runtime.scan_sessions.return_value = [session]
+        registry = pickup.RuntimeRegistry((runtime,))
+        spawned: list[int] = []
+
+        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+            store = pickup.SessionStore(limit=20, registry=registry)
+            store._title_spawn_fn = spawned.append
+            store.load()
+
+        self.assertIn(pickup.session_key(session), store.generating)
+        self.assertEqual(spawned, [20])
+
+        # 防抖：紧接着再请求不应重复拉起。
+        store.request_title_generation()
+        self.assertEqual(spawned, [20])
+
+    def test_stale_generating_poll_requests_title_spawn(self) -> None:
+        session = {
+            "source": "claude",
+            "id": "stale",
+            "short_id": "stale",
+            "mtime": 1,
+            "size_bytes": 1,
+            "size_kb": 1,
+            "fallback_title": "缓存未变仍在等待标题",
+        }
+        runtime = mock.Mock()
+        runtime.id = "claude"
+        runtime.display_name = "Claude"
+        runtime.scan_sessions.return_value = [session]
+        registry = pickup.RuntimeRegistry((runtime,))
+        spawned: list[int] = []
+
+        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+            store = pickup.SessionStore(limit=20, registry=registry)
+            store._title_spawn_fn = spawned.append
+            store._last_title_spawn_at = 0.0
+            store.load()
+        spawned.clear()
+        store._last_title_spawn_at = 0.0
+        store._generating_since = time.time() - pickup.store._TITLE_STALE_SPAWN_SECONDS - 1
+
+        with mock.patch.object(
+            pickup.SessionStore, "_cache_file_mtime", return_value=store._cache_mtime,
+        ):
+            store.poll_cache_updates()
+
+        self.assertEqual(spawned, [20])
 
     def test_conversation_is_loaded_lazily_and_cached(self) -> None:
         session = {

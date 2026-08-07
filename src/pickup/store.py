@@ -21,6 +21,10 @@ from pickup.runtime import RuntimeRegistry, default_registry
 # 新扫到的会话：mtime 在此窗口内才插到列表最前；更旧的（常为临时 cwd 复活）
 # 追加到末尾，避免几天前的会话整批顶到侧边栏。
 _FRESH_PREPEND_MAX_AGE = 2 * 86400
+# 有待生成标题时防抖拉后台，避免重扫抖动狂起进程。
+_TITLE_SPAWN_DEBOUNCE_SECONDS = 3.0
+# generating 仍非空且缓存长时间无变化时再拉一次（上一轮 daemon 可能已死）。
+_TITLE_STALE_SPAWN_SECONDS = 30.0
 
 
 class SessionStore:
@@ -54,6 +58,10 @@ class SessionStore:
         self.dirty = threading.Event()
         self.cache = titles.load_cache()
         self.generating: set[str] = set()  # 仍是临时兜底、等待后台进程产出的会话键（转圈圈）
+        # 可注入的标题后台拉起函数；默认懒加载 cli._spawn_title_daemon，测试可替换。
+        self._title_spawn_fn = None
+        self._last_title_spawn_at = 0.0
+        self._generating_since: float | None = None
         # 本进程内嵌托管的 会话键 -> tmux 会话名。_embed_open 在启动成功的瞬间就写入，
         # 比 annotate() 的 pid 祖先链匹配更快、更确定：运行时还没来得及注册 pid 文件
         # （或像某些 fake CLI 一样根本不注册）时，后台重扫替换会话字典后仍能立刻恢复
@@ -317,12 +325,21 @@ class SessionStore:
         with self.lock:
             attention_migrations = self._reconcile_provisional_sessions(scanned)
             attention_sessions = self._rebuild_order_and_titles()
+            has_pending_titles = bool(self.generating)
+            if has_pending_titles:
+                if self._generating_since is None:
+                    self._generating_since = time.time()
+            else:
+                self._generating_since = None
 
         # SQLite 与运行时历史探测均放在 SessionStore 锁外，避免界面读取被磁盘 I/O
         # 卡住。迁移必须先于真实会话 reconcile，确保占位状态无缝接到正式标识。
         self._migrate_provisional_attention(attention_migrations)
         states = self._reconcile_attention(attention_sessions)
         self._inject_attention_states(states)
+        # 运行中新出现的待生成会话也要拉后台；只靠启动时那一次 spawn 会永久漏生成。
+        if has_pending_titles:
+            self.request_title_generation()
 
     def _drop_tombstoned_sessions(
         self, scanned: dict[str, list[dict]],
@@ -694,10 +711,44 @@ class SessionStore:
                     return session
         return None
 
+    def request_title_generation(self) -> None:
+        """有待生成标题时按防抖拉起后台进程。
+
+        撞文件锁时后台进程立即退出，不会重复烧额度；这里只负责「发现待办就再喊一声」。
+        """
+        with self.lock:
+            if not self.generating:
+                return
+            now = time.time()
+            if now - self._last_title_spawn_at < _TITLE_SPAWN_DEBOUNCE_SECONDS:
+                return
+            self._last_title_spawn_at = now
+            limit = self.limit
+        self._invoke_title_spawn(limit)
+
+    def _invoke_title_spawn(self, limit: int) -> None:
+        """拉起后台标题进程；未注入 spawn 函数时跳过（单测默认不误起真实进程）。"""
+        spawn = self._title_spawn_fn
+        if spawn is None:
+            return
+        try:
+            spawn(limit)
+        except Exception:
+            pass
+
     def poll_cache_updates(self) -> None:
         """缓存文件被后台生成进程更新时重读，把新标题刷到界面并停掉对应转圈圈。"""
         mtime = self._cache_file_mtime()
         if mtime == self._cache_mtime:
+            # 缓存没变：若仍有待生成且已空等过久，再拉一次后台（上一轮可能已退出）。
+            with self.lock:
+                stale = (
+                    bool(self.generating)
+                    and self._generating_since is not None
+                    and (time.time() - self._generating_since) >= _TITLE_STALE_SPAWN_SECONDS
+                )
+            if stale:
+                self.request_title_generation()
             return
         self._cache_mtime = mtime
         cache = titles.load_cache()
@@ -717,8 +768,16 @@ class SessionStore:
                         self.generating.discard(key)
                     if old_title != title or was_generating != needs:
                         changed = True
+            if self.generating:
+                if self._generating_since is None:
+                    self._generating_since = time.time()
+            else:
+                self._generating_since = None
+            still_pending = bool(self.generating)
         if changed:
             self.dirty.set()
+        if still_pending:
+            self.request_title_generation()
 
     def snapshot(self) -> dict[str, str]:
         """取「当前展示标题」快照供界面渲染；正在生成的会话只在标题落地后经

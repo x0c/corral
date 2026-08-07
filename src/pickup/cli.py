@@ -127,6 +127,18 @@ def _output_json(registry, limit: int) -> None:
 
 
 _TITLE_LOCK_FILE = os.path.join(titles.CACHE_DIR, "titles.lock")
+# 生成耗时期间又冒出的会话：解锁前最多再扫几轮，避免「只扫一次就退出」漏生成。
+_TITLE_DRAIN_MAX_ROUNDS = 3
+
+
+def _collect_title_pending(scanned: dict, cache: dict) -> list[dict]:
+    pending = []
+    for bucket in scanned.values():
+        for session in bucket:
+            _, needs = titles.resolve_initial_title(session, cache)
+            if needs:
+                pending.append(session)
+    return pending
 
 
 def _run_title_daemon(registry: RuntimeRegistry, limit: int) -> None:
@@ -134,6 +146,7 @@ def _run_title_daemon(registry: RuntimeRegistry, limit: int) -> None:
 
     用文件锁保证全机单实例：拿不到锁说明已有后台进程在跑，直接退出，
     避免用户反复进 pickup 堆积多个生成进程、重复消耗模型额度。
+    每轮生成后再扫一遍 pending，最多 drain 若干轮后退出。
     """
     os.makedirs(titles.CACHE_DIR, exist_ok=True)
     lock_fp = open(_TITLE_LOCK_FILE, "w")
@@ -143,15 +156,12 @@ def _run_title_daemon(registry: RuntimeRegistry, limit: int) -> None:
         return  # 已有进程持锁，本次无需重复生成
 
     try:
-        scanned = registry.scan_all(limit)
-        cache = titles.load_cache()
-        pending = []
-        for bucket in scanned.values():
-            for session in bucket:
-                _, needs = titles.resolve_initial_title(session, cache)
-                if needs:
-                    pending.append(session)
-        if pending:
+        for _ in range(_TITLE_DRAIN_MAX_ROUNDS):
+            scanned = registry.scan_all(limit)
+            cache = titles.load_cache()
+            pending = _collect_title_pending(scanned, cache)
+            if not pending:
+                break
             titles.refresh_titles(pending, cache)
     finally:
         fcntl.flock(lock_fp, fcntl.LOCK_UN)
@@ -268,6 +278,7 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     if use_tui:
         pkg.keepalive.reap_idle()
         store = pkg.SessionStore(limit=_DIRECT_LAUNCH_LIMIT, registry=registry)
+        store._title_spawn_fn = pkg._spawn_title_daemon
         store.load()
         pkg._spawn_title_daemon(_DIRECT_LAUNCH_LIMIT)
 
@@ -457,6 +468,7 @@ def main() -> None:
         keepalive.reap_idle()  # 顺带回收空闲太久没人管的后台保活会话，不常驻额外进程
 
     store = SessionStore(limit=args.limit, registry=registry)
+    store._title_spawn_fn = _spawn_title_daemon
     # store.load()（磁盘扫描 + JSON 解析）和下面的 _probe_osc_colours()（终端 OSC
     # 10/11 探测，最长阻塞 1.2s）互不依赖，串行执行会把两者耗时直接相加、白白
     # 拖长首屏。这里提前在后台线程里开始扫描，让它跟随后的 OSC 探测重叠执行；
