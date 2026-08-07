@@ -35,6 +35,7 @@
 | 可观测与诊断 | cli/src/pickup/observe.py · cli/src/pickup/agent_api.py |
 | 会话保活 | cli/src/pickup/keepalive.py |
 | 直启子命令 | cli/src/pickup/cli.py · cli/src/pickup/projects.py |
+| 命令拦截（shim） | cli/src/pickup/shim.py · cli/src/pickup/bootstrap.py · cli/src/pickup/runtime/registry.py |
 | 标题补全 | cli/src/pickup/titles.py · cli/src/pickup/titlegen.py |
 | Agent 只读查询 | cli/src/pickup/agent_api.py |
 | 开源发布与一键安装 | cli/install.sh · cli/.github/workflows/ · cli/scripts/publish-release.sh |

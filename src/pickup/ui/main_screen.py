@@ -874,14 +874,41 @@ class MainScreen(
         if request is not None:
             await self._open_or_exit(request)
 
-    async def _open_or_exit(self, request) -> None:
-        """embed 可用则原地内嵌打开；否则退出应用，交给外层 execvp 全屏接管。"""
+    async def _open_or_exit(self, request, *, add_pane: bool = False) -> None:
+        """embed 可用则原地内嵌打开；否则退出应用，交给外层 execvp 全屏接管。
+
+        `add_pane=True` 时在当前右栏旁加一格（跨助手接力默认如此，保留被接力会话）。
+        """
         if not await self._confirm_external_resume(request):
             return
         if self.embed_ok:
-            self._embed_open(request)
+            self._embed_open(request, add_pane=add_pane)
         else:
             self.app.exit(result=request)
+
+    def _prepare_handoff_split(self, session: dict) -> None:
+        """跨助手接力前：确保被接力会话已在右栏，目标才能并排加一格。
+
+        选中跟随通常已经摆好；这里兜底「右栏空着 / 还在别组」时先把源会话单独摆上。
+        """
+        import pickup
+
+        key = pickup.session_key(session)
+        area = self._split_area()
+        if key in area.ordered_session_keys():
+            return
+        name = session.get("keepalive_name") if self._is_session_active(session) else None
+        if name:
+            project = pickup._normalize_cwd(session.get("cwd"))
+            area.show_hosted_group(
+                project,
+                [(session, str(name), lambda s=session: self._render_detail(s))],
+                focus_key=key,
+            )
+        else:
+            area.show_single_preview(
+                session, lambda s=session: self._render_detail(s)
+            )
 
     async def _confirm_external_resume(self, request) -> bool:
         """会话正在别的窗口跑时，"打开"实际是另起一个恢复进程——先问过用户。
@@ -1234,14 +1261,20 @@ class MainScreen(
         if session is None:
             self.app.bell()
             return
+        source = str(session.get("source") or self.nav.source)
         target = await choose_target_runtime(
-            self.app, self.store, str(session.get("source") or self.nav.source)
+            self.app, self.store, source
         )
         if target is None:
             return
         import pickup
         request = pickup.LaunchRequest(session, target, self.store.get_title(session))
-        await self._open_or_exit(request)
+        # 跨助手接力：默认从被接力会话旁分屏，而不是整屏换成新会话。
+        # 同助手原生恢复仍替换/聚焦原会话（不是另开一格）。
+        cross = source != target
+        if cross and self.embed_ok:
+            self._prepare_handoff_split(session)
+        await self._open_or_exit(request, add_pane=cross and self.embed_ok)
 
     @work
     async def action_kill_keepalive(self) -> None:

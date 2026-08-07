@@ -3150,12 +3150,14 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_for_embed_session(app.screen, "pickup-claude-new")
 
     async def test_cross_runtime_handoff_shows_hosted_card_and_keeps_embed(self) -> None:
-        """回归：Claude→Cursor 接力后左栏立刻出现托管卡，右栏保持新 embed。
+        """回归：Claude→Cursor 接力后左栏立刻出现托管卡，右栏与源会话并排分屏。
 
         真机实报：按 a 选 Cursor 后 host_session 成功，但 Cursor 卡在 Workspace Trust、
         尚未落盘 chat 时扫描器无条目；跨运行时路径又不 mark_hosted，左栏不冒新卡。
         同时 `_rebuild_list` → `_follow_current_selection` 因仍选中源 Claude，把右栏
         盖回对话预览，看起来像「什么都没发生」。
+
+        产品默认：跨助手接力从被接力会话旁加一格，不得整屏换成新会话。
         """
         cursor = mock.Mock()
         cursor.id = "cursor"
@@ -3175,8 +3177,10 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                pane = _primary_embed_pane(app.screen)
                 list_view = app.screen.query_one(SessionListView)
+                source = list_view.selected_session()
+                self.assertIsNotNone(source)
+                source_key = pickup.session_key(source)
 
                 await pilot.press("a")
                 await pilot.pause()
@@ -3203,10 +3207,26 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 selected = list_view.selected_session()
                 self.assertIsNotNone(selected)
                 self.assertEqual(selected.get("keepalive_name"), "pickup-cursor-handoff")
-                pane = await _wait_for_embed_pane(app.screen)
-                await _wait_until(lambda: pane.session_name == "pickup-cursor-handoff")
+
+                area = app.screen.query_one(SplitPaneArea)
+                keys = area.ordered_session_keys()
+                self.assertGreaterEqual(len(keys), 2, "接力应与源会话并排分屏，不得整屏替换")
+                self.assertIn(source_key, keys, "被接力会话必须仍在右栏")
+
+                await _wait_for_embed_pane(app.screen)
+                await _wait_until(
+                    lambda: any(
+                        (c.embed_pane() and c.embed_pane().session_name == "pickup-cursor-handoff")
+                        for c in area.cells()
+                    )
+                )
+                handoff_cell = next(
+                    c for c in area.cells()
+                    if c.embed_pane() and c.embed_pane().session_name == "pickup-cursor-handoff"
+                )
+                handoff_pane = handoff_cell.embed_pane()
                 # 接力托管成功 = 明确意图，输入直接落到新会话那一格
-                await _wait_until(lambda: pane.has_focus)
+                await _wait_until(lambda: handoff_pane.has_focus)
                 self.assertFalse(list_view.has_focus)
 
 
