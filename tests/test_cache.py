@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-
-import sqlite3
 
 from pickup.cache import PerformanceCache, history_signature
 from pickup.models import ConversationMessage

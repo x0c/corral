@@ -464,6 +464,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - **E402 的豁免边界**：`sys.path.insert` 之后的模块级 import 被 ruff 豁免（常见 hack 模式），src 下不会报；测试文件里"先设环境变量/夹具、后 import"的刻意顺序用 `[tool.ruff.lint.per-file-ignores]` 的 `"tests/*.py" = ["E402"]` 豁免，不要逐行加 noqa。
 - **`mock.patch("模块.符号")` 的目标路径随符号搬迁同步改**——常量/函数从模块 A 搬到模块 B 后，patch 打在 A 的命名空间上不再影响 B 里的引用点，测试会静默变假（如 `test_attention_ui.py` 的 patch 目标已随关注常量迁到 `controllers.attention_reader`）。
 
+**本机验证漏跑 ruff → 天天发失败邮件（2026-08-07，v0.24.57～0.24.65）**：不是旧的 Kitty / macOS 挂死复发。`v0.24.57` 给 `tests/test_cache.py` 加 WAL 用例时把 `import sqlite3` 插在 stdlib 与第三方之间的空行后，触发 I001（import 排序）；此后每次 `main` 推送 7 个矩阵作业全在 **Lint 步**红掉，单测一步都没跑到，邮件却照发。根因是本机发版只跑了当时只管 unittest 的 `ci-test.py`，与 CI「先 Lint 再 Test」不同源。已修：① 纠正 import 排序；② `scripts/ci-test.py` 开头先跑与 workflow 同版本的 `ruff check`，本机绿才算过。以后看见「整矩阵 ~1 分钟就失败、Test 步 skipped」优先查 Lint 日志，不要先怀疑单测偶发。
 
 
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：

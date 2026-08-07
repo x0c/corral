@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""CI 用的单测入口：跑全量 unittest，并解决两个只在 CI 上要命的问题。
+"""CI 用的检查入口：先 lint，再跑全量 unittest，并解决两个只在 CI 上要命的问题。
+
+**〇、lint 必须和 CI 同源，不能只跑单测。**
+GitHub Actions 在单测前先跑 `ruff check src tests`（固定 `ruff==0.16.1`）。
+以前本脚本只管 unittest，发版机只跑 `ci-test.py` 会绿、推上去却在 Lint
+步全矩阵报红——2026-08-07 起 `v0.24.57`～`v0.24.65` 每次推送都因
+`tests/test_cache.py` 一处 import 排序（I001）发失败邮件，单测根本没跑到。
+把 ruff 收进本入口后，本机绿 ≈ CI 绿。
 
 **一、挂死要能自曝位置，不能干等到作业上限。**
 2026-07-30 macOS runner 上真实发生过：单测跑到一半卡住，GitHub 作业没有配
@@ -16,18 +23,21 @@ timeout，于是整整占着 runner 6 小时直到被平台按上限杀掉。免
 不会被这层重试掩盖；而单次偶发（实测 `test_focusing_split_pane_highlights_
 matching_sidebar_session` 约十次一遇）不再污染 CI 结论。
 
-用法与 `python -m unittest discover -s tests` 等价，退出码同语义。
+用法与 CI 的 Lint+Test 两步等价，退出码同语义。
 """
 from __future__ import annotations
 
 import faulthandler
 import os
+import subprocess
 import sys
 import unittest
 
 # 单个作业的硬上限（秒）。取值要明显小于 CI 作业自身的 timeout-minutes，
 # 才能保证「先由我们打出栈」而不是「先被平台静默杀掉」。
 HANG_DUMP_SECONDS = int(os.environ.get("PICKUP_TEST_HANG_SECONDS", "1500"))
+# 与 `.github/workflows/test.yml` 的 Lint 步保持同一版本，避免规则集漂移。
+RUFF_VERSION = "0.16.1"
 
 
 def _collect_ids(result: unittest.TestResult) -> list[str]:
@@ -41,7 +51,35 @@ def _collect_ids(result: unittest.TestResult) -> list[str]:
     return ids
 
 
+def _run_ruff() -> int:
+    """跑与 CI 相同的 ruff 检查；优先 PATH / `python -m ruff`，不硬装系统包。"""
+    candidates = (
+        ["ruff"],
+        [sys.executable, "-m", "ruff"],
+    )
+    for prefix in candidates:
+        probe = subprocess.run(
+            [*prefix, "--version"],
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode == 0 and RUFF_VERSION in (probe.stdout or ""):
+            print("=== ruff check src tests ===")
+            return subprocess.run([*prefix, "check", "src", "tests"]).returncode
+    print(
+        f"错误：未找到 ruff=={RUFF_VERSION}（与 CI Lint 步一致）。\n"
+        f"  macOS: brew install ruff\n"
+        f"  其它:  python3 -m pip install ruff=={RUFF_VERSION}",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def main() -> int:
+    lint_code = _run_ruff()
+    if lint_code != 0:
+        return lint_code
+
     faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
 
     loader = unittest.TestLoader()
