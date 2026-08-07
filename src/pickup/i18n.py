@@ -202,10 +202,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "+ New session",
         "zh": "＋ 新建会话",
     },
-    "list.pin_separator": {
-        "en": "Other",
-        "zh": "其他",
-    },
     "status.running": {
         "en": "Running",
         "zh": "运行中",

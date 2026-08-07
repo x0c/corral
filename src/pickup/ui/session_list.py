@@ -4,8 +4,8 @@
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
 或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
-无末行空行）。置顶块与未置顶块都非空时，中间插一行 `$primary` 蓝的
-`── 其他 ──` 分隔（高 1、disabled，键盘跳过）。
+无末行空行）。置顶块与未置顶块都非空时，中间插一行 `$primary` 蓝横线
+分隔（高 1、无文案、disabled，键盘跳过；置顶已有 ↑，不必再贬低下方会话）。
 
 业务格式化逻辑（相对时间、宽字符对齐、标题兜底）直接复用 pickup.py 里已测试的
 纯函数，这里只负责「怎么在 Textual 里画卡片、怎么响应选择」。
@@ -498,7 +498,11 @@ class NewSessionCard(Widget):
 
 
 class PinSeparatorCard(Widget):
-    """置顶区与未置顶区之间的单行分隔：`── 其他 ──`，整行用 `$primary` 冷蓝。"""
+    """置顶区与未置顶区之间的单行分隔：拉满栏宽的 `─`，整行 `$primary` 冷蓝。
+
+    故意不写「其他」之类文案——置顶已有 ↑，再给下方贴标签会像在说那些会话
+    不重要；横线只做分区，不排序优先级。
+    """
 
     ALLOW_SELECT = False
 
@@ -512,19 +516,10 @@ class PinSeparatorCard(Widget):
 
     def render(self) -> Text:
         import pickup
-        from pickup.i18n import t
 
         width = max(10, self.size.width or 40)
-        label = t("list.pin_separator")
-        # 左右至少各一条 ─，中间夹空格+文案；栏宽不够时优先保住文案。
-        label_cell = f" {label} "
-        label_w = pickup._text_width(label_cell)
-        dash_budget = max(2, width - label_w)
-        left = dash_budget // 2
-        right = dash_budget - left
-        line = ("─" * left) + label_cell + ("─" * right)
-        # 超宽时再截一次，避免窄栏溢出；颜色吃 CSS `$primary`，不写死也不 dim。
-        return Text(pickup._fit_cell(line, width))
+        # 颜色吃 CSS `$primary`，不写死也不 dim。
+        return Text(pickup._fit_cell("─" * width, width))
 
 
 class SessionListView(ListView):

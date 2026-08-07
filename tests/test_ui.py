@@ -1892,7 +1892,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("↑", first_card.render().plain.splitlines()[0])
 
     async def test_pin_separator_between_pinned_and_unpinned(self) -> None:
-        """置顶与未置顶都非空时画蓝色「其他」分隔；仅一侧时不画。"""
+        """置顶与未置顶都非空时画蓝色横线分隔；仅一侧时不画。"""
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
@@ -1912,9 +1912,11 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(seps), 1)
             sep_item = list_view.query_one(f"#{PIN_SEP_ID}")
             self.assertTrue(sep_item.disabled)
-            plain = seps[0].render().plain
-            self.assertIn("─", plain)
-            self.assertTrue("其他" in plain or "Other" in plain)
+            plain = seps[0].render().plain.strip()
+            self.assertTrue(plain)
+            self.assertTrue(set(plain) <= {"─"})
+            self.assertNotIn("其他", plain)
+            self.assertNotIn("Other", plain)
 
             identities = list_view._current_row_identities()
             self.assertIn(PIN_SEP_ID, identities)
@@ -2146,6 +2148,138 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(area.cells()[0], cell_before, "格子被重建了")
                 self.assertIs(area.cells()[0].embed_pane(), pane_before, "画面控件被重建了")
                 self.assertEqual(area.cells()[0].spec.keepalive_name, "pickup-claude-two")
+
+    async def test_pane_count_change_reuses_pool_without_remount(self) -> None:
+        """2↔4 格切换必须复用格池控件，不得 remove/mount 已有格子。"""
+        from pickup.split_layout import MAX_PANES
+
+        sessions = [
+            {
+                "source": "claude", "id": f"p{i}", "short_id": f"p{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": f"pickup-claude-p{i}",
+            }
+            for i in range(MAX_PANES)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.open_channel", return_value=None), \
+             mock.patch("pickup.embed.should_resize_host", return_value=False):
+            async with app.run_test(size=(160, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                area = app.screen.query_one(SplitPaneArea)
+                mock.patch.object(app.screen, "_follow_current_selection").start()
+                self.addCleanup(mock.patch.stopall)
+
+                area.show_hosted_group(
+                    "/tmp",
+                    [(s, s["keepalive_name"], None) for s in sessions[:2]],
+                )
+                await _wait_until(lambda: len(area.cells()) == 2)
+                await _wait_until(lambda: len(area._pool_cells()) == MAX_PANES)  # noqa: SLF001
+                pool_before = area._pool_cells()  # noqa: SLF001
+                active_before = list(area.cells())
+
+                area.show_hosted_group(
+                    "/tmp",
+                    [(s, s["keepalive_name"], None) for s in sessions],
+                )
+                await _wait_until(lambda: len(area.cells()) == MAX_PANES)
+                self.assertEqual(area._pool_cells(), pool_before)  # noqa: SLF001
+                self.assertIs(area.cells()[0], active_before[0])
+                self.assertIs(area.cells()[1], active_before[1])
+
+                area.show_hosted_group(
+                    "/tmp",
+                    [(s, s["keepalive_name"], None) for s in sessions[:2]],
+                )
+                await _wait_until(lambda: len(area.cells()) == 2)
+                self.assertEqual(area._pool_cells(), pool_before)  # noqa: SLF001
+                self.assertIs(area.cells()[0], active_before[0])
+
+    async def test_browsing_existing_groups_persists_focus_not_composition(self) -> None:
+        """浏览已有会话组只 set_focus，不得 set_group（会抬 updated_at 并整表写盘）。"""
+        sessions = [
+            {
+                "source": "claude", "id": f"g{i}", "short_id": f"g{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"组会话{i}",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": f"pickup-claude-g{i}",
+            }
+            for i in range(4)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        keys = [pickup.session_key(s) for s in sessions]
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.open_channel", return_value=None), \
+             mock.patch("pickup.embed.should_resize_host", return_value=False):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                screen = app.screen
+                screen._apply_layout_change(  # noqa: SLF001
+                    lambda s: s.set_group("/tmp", keys[:2], focus_key=keys[0])
+                )
+                screen._apply_layout_change(  # noqa: SLF001
+                    lambda s: s.set_group("/tmp", keys[2:], focus_key=keys[2])
+                )
+                group_a = screen._split_store.get_group(keys[0])  # noqa: SLF001
+                group_b = screen._split_store.get_group(keys[2])  # noqa: SLF001
+                self.assertIsNotNone(group_a)
+                self.assertIsNotNone(group_b)
+                assert group_a is not None and group_b is not None
+                updated_a = group_a.updated_at
+                updated_b = group_b.updated_at
+
+                focus_calls: list[str] = []
+                composition_calls: list[str] = []
+                real_focus = screen._persist_split_focus
+                real_comp = screen._persist_split_composition
+
+                def track_focus():
+                    focus_calls.append("focus")
+                    return real_focus()
+
+                def track_comp():
+                    composition_calls.append("comp")
+                    return real_comp()
+
+                screen._persist_split_focus = track_focus  # noqa: SLF001
+                screen._persist_split_composition = track_comp  # noqa: SLF001
+
+                screen._show_session_group(keys[0], include_inactive=True)  # noqa: SLF001
+                await pilot.pause(delay=0.15)
+                screen._show_session_group(keys[2], include_inactive=True)  # noqa: SLF001
+                await pilot.pause(delay=0.15)
+
+                self.assertGreaterEqual(len(focus_calls), 2, focus_calls)
+                self.assertEqual(composition_calls, [], composition_calls)
+                adopted = screen._split_store  # noqa: SLF001
+                self.assertEqual(adopted.get_group(keys[0]).updated_at, updated_a)
+                self.assertEqual(adopted.get_group(keys[2]).updated_at, updated_b)
+
+    async def test_cold_hosted_switch_skips_markdown_fallback(self) -> None:
+        """冷切换托管会话不得同步跑 Markdown 回退（空白画布等首帧）。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.open_channel", return_value=None), \
+             mock.patch("pickup.embed.should_resize_host", return_value=False):
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                pane = _primary_embed_pane(app.screen)
+                called = {"n": 0}
+
+                def heavy():
+                    called["n"] += 1
+                    return "SHOULD-NOT-RENDER"
+
+                pane.focus_session("pickup-cold-x", heavy)
+                self.assertIsNone(pane._grid)
+                self.assertFalse(pane._is_hosted_fallback())
+                self.assertEqual(called["n"], 0)
+                self.assertEqual(pane.render().plain, "")
 
     async def test_rapid_highlights_are_throttled_but_still_settle(self) -> None:
         """连按方向键翻找会话时，右栏不能每一步都重建一次。
@@ -3299,7 +3433,9 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: pane.size.height >= 10 and pane.size.width >= 40)
                 # 挡住列表跟随，避免 focus_session 后被盖回静态预览
                 with mock.patch.object(app.screen, "_follow_current_selection"):
-                    pane.focus_session("pickup-cursor-x", lambda: body)
+                    pane.focus_session(
+                        "pickup-cursor-x", lambda: body, detail_until_frame=True,
+                    )
                     self.assertTrue(pane._detail_stick_bottom)
                     self.assertTrue(pane._is_hosted_fallback())
                     pane._pin_detail_to_bottom()
