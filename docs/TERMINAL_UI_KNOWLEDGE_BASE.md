@@ -158,7 +158,7 @@ stateDiagram-v2
 - 组卡固定三行（与会话卡同高）：第一行只有 `▼/▶ + 可选置顶标记 + 组名`，**没有关注圆点**；第二行是项目与成员数（与第一行 `Group …` **同列左对齐**，不靠右）；第三行**留白**——成员卡已各自显示时间，组卡不再重复。关注圆点只画在缩进的会话子项上。
 - 展开后成员以贴侧栏左缘的半角框线 `├─ `/`└─ `（续行同列 `│  `，总宽 3 列、无前导空格）连接，并从顶层列表摘除，禁止同一会话同时出现两份。必须整套半角框线——混用全角 `｜`/`－` 会和 `├` 错列，三行卡片之间竖线断开。树线用 `$foreground 80%`（与卡片基础色同亮），**不用**终端 `dim`。组内子项首行只显示「可选圆点 + 标题」，**不再重复项目名**（项目已写在组卡第二行）。组卡上按 `Space` 或点击三角可收起/展开；搜索组名时即使原先收起，也临时展示全部成员。
 - 分屏高亮只落在**当前会话组标题**和**当前激活的子会话**上；其余组员不再整块铺底。光标落到这两类高亮项上时，仍要使用更重一档的合成色。**光标停在组卡本身时只高亮组标题，不标任何子会话**（点组卡是在看整组，不是选中某一个成员）。
-- `p` 切换置顶：独立会话可单独置顶，会话组只能整体置顶，组内单个成员不能脱离组单独置顶。置顶块排在普通会话组之前，多个置顶项按最近置顶时间排序；组卡与子项始终是不可拆散的一块。
+- `p` 切换置顶：独立会话可单独置顶，会话组只能整体置顶，组内单个成员不能脱离组单独置顶。置顶块排在普通会话组之前，多个置顶项按最近置顶时间排序；组卡与子项始终是不可拆散的一块。**置顶块与未置顶块都非空时**，中间插入一行 `$primary` 冷蓝的 `── 其他 ──`（`PinSeparatorCard`，高 1、`disabled`，键盘 ↑↓ 跳过；无置顶或筛完只剩置顶时不画）。
 - 会话结束不会自动退出组；启动恢复只重新打开仍在运行的成员。关闭某一分屏格或永久删除成员会把它移出组，剩余不足两个成员时解散组；解散不删除任何会话。
 - `x` 落在组卡上删的是**整组**：确认弹窗写明组名和成员数（有运行中成员时另写一版文案，说明会先结束它们），确认后一次性摘掉全部成员卡，再在后台逐条结束进程 + 抹磁盘。**逐条容错**——某个运行时抹历史失败只把那一条捞回列表并提示失败原因，同组其他会话照常删除；成员全删完后组自然解散。组卡本身不对应任何一条会话，所以这里没有"只删选中那一条"的语义可退。
 
@@ -211,7 +211,7 @@ stateDiagram-v2
 | 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
 | 会话卡片、关注状态和列宽 | `ui/session_list.py` | `SessionCard.render()`、`SessionListView.rebuild()` | 固定三行：独立卡首行「圆点 项目 标题」、组内子项首行「圆点 标题」（无项目前缀）/ 运行时靠右 / 时间靠右；圆点优先级黄 > 绿 > 红；首行按有无圆点取 `width - 2` / `width` 硬截断、不写省略号；首行整体 bold，独立卡项目名再叠一层 `dim` 比标题淡一档（标题不 dim），回归 `test_project_name_is_one_shade_lighter_than_title`、`test_group_member_title_omits_project_name` |
 | 时间行的新鲜度亮度梯度 | `ui/session_list.py`、`display.py` | `SessionCard._time_tier()` / `_time_style()`、`_time_brightness_tier()`、`TIME_BRIGHTNESS_TIERS` | 半小时 / 三小时 / 一天为界分四档，最新一档与标题同色（着重）、越旧越暗；档位色走 `SessionCard` 的组件样式（`$foreground` + 透明度，深浅色主题各自与背景混合），渲染时只取混色后的前景、丢掉背景，回归 `test_time_line_brightness_steps_down_with_age` |
-| 会话组树与置顶排序 | `split_layout.py`、`ui/session_list.py`、`ui/main_screen.py` | `SplitLayoutStore`、`SessionGroupCard`、`SessionListView._sidebar_rows()` | 组名、成员、折叠态、最近使用时间、独立会话/整组置顶时间统一持久化；列表顺序为「置顶块 → 未置顶区跟 store 稳定顺序（组卡落在最先出现的成员位置）」，组成员不重复出现在顶层；回归 `SessionGroupSidebarTests` / `SplitLayoutStoreTests` |
+| 会话组树与置顶排序 | `split_layout.py`、`ui/session_list.py`、`ui/main_screen.py` | `SplitLayoutStore`、`SessionGroupCard`、`PinSeparatorCard`、`SessionListView._sidebar_rows()` | 组名、成员、折叠态、最近使用时间、独立会话/整组置顶时间统一持久化；列表顺序为「置顶块 →（两侧都非空时）一行 `$primary` 的 `── 其他 ──` → 未置顶区跟 store 稳定顺序（组卡落在最先出现的成员位置）」，组成员不重复出现在顶层；回归 `SessionGroupSidebarTests` / `SplitLayoutStoreTests` |
 | 侧边栏记忆的多窗口一致性 | `split_layout.py`、`ui/main_screen.py` | `SidebarLayoutDB`、`MainScreen._apply_layout_change()`、`_poll_layout_state()` | 所有写入必须走库（事务内重读最新再叠加），界面只持有只读快照；每秒轮询 `revision`，只有 `sidebar_fingerprint()` 变了才重建列表；回归 `SidebarLayoutDBTests`、`test_follows_sidebar_memory_changed_by_another_window` |
 | 分屏组合在侧边栏的投影 | `ui/session_list.py`、`ui/main_screen.py` | `SessionListView.set_split_marks()`、`MainScreen._sync_split_marks()` | ≥2 格才标：当前组卡贴 `-in-split`；光标在组卡上时 `active=None`（不标子会话），光标在成员或右栏持有输入时才给该子会话贴 `-split-active`；光标叠加态仍用 `_SIDEBAR_SPLIT_LADDER` 的四级阶梯；单格与 `__hint__` 不标，全量重建后重新贴标；回归 `SidebarSplitHighlightTests` |
 | 状态详情与已读确认 | `ui/main_screen.py`、`store.py` | 详情头状态、稳定可见计时、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；只有红点在右侧成功稳定可见 0.5 秒后清除，切换、失败或失焦取消 |

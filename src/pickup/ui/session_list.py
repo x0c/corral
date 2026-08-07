@@ -4,7 +4,8 @@
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
 或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
-无末行空行）。
+无末行空行）。置顶块与未置顶块都非空时，中间插一行 `$primary` 蓝的
+`── 其他 ──` 分隔（高 1、disabled，键盘跳过）。
 
 业务格式化逻辑（相对时间、宽字符对齐、标题兜底）直接复用 pickup.py 里已测试的
 纯函数，这里只负责「怎么在 Textual 里画卡片、怎么响应选择」。
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
 from pickup.i18n import t
 
 NEW_SESSION_ID = "__new_session__"
+PIN_SEP_ID = "__pin_sep__"
 GROUP_ID_PREFIX = "__group__-"
 
 # 时间行档位在「控件还没挂载」时的兜底样式：单测会直接构造 SessionCard 调
@@ -495,6 +497,36 @@ class NewSessionCard(Widget):
         return Text(t("list.new_session"), style="bold") + Text("\n")
 
 
+class PinSeparatorCard(Widget):
+    """置顶区与未置顶区之间的单行分隔：`── 其他 ──`，整行用 `$primary` 冷蓝。"""
+
+    ALLOW_SELECT = False
+
+    DEFAULT_CSS = """
+    PinSeparatorCard {
+        height: 1;
+        width: 1fr;
+        color: $primary;
+    }
+    """
+
+    def render(self) -> Text:
+        import pickup
+        from pickup.i18n import t
+
+        width = max(10, self.size.width or 40)
+        label = t("list.pin_separator")
+        # 左右至少各一条 ─，中间夹空格+文案；栏宽不够时优先保住文案。
+        label_cell = f" {label} "
+        label_w = pickup._text_width(label_cell)
+        dash_budget = max(2, width - label_w)
+        left = dash_budget // 2
+        right = dash_budget - left
+        line = ("─" * left) + label_cell + ("─" * right)
+        # 超宽时再截一次，避免窄栏溢出；颜色吃 CSS `$primary`，不写死也不 dim。
+        return Text(pickup._fit_cell(line, width))
+
+
 class SessionListView(ListView):
     """会话列表：虚拟索引 0 固定为新建会话项，之后是稳定顺序的会话卡片。"""
 
@@ -635,7 +667,7 @@ class SessionListView(ListView):
         return items
 
     def _current_row_identities(self) -> list[str]:
-        """返回当前 DOM 的组/会话身份，用于判断能否原地刷新。"""
+        """返回当前 DOM 的组/会话/分隔身份，用于判断能否原地刷新。"""
         import pickup
 
         identities: list[str] = []
@@ -643,7 +675,9 @@ class SessionListView(ListView):
             if item.id == NEW_SESSION_ID or not item.children:
                 continue
             card = item.children[0]
-            if isinstance(card, SessionGroupCard):
+            if isinstance(card, PinSeparatorCard) or item.id == PIN_SEP_ID:
+                identities.append(PIN_SEP_ID)
+            elif isinstance(card, SessionGroupCard):
                 identities.append(f"{GROUP_ID_PREFIX}{card.group.group_id}")
             elif isinstance(card, SessionCard):
                 identities.append(pickup.session_key(card.session))
@@ -660,6 +694,8 @@ class SessionListView(ListView):
             if item.id != NEW_SESSION_ID and item.children
         ]
         for widget, row in zip(widgets, rows, strict=False):
+            if row.kind == "separator" or isinstance(widget, PinSeparatorCard):
+                continue
             if isinstance(widget, SessionGroupCard) and row.group is not None:
                 widget.apply_update(
                     row.group, row.member_sessions, pinned=row.pinned
@@ -795,13 +831,14 @@ class SessionListView(ListView):
                     unpinned_by_id[key] = [row]
 
         # 置顶块始终在最上（按置顶时间）。
-        rows: list[_SidebarRow] = []
+        pinned_rows: list[_SidebarRow] = []
         pinned_blocks.sort(key=lambda item: item[0], reverse=True)
         for _, block in pinned_blocks:
-            rows.extend(block)
+            pinned_rows.extend(block)
 
         # 未置顶区：按 store 稳定顺序走一遍，组卡落在其「最先出现的成员」位置。
         # 禁止再按当前 mtime 重排——否则运行中会话一写盘整组就会在侧边栏里上下飘。
+        unpinned_rows: list[_SidebarRow] = []
         emitted: set[str] = set()
         for session in filtered:
             key = pickup.session_key(session)
@@ -824,15 +861,21 @@ class SessionListView(ListView):
             block = unpinned_by_id.get(block_id)
             if block is None:
                 continue
-            rows.extend(block)
+            unpinned_rows.extend(block)
             emitted.add(block_id)
 
         # 搜索把组名命中、成员却不在 filtered 主序里时的兜底（visible_sessions
         # 已尽量补齐；这里只防止漏块）。
         for block_id, block in unpinned_by_id.items():
             if block_id not in emitted:
-                rows.extend(block)
+                unpinned_rows.extend(block)
                 emitted.add(block_id)
+
+        rows: list[_SidebarRow] = list(pinned_rows)
+        # 两侧都有可见项时才画分隔，避免「只剩置顶」或「没有置顶」时多出一条空线。
+        if pinned_rows and unpinned_rows:
+            rows.append(_SidebarRow(kind="separator", identity=PIN_SEP_ID))
+        rows.extend(unpinned_rows)
         return rows
 
     def selected_session(self) -> dict | None:
@@ -999,6 +1042,40 @@ class SessionListView(ListView):
     def action_cursor_up(self) -> None:
         self.clear_multi()
         super().action_cursor_up()
+
+    def watch_index(self, old_index: int | None, new_index: int | None) -> None:
+        """点到置顶分隔行时拨到相邻可选项，避免高亮消失、右栏跟随被清空。"""
+        if (
+            new_index is not None
+            and 0 <= new_index < len(self._nodes)
+            and getattr(self._nodes[new_index], "id", None) == PIN_SEP_ID
+        ):
+            direction = 1
+            if old_index is not None and new_index < old_index:
+                direction = -1
+            target = self._nearest_selectable_index(new_index, direction)
+            if target is not None and target != new_index:
+                self.index = target
+                return
+        super().watch_index(old_index, new_index)
+
+    def _nearest_selectable_index(
+        self, from_index: int, direction: int
+    ) -> int | None:
+        """从 from_index 起按方向找下一个未 disabled 的 ListItem。"""
+        step = 1 if direction >= 0 else -1
+        index = from_index + step
+        while 0 <= index < len(self._nodes):
+            if not self._nodes[index].disabled:
+                return index
+            index += step
+        # 首选方向没有可选项时，反向再找一次（例如点在列表末尾的分隔）。
+        index = from_index - step
+        while 0 <= index < len(self._nodes):
+            if not self._nodes[index].disabled:
+                return index
+            index -= step
+        return None
 
     def on_session_multi_toggle_requested(self, event: SessionMultiToggleRequested) -> None:
         event.stop()
@@ -1178,6 +1255,13 @@ class SessionListView(ListView):
         display_titles = self.store.snapshot()
         items = [NoSelectListItem(NewSessionCard(), id=NEW_SESSION_ID)]
         for row in rows:
+            if row.kind == "separator":
+                items.append(
+                    NoSelectListItem(
+                        PinSeparatorCard(), id=PIN_SEP_ID, disabled=True
+                    )
+                )
+                continue
             if row.kind == "group" and row.group is not None:
                 card: Widget = SessionGroupCard(
                     row.group, row.member_sessions, pinned=row.pinned

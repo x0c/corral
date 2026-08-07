@@ -62,6 +62,8 @@ from pickup.ui.search_modal import FullTextSearchModal, SearchResultRow
 from pickup.ui.session_list import (
     GROUP_ID_PREFIX,
     NEW_SESSION_ID,
+    PIN_SEP_ID,
+    PinSeparatorCard,
     SessionCard,
     SessionGroupCard,
     SessionListView,
@@ -1888,6 +1890,71 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             first_card = list_view.children[1].children[0]
             self.assertIsInstance(first_card, SessionGroupCard)
             self.assertIn("↑", first_card.render().plain.splitlines()[0])
+
+    async def test_pin_separator_between_pinned_and_unpinned(self) -> None:
+        """置顶与未置顶都非空时画蓝色「其他」分隔；仅一侧时不画。"""
+        store, app = await self._grouped_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            sessions = store.all_sessions()
+            self.assertGreaterEqual(len(sessions), 2)
+            pinned_key = pickup.session_key(sessions[0])
+            other_key = pickup.session_key(sessions[1])
+
+            # 无置顶 → 无分隔
+            self.assertEqual(len(list(list_view.query(PinSeparatorCard))), 0)
+            self.assertNotIn(PIN_SEP_ID, list_view._current_row_identities())
+
+            list_view.on_layout_change(lambda s: s.toggle_session_pin(pinned_key))
+            await list_view.rebuild()
+            seps = list(list_view.query(PinSeparatorCard))
+            self.assertEqual(len(seps), 1)
+            sep_item = list_view.query_one(f"#{PIN_SEP_ID}")
+            self.assertTrue(sep_item.disabled)
+            plain = seps[0].render().plain
+            self.assertIn("─", plain)
+            self.assertTrue("其他" in plain or "Other" in plain)
+
+            identities = list_view._current_row_identities()
+            self.assertIn(PIN_SEP_ID, identities)
+            sep_at = identities.index(PIN_SEP_ID)
+            self.assertEqual(identities[0], pinned_key)
+            self.assertEqual(identities[sep_at + 1], other_key)
+
+            # 键盘从置顶项 ↓ 直接落到未置顶项，跳过分隔
+            list_view.focus()
+            list_view.index = 1  # 置顶会话（新建项之下）
+            list_view.action_cursor_down()
+            self.assertEqual(
+                pickup.session_key(list_view.selected_session()),
+                other_key,
+            )
+            self.assertNotEqual(
+                getattr(list_view.highlighted_child, "id", None),
+                PIN_SEP_ID,
+            )
+
+            # 全部置顶后分隔消失
+            remaining = [
+                pickup.session_key(session)
+                for session in sessions
+                if pickup.session_key(session) != pinned_key
+            ]
+            for key in remaining:
+                list_view.on_layout_change(lambda s, k=key: s.toggle_session_pin(k))
+            await list_view.rebuild()
+            self.assertEqual(len(list(list_view.query(PinSeparatorCard))), 0)
+
+            # 取消一条置顶后分隔回来，选中不丢
+            list_view.select_session_key(pinned_key)
+            list_view.on_layout_change(lambda s: s.toggle_session_pin(other_key))
+            await list_view.rebuild()
+            self.assertEqual(len(list(list_view.query(PinSeparatorCard))), 1)
+            self.assertEqual(
+                pickup.session_key(list_view.selected_session()),
+                pinned_key,
+            )
 
     async def test_newer_independent_session_sorts_above_unpinned_group(self) -> None:
         """未置顶组不霸榜：比组成员更新的独立会话应排在组前面。"""

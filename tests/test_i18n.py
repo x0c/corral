@@ -47,11 +47,13 @@ class I18nCatalogTests(unittest.TestCase):
         i18n.set_lang("en")
         self.assertEqual(t("action.advanced"), "Advanced")
         self.assertEqual(t("list.new_session"), "+ New session")
+        self.assertEqual(t("list.pin_separator"), "Other")
         self.assertEqual(t("time.minutes_ago", n=2), "2m ago")
 
         i18n.set_lang("zh")
         self.assertEqual(t("action.advanced"), "高级操作")
         self.assertEqual(t("list.new_session"), "＋ 新建会话")
+        self.assertEqual(t("list.pin_separator"), "其他")
         self.assertEqual(t("time.minutes_ago", n=2), "2分钟前")
 
     def test_join_names_uses_locale_separator(self) -> None:
