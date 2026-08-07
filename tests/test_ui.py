@@ -3229,6 +3229,63 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: handoff_pane.has_focus)
                 self.assertFalse(list_view.has_focus)
 
+    async def test_same_runtime_advanced_action_opens_new_session_split(self) -> None:
+        """高级操作选同一助手：读历史后新建并旁挂，不得原生恢复原会话。"""
+        store, registry = _make_store()
+        captured: list = []
+
+        def capture_plan(request):
+            captured.append(request)
+            return LaunchPlan(("claude", "--dangerously-skip-permissions", "prompt"), "/tmp")
+
+        registry.build_launch_plan = capture_plan
+        app = PickupApp(store, embed_ok=True)
+
+        with (
+            mock.patch(
+                "pickup.embed.host_session", return_value="pickup-claude-handoff-self"
+            ) as host_mock,
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                source = list_view.selected_session()
+                self.assertIsNotNone(source)
+                source_key = pickup.session_key(source)
+
+                await pilot.press("a")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, RuntimePickerModal)
+                # 本用例只有 claude，默认即源助手；回车 = 同助手读历史后新建
+                await pilot.press("enter")
+                await _wait_until(lambda: host_mock.call_count == 1)
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                await _wait_until(
+                    lambda: any(
+                        s.get("keepalive_name") == "pickup-claude-handoff-self"
+                        for s in list_view.visible_sessions()
+                    )
+                )
+
+                self.assertEqual(len(captured), 1)
+                self.assertTrue(captured[0].force_new)
+                self.assertEqual(captured[0].target_runtime_id, "claude")
+
+                area = app.screen.query_one(SplitPaneArea)
+                keys = area.ordered_session_keys()
+                self.assertGreaterEqual(len(keys), 2, "同助手另起也应与源会话并排")
+                self.assertIn(source_key, keys)
+                hosted = [
+                    s for s in list_view.visible_sessions()
+                    if s.get("keepalive_name") == "pickup-claude-handoff-self"
+                ]
+                self.assertEqual(len(hosted), 1)
+                self.assertNotEqual(
+                    pickup.session_key(hosted[0]), source_key,
+                    "同助手另起必须是新会话卡，不能 mark 到原会话",
+                )
+
 
 class PaneCellHeaderSyncTests(unittest.TestCase):
     """分栏标题栏在重建中间态可能缺失；焦点同步不得因此崩掉（真机：双击顶栏 OpenCode）。"""

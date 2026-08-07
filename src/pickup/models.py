@@ -185,7 +185,10 @@ class Handoff:
         cwd = self.original_cwd or "（原会话未记录工作目录）"
         sections = [
             f"任务：{self.title}",
-            f"你正在接力一个来自 {self.source_runtime_name} 的会话。这是跨运行时接力，不是原生恢复。",
+            (
+                f"你正在接力一个来自 {self.source_runtime_name} 的会话。"
+                "请新建自己的会话继续工作；这不是对原会话的原生恢复。"
+            ),
             f"原会话历史文件：{self.history_path}\n原工作目录：{cwd}\n历史格式提示：{self.history_reading_hint}",
         ]
         if self.conversation_digest:
@@ -215,11 +218,17 @@ class Handoff:
 
 @dataclass(frozen=True)
 class LaunchRequest:
-    """用户在界面中确认的启动选择。"""
+    """用户在界面中确认的启动选择。
+
+    `force_new=True`：即使目标与来源是同一助手，也走「导出接力 → 新建会话」，
+    不原生恢复原会话。高级操作（`a`）用这个路径处理「原会话卡住 / 出 bug、
+    需要同助手另起一局」；侧边栏回车等入口保持默认原生恢复。
+    """
 
     session: SessionInfo
     target_runtime_id: str
     title: str
+    force_new: bool = False
 
 
 @dataclass(frozen=True)

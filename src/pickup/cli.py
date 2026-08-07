@@ -63,13 +63,18 @@ def _launch(request: LaunchRequest | NewSessionRequest, registry: RuntimeRegistr
     新进程；否则按 keepalive_on 开关决定新启动的进程要不要包进保活层。
     """
     if isinstance(request, LaunchRequest):
-        attach = keepalive.attach_plan(request.session)
-        if attach is not None:
-            execute_launch(attach)
-            return
+        # force_new = 同助手另起新会话，不能 attach 到原会话的保活窗。
+        if not request.force_new:
+            attach = keepalive.attach_plan(request.session)
+            if attach is not None:
+                execute_launch(attach)
+                return
         plan = registry.build_launch_plan(request)
-        same_runtime = request.session.get("source") == request.target_runtime_id
-        ident = request.session["id"] if same_runtime else keepalive.new_session_ident()
+        native_resume = (
+            request.session.get("source") == request.target_runtime_id
+            and not request.force_new
+        )
+        ident = request.session["id"] if native_resume else keepalive.new_session_ident()
     else:
         plan = registry.build_new_session_plan(request)
         ident = keepalive.new_session_ident()

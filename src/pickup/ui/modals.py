@@ -390,15 +390,16 @@ class ConfirmModal(OutsideClickDismiss, ModalScreen[bool]):
 # ---------------------------------------------------------------------------
 
 async def choose_target_runtime(app, store, source: str) -> str | None:
-    """高级操作：选择接力目标运行时（复用 pickup._choose_target_runtime 的业务规则）。"""
+    """高级操作：选择接力目标运行时。
+
+    列表里每一个助手（含来源自身）都是「读取源历史后新建会话」——同助手另起
+    用于原会话卡住 / 出 bug 时；真正的原生恢复走侧边栏回车，不走本入口。
+    """
     runtimes = list(store.registry)
     source_name = store.registry.get(source).display_name
     choices = []
     for runtime in runtimes:
-        if runtime.id == source:
-            action = t("modal.native_resume")
-        else:
-            action = t("modal.read_history_new", source=source_name)
+        action = t("modal.read_history_new", source=source_name)
         choices.append(RuntimeChoice(runtime.id, runtime.display_name, action, runtime.is_available()))
     default_index = next(
         (i for i, runtime in enumerate(runtimes) if runtime.id != source and runtime.is_available()),

@@ -137,7 +137,8 @@ class RuntimeRegistry:
         source_id = str(request.session.get("source") or "")
         source = self.get(source_id)
         target = self.get(request.target_runtime_id)
-        if source.id == target.id:
+        # 同助手且未强制新建 → 原生恢复；跨助手或 force_new → 导出接力后新建。
+        if source.id == target.id and not request.force_new:
             return source.build_resume_plan(request.session)
         handoff = source.export_handoff(request.session, request.title)
         return target.build_new_plan(handoff)

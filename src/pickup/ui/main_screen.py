@@ -920,8 +920,8 @@ class MainScreen(
 
         if not isinstance(request, pickup.LaunchRequest):
             return True
-        # 跨运行时接力只读原历史、另建目标会话，没有互相覆盖的问题，不拦。
-        if request.session.get("source") != request.target_runtime_id:
+        # 接力新建（跨助手或同助手 force_new）只读原历史、另建目标会话，不拦。
+        if request.force_new or request.session.get("source") != request.target_runtime_id:
             return True
         session = self.store.find_session(pickup.session_key(request.session)) or request.session
         if not is_external_running(session):
@@ -1268,13 +1268,14 @@ class MainScreen(
         if target is None:
             return
         import pickup
-        request = pickup.LaunchRequest(session, target, self.store.get_title(session))
-        # 跨助手接力：默认从被接力会话旁分屏，而不是整屏换成新会话。
-        # 同助手原生恢复仍替换/聚焦原会话（不是另开一格）。
-        cross = source != target
-        if cross and self.embed_ok:
+        # 高级操作一律「读历史后新建」——含同助手（原会话卡住时另起）；
+        # 原生恢复留给侧边栏回车。新建默认旁挂被接力会话。
+        request = pickup.LaunchRequest(
+            session, target, self.store.get_title(session), force_new=True,
+        )
+        if self.embed_ok:
             self._prepare_handoff_split(session)
-        await self._open_or_exit(request, add_pane=cross and self.embed_ok)
+        await self._open_or_exit(request, add_pane=self.embed_ok)
 
     @work
     async def action_kill_keepalive(self) -> None:

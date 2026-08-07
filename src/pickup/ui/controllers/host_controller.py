@@ -29,15 +29,22 @@ class HostControllerMixin:
         from pickup import keepalive
         from pickup.split_layout import MAX_PANES
 
-        same_runtime = isinstance(request, pickup.LaunchRequest) and (
+        # 原生恢复 = 同助手且未 force_new；高级操作同助手另起走接力新建分支。
+        native_resume = isinstance(request, pickup.LaunchRequest) and (
             request.session.get("source") == request.target_runtime_id
+            and not request.force_new
         )
         area = self._split_area()
         if isinstance(request, pickup.LaunchRequest):
             key = pickup.session_key(request.session)
             current = self.store.find_session(key) or request.session
-            request = pickup.LaunchRequest(current, request.target_runtime_id, request.title)
-            existing = request.session.get("keepalive_name") if same_runtime else None
+            request = pickup.LaunchRequest(
+                current,
+                request.target_runtime_id,
+                request.title,
+                force_new=request.force_new,
+            )
+            existing = request.session.get("keepalive_name") if native_resume else None
             if existing:
                 # 回车打开已托管会话 = 明确意图，直接把输入交给右栏那一格。
                 if add_pane:
@@ -58,7 +65,7 @@ class HostControllerMixin:
                 self.app.bell()
                 return
             plan = self.store.registry.build_launch_plan(request)
-            ident = request.session["id"] if same_runtime else keepalive.new_session_ident()
+            ident = request.session["id"] if native_resume else keepalive.new_session_ident()
         else:
             if not add_pane and area.pane_count() > 0 and not area.can_add_pane():
                 self.notify(t("split.full", n=MAX_PANES))
@@ -77,12 +84,12 @@ class HostControllerMixin:
         width, height = area.host_pane_size()
         self._host_pending += 1
         self._host_and_focus(
-            request, plan, ident, same_runtime, width, height, add_pane=add_pane,
+            request, plan, ident, native_resume, width, height, add_pane=add_pane,
         )
 
     @work(thread=True, group="host")
     def _host_and_focus(
-        self, request, plan, ident, same_runtime, width, height, *, add_pane: bool = False,
+        self, request, plan, ident, native_resume, width, height, *, add_pane: bool = False,
     ) -> None:
         import time
 
@@ -112,7 +119,7 @@ class HostControllerMixin:
             ok=True,
         )
         self.app.call_from_thread(
-            self._on_embed_hosted, request, name, same_runtime, add_pane,
+            self._on_embed_hosted, request, name, native_resume, add_pane,
         )
 
     def _on_host_failed(self) -> None:
@@ -122,16 +129,16 @@ class HostControllerMixin:
         self.app.bell()
 
     def _on_embed_hosted(
-        self, request, name: str, same_runtime: bool, add_pane: bool = False,
+        self, request, name: str, native_resume: bool, add_pane: bool = False,
     ) -> None:
         """`_host_and_focus` worker 成功后的收尾：只在主线程操作 Textual/store 状态。
 
         `request` 可能是 `LaunchRequest`（恢复/接力）或 `NewSessionRequest`（空白新建）。
         后者没有关联会话，不能读 `.session`——空白新建路径曾经因此闪退。
 
-        跨运行时接力 / 空白新建时目标助手可能尚未落盘历史（例如 Cursor 卡在
-        Workspace Trust），扫描器看不到条目；必须立刻插入托管占位卡并选中它，
-        否则左栏空白、随后的 `_rebuild_list` 还会按仍选中的源会话把右栏盖回去。
+        接力新建（含同助手 force_new）/ 空白新建时目标助手可能尚未落盘历史（例如
+        Cursor 卡在 Workspace Trust），扫描器看不到条目；必须立刻插入托管占位卡并
+        选中它，否则左栏空白、随后的 `_rebuild_list` 还会按仍选中的源会话把右栏盖回去。
         """
         import pickup
 
@@ -141,7 +148,7 @@ class HostControllerMixin:
         select_key = None
         if isinstance(request, pickup.LaunchRequest):
             current = request.session
-            if same_runtime:
+            if native_resume:
                 key = pickup.session_key(request.session)
                 marked = self.store.mark_hosted(key, name)
                 if marked is None:

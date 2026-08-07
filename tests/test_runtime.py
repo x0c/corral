@@ -127,6 +127,23 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertIsNone(plan.cwd)
 
+    def test_force_new_same_runtime_uses_handoff_not_resume(self) -> None:
+        """高级操作同助手另起：读历史后新建，不得带原生 --resume。"""
+        with tempfile.TemporaryDirectory() as td:
+            history = Path(td) / "claude.jsonl"
+            history.write_text("{}\n", encoding="utf-8")
+            session = self._session("claude", str(history), td)
+
+            plan = default_registry().build_launch_plan(
+                LaunchRequest(session, "claude", "原会话卡住另起", force_new=True)
+            )
+
+            self.assertEqual(plan.argv[0], "claude")
+            self.assertNotIn("--resume", plan.argv)
+            self.assertIn(str(history), plan.argv[-1])
+            self.assertIn("不是对原会话的原生恢复", plan.argv[-1])
+            self.assertEqual(plan.cwd, td)
+
     def test_claude_session_can_handoff_to_codex(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             history = Path(td) / "claude.jsonl"
