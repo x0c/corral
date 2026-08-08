@@ -1704,10 +1704,10 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             self.assertEqual(scan_opencode.live_pids_by_process_name("opencode"), {})
 
     def test_scan_filters_self_generated_title_sessions(self) -> None:
-        """标题生成 `opencode run` 落盘会话必须以 PROMPT_MARKER 前缀过滤。"""
+        """标题生成落盘时即使 OpenCode 额外包一层引号，也必须过滤。"""
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "opencode.db"
-            noise_msg = f"{titles.PROMPT_MARKER}（JSON 数组…）"
+            noise_msg = f'"{titles.PROMPT_MARKER}（JSON 数组…）"'
             _make_opencode_db(
                 db_path,
                 sessions=[
@@ -2678,7 +2678,8 @@ class TuiLayoutTests(unittest.TestCase):
         now = 1_000_000.0
         self.assertEqual(pickup._format_relative_time(now - 5, now), "just now")
         self.assertEqual(pickup._format_relative_time(now + 100, now), "just now")  # 时钟漂移/未来
-        self.assertEqual(pickup._format_relative_time(now - 120, now), "2m ago")
+        self.assertEqual(pickup._format_relative_time(now - 179, now), "just now")  # 3 分钟内
+        self.assertEqual(pickup._format_relative_time(now - 180, now), "3m ago")
         self.assertEqual(pickup._format_relative_time(now - 3 * 3600, now), "3h ago")
         # 超过一天退回绝对日期时间（沿用 MM-DD HH:MM）
         old = now - 3 * 86400

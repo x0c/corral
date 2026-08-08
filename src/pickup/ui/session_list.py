@@ -235,6 +235,8 @@ class SessionCard(Widget):
 
     def _compute_signature(self) -> tuple:
         """渲染相关字段的轻量快照，用来判定"内容是否真的变了"、要不要 refresh()。"""
+        import pickup
+
         session = self.session
         return (
             self.display_title,
@@ -246,6 +248,9 @@ class SessionCard(Widget):
             # mtime 不变但会话「变旧」跨过档位线时，时间行要跟着压暗，所以档位
             # 本身也得进签名，否则原地更新路径不会重绘。
             self._time_tier(),
+            # 相对时间文案（含「刚刚」↔「Xm ago」）随墙钟变化，必须进签名，
+            # 否则「刚刚」加粗/文案切换不会在原地更新路径里重绘。
+            pickup._format_relative_time(session.get("mtime") or 0),
             self.tree_position,
             self.pinned,
         )
@@ -333,8 +338,10 @@ class SessionCard(Widget):
         relative_time = pickup._format_relative_time(session.get("mtime") or 0)
         time_cell = pickup._fit_cell_right(relative_time, content_width)
         # 时间按新鲜度取一档亮度：半小时内与标题同亮，越旧越暗，让「刚刚还在动」
-        # 的会话在一列时间里一眼可见。
+        # 的会话在一列时间里一眼可见。「刚刚」文案再加粗，与「Xm ago」拉开层级。
         time_style = self._time_style(self._time_tier())
+        if relative_time == t("time.just_now"):
+            time_style = time_style + Style(bold=True)
 
         # 首行整体 bold（与下面两行拉开层级）；独立卡的项目名再 dim 一档，
         # 避免和标题抢视线。组内子项不写项目名，也就没有这段 dim。

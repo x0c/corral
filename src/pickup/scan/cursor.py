@@ -264,9 +264,9 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         fallback = str(info.get("fallback_title") or "")
         native = str(info.get("native_title") or "")
         if (
-            first_user.startswith(titles.PROMPT_MARKER)
-            or fallback.startswith(titles.PROMPT_MARKER)
-            or native.startswith(titles.PROMPT_MARKER)
+            titles.is_title_generation_prompt(first_user)
+            or titles.is_title_generation_prompt(fallback)
+            or titles.is_title_generation_prompt(native)
         ):
             continue
         if is_ephemeral_agent_cwd(info["cwd"]):

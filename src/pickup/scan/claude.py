@@ -461,7 +461,7 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
             break
 
         peek_cwd, peek_first_user = _peek_head_meta(fpath)
-        if peek_first_user is not None and peek_first_user.startswith(titles.PROMPT_MARKER):
+        if titles.is_title_generation_prompt(peek_first_user):
             continue  # 廉价探测已确认是自产噪音会话，跳过整文件解析
         if peek_cwd and is_ephemeral_agent_cwd(peek_cwd):
             continue  # OpenConductor 管家临时 cwd，目录复活会刷屏
@@ -478,7 +478,7 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
             cache.put_session("claude", fpath, info)
         if not info["first_user_msg"] or info["fallback_title"] == "(仅本地命令)":
             continue  # 无用户消息的空会话
-        if info["first_user_msg"].startswith(titles.PROMPT_MARKER):
+        if titles.is_title_generation_prompt(info["first_user_msg"]):
             continue  # sc 自己生成标题留下的噪音会话，跳过（廉价探测失手时的兜底）
         if is_ephemeral_agent_cwd(info["cwd"]):
             continue

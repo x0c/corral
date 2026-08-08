@@ -54,6 +54,15 @@ _TEMP_TITLE_LEN = 26
 # 识别并过滤掉这类自产生的噪音会话，避免它们污染会话列表。
 PROMPT_MARKER = "你将看到一批编程助手会话的摘录"
 
+
+def is_title_generation_prompt(text: object) -> bool:
+    """判断一段历史文本是否来自 pickup 自己的标题生成请求。
+
+    不同助手会原样保存、加引号或包成 JSON 字符串；不能只依赖文本开头，
+    否则自产会话会重新混进侧边栏。
+    """
+    return isinstance(text, str) and PROMPT_MARKER in text
+
 _DOC_COMMAND_LABELS = {
     "doc-init": "文档初始化",
     "doc-update": "会话文档复盘",
@@ -416,6 +425,10 @@ def refresh_titles(
     # 并行批次共享同一份 cache 字典；落盘必须互斥，避免 json.dump 遍历时
     # 被另一线程改字典大小，或写出去半一致快照。
     persist_lock = threading.Lock()
+    # 首次调用每个助手时只允许一个批次探测；探测成功后立即放开并行。这样既能
+    # 避免多个批次同时撞上一个失效助手，又不会把健康助手的后续批次串行化。
+    generator_states = {candidate.id: "待探测" for candidate in generators}
+    availability = threading.Condition()
 
     def usable_results(chunk: list[dict], raw: dict[str, str]) -> dict[str, str]:
         """只保留当前批次里可作为最终标题的模型结果。"""
@@ -451,11 +464,28 @@ def refresh_titles(
         """单批生成；平权轮转选首个候选，失败时遍历其他候选。"""
         ordered = generators[offset:] + generators[:offset]
         for candidate in ordered:
+            with availability:
+                while generator_states[candidate.id] == "探测中":
+                    availability.wait()
+                if generator_states[candidate.id] == "不可用":
+                    continue
+                is_probe = generator_states[candidate.id] == "待探测"
+                if is_probe:
+                    generator_states[candidate.id] = "探测中"
             try:
                 raw = generate_titles_batch(chunk, candidate)
             except Exception:
                 raw = {}
-            if usable_results(chunk, raw):
+            valid = usable_results(chunk, raw)
+            if is_probe:
+                with availability:
+                    generator_states[candidate.id] = "可用" if valid else "不可用"
+                    availability.notify_all()
+            elif not valid:
+                with availability:
+                    generator_states[candidate.id] = "不可用"
+                    availability.notify_all()
+            if valid:
                 return raw
         return {}
 

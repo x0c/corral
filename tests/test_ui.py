@@ -1265,6 +1265,45 @@ class SessionCardVisualTests(unittest.TestCase):
         relative_time = pickup._format_relative_time(card.session["mtime"])
         self.assertTrue(lines[2].endswith(relative_time))
 
+    def test_just_now_time_is_bold_older_relative_time_is_not(self) -> None:
+        """「刚刚」加粗；跨过 3 分钟阈值后的相对时间保持常规字重。"""
+        now = time.time()
+        fresh = self._card()
+        fresh.session["mtime"] = now - 30
+        older = self._card()
+        older.session["mtime"] = now - 240  # 4 分钟前 → "4m ago"
+        with mock.patch.object(
+            SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
+        ):
+            fresh_text = fresh.render()
+            older_text = older.render()
+
+        just_now = pickup._format_relative_time(fresh.session["mtime"], now)
+        self.assertEqual(just_now, "just now")
+        just_idx = fresh_text.plain.rfind(just_now)
+        self.assertGreaterEqual(just_idx, 0)
+        just_spans = [
+            span for span in fresh_text.spans
+            if span.start <= just_idx < span.end
+        ]
+        self.assertTrue(
+            any("bold" in str(span.style).lower() for span in just_spans),
+            f"just now should be bold, spans={just_spans}",
+        )
+
+        older_label = pickup._format_relative_time(older.session["mtime"], now)
+        self.assertEqual(older_label, "4m ago")
+        older_idx = older_text.plain.rfind(older_label)
+        self.assertGreaterEqual(older_idx, 0)
+        older_spans = [
+            span for span in older_text.spans
+            if span.start <= older_idx < span.end
+        ]
+        self.assertFalse(
+            any("bold" in str(span.style).lower() for span in older_spans),
+            f"older relative time should not be bold, spans={older_spans}",
+        )
+
     def test_long_title_is_hard_truncated_without_ellipsis(self) -> None:
         """标题放不下时直接截断，不写 `...`：省略号只会白占三格。"""
         card = self._card(
@@ -2193,11 +2232,15 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 pool_before = area._pool_cells()  # noqa: SLF001
                 active_before = list(area.cells())
 
-                focus_calls: list[bool] = []
+                focus_calls: list[tuple[bool, bool, tuple[int, int] | None]] = []
                 original_focus_session = EmbedPane.focus_session
 
                 def _record_focus(pane, *args, **kwargs):
-                    focus_calls.append(kwargs.get("resize_immediately", True))
+                    focus_calls.append((
+                        kwargs.get("resize_immediately", True),
+                        kwargs.get("discard_stale_screen", False),
+                        kwargs.get("target_size"),
+                    ))
                     return original_focus_session(pane, *args, **kwargs)
 
                 with mock.patch.object(EmbedPane, "focus_session", new=_record_focus):
@@ -2207,10 +2250,11 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     await _wait_until(lambda: len(area.cells()) == MAX_PANES)
                 self.assertEqual(
+                    [(True, True, call[2]) for call in focus_calls],
                     focus_calls,
-                    [False] * MAX_PANES,
-                    "格数变化时必须等新布局落定再同步托管终端尺寸",
+                    "格数变化必须立即按最终尺寸重设终端，并禁止铺旧宽缓存",
                 )
+                self.assertTrue(all(call[2] is not None for call in focus_calls))
                 self.assertEqual(area._pool_cells(), pool_before)  # noqa: SLF001
                 self.assertIs(area.cells()[0], active_before[0])
                 self.assertIs(area.cells()[1], active_before[1])
@@ -2223,8 +2267,8 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(area._pool_cells(), pool_before)  # noqa: SLF001
                 self.assertIs(area.cells()[0], active_before[0])
 
-    async def test_pane_count_change_resizes_only_after_final_layout(self) -> None:
-        """分屏格数变化不得先按旧宽度 resize、再按新宽度重设一次。"""
+    async def test_pane_count_change_resizes_once_at_final_layout_size(self) -> None:
+        """分屏格数变化要立即按最终尺寸 resize，布局落定后不得重复一次。"""
         from pickup.split_layout import MAX_PANES
 
         sessions = [
@@ -2269,8 +2313,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     [(s, s["keepalive_name"], None) for s in sessions],
                 )
                 await _wait_until(lambda: len(area.cells()) == MAX_PANES)
-                self.assertEqual(resize_calls, [], "布局落定前不得写入旧格宽")
-                await pilot.pause(delay=0.4)
+                await pilot.pause(delay=0.05)
 
                 expected = [
                     (
@@ -2282,6 +2325,69 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     if cell.embed_pane() is not None
                 ]
                 self.assertEqual(sorted(resize_calls), sorted(expected))
+                await pilot.pause(delay=0.4)
+                self.assertEqual(
+                    sorted(resize_calls), sorted(expected),
+                    "布局落定后的 Resize 不得在 200ms 后再次调回相同尺寸",
+                )
+
+    async def test_two_to_one_discards_half_width_screen_before_first_frame(self) -> None:
+        """双格切单格不可先把半宽缓存画在左半边，再等 200ms 防抖修正。"""
+        from pickup.ui import embed_pane as embed_pane_mod
+
+        sessions = [
+            {
+                "source": "claude", "id": f"single-{i}", "short_id": f"single-{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"单格会话{i}",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": f"pickup-claude-single-{i}",
+            }
+            for i in range(3)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=True)
+        resize_calls: list[tuple[str, int, int]] = []
+        target_name = sessions[2]["keepalive_name"]
+        # 这正是切回过双格会话时会命中的旧尺寸缓存；本次切单格必须不用它。
+        embed_pane_mod._cache_screen(target_name, [["旧半宽画面"]], None)  # noqa: SLF001
+        with (
+            mock.patch("pickup.embed.open_channel", return_value=None),
+            mock.patch("pickup.embed.should_resize_host", return_value=True),
+            mock.patch(
+                "pickup.embed.resize",
+                side_effect=lambda name, width, height: resize_calls.append(
+                    (name, width, height)
+                ),
+            ),
+        ):
+            async with app.run_test(size=(160, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                area = app.screen.query_one(SplitPaneArea)
+                mock.patch.object(app.screen, "_follow_current_selection").start()
+                self.addCleanup(mock.patch.stopall)
+
+                area.show_hosted_group(
+                    "/tmp",
+                    [(s, s["keepalive_name"], None) for s in sessions[:2]],
+                )
+                await _wait_until(lambda: len(area.cells()) == 2)
+                await pilot.pause(delay=0.3)
+                resize_calls.clear()
+
+                area.show_hosted_group("/tmp", [(sessions[2], target_name, None)])
+                await _wait_until(lambda: len(area.cells()) == 1)
+                pane = area.cells()[0].embed_pane()
+                self.assertIsNotNone(pane)
+                self.assertIsNone(pane._grid, "切单格前不得先恢复旧的半宽缓存")  # noqa: SLF001
+                await pilot.pause(delay=0.05)
+                expected = (target_name, pane.size.width, pane.size.height)
+                self.assertEqual(resize_calls, [expected])
+                await pilot.pause(delay=0.35)
+                self.assertEqual(
+                    resize_calls, [expected],
+                    "布局落定后的尺寸回报不得在 200ms 后重复 resize",
+                )
 
     async def test_browsing_existing_groups_persists_focus_not_composition(self) -> None:
         """浏览已有会话组只 set_focus，不得 set_group（会抬 updated_at 并整表写盘）。"""
@@ -2913,6 +3019,105 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertTrue(list_view.has_focus)
                 await _wait_until(lambda: pane.input_masked)
+
+    async def test_focus_intent_removes_input_mask_before_focus_lands(self) -> None:
+        """点开托管会话时，灰色输入蒙版必须先于下一帧的真实落焦消失。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+
+                await pilot.press("ctrl+backslash")
+                await _wait_until(lambda: pane.input_masked)
+                key = app.screen.query_one(SplitPaneArea).pane_specs()[0].session_key
+
+                # 这里刻意不等待下一次刷新：这正是用户此前能看到的中间态。
+                app.screen.query_one(SplitPaneArea)._request_pane_focus(key)  # noqa: SLF001
+                self.assertFalse(pane.input_masked)
+                await _wait_until(lambda: pane.has_focus)
+
+    async def test_input_claim_survives_until_the_real_focus_event(self) -> None:
+        """已调用聚焦、但真实焦点尚未落下时，迟到的蒙版同步不能闪灰一帧。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+
+                await pilot.press("ctrl+backslash")
+                await _wait_until(lambda: pane.input_masked)
+                area = app.screen.query_one(SplitPaneArea)
+                key = area.pane_specs()[0].session_key
+                area._claim_pane_input(key)  # noqa: SLF001 模拟点击已登记输入归属
+
+                # Widget.focus() 会延后到下一轮事件循环；在它真正生效前让一次蒙版
+                # 同步插队，正是此前真机上能看见灰色闪现的时序。
+                with mock.patch.object(type(area.cells()[0]), "focus_embed", autospec=True):
+                    self.assertTrue(area._apply_focus_intent())  # noqa: SLF001
+                self.assertIsNone(area._focus_intent_key)  # noqa: SLF001
+                self.assertEqual(area._input_claim_key, key)  # noqa: SLF001
+                area.sync_input_mask()
+                self.assertFalse(pane.input_masked)
+
+                area._handle_pane_focused(key)  # noqa: SLF001 模拟真实焦点事件抵达
+                self.assertIsNone(area._input_claim_key)  # noqa: SLF001
+                self.assertFalse(pane.input_masked)
+
+    async def test_remount_focus_intent_removes_input_mask_immediately(self) -> None:
+        """需重排的会话切换也必须先撤蒙版，不能只覆盖同格聚焦路径。"""
+        sessions = [
+            {
+                "source": "claude", "id": f"mask-{i}", "short_id": f"mask-{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"蒙版会话{i}",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": f"pickup-claude-mask-{i}",
+            }
+            for i in range(2)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.open_channel", return_value=None),
+            mock.patch("pickup.embed.should_resize_host", return_value=False),
+        ):
+            async with app.run_test(size=(160, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                area = app.screen.query_one(SplitPaneArea)
+                area.show_hosted_group(
+                    "/tmp", [(sessions[0], sessions[0]["keepalive_name"], None)],
+                )
+                await _wait_until(lambda: len(area.cells()) == 1)
+                pane = area.cells()[0].embed_pane()
+                app.screen._focus_list()  # noqa: SLF001
+                await pilot.pause()
+                area.sync_input_mask()
+                self.assertTrue(pane.input_masked)
+
+                area.show_hosted_group(
+                    "/tmp",
+                    [(s, s["keepalive_name"], None) for s in sessions],
+                    focus_key=pickup.session_key(sessions[1]),
+                    focus_pane=True,
+                )
+                self.assertFalse(pane.input_masked)
 
     async def test_click_pane_focuses_embed(self) -> None:
         """鼠标点右栏进入内嵌交互（自动聚焦之外的另一条路径）。"""

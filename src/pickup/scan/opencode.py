@@ -208,7 +208,7 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
             # 标题生成用 `opencode run` 会真实落盘会话；用固定前缀拦掉自产噪音。
             first_user = str(info.get("first_user_msg") or "")
             fallback = str(info.get("fallback_title") or "")
-            if first_user.startswith(titles.PROMPT_MARKER) or fallback.startswith(titles.PROMPT_MARKER):
+            if titles.is_title_generation_prompt(first_user) or titles.is_title_generation_prompt(fallback):
                 continue
             if cwd_filter and not info["cwd"].startswith(cwd_filter):
                 continue

@@ -289,7 +289,8 @@ class PaneCell(Vertical):
         *,
         title: str,
         detail_renderer: Callable[[], Text | str] | None,
-        resize_after_layout: bool = False,
+        target_size: tuple[int, int] | None = None,
+        discard_stale_screen: bool = False,
     ) -> None:
         """把这一格改绑到另一个会话，不销毁重建。
 
@@ -304,13 +305,20 @@ class PaneCell(Vertical):
         self._detail_renderer = detail_renderer
         self.set_pooled(False)
         self.set_title(title)
-        # 单格与多格之间切换时，此刻仍拿得到旧格宽；立刻写回托管终端，随后
-        # Textual 布局完成又按新宽度写一次，就会让助手画面可见地先宽后窄（反向同理）。
-        # 等布局发出本格 Resize 后再同步尺寸，只写最终宽度；同样格数的改绑仍立即
-        # 同步，保留普通会话切换的响应速度。
-        self._start_session(resize_immediately=not resize_after_layout)
+        # 单格与多格之间切换时，格子此刻还保留旧宽。用分栏区计算出的最终尺寸立即
+        # 调整托管终端，同时丢掉旧宽画面；不能等布局后的防抖 resize，否则新单格会
+        # 在约 200ms 内把旧半宽缓存贴在左侧。
+        self._start_session(
+            target_size=target_size,
+            discard_stale_screen=discard_stale_screen,
+        )
 
-    def _start_session(self, *, resize_immediately: bool = True) -> None:
+    def _start_session(
+        self,
+        *,
+        target_size: tuple[int, int] | None = None,
+        discard_stale_screen: bool = False,
+    ) -> None:
         pane = self.embed_pane()
         if pane is None:
             return
@@ -318,7 +326,8 @@ class PaneCell(Vertical):
             pane.focus_session(
                 self.spec.keepalive_name,
                 self._detail_renderer,
-                resize_immediately=resize_immediately,
+                target_size=target_size,
+                discard_stale_screen=discard_stale_screen,
             )
             # 画面刚接上就要按当前焦点决定压不压暗，别等下一次焦点变化。
             if self._on_sync_mask is not None:
@@ -489,6 +498,10 @@ class SplitPaneArea(Vertical):
         # 「把输入交给某一格」的待兑现意图，以及尚未执行完的整排挂载数量。
         # 两者配合让意图能跨过一次异步 remount，见 _request_pane_focus。
         self._focus_intent_key: str | None = None
+        # 焦点请求已发出、但 Textual 尚未真正把焦点送进内嵌终端时，右栏已经
+        # 拥有输入。这个声明必须保留到 DescendantFocus 落下，不能在调用
+        # Widget.focus() 后马上撤掉，否则此前排队的蒙版同步仍会灰掉一帧。
+        self._input_claim_key: str | None = None
         self._mount_pending = 0
         self._focus_intent_serial = 0
 
@@ -558,13 +571,16 @@ class SplitPaneArea(Vertical):
         """焦点不在右栏时，把活着的实时终端整格压暗（输入无效的视觉提示）。
 
         只看「右栏是否持有输入」这一件事：焦点在另一格时不压暗其余格——那时输入
-        是有效的，只是去了别的格，激活格自己的高亮条已经说明了这点。
+        是有效的，只是去了别的格，激活格自己的高亮条已经说明了这点。已经登记的
+        自动聚焦已声明输入归属也视为右栏持有输入：用户点开会话的瞬间就已决定把
+        后续输入交给它，直到真实焦点落下前都不能撤掉这个声明，否则此前排队的
+        蒙版同步会在中间插入一帧灰色。
         """
         try:
             cells = self._cells()
         except Exception:  # noqa: BLE001 分栏重建中间态查不到 #pane-row
             return
-        area_has_input = self.any_embed_focused()
+        area_has_input = self.any_embed_focused() or self._input_claim_key is not None
         for cell in cells:
             pane = cell.embed_pane()
             live = (
@@ -590,6 +606,25 @@ class SplitPaneArea(Vertical):
         w = max(1, (row.size.width or 120) // count)
         h = max(1, row.size.height or 24)
         return embed_mod.normalize_host_size(w, h - 1)
+
+    def _projected_embed_sizes(self, count: int) -> list[tuple[int, int]] | None:
+        """计算本次分栏布局最终会给每个实时画面的内容尺寸。
+
+        `PaneCell` 只有非首格占一列左间距，剩余列按 Textual 的 `1fr` 从左到右
+        均分（不能在旧格上读取 `pane.size`，那正是闪跳来源）。顶、底栏各占一行。
+        """
+        if count <= 0:
+            return []
+        row = self.query_one("#pane-row", Horizontal)
+        if row.size.width <= 0 or row.size.height <= 0:
+            return None
+        usable_width = max(1, row.size.width - (count - 1))
+        base, remainder = divmod(usable_width, count)
+        height = max(1, row.size.height - 2)
+        return [
+            (base + int(index >= count - remainder), height)
+            for index in range(count)
+        ]
 
     def sync_hud(self, payloads: dict[str, object] | None, *, expanded: bool) -> None:
         """每个实时托管格画自己的会话小窗；payloads 里没有的格一律收掉。
@@ -814,6 +849,9 @@ class SplitPaneArea(Vertical):
 
     def _handle_pane_focused(self, session_key: str) -> None:
         self._focus_key = session_key
+        # 收到真实焦点事件才结束输入归属声明。Widget.focus() 本身是延迟落地的，
+        # 在这里之前的任何蒙版同步都必须继续认为右栏可输入。
+        self._input_claim_key = None
         self.sync_input_mask()
         if self._on_pane_focused is not None:
             self._on_pane_focused(session_key)
@@ -940,12 +978,21 @@ class SplitPaneArea(Vertical):
         """
         if not key:
             return
-        self._focus_intent_key = key
+        self._claim_pane_input(key)
         self.call_after_refresh(self._apply_focus_intent)
+
+    def _claim_pane_input(self, key: str) -> None:
+        """登记自动聚焦意图，并立刻移除“输入无效”的视觉状态。"""
+        self._focus_intent_key = key
+        self._input_claim_key = key
+        # 焦点组件实际落地要等下一轮刷新；先同步撤去「输入无效」蒙版，避免用户
+        # 已点击打开却在这段等待里看到整格灰一下再恢复。
+        self.sync_input_mask()
 
     def clear_focus_intent(self) -> None:
         """用户已经主动决定焦点去哪（回列表 / 点了别处），丢弃待兑现意图。"""
         self._focus_intent_key = None
+        self._input_claim_key = None
 
     def _apply_focus_intent(self) -> bool:
         """兑现待办意图；还有挂载在路上时保留意图，等挂载收尾再试。"""
@@ -959,6 +1006,8 @@ class SplitPaneArea(Vertical):
         if not self._mount_pending:
             # 目标不是实时格（预览 / 已结束 / 托管失败），放弃，不留到下次挂载诈尸
             self._focus_intent_key = None
+            self._input_claim_key = None
+            self.sync_input_mask()
         return False
 
     def _settle_focus_intent(self, restore_list: bool, serial: int) -> None:
@@ -1001,7 +1050,8 @@ class SplitPaneArea(Vertical):
         focus_pane: bool = False,
     ) -> None:
         if focus_pane:
-            self._focus_intent_key = focus_key
+            if focus_key:
+                self._claim_pane_input(focus_key)
         # 格池已够用且无需新建控件时同步改绑，少一帧「旧画面停住 / 空一帧」。
         # 首次建池或空态清场仍走 async（要 await mount/remove）。
         pool = self._pool_cells()
@@ -1039,6 +1089,8 @@ class SplitPaneArea(Vertical):
         self._mount_pending = max(0, self._mount_pending - 1)
         pool = self._pool_cells()
         visible_before = sum(not cell._pooled for cell in pool)  # noqa: SLF001
+        composition_changed = visible_before != len(entries)
+        target_sizes = self._projected_embed_sizes(len(entries)) if composition_changed else None
         # 先把要用的前缀解冻并改绑，其余收回池里。
         self._panes = [s for s, _, _ in entries]
         for index, (spec, session, renderer) in enumerate(entries):
@@ -1047,7 +1099,8 @@ class SplitPaneArea(Vertical):
                 spec,
                 title=title,
                 detail_renderer=renderer,
-                resize_after_layout=visible_before != len(entries),
+                target_size=target_sizes[index] if target_sizes is not None else None,
+                discard_stale_screen=composition_changed,
             )
         for spare in pool[len(entries):]:
             if not spare._pooled:  # noqa: SLF001
@@ -1094,6 +1147,7 @@ class SplitPaneArea(Vertical):
                 await row.mount(Static(t("split.empty_hint"), id="pane-row-empty"))
             self._panes = []
             self._focus_intent_key = None
+            self._input_claim_key = None
             if list_had_focus:
                 self.call_after_refresh(self._on_focus_list)
             return

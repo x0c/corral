@@ -363,6 +363,10 @@ class EmbedPane(Widget):
         self._real_cursor_shown = False  # 外层真实硬件光标当前是否被我们显式打开（见 _set_real_cursor）
         self._resize_tmux_timer = None  # 防抖：拖动停稳后再 resize-window + 抓帧
         self._pending_tmux_size: tuple[int, int] | None = None
+        # 最近一次已真正写给托管终端的尺寸。分栏数量变化会先按预期最终尺寸调窗，
+        # 随后的 Textual Resize 若尺寸相同，必须识别为同一次变化，不能隔 200ms 再
+        # 调一次并让旧尺寸画面有机会露出来。
+        self._host_size: tuple[str, int, int] | None = None
         # resize 后抓帧冻结：主线程开启；抓帧线程判定稳定后解除并放行一帧。
         self._resize_hold_active = False
         self._resize_hold_until_min = 0.0
@@ -417,6 +421,8 @@ class EmbedPane(Widget):
         *,
         detail_until_frame: bool = False,
         resize_immediately: bool = True,
+        target_size: tuple[int, int] | None = None,
+        discard_stale_screen: bool = False,
     ) -> None:
         """把面板切到托管会话；首帧到达前立即展示可用内容或空白终端。
 
@@ -428,7 +434,14 @@ class EmbedPane(Widget):
         # 后台重扫和重复点击会再次选中同一个会话。已有画面时必须保持幂等，不能
         # 前台清空 _grid、后台却因 tmux 静止帧未变化而跳过解析，永久卡在“连接中…”。
         # 若尚无画面，则提升版本强制后台重新解析，兼顾从旧异常状态自愈。
-        reset_capture = self.session_name != name or self._grid is None
+        # 多格和单格之间切换时，旧画面（包括同一会话当前持有的画面）仍是旧列宽。
+        # 不能把它拉伸到新格里等待抓帧，否则会明显看到半宽内容贴在左边。此时强制
+        # 清屏且不回填磁盘/内存缓存，直接请求目标尺寸的新帧。
+        reset_capture = (
+            self.session_name != name
+            or self._grid is None
+            or discard_stale_screen
+        )
         if reset_capture:
             self._stash_screen()
             self._capture_generation += 1
@@ -440,7 +453,7 @@ class EmbedPane(Widget):
         self.dead = False
         self.detail_offset = 0
         self.history_offset = 0
-        if reset_capture:
+        if reset_capture and not discard_stale_screen:
             self._restore_cached_screen(name)
         if self._grid is not None:
             # 缓存命中：已有实时画面，对话回退用不上。
@@ -456,11 +469,12 @@ class EmbedPane(Widget):
             self._detail_stick_bottom = False
         self.invalidate_detail()
         channel = embed.open_channel(name, on_output=self._on_pane_output)
-        pane_w, pane_h = self._pane_size()
+        pane_w, pane_h = target_size or self._pane_size()
         # 过窄时不 resize：布局尚未稳定或用户把终端缩得很小时，避免 agent
         # 按几列硬换行写进 scrollback（恢复宽度后往上滚仍会看到窄条历史）。
         if resize_immediately and embed.should_resize_host(pane_w, pane_h):
             embed.resize(name, pane_w, pane_h)
+            self._host_size = (name, pane_w, pane_h)
         # 终端背景色注入：此后 pane 内 agent 的 OSC 11 查询由 tmux 按真实值应答，
         # 深/浅主题自动检测才不会瞎猜（tmux 默认不应答 pane 内的查询）。
         if channel is not None and self._osc_report and embed.supports_theme_report():
@@ -1315,6 +1329,14 @@ class EmbedPane(Widget):
             max(1, event.size.width),
             max(1, event.size.height),
         )
+        if self._host_size == (name, *self._pending_tmux_size):
+            # 分栏切换已按预测的最终格尺寸调过终端；本次 Resize 只是布局落定的回报。
+            # 清掉旧防抖任务，避免 200ms 后的重复 resize 与无意义抓帧冻结。
+            self._pending_tmux_size = None
+            if self._resize_tmux_timer is not None:
+                self._resize_tmux_timer.stop()
+                self._resize_tmux_timer = None
+            return
         if self._resize_tmux_timer is not None:
             self._resize_tmux_timer.stop()
         self._resize_tmux_timer = self.set_timer(
@@ -1333,6 +1355,7 @@ class EmbedPane(Widget):
         if not embed.should_resize_host(size[0], size[1]):
             return
         embed.resize(name, size[0], size[1])
+        self._host_size = (name, size[0], size[1])
         # 已有直播画面时冻结抓帧显示：Cursor 等重排中间态不刷到右栏。
         if self._grid is not None:
             self._begin_resize_capture_hold()

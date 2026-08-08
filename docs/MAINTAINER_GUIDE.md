@@ -11,7 +11,7 @@
 - **标题生成的失败是带冷却的终态，不是“永远不再试”，也不是“下次启动立刻再试”**：调用失败、超时、不可解析/低价值/机器 slug、批量结果部分缺项，以及本机没有任何可用生成器时，都给受影响会话写入当前 `TITLE_CACHE_VERSION` 的 `generation_state=failed` 与 `failed_at`，保留本地兜底并立即清掉 `generating` 状态。冷却期内（默认 6 小时）同一缓存版本不再自动提交模型，避免瞬时故障反复排队花额度；冷却过期或历史失败条目缺少 `failed_at` 时允许再入队。提升缓存版本后失败标记也会自然失效。成功、失败和部分缺项都要逐批 `save_cache`，不能只保存成功项，否则缺项会永远重新排队。
 - 标题生成后端已抽象为 `titlegen.py` 的 `TitleGenerator`，覆盖与默认运行时注册表一致的五家：claude / codex / opencode / kimi / cursor。`titles.py` 只负责批量 prompt、JSON 解析和缓存，不感知具体 CLI；新增生成器只在 `titlegen.py` 加实现并注册进 `_GENERATORS`（候选集合与 `default_registry` 对齐），禁止在 `titles.py` 里写 `subprocess` 调用，也禁止 `titlegen` import `runtime/`。除非用户明确设置 `PICKUP_TITLE_GENERATOR`（旧名 `SC_TITLE_GENERATOR`）指定所用助手，自动模式不得设默认优先级；未设置 `PICKUP_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）时，标题生成必须继承对应助手的全局默认模型；该变量仅用于用户明确指定标题生成的模型。缓存与生成器无关，换生成器不重算已有成功标题；冷却期内也不绕过当前缓存版本的失败终态。
 - **真实冒烟时某家 CLI 因本机账号 / 模型列表刷新 / 网络失败，不算 pickup 缺陷**：验收口径是「该助手失败后，本批其余可用助手能顶上，且成功标题可解析」。例如本机 Codex 因模型管理器刷新超时失败、Claude/OpenCode/Cursor 仍能出标题，属于环境侧问题；不要为绕过某家账号限制去改变自动模式的平权轮转，除非用户明确选择固定某个助手。
-- 自产噪音会话的过滤，每个可能被生成器落盘的运行时扫描器都要有：Claude 用 `--no-session-persistence`、Codex 用 `--ephemeral` 尽量不落盘，扫描侧 `PROMPT_MARKER` 仍作兜底；OpenCode（`run --auto`）、Kimi（`-p`）、Cursor（`agent -p`）每次调用都会落盘，对应扫描器的 `PROMPT_MARKER` 过滤是必需项，漏掉会让标题生成会话刷屏列表。
+- 自产噪音会话的过滤，每个可能被生成器落盘的运行时扫描器都要有：Claude 用 `--no-session-persistence`、Codex 用 `--ephemeral` 尽量不落盘，扫描侧仍须按标题请求标记的**任意出现位置**兜底过滤；OpenCode 会把整段请求额外包一层引号，不能只判断开头。OpenCode（`run --auto`）、Kimi（`-p`）、Cursor（`agent -p`）每次调用都会落盘，同样必须过滤，漏掉会让标题生成会话刷屏列表。
 - **`titles.save_cache` 是原子写（临时文件 + `os.replace`），不是直接覆写**：后台标题生成进程逐批写、TUI 每约 1 秒轮询读同一份 `titles.json`；直接 `open(..., "w")` 覆写会被并发读到半截 JSON（`load_cache` 解析失败静默退回 `{}`，界面标题短暂回退临时兜底）。并行批次落盘时必须对共享 cache 字典加锁后再 `save_cache`。改这个函数前确认没有退回裸覆写。
 
 ## 标题生成进程

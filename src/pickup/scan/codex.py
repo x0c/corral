@@ -392,7 +392,9 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
     慢，实测是首屏卡顿主因之一（结果与逐次调用字节级一致）。
     """
     index = _load_index()
-    index_version = repr(file_signature(SESSION_INDEX))
+    # 新版记录把真实消息放进 response_item；提升解析缓存版本，让旧版误判为
+    # “新会话”的派生结果自动重读，而不必让用户手动清缓存。
+    index_version = repr((file_signature(SESSION_INDEX), "response-item-v2"))
     all_files = _find_all_session_files()
     live_ids = _live_session_ids()
 
@@ -436,7 +438,7 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         if not info["first_user_msg"] and info["fallback_title"] == "(无消息)":
             # 派生缓存可能来自更新前；让已有运行中空会话也立即获得可读标题。
             info["fallback_title"] = "Codex 新会话"
-        if info["first_user_msg"].startswith(titles.PROMPT_MARKER):
+        if titles.is_title_generation_prompt(info["first_user_msg"]):
             continue  # 后台标题生成自产的噪音会话,和 Claude 侧同一套 PROMPT_MARKER 过滤
         if is_ephemeral_agent_cwd(info["cwd"]):
             continue  # OpenConductor 管家等 /tmp/oc-manager-* 自动任务，目录复活会刷屏
