@@ -3076,7 +3076,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 area.sync_input_mask()
                 self.assertFalse(pane.input_masked)
 
-                area._handle_pane_focused(key)  # noqa: SLF001 模拟真实焦点事件抵达
+                self.assertTrue(area.focus_session_key(key, only_live=True))
+                await _wait_until(lambda: pane.has_focus)
+                await pilot.pause()
                 self.assertIsNone(area._input_claim_key)  # noqa: SLF001
                 self.assertFalse(pane.input_masked)
 
