@@ -274,9 +274,9 @@ class LayoutControllerMixin:
                 continue
             kname = session.get("keepalive_name")
             if kname:
-                entries.append(
-                    (session, str(kname), lambda s=session: self._render_detail(s)),
-                )
+                # 托管会话的首帧只能是实时画面或空白运行时底色。预览渲染器一旦
+                # 跟着这条数据流进入右栏，就可能在抓帧重排的空档闪现。
+                entries.append((session, str(kname), None))
                 continue
             entries.append((session, None, lambda s=session: self._render_detail(s)))
             if session.get("live"):

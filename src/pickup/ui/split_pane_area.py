@@ -229,7 +229,9 @@ class PaneCell(Vertical):
         self._on_hud_toggle = on_hud_toggle
         self._osc_report = osc_report
         self._title = title
-        self._detail_renderer = detail_renderer
+        # 活跃格不保存预览。即使调用方误把它传进来，抓帧切换/重排时也绝不能
+        # 回退到消息预览。
+        self._detail_renderer = None if spec.keepalive_name else detail_renderer
         self._input_masked = False
         self._pooled = False
 
@@ -730,16 +732,21 @@ class SplitPaneArea(Vertical):
         focus_key: str | None = None,
         focus_pane: bool = False,
     ) -> None:
-        """entries: (session, keepalive_name, detail_renderer)
+        """entries: (session, keepalive_name, detail_renderer)。
 
-        若 (session_key, keepalive_name) 有序身份与当前一致，只就地更新标题/
-        回退 renderer，禁止整排 remount（否则会清掉 live `_grid`，首帧前
-        静态回退会闪回对话开头）。
+        托管会话一律丢弃 detail_renderer；其首帧只能是运行时画面或空白底色。
+        若 (session_key, keepalive_name) 有序身份与当前一致，只就地更新标题，
+        禁止整排 remount（否则会清掉 live `_grid`）。
 
         `focus_pane`=True 表示调用方带着明确意图（回车打开 / 新建托管成功），
         此时把键盘焦点交给 `focus_key` 那一格；单纯的选择跟随不得传 True。
         """
         self.current_project = project
+        # 这是最后一道边界：调用方未来即使错传预览，也不能污染活跃格。
+        entries = [
+            (session, kname, None if kname else renderer)
+            for session, kname, renderer in entries
+        ]
         target_identity = [
             (make_session_key(session), kname) for session, kname, _ in entries
         ]
@@ -772,17 +779,17 @@ class SplitPaneArea(Vertical):
         focus_key: str | None = None,
         focus_pane: bool = False,
     ) -> None:
-        """同身份：更新 title / detail_renderer，保留 EmbedPane 的 live 画面。"""
+        """同身份：更新标题，并确保活跃格不残留静态预览。"""
         cells = self._cells()
-        for cell, (session, _kname, renderer) in zip(cells, entries, strict=False):
+        for cell, (session, kname, renderer) in zip(cells, entries, strict=False):
             cell.set_title(self._pane_title(session))
             pane = cell.embed_pane()
             if pane is None:
                 continue
-            if renderer is not None:
-                pane._detail_renderer = renderer  # noqa: SLF001
-                # 仅失效静态缓存；有 live grid 时 invalidate_detail 不会 refresh 盖住画面
-                pane.invalidate_detail()
+            # 就地更新是之前漏掉的路径：活跃格已有画面时看似不会用预览，但抓帧
+            # 被清空或重排的一个绘制周期仍会读到残留 renderer。
+            pane._detail_renderer = None if kname else renderer  # noqa: SLF001
+            pane.invalidate_detail()
         if focus_key:
             self._focus_key = focus_key
         elif self._panes:
@@ -822,7 +829,8 @@ class SplitPaneArea(Vertical):
                 if pane is not None and not p.keepalive_name:
                     renderer_fn = pane._detail_renderer  # noqa: SLF001
             rebuild.append((p, sess, renderer_fn))
-        rebuild.append((spec, session, renderer))
+        # add_hosted_pane 是另一条创建活跃格的入口，同样不准携带消息预览。
+        rebuild.append((spec, session, None))
         self._panes = [s for s, _, _ in rebuild]
         focus_key = key if focus else self._focus_key
         self._schedule_mount(rebuild, focus_key=focus_key, focus_pane=focus_pane)

@@ -804,7 +804,9 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(area.cells()[0].embed_pane(), pane)
                 self.assertIs(pane._grid, fake_grid)  # noqa: SLF001
                 self.assertEqual(pane._capture_generation, 7)  # noqa: SLF001
-                self.assertEqual(pane._detail_renderer(), "FALLBACK-UPDATED")  # noqa: SLF001
+                # 就地更新必须保留实时画面，但托管会话绝不能残留对话预览；
+                # 否则抓帧重排的空档会闪一下消息内容。
+                self.assertIsNone(pane._detail_renderer)  # noqa: SLF001
 
     async def test_hosted_registration_keeps_session_active_without_is_alive(self) -> None:
         """store.hosted 仍登记时，is_alive 假阴性不得把会话判为不活跃。"""
@@ -2499,7 +2501,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(pane.render().plain, "")
 
     async def test_active_pane_never_receives_a_message_preview_renderer(self) -> None:
-        """活跃会话切换只能进运行时画面，首帧前也不允许消息预览参与渲染。"""
+        """活跃会话的首次挂载和就地刷新都不能残留消息预览。"""
         sessions = [{
             "source": "claude", "id": "runtime-only", "short_id": "runtime-only",
             "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
@@ -2528,6 +2530,16 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(
                     lambda: len(app.screen.query_one(SplitPaneArea).cells()) == 1,
                 )
+                area = app.screen.query_one(SplitPaneArea)
+                pane = area.cells()[0].embed_pane()
+                self.assertIsNotNone(pane)
+                self.assertIsNone(pane._detail_renderer)
+                # 同一会话的列表刷新走就地更新，曾经正是这里把预览重新塞回活跃格。
+                area.show_hosted_group(
+                    "/tmp",
+                    [(sessions[0], "pickup-runtime-only", lambda: "仍不得闪现")],
+                )
+                self.assertIsNone(pane._detail_renderer)
         self.assertTrue(seen_fallbacks)
         self.assertTrue(all(fallback is None for fallback in seen_fallbacks))
 
