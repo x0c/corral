@@ -33,8 +33,6 @@ class CodexRuntime(BaseRuntime):
             argv=(
                 self.executable,
                 "resume",
-                "-c",
-                'model_reasoning_effort="high"',
                 *self.auto_approve_args,
                 str(session["id"]),
             ),
@@ -48,8 +46,6 @@ class CodexRuntime(BaseRuntime):
                 self.executable,
                 "exec",
                 "resume",
-                "-c",
-                'model_reasoning_effort="high"',
                 *self.auto_approve_args,
                 str(session["id"]),
                 instruction,
@@ -62,8 +58,6 @@ class CodexRuntime(BaseRuntime):
         return LaunchPlan(
             argv=(
                 self.executable,
-                "-c",
-                'model_reasoning_effort="high"',
                 *self.auto_approve_args,
                 "--add-dir",
                 history_dir,
@@ -76,8 +70,6 @@ class CodexRuntime(BaseRuntime):
         return LaunchPlan(
             argv=(
                 self.executable,
-                "-c",
-                'model_reasoning_effort="high"',
                 *self.auto_approve_args,
             ),
             cwd=usable_cwd(cwd),

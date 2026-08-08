@@ -45,7 +45,7 @@ if os.name != "nt":
     from textual.drivers import linux_driver
     from textual.drivers.linux_driver import LinuxDriver
 
-class TerminalThemeParser(XTermParser):
+    class TerminalThemeParser(XTermParser):
         """从 Textual 输入流中提取主题应答，其余输入原样交回框架。"""
 
         def __init__(self, debug: bool = False) -> None:

@@ -353,7 +353,7 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             plan.argv,
-            ("codex", "-c", 'model_reasoning_effort="high"', "--dangerously-bypass-approvals-and-sandbox"),
+            ("codex", "--dangerously-bypass-approvals-and-sandbox"),
         )
         self.assertEqual(plan.cwd, td)
 

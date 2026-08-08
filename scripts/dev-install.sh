@@ -32,7 +32,14 @@ entry_python() {
 install_editable() {
   local py="$1"
   echo "→ $py -m pip install --force-reinstall --no-deps -e $ROOT"
-  "$py" -m pip install --force-reinstall --no-deps -e "$ROOT"
+  if "$py" -m pip install --force-reinstall --no-deps -e "$ROOT"; then
+    return 0
+  fi
+
+  # Homebrew Python 遵循 PEP 668，拒绝直接写其受管理目录；用户目录仍会被该解释器优先加载，
+  # 因此改为安全地把开发副本装到当前用户，而不是让开发安装半途失败。
+  echo "检测到受管理的 Python，改装到当前用户目录…"
+  "$py" -m pip install --user --break-system-packages --force-reinstall --no-deps -e "$ROOT"
 }
 
 PY=""
