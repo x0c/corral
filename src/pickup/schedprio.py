@@ -10,6 +10,7 @@ User Initiated。Linux / Windows 做同语义的尽力而为（nice / 进程优�
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 # Apple sys/qos.h
@@ -23,6 +24,7 @@ _ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
 def boost_interactive() -> None:
     """TUI 主线程：用户正在看着、卡了就是界面冻住。"""
     if sys.platform == "darwin":
+        _darwin_restore_foreground_policy()
         _darwin_set_thread_qos(_QOS_USER_INTERACTIVE)
     elif sys.platform == "win32":
         _windows_set_process_above_normal()
@@ -46,6 +48,20 @@ def _darwin_set_thread_qos(qos_class: int) -> None:
         # relative_priority：0 是该类内最高；负值才降低。argtypes 会把 int 转成 c_uint32。
         lib.pthread_set_qos_class_self_np(qos_class, 0)
     except Exception:
+        return
+
+
+def _darwin_restore_foreground_policy() -> None:
+    """撤销遗留的后台让位标记，避免 TUI 被系统按后台任务调度。"""
+    try:
+        subprocess.run(
+            ["taskpolicy", "-B", "-p", str(os.getpid())],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=0.2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return
 
 

@@ -2162,6 +2162,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_pane_count_change_reuses_pool_without_remount(self) -> None:
         """2↔4 格切换必须复用格池控件，不得 remove/mount 已有格子。"""
         from pickup.split_layout import MAX_PANES
+        from pickup.ui.embed_pane import EmbedPane
 
         sessions = [
             {
@@ -2192,11 +2193,24 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 pool_before = area._pool_cells()  # noqa: SLF001
                 active_before = list(area.cells())
 
-                area.show_hosted_group(
-                    "/tmp",
-                    [(s, s["keepalive_name"], None) for s in sessions],
+                focus_calls: list[bool] = []
+                original_focus_session = EmbedPane.focus_session
+
+                def _record_focus(pane, *args, **kwargs):
+                    focus_calls.append(kwargs.get("resize_immediately", True))
+                    return original_focus_session(pane, *args, **kwargs)
+
+                with mock.patch.object(EmbedPane, "focus_session", new=_record_focus):
+                    area.show_hosted_group(
+                        "/tmp",
+                        [(s, s["keepalive_name"], None) for s in sessions],
+                    )
+                    await _wait_until(lambda: len(area.cells()) == MAX_PANES)
+                self.assertEqual(
+                    focus_calls,
+                    [False] * MAX_PANES,
+                    "格数变化时必须等新布局落定再同步托管终端尺寸",
                 )
-                await _wait_until(lambda: len(area.cells()) == MAX_PANES)
                 self.assertEqual(area._pool_cells(), pool_before)  # noqa: SLF001
                 self.assertIs(area.cells()[0], active_before[0])
                 self.assertIs(area.cells()[1], active_before[1])
@@ -2208,6 +2222,66 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: len(area.cells()) == 2)
                 self.assertEqual(area._pool_cells(), pool_before)  # noqa: SLF001
                 self.assertIs(area.cells()[0], active_before[0])
+
+    async def test_pane_count_change_resizes_only_after_final_layout(self) -> None:
+        """分屏格数变化不得先按旧宽度 resize、再按新宽度重设一次。"""
+        from pickup.split_layout import MAX_PANES
+
+        sessions = [
+            {
+                "source": "claude", "id": f"resize-{i}", "short_id": f"resize-{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"尺寸会话{i}",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": f"pickup-claude-resize-{i}",
+            }
+            for i in range(MAX_PANES)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=True)
+        resize_calls: list[tuple[str, int, int]] = []
+        with (
+            mock.patch("pickup.embed.open_channel", return_value=None),
+            mock.patch("pickup.embed.should_resize_host", return_value=True),
+            mock.patch(
+                "pickup.embed.resize",
+                side_effect=lambda name, width, height: resize_calls.append(
+                    (name, width, height)
+                ),
+            ),
+        ):
+            async with app.run_test(size=(160, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                area = app.screen.query_one(SplitPaneArea)
+                mock.patch.object(app.screen, "_follow_current_selection").start()
+                self.addCleanup(mock.patch.stopall)
+
+                area.show_hosted_group(
+                    "/tmp",
+                    [(s, s["keepalive_name"], None) for s in sessions[:2]],
+                )
+                await _wait_until(lambda: len(area.cells()) == 2)
+                await pilot.pause(delay=0.4)
+                resize_calls.clear()
+
+                area.show_hosted_group(
+                    "/tmp",
+                    [(s, s["keepalive_name"], None) for s in sessions],
+                )
+                await _wait_until(lambda: len(area.cells()) == MAX_PANES)
+                self.assertEqual(resize_calls, [], "布局落定前不得写入旧格宽")
+                await pilot.pause(delay=0.4)
+
+                expected = [
+                    (
+                        str(cell.spec.keepalive_name),
+                        cell.embed_pane().size.width,
+                        cell.embed_pane().size.height,
+                    )
+                    for cell in area.cells()
+                    if cell.embed_pane() is not None
+                ]
+                self.assertEqual(sorted(resize_calls), sorted(expected))
 
     async def test_browsing_existing_groups_persists_focus_not_composition(self) -> None:
         """浏览已有会话组只 set_focus，不得 set_group（会抬 updated_at 并整表写盘）。"""

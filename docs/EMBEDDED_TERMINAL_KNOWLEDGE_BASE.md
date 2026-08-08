@@ -295,6 +295,7 @@ stateDiagram-v2
 
 - `docs/MAINTAINER_GUIDE.md`：改、评审或排查内嵌面板、会话保活、控制通道、输入延迟、滚动、主题、IME、tmux 冒烟时联读；这是会话保活策略和真实踩坑的权威维护说明。
 - `docs/TERMINAL_UI_KNOWLEDGE_BASE.md`：涉及右栏与列表焦点、静态对话预览、界面事件路由时联读；该文档覆盖终端界面布局与交互边界，本知识库不重复其内容。**画在实时画面右上角的会话小窗也归那边**（浮层不参与抓帧与输入转发，只是盖在画面上；它盖住的区域滚轮到不了托管会话，这条约束写在那边的 §6）。
+- `docs/PERFORMANCE_KNOWLEDGE_BASE.md`：电脑忙时掉帧、调度优先级、fork 风暴、控制客户端过多、tmux 服务端 livelock、Textual/GIL 等「同类应用踩坑地图」与分诊顺序见该文；本知识库只管协议与交互语义，不重复那张表。
 - `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：涉及 embed-error 日志、事件落盘或托管画面异常排查时联读。
 - `AGENTS.md`：改动内嵌 / 保活 / 直启时先读，尤其是 tmux 硬依赖、旧 `SC_*` 兼容和 `selftest.sh` 验收要求。
 - `keepalive.py`：需要变更会话命名、环境注入、状态标注、pid 祖先链匹配或回收时联读实现与维护指南；本知识库仅说明内嵌实时终端如何复用其命名空间。

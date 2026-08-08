@@ -1021,6 +1021,53 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
         self.assertIsNotNone(info)
         self.assertEqual(info["first_user_msg"], "真实用户消息")
 
+    def test_build_session_info_reads_modern_response_item_messages(self) -> None:
+        """新版 Codex 将真实对话写入 response_item，不得误判为空会话。"""
+        with tempfile.TemporaryDirectory() as td:
+            uuid = "019efe42-6d51-7fb3-ad48-112a8eefa03d"
+            path = Path(td) / f"rollout-2026-06-25T18-10-26-{uuid}.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "timestamp": "2026-06-25T10:10:40.522Z",
+                        "type": "session_meta",
+                        "payload": {"id": uuid, "cwd": td},
+                    },
+                    {
+                        "timestamp": "2026-06-25T10:10:50.000Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "修复 Codex 会话标题"}],
+                        },
+                    },
+                    {
+                        "timestamp": "2026-06-25T10:11:10.000Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "正在排查"}],
+                        },
+                    },
+                ],
+            )
+
+            info = scan_codex._build_session_info(str(path), {})
+            conversation = scan_codex.load_conversation(str(path))
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info["first_user_msg"], "修复 Codex 会话标题")
+        self.assertEqual(info["fallback_title"], "修复 Codex 会话标题")
+        self.assertEqual(info["last_user_msg"], "修复 Codex 会话标题")
+        self.assertEqual(info["last_agent_msg"], "正在排查")
+        self.assertEqual(
+            [(message.role, message.text) for message in conversation],
+            [("user", "修复 Codex 会话标题"), ("assistant", "正在排查")],
+        )
+
     def test_entry_time_does_not_crash_when_payload_is_json_null(self) -> None:
         self.assertIsNone(scan_codex._entry_time({"payload": None}))
 

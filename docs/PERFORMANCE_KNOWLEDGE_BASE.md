@@ -2,16 +2,42 @@
 
 ## 什么时候读
 
-改、评审或排查启动、会话扫描、对话预览、内嵌终端渲染、缓存、原生扩展、安装包或发布流水线时先读本文；各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。
+改、评审、优化或排查启动、会话扫描、对话预览、内嵌终端渲染、缓存、原生扩展、安装包或发布流水线时先读本文；**排查「电脑忙时 pickup 卡、自身占用却不高」「同类会话管理 / 内嵌终端 TUI 的性能坑」时也读**（见「系统高负载下的调度优先级」与「同类应用踩坑地图」）。各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。
 
 ## 系统高负载下的调度优先级（为什么「自己不重却卡」）
 
 用户常见体感：电脑 CPU 已经被浏览器 / IDE 打满时，pickup 占用并不高，界面却开始掉帧、按键迟钝。根因通常不是业务逻辑变慢，而是**调度等级偏低**：
 
-- **macOS**：未标注 QoS 的线程落在 Default。系统忙时会优先给 User Interactive / User Initiated 的进程（图形 App、前台 IDE）CPU，CLI 默认可被饿死。
-- **对策**（`schedprio.py`，进入 TUI 时生效）：主线程 `boost_interactive()` → User Interactive；抓帧 / 控制通道读 / 鼠标发送线程 `boost_ui_worker()` → User Initiated。Linux 尽力 `nice(-5)`，Windows 尽力抬到 Above Normal。调用失败一律忽略，不得挡启动。
+- **macOS**：未标注 QoS 的线程落在 Default（图形 App 主线程才是 User Interactive）。系统忙时会优先给更高档的进程 CPU，CLI TUI 可被饿死。业界同构事故：键盘重映射工具 kanata 在编译打满 CPU 时按键处理被饿 100–275ms，系统误判长按并自动连发；修法是把处理线程抬到 `QOS_CLASS_USER_INTERACTIVE`（[kanata#2040](https://github.com/jtroo/kanata/pull/2040)）。Apple 官方也写明：界面相关工作要用 User Interactive，否则界面会像冻住（[Energy Efficiency Guide](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/power_efficiency_guidelines_osx/PrioritizeWorkAtTheTaskLevel.html)）。
+- **Apple Silicon**：QoS 还会影响更偏向性能核还是能效核。Background 档会被钉在能效核；交互档优先性能核。别把「慢」一两个原因混为一谈——单线程算法慢 ≠ 被钉到能效核（见 Eclectic Light 对命令行工具与 QoS 的辨析）。
+- **对策**（`schedprio.py`，v0.24.72 起进入 TUI 时生效）：启动时先撤销遗留的 macOS 后台让位标记，再把主线程提到 User Interactive；抓帧 / 控制通道读 / 鼠标发送线程使用 User Initiated。Linux 尽力 `nice(-5)`，Windows 尽力抬到 Above Normal。调用失败一律忽略，不得挡启动。
+- **前台会话不得被后台治理误伤**：pickup 正在展示或接收输入的界面及其托管助手属于用户正在等待结果的工作，绝不能被本机性能治理工具标记为后台让位；工具必须识别并拒绝此类目标。排查“列表不慢、但首帧或输入很卡”时，先检查会话及其运行时是否被后台降级，再归因到扫描或 Cursor 重绘。
 - **不要**给标题生成守护进程、纯扫描后台也抬到 Interactive——那些可以让路；只保「用户正在看的界面」。
-- 这解决的是**被别人抢走时间片**，不是替代抓帧节流 / 原生解析等业务侧优化。若空闲时也卡，仍按本文其它节排查。
+- **优先级反转**：界面线程若同步等更低 QoS 的辅助进程（如未抬档的 tmux 子进程），高负载下仍可能一起卡。macOS 对 Mach IPC 有 QoS override，但对「fork 出去的普通 tmux 客户端」不保证同等提权——因此热路径应走常驻控制通道，并给喂画面的线程也抬档。
+- 这解决的是**被别人抢走时间片**，不是替代抓帧节流 / 原生解析等业务侧优化。若空闲时也卡，仍按本文其它节与下方踩坑地图排查。
+
+## 同类应用踩坑地图（会话管理 / 内嵌终端 TUI）
+
+与 pickup 同形态的产品（多会话列表 + 内嵌实时终端 + 常驻 tmux）在公开仓库里反复踩过这些坑。评审新优化或排查「卡 / 烫 / 风暴」时按图索骥；**已在 pickup 落地的用「已做」标出，其余是警戒线**。
+
+| 坑类 | 典型症状 | 业界证据 / 教训 | pickup 现状 |
+|------|----------|-----------------|-------------|
+| 调度档偏低 | 系统忙时掉帧、自身 CPU 不高 | kanata 抬 QoS；Apple QoS 指南 | **已做** `schedprio`（v0.24.72） |
+| 每会话 fork 风暴 | 自身 100%+ CPU，大量短命 `tmux` 子进程 | [agent-deck#1728](https://github.com/asheshgoplani/agent-deck/issues/1728)：~60 会话扫状态时 `capture-pane`/`show-environment` 狂 fork；修复含**否定缓存**、超时、合并刷新 | **已做** 控制通道优先 + 存活证据缓存 + 通道池 LRU；禁止在热路径无 `max_age` 判活 |
+| 控制客户端过多 | 启动风暴、tmux 服务端背压、交互抢焦 | agent-deck：多实例 × 全会话常驻 `tmux -C` 会挤爆单线程服务端；改为「焦点 / 最近查看」小 LRU 才挂活管 | **已做** `_MAX_CHANNELS`（须 > `MAX_PANES`）；多开窗口时仍要注意别再开「全会话挂管」 |
+| 无截止的周期命令 | 系统卡死后客户端挂死，恢复后越扫越疯 | agent-deck：每个节奏性 `tmux` 调用必须带 deadline，否则卡住的客户端占满 CPU 且无法自愈 | 热路径多有 timeout；**新增周期轮询时必须带超时，禁止裸 `subprocess` 无限等** |
+| 刷新积压不合并 | 卡顿结束后突然狂刷 | agent-deck#1728 假设：stall 期间定时器积压，恢复后背靠背跑完 | 选择跟随有节流；**新定时器必须「超时则丢旧 tick」，禁止串行还债** |
+| tmux 服务端 livelock | 整个 socket 无响应，要 `kill -9` | [tmux#5024](https://github.com/tmux/tmux/issues/5024)：控制模式高压 + 宽字符/emoji 可卡在重绘；Unicode 重的 pane 更危险 | 少开多余 `-C` 客户端；升级本机 tmux；异常时查是否服务端 100% 而非 pickup |
+| Textual / Python GIL | 界面冻、后台其实在算 | Textual 官方：CPU 活必须 `@work(thread=True)`，UI 更新走 `call_from_thread`；后台线程过重仍会抢 GIL | 抓帧已在后台线程；**禁止**在消息处理里同步重解析 / 全表刷新 |
+| 把后台活抬到 Interactive | 耗电、挤掉真正交互 | Apple：只有真正交互才用最高档 | 标题守护 / 全量扫描保持默认或更低 |
+
+**排查分诊（先问「空闲也卡还是只忙时卡」）**：
+
+1. **只在电脑忙时卡、pickup 自身占用低** → 先信调度档（本机可看线程 QoS；已装 ≥0.24.72 仍如此则查是否卡在等 tmux / 磁盘）。
+2. **空闲也卡或自身 CPU 高** → 查 fork 数（是否狂出 `tmux`）、控制客户端个数、抓帧是否退回外部 fork、Textual 主线程是否被同步活堵住。
+3. **连 `tmux ls` 都卡住** → 怀疑 tmux 服务端本身（livelock），别只在 pickup 里加日志。
+
+更细的控制通道协议与「禁止主线程调 tmux」见 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md`。
 
 ## 性能架构
 
@@ -68,6 +94,7 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 
 - **浏览已有组只 `set_focus`**（`layout_controller._show_session_group`）：目标 keys 与 store 里该组成员一致时走 `_persist_split_focus()`；只有组合真的变了（加格/关格/多选开屏等）才 `_persist_split_composition()` → `set_group`。禁止浏览路径抬 `updated_at`。
 - **固定格池**（`SplitPaneArea`）：首次挂满 `MAX_PANES` 个 `PaneCell`，多余格 `-spare` 隐藏；跨组 2↔4 只 rebind/显隐，关格 `park()` 回收进池，不 `remove`。`cells()` / `hosted_identity()` / `ordered_session_keys()` 只报绑定中的可见格。可见最左格用 `-leading` 去左边距（闲置格仍占 DOM，不能靠 `:first-child`）。
+- **格数改变时必须等布局落定后才重设托管终端尺寸**：单格切多格、或多格切单格时，`rebind` 发生的瞬间旧格仍保留旧宽度；若立刻按它 resize，随后布局完成又会按新宽度 resize 一次，用户会直接看到助手画面短暂由宽变窄（或反向跳变）。这条路径须跳过首次即时 resize，交给本格已落定尺寸后的 `Resize` 防抖链只写最终尺寸；**只有格数不变的普通会话切换**才保留即时 resize，不能为消除跳变而给每次切换都增加等待。
 - **屏缓存扩到 `MAX_PANES * 4`（16）**：覆盖约四个最近分组。冷切换默认空白画布等首帧（`focus_session` 不跑 Markdown 回退）；`detail_until_frame=True` 保留旧回退行为给测试/特例。跟随稳定后后台 `prefetch_cached_screen` 预抓当前组缺缓存的托管帧。**预抓必须先 `parse_screen_rows` 再入缓存**：`embed.capture` 返回的是 ANSI 原文，直接塞进 `_screen_cache` 会在恢复时对字符串逐字符 `_row_to_strip`，真机直接 `AttributeError: 'str' object has no attribute 'wide_cont'` 崩掉（v0.24.61）。`_cache_screen` / `_take_cached_screen` 也要拒绝非行网格脏数据。
 - **格池已满时同步改绑**（`_schedule_mount`）：无需新建控件时直接 `_apply_pane_bindings`，少一帧旧画面停顿。
 
@@ -155,9 +182,4 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 ```bash
 python3 scripts/benchmark.py
 PICKUP_NATIVE=0 python3 scripts/benchmark.py
-python3 -c "import time; from pickup.runtime import default_registry; r=default_registry(); t=time.perf_counter(); r.scan_all(50); print(f'{(time.perf_counter()-t)*1000:.0f}ms')"
-```
-
-还必须完成完整单测、`selftest.sh`、至少 5 条真实会话抽样和 TUI 截图验收。原生 ANSI 解析必须与 Python 参考实现差分一致，覆盖索引色、真彩、宽字符、emoji、组合字符和非 SGR 转义序列。
-
-基准应同时保留冷缓存与暖缓存数据；不把共享机器瞬时负载造成的单次抖动写成稳定结论。回归判断优先看多次中位数，并保留原生关闭时的对照组。
+python3 -c "import time; from pickup.runtime import default_registry; r

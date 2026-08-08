@@ -70,9 +70,9 @@ bottom-right corner; clicking it runs the same install command your install chan
 (`brew upgrade pickup` or `pip install --upgrade`), then offers to restart `pickup`. You can also
 trigger this manually any time with `pickup update`, or dismiss the notice for the day.
 
-Optional title generation launches one of your locally installed agent CLIs (`claude` or `codex`; auto-detected, or pinned via `PICKUP_TITLE_GENERATOR`, legacy name `SC_TITLE_GENERATOR`). That command sends short session excerpts to the corresponding model provider under your own account and credentials. If the command is missing or fails, the tool keeps using local fallback titles.
+Optional title generation distributes batches among locally installed Claude, Codex, OpenCode, Kimi, and Cursor CLIs (or honors an explicit `PICKUP_TITLE_GENERATOR`, with legacy `SC_TITLE_GENERATOR` still accepted). That command sends short session excerpts to the corresponding model provider under your own account and credentials. If one assistant fails, another available assistant takes over that batch; if all fail, the tool keeps using local fallback titles.
 
-Title generation uses each supported CLI's non-persistent one-shot mode (`claude --no-session-persistence` or `codex exec --ephemeral`), so these derived requests are not saved as Claude Code or Codex CLI sessions.
+Title generation uses non-persistent one-shot modes for Claude and Codex, so those derived requests are not saved as their sessions. OpenCode, Kimi, and Cursor may retain their own derived request, but pickup marks it and excludes it from the user session list.
 
 Failed, timed-out, invalid, or incomplete title results are recorded locally for the current cache
 version. Later launches do not automatically submit those sessions again, preventing repeated quota

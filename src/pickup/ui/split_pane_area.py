@@ -289,6 +289,7 @@ class PaneCell(Vertical):
         *,
         title: str,
         detail_renderer: Callable[[], Text | str] | None,
+        resize_after_layout: bool = False,
     ) -> None:
         """把这一格改绑到另一个会话，不销毁重建。
 
@@ -303,9 +304,13 @@ class PaneCell(Vertical):
         self._detail_renderer = detail_renderer
         self.set_pooled(False)
         self.set_title(title)
-        self._start_session()
+        # 单格与多格之间切换时，此刻仍拿得到旧格宽；立刻写回托管终端，随后
+        # Textual 布局完成又按新宽度写一次，就会让助手画面可见地先宽后窄（反向同理）。
+        # 等布局发出本格 Resize 后再同步尺寸，只写最终宽度；同样格数的改绑仍立即
+        # 同步，保留普通会话切换的响应速度。
+        self._start_session(resize_immediately=not resize_after_layout)
 
-    def _start_session(self) -> None:
+    def _start_session(self, *, resize_immediately: bool = True) -> None:
         pane = self.embed_pane()
         if pane is None:
             return
@@ -313,6 +318,7 @@ class PaneCell(Vertical):
             pane.focus_session(
                 self.spec.keepalive_name,
                 self._detail_renderer,
+                resize_immediately=resize_immediately,
             )
             # 画面刚接上就要按当前焦点决定压不压暗，别等下一次焦点变化。
             if self._on_sync_mask is not None:
@@ -1032,11 +1038,17 @@ class SplitPaneArea(Vertical):
         serial = self._focus_intent_serial
         self._mount_pending = max(0, self._mount_pending - 1)
         pool = self._pool_cells()
+        visible_before = sum(not cell._pooled for cell in pool)  # noqa: SLF001
         # 先把要用的前缀解冻并改绑，其余收回池里。
         self._panes = [s for s, _, _ in entries]
         for index, (spec, session, renderer) in enumerate(entries):
             title = self._pane_title(session)
-            pool[index].rebind(spec, title=title, detail_renderer=renderer)
+            pool[index].rebind(
+                spec,
+                title=title,
+                detail_renderer=renderer,
+                resize_after_layout=visible_before != len(entries),
+            )
         for spare in pool[len(entries):]:
             if not spare._pooled:  # noqa: SLF001
                 spare.park()

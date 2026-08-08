@@ -7,10 +7,10 @@
 - Claude Code 自带 `aiTitle` 不稳定，只能作为临时兜底的最后来源，不能绕过生成缓存直接展示。
 - 无缓存时必须先生成本地短标题，再交给后台模型优化。首屏不能依赖后台生成器（`claude`/`codex` 无头调用）是否及时返回。
 - Claude 标题生成必须使用 `--no-session-persistence`，从源头禁止一次性标题请求写入 Claude 会话历史；扫描侧仍须过滤历史版本已落盘的自产标题 prompt 和只有低价值消息的记录，避免旧噪音反过来进入列表。
-- 标题生成以 5 条会话为一批。第一批先**串行**探测候选生成器：首选失败、超时或返回无有效标题时才试备用，避免坏首选在并发 worker 启动后重复消耗 5 次；选出健康生成器后，其余批次最多 5 路并发。每次后端调用仍以 90 秒为上限，当前首选 + 备用两级在第一批全部失败时最坏约 180 秒，但只发生一次串行健康探测；后续不会再探测已失败候选。每批完成立即原子写缓存，界面可陆续显示结果。生成出的有效标题一旦写入缓存即为该会话的固定标题，后续对话内容增长不能让它再次排队。会话只有“在吗”等无任务信息时保留本地标题且不调用模型。
+- 标题生成以 5 条会话为一批，最多 5 路并发。自动模式每次从随机助手开始，批次间依次轮转，让本机可用的 Claude、Codex、OpenCode、Kimi、Cursor 平均分担；轮到的助手失败、超时或返回无有效标题时，仅在该批依次交给其余助手接管，并且后续批次不再重复调用已失败的助手。每次后端调用仍以 90 秒为上限。每批完成立即原子写缓存，界面可陆续显示结果。生成出的有效标题一旦写入缓存即为该会话的固定标题，后续对话内容增长不能让它再次排队。会话只有“在吗”等无任务信息时保留本地标题且不调用模型。
 - **标题生成的失败是带冷却的终态，不是“永远不再试”，也不是“下次启动立刻再试”**：调用失败、超时、不可解析/低价值/机器 slug、批量结果部分缺项，以及本机没有任何可用生成器时，都给受影响会话写入当前 `TITLE_CACHE_VERSION` 的 `generation_state=failed` 与 `failed_at`，保留本地兜底并立即清掉 `generating` 状态。冷却期内（默认 6 小时）同一缓存版本不再自动提交模型，避免瞬时故障反复排队花额度；冷却过期或历史失败条目缺少 `failed_at` 时允许再入队。提升缓存版本后失败标记也会自然失效。成功、失败和部分缺项都要逐批 `save_cache`，不能只保存成功项，否则缺项会永远重新排队。
-- 标题生成后端已抽象为 `titlegen.py` 的 `TitleGenerator`，覆盖与默认运行时注册表一致的五家：claude / codex / opencode / kimi / cursor。`titles.py` 只负责批量 prompt、JSON 解析和缓存，不感知具体 CLI；新增生成器只在 `titlegen.py` 加实现并注册进 `_GENERATORS`（顺序与 `default_registry` 对齐），禁止在 `titles.py` 里写 `subprocess` 调用，也禁止 `titlegen` import `runtime/`。选择顺序：`PICKUP_TITLE_GENERATOR`（旧名 `SC_TITLE_GENERATOR`）可指定首选 → 其余按注册顺序取本机已安装候选；第一批串行探测，坏首选只消耗一次；后续批次首选中途失效时继续按同一顺序自动切换。`PICKUP_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）覆盖模型。缓存与生成器无关，换生成器不重算已有成功标题；冷却期内也不绕过当前缓存版本的失败终态。
-- **真实冒烟时某家 CLI 因本机账号 / 模型列表刷新 / 网络失败，不算 pickup 缺陷**：验收口径是「该后端失败后候选顺序里的下一家能顶上，且成功标题可解析」。例如本机 Codex 因模型管理器刷新超时失败、Claude/OpenCode/Cursor 仍能出标题，属于环境侧问题；不要为绕过某家账号限制去改 pickup 的默认模型选择，除非产品明确要锁便宜模型。
+- 标题生成后端已抽象为 `titlegen.py` 的 `TitleGenerator`，覆盖与默认运行时注册表一致的五家：claude / codex / opencode / kimi / cursor。`titles.py` 只负责批量 prompt、JSON 解析和缓存，不感知具体 CLI；新增生成器只在 `titlegen.py` 加实现并注册进 `_GENERATORS`（候选集合与 `default_registry` 对齐），禁止在 `titles.py` 里写 `subprocess` 调用，也禁止 `titlegen` import `runtime/`。除非用户明确设置 `PICKUP_TITLE_GENERATOR`（旧名 `SC_TITLE_GENERATOR`）指定所用助手，自动模式不得设默认优先级；未设置 `PICKUP_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）时，标题生成必须继承对应助手的全局默认模型；该变量仅用于用户明确指定标题生成的模型。缓存与生成器无关，换生成器不重算已有成功标题；冷却期内也不绕过当前缓存版本的失败终态。
+- **真实冒烟时某家 CLI 因本机账号 / 模型列表刷新 / 网络失败，不算 pickup 缺陷**：验收口径是「该助手失败后，本批其余可用助手能顶上，且成功标题可解析」。例如本机 Codex 因模型管理器刷新超时失败、Claude/OpenCode/Cursor 仍能出标题，属于环境侧问题；不要为绕过某家账号限制去改变自动模式的平权轮转，除非用户明确选择固定某个助手。
 - 自产噪音会话的过滤，每个可能被生成器落盘的运行时扫描器都要有：Claude 用 `--no-session-persistence`、Codex 用 `--ephemeral` 尽量不落盘，扫描侧 `PROMPT_MARKER` 仍作兜底；OpenCode（`run --auto`）、Kimi（`-p`）、Cursor（`agent -p`）每次调用都会落盘，对应扫描器的 `PROMPT_MARKER` 过滤是必需项，漏掉会让标题生成会话刷屏列表。
 - **`titles.save_cache` 是原子写（临时文件 + `os.replace`），不是直接覆写**：后台标题生成进程逐批写、TUI 每约 1 秒轮询读同一份 `titles.json`；直接 `open(..., "w")` 覆写会被并发读到半截 JSON（`load_cache` 解析失败静默退回 `{}`，界面标题短暂回退临时兜底）。并行批次落盘时必须对共享 cache 字典加锁后再 `save_cache`。改这个函数前确认没有退回裸覆写。
 
@@ -49,6 +49,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 
 ## Codex 扫描
 
+- **新版 Codex 的对话不再只写旧事件流。** 真实用户输入和助手答复也会出现在响应记录中，首轮还会带入大段运行环境说明；扫描、标题摘录和右栏预览都必须同时读取两种形态，并跳过这类注入说明，继续找到真实任务文本。否则有真实工作的会话会被误判为「Codex 新会话」，标题服务把空摘录缓存成「新会话 / 空会话」后不再重试。此类泛标题必须视为无效缓存，恢复真实摘录后重新补齐；回归同时覆盖列表项、完整预览和旧缓存重试。
 - **Codex 自身的多智能体（swarm/subagent）任务会把每个子代理线程各自写成一份独立的 `rollout-*.jsonl` 文件，扫描时必须过滤掉，不能当作用户发起的顶层会话列出。** 真实故障：一个真实会话（`session_meta.payload.thread_source` 缺失或为 `"user"`）执行多智能体任务时，会派生出好几个子代理线程（`thread_source: "subagent"`，`forked_from_id`/`parent_thread_id` 指向父会话，`agent_nickname` 是 Codex 随机取的代号），这些子代理线程 fork 时继承了父会话开头的历史，因此它们文件里"第一条用户消息"（也就是列表兜底标题的来源）和父会话完全相同。`_find_all_session_files` 对 `~/.codex/sessions/` 下所有 `.jsonl` 一视同仁地扫描，没读 `thread_source` 字段时，这些子代理文件会和父会话一起出现在列表里，表现为同一段任务描述反复出现好几条、目录和时间都很接近，用户会误以为是"同一个会话被重复列出"的 bug，实际是把 Codex 内部子任务线程误当成了独立会话。修法是在 `_build_session_info` 读 `session_meta` 时顺带取 `payload.get("thread_source")`，`scan_sessions` 里 `thread_source == "subagent"` 直接 `continue` 跳过，和过滤空会话、死 cwd 会话放在同一批前置检查里。
 - **判活（`_live_session_ids`）曾对每个存活 codex 进程各发一次 `lsof -p`，是首屏超过 1s 硬指标的真实根因**：本机实测单次 `lsof -p <pid>` 耗时约 500ms，2 个 codex 进程就吃掉近 1 秒，进程越多越慢。改为按平台分流：Linux 直接遍历 `/proc/<pid>/fd` 逐个 `os.readlink` 找 `rollout-` 文件（近乎零成本，不 fork 子进程）；macOS 等无 `/proc` 的平台改为一次合并调用 `lsof -n -P -Fpn -p <pid1>,<pid2>,...` 覆盖全部候选 pid（`-n -P` 跳过 DNS/端口名解析——这是原实现单次 `lsof -p` 慢的另一诱因；`-Fpn` 只输出 `p<pid>`/`n<name>` 两类字段行，逐行按 `p` 切换当前 pid、遇到含 `rollout-` 的 `n` 行才抽 UUID）。两条路径都不判断 fd 是读还是写模式，与改动前 lsof 实现的实际行为一致（旧实现同样没有过滤 `w` 模式，只要 `rollout-` 出现在 lsof 输出里就算命中）。
 
@@ -471,11 +472,13 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 
 **推送 / 发版门禁 + 矩阵 fail-fast（2026-08-07）**：单靠文档不够——Agent 仍可能漏跑验证就推。落地三道：
 
-1. **`.githooks/pre-push`**（`bash scripts/install-git-hooks.sh` 装到 `.git/hooks`）：日常推送只跑 `ci-test.py --lint-only`；提交说明以 `release:` 开头或推 `v*` 标签时跑完整 `ci-test.py`。应急跳过：`PICKUP_SKIP_PUSH_GATE=1` 或 `git push --no-verify`（应极少用）。
+1. **`.githooks/pre-push`**（`bash scripts/install-git-hooks.sh` 装到 Git 实际会执行的 hooks 目录）：日常推送只跑 `ci-test.py --lint-only`；提交说明以 `release:` 开头或推 `v*` 标签时跑完整 `ci-test.py`。应急跳过：`PICKUP_SKIP_PUSH_GATE=1` 或 `git push --no-verify`（应极少用）。
+   - **共享 `core.hooksPath`（如 `~/.git-hooks`）**：Git 会忽略各仓 `.git/hooks`。安装脚本必须在共享目录写**通用分发器**（仅当当前仓有可执行的 `.githooks/pre-push` 才转调），禁止把本仓专用脚本直接盖到全局 hooks——否则别的仓库推送也会跑 pickup 检查。若目标已是指向本仓脚本的软链，**先 `rm` 再写分发器**；`cat >` 会顺着软链把真脚本盖掉（已踩过一次）。
+   - **判定「是否全量门禁」**：只看「相对远端尚未推送」的提交（`git log … --not --remotes`）。新分支首次推送若用裸 `git log $sha`，会扫到历史上任意 `release:` 提交，误跑全量——不要改回。
 2. **`publish-release.sh` 开头**再跑完整 `ci-test.py`，挡住「推送被绕过、收尾脚本仍把配方指到未验证版本」；`PICKUP_SKIP_CI_GATE=1` 仅应急。
 3. **`test.yml` 矩阵 `fail-fast: true`**：一路挂了就取消其余作业，少收重复失败邮件、少占免费并发。排查「只在某一 OS / Python 挂」时可临时改 `false` 看全貌，修完改回。
 
-仍无法保证永远零邮件（平台专属挂死、偶发竞态、GitHub 自身异常），但「本机以为绿、一推整矩阵 Lint 红」这类应被门禁拦在推送前。
+仍无法保证永远零邮件（平台专属挂死、偶发竞态、GitHub 自身异常），但「本机以为绿、一推整矩阵 Lint 红」这类应被门禁拦在推送前。克隆后若尚未装 hook，先 `bash scripts/install-git-hooks.sh`。
 
 
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：

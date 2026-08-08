@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -197,6 +198,12 @@ def _is_low_value_title(text: str | None) -> bool:
         "requestinterruptedbyuser",
         "continuefromwhereyouleftoff",
         "noresponserequested",
+        "新会话",
+        "空会话",
+        "codex新会话",
+        "codex空会话",
+        "newsession",
+        "emptysession",
     }:
         return True
     if compact.startswith(("你测试了吗", "测试了吗", "快点继续")):
@@ -392,8 +399,8 @@ def refresh_titles(
     内部按 _BATCH_SIZE 拆批，并以最多 _MAX_PARALLEL_BATCHES 批并行生成。
     例如 25 条待生成会话会启动 5 个并行任务，每个任务处理 5 条；超过
     25 条时，完成的任务会继续领取下一批，避免同时启动过多模型进程。
-    generator 为 None 时按环境自动选择;首选生成器运行失败时自动切换到下一个
-    已安装生成器。本机没有任何可用 CLI 时返回空增量。
+    generator 为 None 时把已安装助手视为平等候选：每批从随机起点轮转，某个
+    助手运行失败时立即依次切到其余候选。本机没有任何可用 CLI 时返回空增量。
     """
     if not sessions:
         return {}
@@ -436,42 +443,14 @@ def refresh_titles(
             # 已经结束，下一次启动还会把同一批会话重新提交给模型。
             save_cache(cache)
 
-    # 先用第一批串行探测候选生成器。旧实现直接启动 5 个 worker，坏首选会在
-    # 熔断标记写入前被并发调用 5 次；现在每个坏候选最多只消耗一次探测调用。
-    first_chunk = chunks[0]
-    selected_generator = None
-    first_raw: dict[str, str] = {}
-    for candidate in generators:
-        try:
-            raw = generate_titles_batch(first_chunk, candidate)
-        except Exception:
-            raw = {}
-        if usable_results(first_chunk, raw):
-            selected_generator = candidate
-            first_raw = raw
-            break
-    persist_chunk(first_chunk, first_raw)
+    # 默认策略不偏向任何助手：每轮从随机起点开始，再逐批轮转，足量批次会均分给
+    # 所有可用助手；单批失败只影响本批，立刻由余下候选接手。
+    start = secrets.randbelow(len(generators)) if generator is None else 0
 
-    remaining_chunks = chunks[1:]
-    if not remaining_chunks:
-        return merged
-
-    if selected_generator is None:
-        # 所有候选都探测失败时，剩余批次无需继续发起同样注定失败的模型请求，
-        # 但仍要写失败终态，防止后续启动重复排队和永久转圈。
-        for chunk in remaining_chunks:
-            persist_chunk(chunk, {})
-        return merged
-
-    # 首选之后的降级顺序：健康首选先试，失败再按 available_generators 顺序切换。
-    failover_order = (
-        selected_generator,
-        *(generator for generator in generators if generator is not selected_generator),
-    )
-
-    def generate_chunk(chunk: list[dict]) -> dict[str, str]:
-        """单批生成；首选中途失效时自动切换到下一个可用生成器。"""
-        for candidate in failover_order:
+    def generate_chunk(chunk: list[dict], offset: int) -> dict[str, str]:
+        """单批生成；平权轮转选首个候选，失败时遍历其他候选。"""
+        ordered = generators[offset:] + generators[:offset]
+        for candidate in ordered:
             try:
                 raw = generate_titles_batch(chunk, candidate)
             except Exception:
@@ -480,9 +459,11 @@ def refresh_titles(
                 return raw
         return {}
 
-    # 首批已确认至少有一个生成器健康；其余批次继续最多 5 路并发。
-    with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_BATCHES, len(remaining_chunks))) as pool:
-        futures = {pool.submit(generate_chunk, chunk): chunk for chunk in remaining_chunks}
+    with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_BATCHES, len(chunks))) as pool:
+        futures = {
+            pool.submit(generate_chunk, chunk, (start + index) % len(generators)): chunk
+            for index, chunk in enumerate(chunks)
+        }
         for future in as_completed(futures):
             persist_chunk(futures[future], future.result())
 

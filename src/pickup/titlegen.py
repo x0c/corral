@@ -6,12 +6,13 @@
 结果解析和缓存;本模块的每个生成器只负责一次无头 CLI 调用并交回原始文本。
 
 覆盖范围与 pickup 默认运行时注册表对齐：claude / codex / opencode / kimi / cursor。
-本机装了哪个助手，标题生成就可以用哪个；首选失败时按优先级自动切换到下一个。
+本机装了哪个助手，标题生成就可以用哪个；每批随机起点轮转，失败时自动切换到其余可用助手。
 
 选择策略:
 - 环境变量 PICKUP_TITLE_GENERATOR 显式指定首选（旧名 SC_TITLE_GENERATOR 仍生效）；
-- 未指定或指定的不可用时,按注册顺序取本机已安装的全部候选；
-- 环境变量 PICKUP_TITLE_MODEL 覆盖生成器默认模型（旧名 SC_TITLE_MODEL 仍生效）。
+- 未指定或指定的不可用时,返回本机已安装的全部候选；实际批次由 titles.py 随机起点轮转，不设默认优先级；
+- 环境变量 PICKUP_TITLE_MODEL 显式指定标题生成使用的模型（旧名 SC_TITLE_MODEL 仍生效）；
+  未设置时继承各助手自己的全局默认。
 """
 
 from __future__ import annotations
@@ -53,13 +54,12 @@ class TitleGenerator(ABC):
 
     id: str
     executable: str
-    default_model: str | None = None
 
     def is_available(self) -> bool:
         return shutil.which(self.executable) is not None
 
     def _model(self) -> str | None:
-        return _env(ENV_MODEL, LEGACY_ENV_MODEL) or self.default_model
+        return _env(ENV_MODEL, LEGACY_ENV_MODEL) or None
 
     @abstractmethod
     def generate(self, prompt: str, timeout: int) -> str | None:
@@ -69,20 +69,19 @@ class TitleGenerator(ABC):
 class ClaudeTitleGenerator(TitleGenerator):
     id = "claude"
     executable = "claude"
-    default_model = "haiku"  # 标题生成用最便宜的模型即可
 
     def generate(self, prompt: str, timeout: int) -> str | None:
         # 标题是一次性派生数据，不得写进 Claude 会话历史污染用户的真实会话列表。
-        return _run([
-            "claude", "-p", "--no-session-persistence",
-            "--model", self._model(),
-        ], prompt, timeout)
+        argv = ["claude", "-p", "--no-session-persistence"]
+        model = self._model()
+        if model:
+            argv += ["--model", model]
+        return _run(argv, prompt, timeout)
 
 
 class CodexTitleGenerator(TitleGenerator):
     id = "codex"
     executable = "codex"
-    default_model = None  # 不带 -m,用用户 codex 配置里的默认模型
 
     def generate(self, prompt: str, timeout: int) -> str | None:
         # stdout 混着事件日志,最终答复用 -o 落到临时文件读取;
@@ -117,7 +116,6 @@ class CodexTitleGenerator(TitleGenerator):
 class OpenCodeTitleGenerator(TitleGenerator):
     id = "opencode"
     executable = "opencode"
-    default_model = None
 
     def generate(self, prompt: str, timeout: int) -> str | None:
         # `opencode run` 无头执行一次；--auto 跳过权限问询。
@@ -133,7 +131,6 @@ class OpenCodeTitleGenerator(TitleGenerator):
 class KimiTitleGenerator(TitleGenerator):
     id = "kimi"
     executable = "kimi"
-    default_model = None
 
     def generate(self, prompt: str, timeout: int) -> str | None:
         # `-p` 非交互打印；`-y` 跳过权限问询。会落盘会话，扫描侧过滤 PROMPT_MARKER。
@@ -149,8 +146,6 @@ class CursorTitleGenerator(TitleGenerator):
     executable = "agent"
     # 与 CursorRuntime.executable_aliases 对齐：官方主名 agent，兼容名 cursor-agent。
     _aliases = ("agent", "cursor-agent")
-    default_model = None
-
     def is_available(self) -> bool:
         return any(shutil.which(name) for name in self._aliases)
 
@@ -178,7 +173,7 @@ class CursorTitleGenerator(TitleGenerator):
         return _run(argv, None, timeout)
 
 
-# 顺序与 runtime/registry.default_registry 对齐：本机有哪些就按这个优先序用。
+# 候选集合与 runtime/registry.default_registry 对齐；实际生成时由调用方公平轮转。
 _GENERATORS: tuple[TitleGenerator, ...] = (
     ClaudeTitleGenerator(),
     CodexTitleGenerator(),
@@ -189,7 +184,7 @@ _GENERATORS: tuple[TitleGenerator, ...] = (
 
 
 def available_generators() -> tuple[TitleGenerator, ...]:
-    """返回可用生成器的优先顺序，首选失败时可继续降级。"""
+    """返回全部可用生成器；显式指定时仅将其置前，其余保持同等候选资格。"""
     configured = _env(ENV_GENERATOR, LEGACY_ENV_GENERATOR).lower()
     available = tuple(generator for generator in _GENERATORS if generator.is_available())
     preferred = next((generator for generator in available if generator.id == configured), None)
@@ -199,6 +194,6 @@ def available_generators() -> tuple[TitleGenerator, ...]:
 
 
 def resolve_generator() -> TitleGenerator | None:
-    """兼容旧调用：返回当前优先级最高的可用生成器。"""
+    """兼容旧调用：返回候选列表的首项。批量生成不使用此函数决定选路。"""
     generators = available_generators()
     return generators[0] if generators else None

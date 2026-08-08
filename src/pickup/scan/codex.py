@@ -92,8 +92,50 @@ def _entry_time(entry: dict) -> float | None:
     return _parse_timestamp(entry.get("timestamp")) or _parse_timestamp(payload.get("timestamp"))
 
 
-def _read_session_head(path: str, max_lines: int = 30) -> list[dict]:
-    """逐行读取文件头部，找到 session_meta 和第一条 user_message 后停止。"""
+def _response_message_text(payload: dict, role: str) -> str:
+    """提取新版 response_item message 的指定角色文本，忽略框架注入上下文。"""
+    if payload.get("type") != "message" or payload.get("role") != role:
+        return ""
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts = [
+        str(part.get("text") or "").strip()
+        for part in content
+        if isinstance(part, dict) and part.get("type") in ("input_text", "output_text")
+    ]
+    text = "\n".join(part for part in parts if part)
+    if text.startswith(("# AGENTS.md instructions", "<environment_context>")):
+        return ""
+    return text
+
+
+def _user_message_text(entry: dict) -> str:
+    """兼容旧 event_msg 与新版 response_item 的真实用户输入。"""
+    payload = entry.get("payload") or {}
+    if not isinstance(payload, dict):
+        return ""
+    if entry.get("type") == "event_msg" and payload.get("type") == "user_message":
+        return str(payload.get("message") or "").strip()
+    if entry.get("type") == "response_item":
+        return _response_message_text(payload, "user")
+    return ""
+
+
+def _assistant_message_text(entry: dict) -> str:
+    """兼容旧 event_msg 与新版 response_item 的助手文本。"""
+    payload = entry.get("payload") or {}
+    if not isinstance(payload, dict):
+        return ""
+    if entry.get("type") == "event_msg" and payload.get("type") == "agent_message":
+        return str(payload.get("message") or "").strip()
+    if entry.get("type") == "response_item":
+        return _response_message_text(payload, "assistant")
+    return ""
+
+
+def _read_session_head(path: str, max_lines: int = 128) -> list[dict]:
+    """逐行读取文件头部，找到元数据和第一条真实用户输入后停止。"""
     entries: list[dict] = []
     found_meta = False
     found_user = False
@@ -109,10 +151,9 @@ def _read_session_head(path: str, max_lines: int = 30) -> list[dict]:
                     obj = json.loads(line)
                     entries.append(obj)
                     t = obj.get("type")
-                    pt = (obj.get("payload") or {}).get("type", "")
                     if t == "session_meta":
                         found_meta = True
-                    if t == "event_msg" and pt == "user_message":
+                    if _user_message_text(obj):
                         found_user = True
                     if found_meta and found_user:
                         break
@@ -189,8 +230,9 @@ def _build_session_info(path: str, index: dict[str, str]) -> dict | None:
         if t == "session_meta" and cwd is None:
             cwd = payload.get("cwd")
             thread_source = payload.get("thread_source")
-        if t == "event_msg" and pt == "user_message" and first_user_msg is None:
-            first_user_msg = payload.get("message", "")
+        user_text = _user_message_text(e)
+        if user_text and first_user_msg is None:
+            first_user_msg = user_text
 
     for e in tail_entries:
         entry_time = _entry_time(e)
@@ -199,20 +241,21 @@ def _build_session_info(path: str, index: dict[str, str]) -> dict | None:
         t = e.get("type")
         payload = e.get("payload") or {}
         pt = payload.get("type", "")
-        if t == "event_msg":
-            if pt == "user_message":
-                last_user_msg = payload.get("message", "")
-                last_event_type = "user_message"
-            elif pt == "agent_message":
-                last_agent_msg = payload.get("message", "")
-                last_event_type = "agent_message"
-            elif pt == "task_complete":
-                msg = payload.get("last_agent_message")
-                if msg:
-                    last_agent_msg = msg
-                last_event_type = "task_complete"
-            elif pt == "turn_aborted":
-                last_event_type = "turn_aborted"
+        user_text = _user_message_text(e)
+        assistant_text = _assistant_message_text(e)
+        if user_text:
+            last_user_msg = user_text
+            last_event_type = "user_message"
+        elif assistant_text:
+            last_agent_msg = assistant_text
+            last_event_type = "agent_message"
+        elif t == "event_msg" and pt == "task_complete":
+            msg = payload.get("last_agent_message")
+            if msg:
+                last_agent_msg = msg
+            last_event_type = "task_complete"
+        elif t == "event_msg" and pt == "turn_aborted":
+            last_event_type = "turn_aborted"
 
     mtime = os.path.getmtime(path)
     resolved_event_time = event_time or (dt.timestamp() if dt else None)
@@ -430,25 +473,25 @@ def load_conversation(path: str) -> list[ConversationMessage]:
                     entry = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
-                if entry.get("type") != "event_msg":
-                    continue
-                payload = entry.get("payload", {})
+                payload = entry.get("payload") or {}
                 if not isinstance(payload, dict):
                     continue
 
                 # payload 里的字段即使写了 key，值也可能是 JSON null（如任务无输出就结束的
                 # task_complete）；`.get(key, "")` 只在 key 缺失时才用默认值，key 存在但值为
                 # null 时会拿到 None，`str(None)` 变成字面量 "None" 混进正文，必须用 `or ""` 兜底。
+                user_text = _user_message_text(entry)
+                assistant_text = _assistant_message_text(entry)
                 payload_type = payload.get("type")
-                if payload_type == "user_message":
-                    text = str(payload.get("message") or "").strip()
-                    if text:
-                        messages.append(ConversationMessage("user", text, _entry_time(entry)))
-                elif payload_type == "agent_message" and payload.get("phase") in (None, "final_answer", "commentary"):
-                    text = str(payload.get("message") or "").strip()
-                    if text and (not messages or messages[-1].role != "assistant" or messages[-1].text != text):
-                        messages.append(ConversationMessage("assistant", text, _entry_time(entry)))
-                elif payload_type == "task_complete":
+                if user_text:
+                    messages.append(ConversationMessage("user", user_text, _entry_time(entry)))
+                elif assistant_text and (
+                    not messages
+                    or messages[-1].role != "assistant"
+                    or messages[-1].text != assistant_text
+                ):
+                    messages.append(ConversationMessage("assistant", assistant_text, _entry_time(entry)))
+                elif entry.get("type") == "event_msg" and payload_type == "task_complete":
                     text = str(payload.get("last_agent_message") or "").strip()
                     if text and (not messages or messages[-1].role != "assistant" or messages[-1].text != text):
                         messages.append(ConversationMessage("assistant", text, _entry_time(entry)))

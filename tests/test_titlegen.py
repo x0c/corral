@@ -40,7 +40,7 @@ class ResolveGeneratorTests(unittest.TestCase):
             generator = titlegen.resolve_generator()
         self.assertEqual(generator.id, "claude")
 
-    def test_defaults_to_claude_first(self) -> None:
+    def test_resolve_generator_keeps_legacy_first_available_compatibility(self) -> None:
         with mock.patch.object(titlegen.shutil, "which", side_effect=_which({"claude", "codex"})), \
                 mock.patch.dict(os.environ, _NO_ENV):
             generator = titlegen.resolve_generator()
@@ -89,7 +89,7 @@ class ClaudeGeneratorTests(unittest.TestCase):
             out = titlegen.ClaudeTitleGenerator().generate("prompt 内容", timeout=5)
 
         self.assertEqual(calls["argv"], [
-            "claude", "-p", "--no-session-persistence", "--model", "haiku",
+            "claude", "-p", "--no-session-persistence",
         ])
         self.assertEqual(calls["input"], "prompt 内容")
         self.assertEqual(out, '{"claude:s1": "标题"}')
@@ -319,6 +319,7 @@ class RefreshTitlesGeneratorTests(unittest.TestCase):
         fallback = _StaticGenerator('{"claude:s1": "修复登录报错"}')
         fallback.id = "codex"
         with mock.patch.object(titlegen, "available_generators", return_value=(failed, fallback)), \
+                mock.patch.object(titles.secrets, "randbelow", return_value=0), \
                 mock.patch.object(titles, "save_cache"):
             result = titles.refresh_titles([_session("s1")], {})
         self.assertEqual(result, {"claude:s1": "修复登录报错"})
@@ -339,6 +340,7 @@ class RefreshTitlesGeneratorTests(unittest.TestCase):
         fallback.generate.side_effect = generate_fallback
         sessions = [_session(f"s{i}") for i in range(titles._BATCH_SIZE + 1)]
         with mock.patch.object(titlegen, "available_generators", return_value=(failed, fallback)), \
+                mock.patch.object(titles.secrets, "randbelow", return_value=0), \
                 mock.patch.object(titles, "_MAX_PARALLEL_BATCHES", 1), \
                 mock.patch.object(titles, "save_cache"):
             result = titles.refresh_titles(sessions, {})
@@ -347,8 +349,8 @@ class RefreshTitlesGeneratorTests(unittest.TestCase):
         failed.generate.assert_called_once()
         self.assertEqual(fallback.generate.call_count, 2)
 
-    def test_later_batch_fails_over_when_selected_generator_dies(self) -> None:
-        """首批探测选定的生成器若中途失效，后续批次应自动切到下一候选。"""
+    def test_later_batch_fails_over_when_its_rotated_generator_dies(self) -> None:
+        """轮到某助手的后续批次失败时，应在本批自动切到另一个可用助手。"""
         primary = mock.Mock(spec=titlegen.TitleGenerator)
         primary.id = "claude"
         backup = mock.Mock(spec=titlegen.TitleGenerator)
@@ -373,15 +375,59 @@ class RefreshTitlesGeneratorTests(unittest.TestCase):
 
         primary.generate.side_effect = generate_primary
         backup.generate.side_effect = generate_backup
-        sessions = [_session(f"s{i}") for i in range(titles._BATCH_SIZE + 1)]
+        sessions = [_session(f"s{i}") for i in range(titles._BATCH_SIZE * 3)]
         with mock.patch.object(titlegen, "available_generators", return_value=(primary, backup)), \
+                mock.patch.object(titles.secrets, "randbelow", return_value=0), \
                 mock.patch.object(titles, "_MAX_PARALLEL_BATCHES", 1), \
                 mock.patch.object(titles, "save_cache"):
             result = titles.refresh_titles(sessions, {})
 
         self.assertEqual(len(result), len(sessions))
-        self.assertEqual(calls["claude"], 2)  # 首批成功 + 次批失败
-        self.assertEqual(calls["opencode"], 1)  # 次批切换成功
+        self.assertEqual(calls["claude"], 2)  # 第一批成功，第三批失败
+        self.assertEqual(calls["opencode"], 2)  # 第二批成功，并接管第三批
+
+    def test_auto_selection_rotates_equal_candidates_by_batch(self) -> None:
+        """未指定生成器时，每批从不同候选开始，不默认偏向任何一个助手。"""
+        generators = []
+        calls: dict[str, int] = {}
+        for name in ("claude", "codex", "opencode"):
+            generator = mock.Mock(spec=titlegen.TitleGenerator)
+            generator.id = name
+
+            def generate(prompt: str, timeout: int, *, generator_id: str = name) -> str:
+                calls[generator_id] = calls.get(generator_id, 0) + 1
+                payload = json.loads(prompt.rsplit("\n\n", 1)[1])
+                return json.dumps(
+                    {item["id"]: f"{generator_id}-{item['id']}" for item in payload},
+                    ensure_ascii=False,
+                )
+
+            generator.generate.side_effect = generate
+            generators.append(generator)
+
+        sessions = [_session(f"s{i}") for i in range(titles._BATCH_SIZE * len(generators))]
+        with mock.patch.object(titlegen, "available_generators", return_value=tuple(generators)), \
+                mock.patch.object(titles.secrets, "randbelow", return_value=0), \
+                mock.patch.object(titles, "_MAX_PARALLEL_BATCHES", 1), \
+                mock.patch.object(titles, "save_cache"):
+            result = titles.refresh_titles(sessions, {})
+
+        self.assertEqual(len(result), len(sessions))
+        self.assertEqual(calls, {"claude": 1, "codex": 1, "opencode": 1})
+
+    def test_generic_empty_session_title_is_not_cached_as_final_title(self) -> None:
+        session = _session("s1")
+        session.update({
+            "source": "codex",
+            "fallback_title": "Codex 新会话",
+            "first_user_msg": "修复 Codex 会话标题",
+        })
+        cache = {"codex:s1": {"title": "Codex 新会话"}}
+
+        title, needs_generation = titles.resolve_initial_title(session, cache)
+
+        self.assertEqual(title, "修复 Codex 会话标题")
+        self.assertTrue(needs_generation)
 
 
 class SaveCacheAtomicWriteTests(unittest.TestCase):

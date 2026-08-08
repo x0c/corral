@@ -26,8 +26,10 @@ class SchedPrioTests(unittest.TestCase):
             mock.patch.object(sys, "platform", "darwin"),
             mock.patch("ctypes.CDLL", return_value=fake_lib),
             mock.patch.object(schedprio, "_best_effort_nice"),
+            mock.patch.object(schedprio, "_darwin_restore_foreground_policy") as restore,
         ):
             schedprio.boost_interactive()
+        restore.assert_called_once_with()
         fake_lib.pthread_set_qos_class_self_np.assert_called_once_with(
             schedprio._QOS_USER_INTERACTIVE, 0
         )
@@ -53,6 +55,7 @@ class SchedPrioTests(unittest.TestCase):
             mock.patch.object(sys, "platform", "darwin"),
             mock.patch("ctypes.CDLL", side_effect=OSError("nope")),
             mock.patch.object(schedprio, "_best_effort_nice"),
+            mock.patch.object(schedprio, "_darwin_restore_foreground_policy"),
         ):
             schedprio.boost_interactive()  # 不得抛
 

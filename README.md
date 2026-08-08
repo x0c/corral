@@ -35,7 +35,7 @@ The tool is local-first.
 - It reads local history under `~/.claude/projects/`, `~/.codex/sessions/`, `~/.kimi-code/sessions/`, `~/.cursor/chats/`, and (read-only) OpenCode's SQLite database at `~/.local/share/opencode/opencode.db`.
 - It does not upload session history by itself.
 - Cross-runtime handoff passes the original history file path to the target runtime instead of copying the whole conversation into command-line arguments.
-- Optional title generation calls the preferred installed agent CLI (Claude Code first, then Codex) and may consume its account quota.
+- Optional title generation distributes batches evenly among installed Claude Code, Codex, OpenCode, Kimi Code, and Cursor Agent CLIs; a failed assistant automatically yields its batch to another available one. It may consume the corresponding account quota.
 - Title and derived performance caches are stored under `~/.cache/pickup/`; they can be inspected or cleared locally.
 - Attention state is local and content-free: it stores only runtime/session identifiers, opaque change tokens, timestamps, and read state. Cursor live-state support adds pickup-managed entries to your user-level hooks file without replacing existing hooks.
 
@@ -400,6 +400,7 @@ Cost controls:
 
 - generated titles are cached by runtime and session ID;
 - a file lock prevents duplicate title-generation workers;
+- available assistants are equal candidates: batches start at a random candidate and then rotate, rather than permanently preferring one assistant;
 - failed, timed-out, invalid, or missing results keep the local fallback title;
 - a failed title is not retried automatically on later launches, so it does not repeatedly consume
   account quota. A future title-cache upgrade may retry it under updated rules.

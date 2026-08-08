@@ -416,6 +416,7 @@ class EmbedPane(Widget):
         fallback_renderer: Callable[[], Text | str] | None = None,
         *,
         detail_until_frame: bool = False,
+        resize_immediately: bool = True,
     ) -> None:
         """把面板切到托管会话；首帧到达前立即展示可用内容或空白终端。
 
@@ -458,7 +459,7 @@ class EmbedPane(Widget):
         pane_w, pane_h = self._pane_size()
         # 过窄时不 resize：布局尚未稳定或用户把终端缩得很小时，避免 agent
         # 按几列硬换行写进 scrollback（恢复宽度后往上滚仍会看到窄条历史）。
-        if embed.should_resize_host(pane_w, pane_h):
+        if resize_immediately and embed.should_resize_host(pane_w, pane_h):
             embed.resize(name, pane_w, pane_h)
         # 终端背景色注入：此后 pane 内 agent 的 OSC 11 查询由 tmux 按真实值应答，
         # 深/浅主题自动检测才不会瞎猜（tmux 默认不应答 pane 内的查询）。
