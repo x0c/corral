@@ -2389,6 +2389,33 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     "布局落定后的尺寸回报不得在 200ms 后重复 resize",
                 )
 
+    def test_capture_uses_projected_single_pane_size_until_layout_arrives(self) -> None:
+        """双格改单格时，首帧解析不得继续沿用旧半格宽度。"""
+        pane = EmbedPane()
+        pane._capture_size_override = (101, 28)  # noqa: SLF001 预测到的单格最终尺寸
+        with mock.patch.object(pane, "_pane_size", return_value=(50, 28)):
+            self.assertEqual(
+                pane._capture_size(),  # noqa: SLF001 抓帧线程的唯一尺寸入口
+                (101, 28),
+                "布局尚未更新时，抓帧必须按单格全宽解析，不可补出右半边空白",
+            )
+
+    def test_projected_size_is_visible_before_new_session_can_be_captured(self) -> None:
+        """新会话名一写入，抓帧线程就必须已经看见单格最终尺寸。"""
+        pane = EmbedPane()
+        pane.post_message = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        observed: list[tuple[int, int]] = []
+        with (
+            mock.patch.object(pane, "_pane_size", return_value=(50, 28)),
+            mock.patch(
+                "pickup.embed.open_channel",
+                side_effect=lambda *_args, **_kwargs: observed.append(pane._capture_size()),
+            ),
+            mock.patch("pickup.embed.should_resize_host", return_value=False),
+        ):
+            pane.focus_session("pickup-claude-target", target_size=(101, 28))
+        self.assertEqual(observed, [(101, 28)])
+
     async def test_browsing_existing_groups_persists_focus_not_composition(self) -> None:
         """浏览已有会话组只 set_focus，不得 set_group（会抬 updated_at 并整表写盘）。"""
         sessions = [
@@ -2470,6 +2497,39 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(pane._is_hosted_fallback())
                 self.assertEqual(called["n"], 0)
                 self.assertEqual(pane.render().plain, "")
+
+    async def test_active_pane_never_receives_a_message_preview_renderer(self) -> None:
+        """活跃会话切换只能进运行时画面，首帧前也不允许消息预览参与渲染。"""
+        sessions = [{
+            "source": "claude", "id": "runtime-only", "short_id": "runtime-only",
+            "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+            "native_title": None, "fallback_title": "运行时优先",
+            "cwd": "/tmp", "live": True, "keepalive_name": "pickup-runtime-only",
+        }]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=True)
+        seen_fallbacks: list[object | None] = []
+        original = EmbedPane.focus_session
+
+        def record(pane, name, fallback_renderer=None, **kwargs):
+            seen_fallbacks.append(fallback_renderer)
+            return original(pane, name, fallback_renderer, **kwargs)
+
+        with (
+            mock.patch("pickup.embed.open_channel", return_value=None),
+            mock.patch.object(EmbedPane, "focus_session", new=record),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                app.screen.query_one(SplitPaneArea).show_hosted_group(
+                    "/tmp",
+                    [(sessions[0], "pickup-runtime-only", lambda: "不得闪现的消息预览")],
+                )
+                await _wait_until(
+                    lambda: len(app.screen.query_one(SplitPaneArea).cells()) == 1,
+                )
+        self.assertTrue(seen_fallbacks)
+        self.assertTrue(all(fallback is None for fallback in seen_fallbacks))
 
     async def test_rapid_highlights_are_throttled_but_still_settle(self) -> None:
         """连按方向键翻找会话时，右栏不能每一步都重建一次。
@@ -4954,8 +5014,8 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                     "重启组成员不得把用户的分屏组合拆成单格",
                 )
 
-    async def test_live_pane_still_forwards_enter_to_assistant(self) -> None:
-        """活着的格子里回车照常发给助手，不能被重启逻辑截走。"""
+    async def test_live_pane_forwards_enter_but_ctrl_f_opens_search(self) -> None:
+        """回车照常发给助手，但 Ctrl+F 必须由 pickup 打开全文搜索。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
         app = PickupApp(store, embed_ok=True)
@@ -4975,6 +5035,12 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("enter")
                     await pilot.pause()
                     self.assertTrue(send_key.called)
+
+                with mock.patch("pickup.embed.send_key") as send_key:
+                    await pilot.press("ctrl+f")
+                    await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))
+                    self.assertFalse(send_key.called)
+                    await pilot.press("escape")
 
     async def test_clicking_ended_session_only_previews_enter_restarts(self) -> None:
         """进程早就没了的会话：单击只摆历史，回车才恢复（机主 2026-08-05 拍板）。"""
@@ -6216,12 +6282,8 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([m.session["id"] for m in modal._matches], ["c"])
             await pilot.press("escape")
 
-    async def test_ctrl_f_yields_to_the_assistant_when_a_live_pane_has_focus(self) -> None:
-        """右栏实时终端持有输入时 Ctrl+F 必须原样转发给助手，不能被弹窗截胡。
-
-        Ctrl+F 在助手里是常用键（readline 前移光标、翻页搜索），所以它和显隐侧栏
-        那种壳层开关不同，属于「只在列表侧成立」的动作。
-        """
+    async def test_ctrl_f_opens_search_when_a_live_pane_has_focus(self) -> None:
+        """右栏实时终端持有输入时，Ctrl+F 仍是 pickup 的全文搜索入口。"""
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
@@ -6229,7 +6291,11 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             screen = app.screen
             self.assertTrue(screen.check_action("search_content", ()))
             with mock.patch.object(type(screen), "_live_embed_focused", return_value=True):
-                self.assertFalse(screen.check_action("search_content", ()))
+                self.assertTrue(screen.check_action("search_content", ()))
+
+            await pilot.press("ctrl+f")
+            await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))
+            await pilot.press("escape")
 
 
 class SessionHudSummaryTests(unittest.TestCase):

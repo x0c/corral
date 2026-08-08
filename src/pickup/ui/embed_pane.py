@@ -363,6 +363,11 @@ class EmbedPane(Widget):
         self._real_cursor_shown = False  # 外层真实硬件光标当前是否被我们显式打开（见 _set_real_cursor）
         self._resize_tmux_timer = None  # 防抖：拖动停稳后再 resize-window + 抓帧
         self._pending_tmux_size: tuple[int, int] | None = None
+        # 分栏数量变化时，托管窗口会先按预测的最终尺寸 resize，但 Textual 本格的
+        # 几何尺寸要到下一轮布局才更新。抓帧线程若在这段空档仍读取旧半宽，就会把
+        # 已经全宽的 tmux 画面按半宽解析，最终在单格右半边补成空白。这里暂存目标
+        # 尺寸，直到真实 Resize 抵达前始终用于抓帧解析。
+        self._capture_size_override: tuple[int, int] | None = None
         # 最近一次已真正写给托管终端的尺寸。分栏数量变化会先按预期最终尺寸调窗，
         # 随后的 Textual Resize 若尺寸相同，必须识别为同一次变化，不能隔 200ms 再
         # 调一次并让旧尺寸画面有机会露出来。
@@ -449,6 +454,11 @@ class EmbedPane(Widget):
             self._strips = None
             self._cursor = None
             self._clear_resize_capture_hold()
+        # 必须早于写入 session_name：抓帧线程可能正好在这里被旧会话的轮询唤醒，
+        # 一旦看见新名字就会立即抓屏；若覆盖尺寸晚一步才写入，仍有机会按旧半宽
+        # 解析出一次「左边内容、右边空白」的首帧。
+        if target_size is not None:
+            self._capture_size_override = target_size
         self.session_name = name
         self.dead = False
         self.detail_offset = 0
@@ -587,6 +597,10 @@ class EmbedPane(Widget):
         size = self.content_size
         return max(1, size.width), max(1, size.height)
 
+    def _capture_size(self) -> tuple[int, int]:
+        """本轮抓帧应按什么尺寸解析终端画面。"""
+        return self._capture_size_override or self._pane_size()
+
     def _on_pane_output(self) -> None:
         # 控制通道读线程本来就跑在子线程里，这里只是唤醒抓帧线程，不跨线程动 UI 状态
         self._poke.set()
@@ -623,7 +637,7 @@ class EmbedPane(Widget):
                 gap = time.monotonic() - last_capture
                 if 0 < gap < MIN_CAPTURE_INTERVAL:
                     time.sleep(MIN_CAPTURE_INTERVAL - gap)
-                pane_w, pane_h = self._pane_size()
+                pane_w, pane_h = self._capture_size()
                 capture_t0 = time.perf_counter()
                 text = embed.capture(name, history_offset, pane_h)
                 last_capture = time.monotonic()
@@ -1325,10 +1339,14 @@ class EmbedPane(Widget):
         name = self.session_name
         if not name or self.dead:
             return
-        self._pending_tmux_size = (
+        actual_size = (
             max(1, event.size.width),
             max(1, event.size.height),
         )
+        if self._capture_size_override == actual_size:
+            # 真实布局已经追上预测尺寸；后续抓帧重新按正常的控件尺寸读取即可。
+            self._capture_size_override = None
+        self._pending_tmux_size = actual_size
         if self._host_size == (name, *self._pending_tmux_size):
             # 分栏切换已按预测的最终格尺寸调过终端；本次 Resize 只是布局落定的回报。
             # 清掉旧防抖任务，避免 200ms 后的重复 resize 与无意义抓帧冻结。

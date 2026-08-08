@@ -135,10 +135,6 @@ _ACTION_I18N = {
 # 本就到不了（EmbedPane 先 stop 掉），要么会把用户想打给助手的内容截胡。
 _LIST_ONLY_ACTIONS = frozenset(
     {
-        # 全文搜索是列表侧的检索动作，不是壳层开关：Ctrl+F 在助手里是常用键
-        # （readline 前移光标、翻页搜索），右栏持有输入时必须原样转发给会话，
-        # 想搜就先 Ctrl+\ 回列表。这一点与 Ctrl+Shift+B 显隐侧栏刻意不同。
-        "search_content",
         # 会话小窗的展开/收起：右栏实时格持有输入时让路给助手。小窗本来就是"扫一眼"
         # 用的，不值得为它从助手手里抢一个组合键；那种场景下点一下小窗本身即可
         # （点浮层不改焦点，见 `SessionHud`）。
@@ -159,7 +155,9 @@ _LIST_ONLY_ACTIONS = frozenset(
 def _main_bindings() -> list[Binding]:
     """按当前语言生成底部快捷键说明。"""
     return [
-        Binding("ctrl+f", "search_content", t("action.search")),
+        # Ctrl+F 是全局全文搜索入口。priority 让它先于当前聚焦控件处理，运行中
+        # 助手不能再截走这个键；临时弹窗不继承主屏绑定，仍保持自己的输入语义。
+        Binding("ctrl+f", "search_content", t("action.search"), priority=True),
         Binding("a", "handoff", t("action.advanced")),
         Binding("q", "kill_keepalive", t("action.kill_session")),
         Binding("x", "delete_session", t("action.delete_session")),

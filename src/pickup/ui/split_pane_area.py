@@ -325,7 +325,6 @@ class PaneCell(Vertical):
         if self.spec.keepalive_name:
             pane.focus_session(
                 self.spec.keepalive_name,
-                self._detail_renderer,
                 target_size=target_size,
                 discard_stale_screen=discard_stale_screen,
             )
