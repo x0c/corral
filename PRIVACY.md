@@ -127,6 +127,28 @@ session.
 
 The target runtime may choose to read that local history after it starts.
 
+## Phone Remote (`pickup remote`)
+
+Optional phone relay (`pip install 'pickup[remote]'`) lets a paired phone list sessions, watch
+live terminal frames, send input, and start or stop hosted sessions on this machine.
+
+- **What leaves the machine.** After pairing, session titles, project paths, conversation text,
+  and live terminal frames are end-to-end encrypted to the phone. The optional public relay only
+  forwards ciphertext and opaque routing identifiers; it cannot read prompts or code. Push
+  notification bodies are sealed the same way and decrypted on-device by the notification service
+  extension.
+- **What stays local.** Long-term identity keys and the paired-device list live under the OS state
+  directory (`~/.local/state/pickup/remote/`, overridable with `PICKUP_STATE_DIR`). They are not
+  uploaded. Older installs that kept these under `~/.cache/pickup/remote/` are migrated once.
+- **Trust boundary.** A paired phone can drive the same hosted agent sessions you run locally
+  (including launches that skip permission prompts). Treat the pairing QR code as a root
+  credential: one-time, ten-minute expiry. Use `pickup remote pair --readonly` for view-only
+  access, and `pickup remote unpair` to revoke a lost phone (the daemon drops that device within
+  a few seconds).
+- **Network defaults.** The host dials out to a `wss://` relay; LAN direct is plaintext `ws://`
+  under the same application-layer encryption. Cleartext relays require an explicit
+  `--insecure-relay` flag.
+
 ## Repository Hygiene
 
 Do not commit real session history, generated caches, logs, tokens, API keys, or local environment files. The project `.gitignore` excludes common local artifacts, but contributors should still review changes before publishing.

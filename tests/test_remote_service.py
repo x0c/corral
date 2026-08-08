@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 from pickup.remote import config as remote_config
-from pickup.remote import crypto, protocol
+from pickup.remote import crypto, protocol, ratelimit
 from pickup.remote.service import Connection, RemoteService
 from pickup.remote.sessions import ActionError
 
@@ -99,6 +99,11 @@ class RemoteServiceTests(unittest.TestCase):
         os.environ["PICKUP_CACHE_DIR"] = self._tmp.name
         self.addCleanup(self._restore_cache)
 
+        ratelimit.PAIR_ATTEMPTS.reset()
+        ratelimit.PAIR_ATTEMPTS_HOURLY.reset()
+        ratelimit.INPUT_ACTIONS.reset()
+        ratelimit.SESSION_CREATE.reset()
+        ratelimit.PUSH_REGISTER.reset()
         self.hub = FakeHub()
         self.service = RemoteService(self.hub)  # type: ignore[arg-type]
         self.sent: list[dict] = []
@@ -284,9 +289,68 @@ class RemoteServiceTests(unittest.TestCase):
 
     def test_hub_errors_are_passed_through_verbatim(self):
         connection = self._paired()
-        reply = self._call(connection, protocol.M_SESSION_DELETE, {"key": "codex:abc"})
+        reply = self._call(
+            connection, protocol.M_SESSION_DELETE, {"key": "codex:abc", "confirm": True}
+        )
         self.assertEqual(reply["e"]["code"], protocol.E_NOT_FOUND)
         self.assertEqual(reply["e"]["message"], "会话不在了")
+
+    def test_destructive_actions_require_confirm(self):
+        connection = self._paired()
+        reply = self._call(connection, protocol.M_SESSION_DELETE, {"key": "codex:abc"})
+        self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
+        reply = self._call(connection, protocol.M_SESSION_STOP, {"key": "codex:abc"})
+        self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
+
+    def test_input_keys_rejects_tmux_injection(self):
+        connection = self._paired()
+        reply = self._call(
+            connection,
+            protocol.M_INPUT_KEYS,
+            {"key": "codex:abc", "keys": ["Enter\nrun-shell evil"]},
+        )
+        self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
+        self.assertEqual(self.hub.calls, [])
+
+    def test_unpair_on_disk_revokes_live_connection(self):
+        """另一进程 unpair 后，常驻服务必须以磁盘为准踢掉在线连接。"""
+        connection = self._paired()
+        device = remote_config.find_device(self.service.state, connection.device_public_key)
+        self.assertIsNotNone(device)
+        # 模拟 CLI unpair：只改磁盘
+        other = remote_config.load_state()
+        self.assertTrue(remote_config.remove_device(other, device.id))
+        # 下次请求应被拒并踢下线
+        reply = self._call(connection, protocol.M_SESSIONS_LIST)
+        self.assertFalse(reply["ok"])
+        self.assertEqual(reply["e"]["code"], protocol.E_UNAUTHORIZED)
+        self.assertFalse(connection.paired)
+
+    def test_touch_device_does_not_resurrect_unpaired_device(self):
+        code = self.service.begin_pairing()
+        connection = self._connect()
+        self._call(connection, protocol.M_PAIR, {"code": code})
+        device = remote_config.find_device(self.service.state, connection.device_public_key)
+        # CLI 解绑
+        disk = remote_config.load_state()
+        remote_config.remove_device(disk, device.id)
+        # 陈旧服务内存里仍以为有设备；touch 不得把解绑写回去
+        remote_config.touch_device(self.service.state, connection.device_public_key)
+        reloaded = remote_config.load_state()
+        self.assertIsNone(remote_config.find_device(reloaded, connection.device_public_key))
+
+    def test_readonly_pairing_blocks_input(self):
+        code = self.service.begin_pairing(mode="readonly")
+        connection = self._connect()
+        reply = self._call(connection, protocol.M_PAIR, {"code": code, "name": "只读机"})
+        self.assertTrue(reply["ok"])
+        self.assertEqual(reply["d"]["access"], "readonly")
+        blocked = self._call(
+            connection, protocol.M_INPUT_TEXT, {"key": "codex:abc", "text": "hi"}
+        )
+        self.assertEqual(blocked["e"]["code"], protocol.E_UNAUTHORIZED)
+        listing = self._call(connection, protocol.M_SESSIONS_LIST)
+        self.assertTrue(listing["ok"])
 
     def test_unknown_method_is_reported_not_crashed(self):
         connection = self._paired()

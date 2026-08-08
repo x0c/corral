@@ -7,19 +7,71 @@
 订阅的记账放在这里而不是会话中枢里：中枢只知道「有几个人在看这条会话」，
 不知道这些人分别连在哪条线上；断线时由这一层负责把该连接的订阅全部退掉，
 避免没人看了还在后台抓帧。
+
+安全边界（2026-08-08 审查后）：
+- 设备清单以磁盘为准，感知另一进程的 unpair，并主动踢掉已解绑连接
+- 只读配对只能调查询/订阅类方法
+- 删除 / 结束会话必须带 confirm=true（手机端确认框之后再发）
+- 配对失败、输入、新建会话走滑动窗口限流
 """
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 
 from pickup import __version__, observe
 from pickup.remote import config as remote_config
-from pickup.remote import crypto, protocol
+from pickup.remote import crypto, protocol, ratelimit
 from pickup.remote.sessions import ActionError, SessionHub
 
 _PAIRING_TTL = 10 * 60  # 配对码有效期：够扫码，又不至于长期挂着一个可用凭据
+
+# 只读配对允许的方法（看会话 / 画面 / 搜索；不能输入、不能改布局、不能启停）
+_READONLY_METHODS = frozenset(
+    {
+        protocol.M_HELLO,
+        protocol.M_SESSIONS_LIST,
+        protocol.M_SESSIONS_WATCH,
+        protocol.M_SESSIONS_UNWATCH,
+        protocol.M_SESSION_GET,
+        protocol.M_SESSION_MESSAGES,
+        protocol.M_SESSION_PROMPTS,
+        protocol.M_SESSION_WATCH,
+        protocol.M_SESSION_UNWATCH,
+        protocol.M_SCREEN_WATCH,
+        protocol.M_SCREEN_UNWATCH,
+        protocol.M_SCREEN_SCROLL,
+        protocol.M_PROJECTS_LIST,
+        protocol.M_RUNTIMES_LIST,
+        protocol.M_SEARCH,
+        protocol.M_PUSH_REGISTER,
+        protocol.M_SESSION_MARK_READ,
+    }
+)
+
+# 需要二次确认的破坏性操作
+_CONFIRM_METHODS = frozenset(
+    {
+        protocol.M_SESSION_DELETE,
+        protocol.M_SESSION_STOP,
+    }
+)
+
+# tmux 键名白名单：字母数字、常见修饰前缀、以及一组具名特殊键
+_TMUX_KEY_RE = re.compile(
+    r"^(?:"
+    r"[A-Za-z0-9]"
+    r"|(?:[CMS]-)+[A-Za-z0-9]"
+    r"|Enter|Escape|Space|Tab|BSpace|BTab|DC|IC"
+    r"|Up|Down|Left|Right|Home|End|PageUp|PageDown|PPage|NPage"
+    r"|F(?:[1-9]|1[0-2])"
+    r"|KP/\d|KPEnter"
+    r")$"
+)
+
+_PUSH_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 class Connection:
@@ -31,8 +83,11 @@ class Connection:
         self.address = address
         self.paired = False
         self.device_name = ""
+        self.device_id = ""
+        self.access = "full"
         self.channels: set[str] = set()
         self.closed = False
+        self.close_hook = None  # 可选：() -> None，用于踢掉底层传输
 
 
 class RemoteService:
@@ -41,22 +96,118 @@ class RemoteService:
         if hub is not None:
             hub._on_event = self._dispatch_event
         self.state = remote_config.load_state()
+        # 服务自持「上次加载」mtime：模块全局会被同进程的 remove_device 写脏，
+        # 不能用来判断「磁盘是否相对我这份快照变了」。
+        self._state_mtime = remote_config.state_mtime()
         self._lock = threading.Lock()
         self._connections: set[Connection] = set()
         self._subscribers: dict[str, set[Connection]] = {}
+        self._audit: list[dict] = []  # 最近远程操作，供 status 展示
+
+    # -- 状态同步 ---------------------------------------------------------
+
+    def refresh_state(self) -> remote_config.RemoteState:
+        """从磁盘重载；另一进程的 unpair / 轮换 token 靠这个被看见。"""
+        self.state = remote_config.reload_state_if_changed(
+            self.state, known_mtime=self._state_mtime
+        )
+        self._state_mtime = remote_config.state_mtime()
+        return self.state
+
+    def _sync_state_mtime(self) -> None:
+        """本服务刚写过盘（配对 / touch）后对齐自持 mtime。"""
+        self._state_mtime = remote_config.state_mtime()
+
+    def reconcile_devices(self) -> int:
+        """踢掉已不在磁盘清单里的连接。返回被踢数量。"""
+        self.refresh_state()
+        known = {d.public_key for d in self.state.devices}
+        kicked = 0
+        with self._lock:
+            targets = [c for c in self._connections if c.paired and c.device_public_key not in known]
+        for connection in targets:
+            observe.event("remote_device_revoked", device=connection.device_name or connection.device_id)
+            self._kick(connection)
+            kicked += 1
+        return kicked
+
+    def _kick(self, connection: Connection) -> None:
+        connection.paired = False
+        connection.closed = True
+        hook = connection.close_hook
+        self.detach(connection)
+        if hook is not None:
+            try:
+                hook()
+            except Exception:
+                pass
+
+    def kick_device(self, device_id: str = "", *, public_key: str = "") -> int:
+        """按设备 id 或公钥断开在线连接。unpair 后由 daemon 对账即可，此方法供测试。"""
+        with self._lock:
+            targets = [
+                c
+                for c in self._connections
+                if (device_id and c.device_id == device_id)
+                or (public_key and c.device_public_key == public_key)
+            ]
+        for connection in targets:
+            self._kick(connection)
+        return len(targets)
+
+    def online_devices(self) -> list[dict]:
+        self.refresh_state()
+        with self._lock:
+            connections = list(self._connections)
+        result = []
+        for connection in connections:
+            if connection.closed or not connection.paired:
+                continue
+            result.append(
+                {
+                    "id": connection.device_id,
+                    "name": connection.device_name,
+                    "access": connection.access,
+                    "address": connection.address,
+                    "public_key": connection.device_public_key[:16] + "…",
+                }
+            )
+        return result
+
+    def recent_audit(self, limit: int = 20) -> list[dict]:
+        with self._lock:
+            return list(self._audit[-limit:])
+
+    def _audit_event(self, connection: Connection, method: str) -> None:
+        entry = {
+            "ts": time.time(),
+            "method": method,
+            "device": connection.device_name or connection.device_id or "?",
+            "access": connection.access,
+        }
+        with self._lock:
+            self._audit.append(entry)
+            if len(self._audit) > 100:
+                self._audit = self._audit[-100:]
 
     # -- 配对 -------------------------------------------------------------
 
-    def begin_pairing(self, ttl: float = _PAIRING_TTL) -> str:
+    def begin_pairing(self, ttl: float = _PAIRING_TTL, *, mode: str = "full") -> str:
         code = crypto.new_pairing_code()
-        remote_config.write_pairing(code, ttl)
+        remote_config.write_pairing(code, ttl, mode=mode)
         return code
 
     def pairing_open(self) -> bool:
         return remote_config.read_pairing() is not None
 
     def is_known_device(self, device_public_key: str) -> bool:
+        self.refresh_state()
         return remote_config.find_device(self.state, device_public_key) is not None
+
+    def device_access(self, device_public_key: str) -> str:
+        self.refresh_state()
+        device = remote_config.find_device(self.state, device_public_key)
+        return device.access if device is not None else "full"
 
     def accepts(self, device_public_key: str) -> bool:
         """握手阶段的准入判断：已配对设备随时可进，陌生设备只在配对窗口内放行。"""
@@ -65,11 +216,17 @@ class RemoteService:
     # -- 连接生命周期 -----------------------------------------------------
 
     def attach(self, connection: Connection) -> None:
-        connection.paired = self.is_known_device(connection.device_public_key)
+        self.refresh_state()
+        device = remote_config.find_device(self.state, connection.device_public_key)
+        connection.paired = device is not None
+        if device is not None:
+            connection.device_name = device.name
+            connection.device_id = device.id
+            connection.access = device.access
+            remote_config.touch_device(self.state, connection.device_public_key)
+            self._sync_state_mtime()
         with self._lock:
             self._connections.add(connection)
-        if connection.paired:
-            remote_config.touch_device(self.state, connection.device_public_key)
 
     def detach(self, connection: Connection) -> None:
         connection.closed = True
@@ -116,6 +273,8 @@ class RemoteService:
             self.hub.unwatch_conversation(channel[len("session:") :])
 
     def _dispatch_event(self, channel: str, data) -> None:
+        # 事件推送前顺手对账一次，避免已解绑设备还在收画面
+        self.reconcile_devices()
         with self._lock:
             targets = list(self._subscribers.get(channel, ()))
         if not targets:
@@ -152,50 +311,98 @@ class RemoteService:
         connection.send(protocol.response(req_id, data))
 
     def _invoke(self, connection: Connection, method: str, params: dict):
+        # 每次请求都以磁盘为准：解绑立刻生效
+        if connection.paired and not self.is_known_device(connection.device_public_key):
+            self._kick(connection)
+            raise ActionError(protocol.E_UNAUTHORIZED, "这台设备已被解除配对")
+        if connection.paired:
+            connection.access = self.device_access(connection.device_public_key)
+
         if method == protocol.M_PAIR:
             return self._pair(connection, params)
         if method == protocol.M_HELLO:
             return self._hello(connection, params)
         if not connection.paired:
             raise ActionError(protocol.E_UNAUTHORIZED, "这台设备还没有和开发机配对")
+        if connection.access == "readonly" and method not in _READONLY_METHODS:
+            raise ActionError(protocol.E_UNAUTHORIZED, "这台设备是只读配对，不能执行此操作")
+        if method in _CONFIRM_METHODS and not bool(params.get("confirm")):
+            raise ActionError(
+                protocol.E_USAGE,
+                "这个操作会改动开发机上的会话，请在手机上确认后再试",
+            )
         handler = _HANDLERS.get(method)
         if handler is None:
             raise NotImplementedError(method)
+        self._audit_event(connection, method)
         return handler(self, connection, params)
 
     # -- 具体方法 ---------------------------------------------------------
 
     def _pair(self, connection: Connection, params: dict):
+        key = connection.device_public_key or "anon"
         pairing = remote_config.read_pairing()
         if pairing is None:
+            self._note_pair_failure(key)
             raise ActionError(protocol.E_UNAUTHORIZED, "配对码已经失效，请在开发机上重新生成")
         if not crypto.codes_equal(str(params.get("code") or ""), pairing[0]):
+            self._note_pair_failure(key)
             raise ActionError(protocol.E_UNAUTHORIZED, "配对码不对")
+        # 必须在 clear 之前读模式，否则窗口文件没了就永远当成 full
+        pairing_mode = remote_config.read_pairing_mode()
         remote_config.clear_pairing()  # 一次性凭据，用掉立刻作废
+        access = str(params.get("access") or "").strip().lower()
+        # 开发机 `pair --readonly` 写入的窗口模式优先，防止手机端自行申请 full
+        if pairing_mode == "readonly":
+            access = "readonly"
+        elif access not in ("full", "readonly"):
+            access = "full"
         device = remote_config.PairedDevice(
             id=crypto.random_id(8),
-            name=str(params.get("name") or "iPhone")[:60],
+            name=remote_config.sanitize_display_name(str(params.get("name") or "iPhone")),
             public_key=connection.device_public_key,
             paired_at=time.time(),
             last_seen_at=time.time(),
-            platform=str(params.get("platform") or "ios")[:20],
+            platform=remote_config.sanitize_display_name(
+                str(params.get("platform") or "ios"), max_len=20, fallback="ios"
+            ),
+            access=access,
         )
         remote_config.add_device(self.state, device)
+        self._sync_state_mtime()
         connection.paired = True
         connection.device_name = device.name
-        observe.event("remote_paired", device=device.name)
-        return {"device_id": device.id, "host_name": self.state.host_name}
+        connection.device_id = device.id
+        connection.access = device.access
+        observe.event("remote_paired", device=device.name, access=device.access)
+        return {
+            "device_id": device.id,
+            "host_name": self.state.host_name,
+            "access": device.access,
+        }
+
+    @staticmethod
+    def _note_pair_failure(key: str) -> None:
+        """只对失败的配对尝试计数；成功配对不占配额。"""
+        if not ratelimit.PAIR_ATTEMPTS.allow_request(key) or not ratelimit.PAIR_ATTEMPTS_HOURLY.allow_request(
+            key
+        ):
+            raise ActionError(protocol.E_RATE_LIMITED, "配对尝试太频繁，请稍后再试")
 
     def _hello(self, connection: Connection, params: dict):
-        connection.device_name = str(params.get("name") or "")[:60]
+        connection.device_name = remote_config.sanitize_display_name(
+            str(params.get("name") or ""), fallback=connection.device_name or ""
+        )
+        self.refresh_state()
         # 未配对也返回中继/局域网开关，便于旧配对手机补上中继地址、不必重新扫码。
         return {
             "protocol": protocol_version(),
             "pickup_version": __version__,
-            "host_id": self.state.host_id,
+            "host_id": self.state.routing_id or self.state.host_id,
             "host_name": self.state.host_name,
             "paired": connection.paired,
             "pairing_open": self.pairing_open(),
+            "access": connection.access if connection.paired else "",
             "runtimes": self.hub.runtimes() if connection.paired else [],
             "relay_url": self.state.relay_url if self.state.relay_enabled else "",
             "relay_enabled": self.state.relay_enabled,
@@ -234,8 +441,6 @@ class RemoteService:
         if self._subscribe(connection, channel):
             history = self.hub.watch_conversation(key)
         else:
-            # 同连接重复 watch（对话页重进 / 状态条与聊天叠订）：订阅只记一次，
-            # 但仍要返回全文快照，否则第二次只能拿到空列表。
             history = self.hub.conversation_snapshot(key)
         return {"messages": history}
 
@@ -251,7 +456,6 @@ class RemoteService:
         if self._subscribe(connection, channel):
             frame = self.hub.watch_screen(key)
         else:
-            # 同一连接重复 watch（聊天状态条 + 终端页）：不再加订阅计数，但要整帧。
             frame = self.hub.resync_screen(key)
         return {"frame": frame}
 
@@ -265,6 +469,8 @@ class RemoteService:
         return {"frame": self.hub.scroll_screen(_key(params), _int_param(params, "offset", 0))}
 
     def _input_text(self, connection: Connection, params: dict):
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, "发送太频繁，请稍后再试")
         text = str(params.get("text") or "")
         submit = bool(params.get("submit", True))
         if not text and not submit:
@@ -273,16 +479,27 @@ class RemoteService:
         return {"ok": True}
 
     def _input_keys(self, connection: Connection, params: dict):
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, "发送太频繁，请稍后再试")
         keys = params.get("keys")
         if not isinstance(keys, list):
             raise ActionError(protocol.E_USAGE, "没有要发送的按键")
-        cleaned = [str(k) for k in keys if str(k).strip()]
+        cleaned = []
+        for raw in keys:
+            key = str(raw).strip()
+            if not key:
+                continue
+            if not _TMUX_KEY_RE.match(key):
+                raise ActionError(protocol.E_USAGE, f"不支持的按键：{key[:32]}")
+            cleaned.append(key)
         if not cleaned:
             raise ActionError(protocol.E_USAGE, "没有要发送的按键")
         self.hub.send_keys(_key(params), cleaned)
         return {"ok": True}
 
     def _input_image(self, connection: Connection, params: dict):
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, "发送太频繁，请稍后再试")
         import base64
         import binascii
 
@@ -316,18 +533,24 @@ class RemoteService:
         return {"ok": True}
 
     def _session_new(self, connection: Connection, params: dict):
+        if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, "新建会话太频繁，请稍后再试")
         runtime = str(params.get("runtime") or "").strip()
         if not runtime:
             raise ActionError(protocol.E_USAGE, "请选择助手")
         cwd = params.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             raise ActionError(protocol.E_USAGE, "项目路径格式不对")
-        return {"session": self.hub.new_session(runtime, cwd)}
+        return {"session": self.hub.new_session(runtime, cwd, whitelist=self.state.cwd_whitelist)}
 
     def _session_resume(self, connection: Connection, params: dict):
+        if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, "操作太频繁，请稍后再试")
         return {"session": self.hub.resume_session(_key(params))}
 
     def _session_handoff(self, connection: Connection, params: dict):
+        if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, "操作太频繁，请稍后再试")
         return {"session": self.hub.handoff_session(_key(params), str(params.get("runtime") or ""))}
 
     def _projects_list(self, connection: Connection, params: dict):
@@ -340,12 +563,21 @@ class RemoteService:
         return {"sessions": self.hub.list_sessions(query=str(params.get("q") or ""), limit=100)}
 
     def _push_register(self, connection: Connection, params: dict):
+        if not ratelimit.PUSH_REGISTER.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, "推送登记太频繁，请稍后再试")
+        token = str(params.get("token") or "").strip()
+        if token and not _PUSH_TOKEN_RE.match(token):
+            raise ActionError(protocol.E_USAGE, "推送令牌格式不对")
+        env = str(params.get("env") or "").strip().lower()
+        if env and env not in ("sandbox", "production"):
+            raise ActionError(protocol.E_USAGE, "推送环境只能是 sandbox 或 production")
         device = remote_config.touch_device(
             self.state,
             connection.device_public_key,
-            push_token=str(params.get("token") or ""),
-            push_env=str(params.get("env") or ""),
+            push_token=token,
+            push_env=env,
         )
+        self._sync_state_mtime()
         if device is None:
             raise ActionError(protocol.E_UNAUTHORIZED, "这台设备还没有和开发机配对")
         return {"ok": True}
@@ -358,7 +590,7 @@ def _key(params: dict) -> str:
     return key
 
 
-def _int_param(params: dict, name: str, default: int) -> int:
+def _int_param(params: dict, name: str, default: int, *, max_value: int = 10_000) -> int:
     """把请求参数收成非负整数；坏值按 usage_error，避免 int() 把整条请求打成 500。"""
     raw = params.get(name, default)
     if raw is None or raw == "":
@@ -367,7 +599,9 @@ def _int_param(params: dict, name: str, default: int) -> int:
         value = int(raw)
     except (TypeError, ValueError) as exc:
         raise ActionError(protocol.E_USAGE, f"参数 {name} 必须是整数") from exc
-    return max(0, value)
+    if value < 0:
+        return 0
+    return min(value, max_value)
 
 
 def protocol_version() -> int:

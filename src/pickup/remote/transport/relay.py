@@ -6,6 +6,9 @@
 
 断线重连用指数退避，上限一分钟：开发机可能在合盖、换网、路由重启之间反复掉线，
 死磕重连既没意义又会给中继带来无谓压力。
+
+开发机侧自设通道上限与建通道速率——不把记账交给中继，中继被攻破或被替换时
+也不能靠灌 CHANNEL_OPEN 把本机线程打满。
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ import json
 import random
 
 from pickup import __version__, observe
-from pickup.remote import protocol
+from pickup.remote import protocol, ratelimit
 from pickup.remote.config import RemoteState
 from pickup.remote.service import RemoteService
 from pickup.remote.transport.channel import HostChannel
@@ -24,6 +27,8 @@ from pickup.remote.transport.channel import HostChannel
 _INITIAL_BACKOFF = 1.0
 _MAX_BACKOFF = 60.0
 _PING_INTERVAL = 20.0
+# 正常用户个位数手机；略大于中继侧 16，给瞬断重连留余量，但仍是硬顶
+_MAX_CHANNELS = 8
 
 _MISSING_WS_HINT = (
     "手机端接力需要额外的网络组件。请执行：pip install 'pickup[remote]'\n"
@@ -95,8 +100,10 @@ class RelayClient:
             backoff = min(backoff * 2, _MAX_BACKOFF)
 
     def _headers(self) -> dict:
+        # 路由用公开的 routing_id；鉴权仍用 host_token
+        host_header = self.state.routing_id or self.state.host_id
         return {
-            "X-Pickup-Host": self.state.host_id,
+            "X-Pickup-Host": host_header,
             "X-Pickup-Host-Name": self.state.host_name,
             "X-Pickup-Version": __version__,
             "Authorization": f"Bearer {self.state.host_token}",
@@ -129,12 +136,20 @@ class RelayClient:
             self._close_channel(channel_id)
         elif frame_type in (protocol.FRAME_HELLO, protocol.FRAME_DATA):
             channel = self._channels.get(channel_id) or self._open_channel(channel_id)
+            if channel is None:
+                return
             channel.submit(frame_type, payload)
 
-    def _open_channel(self, channel_id: bytes) -> HostChannel:
+    def _open_channel(self, channel_id: bytes) -> HostChannel | None:
         existing = self._channels.get(channel_id)
         if existing is not None:
             return existing
+        if len(self._channels) >= _MAX_CHANNELS:
+            observe.event("remote_channel_limit", count=len(self._channels))
+            return None
+        if not ratelimit.CHANNEL_OPENS.allow_request(self.state.host_id or "host"):
+            observe.event("remote_channel_rate_limited")
+            return None
         channel = HostChannel(
             self.service,
             self.static_private,

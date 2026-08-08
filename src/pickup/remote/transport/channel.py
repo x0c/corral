@@ -2,12 +2,17 @@
 
 一条 WebSocket 长连接上可能同时跑着多台设备（同一台开发机可以配多部手机），
 所以帧里带 16 字节的通道标识，本类对应其中一条。
+
+**密钥确认**：握手阶段对端自称的长期公钥还不足以授权——公钥在局域网明文与中继
+上都可见，任何人都能重放 HELLO。必须等对端用派生出的会话密钥发出第一条可解密
+帧，才证明它持有对应私钥，此时才 `attach` 并写盘。
 """
 
 from __future__ import annotations
 
 import queue
 import threading
+import time
 
 from pickup import observe
 from pickup.remote import protocol
@@ -15,6 +20,8 @@ from pickup.remote.crypto import ChannelError, Handshake
 from pickup.remote.service import Connection, RemoteService
 
 _STOP = object()
+# 首条密文若带毫秒时间戳，允许的时钟偏差（防重放 HELLO+旧 DATA）
+_CONFIRM_SKEW_MS = 5 * 60 * 1000
 
 
 class HostChannel:
@@ -36,25 +43,37 @@ class HostChannel:
         writer,
         *,
         address: str = "",
+        close_transport=None,
     ) -> None:
         self.service = service
         self.channel_id = channel_id
         self._writer = writer
         self._address = address
+        self._close_transport = close_transport
         self._handshake = Handshake(static_private)
         self._secure = None
         self._connection: Connection | None = None
+        self._pending_device_key: str = ""
+        self._confirmed = False
         self._lock = threading.Lock()
         self._queue: queue.Queue = queue.Queue(maxsize=256)
-        self._worker = threading.Thread(target=self._run, daemon=True, name="remote-channel")
-        self._worker.start()
+        # 延迟到首帧再起线程：避免中继灌未知通道号时「建对象即占 OS 线程」
+        self._worker: threading.Thread | None = None
 
     @property
     def ready(self) -> bool:
-        return self._secure is not None
+        return self._secure is not None and self._confirmed
+
+    def _ensure_worker(self) -> None:
+        if self._worker is not None:
+            return
+        worker = threading.Thread(target=self._run, daemon=True, name="remote-channel")
+        self._worker = worker
+        worker.start()
 
     def submit(self, frame_type: int, payload: bytes) -> None:
         """由网络侧调用，把一帧交给工作线程。队列满说明手机端在灌数据，直接断开。"""
+        self._ensure_worker()
         try:
             self._queue.put_nowait((frame_type, payload))
         except queue.Full:
@@ -97,16 +116,47 @@ class HostChannel:
         secure = self._handshake.accept(device_static, device_eph)
         self._writer(protocol.FRAME_HELLO, self._handshake.ephemeral_public)
         self._secure = secure
-        self._connection = Connection(device_key_hex, self._send_message, address=self._address)
-        self.service.attach(self._connection)
+        self._pending_device_key = device_key_hex
+        # 故意不 attach：等第一条可解密密文完成密钥确认
 
     def _on_data(self, payload: bytes) -> None:
-        if self._secure is None or self._connection is None:
+        if self._secure is None:
             raise ChannelError("尚未握手")
         with self._lock:
             plaintext = self._secure.decrypt(payload)
         message = protocol.loads(plaintext)
+        if not self._confirmed:
+            self._confirm_and_attach(message)
+        if self._connection is None:
+            raise ChannelError("通道未确认")
         self.service.handle(self._connection, message)
+
+    def _confirm_and_attach(self, message: dict) -> None:
+        """首条可解密帧 = 密钥确认。可选校验毫秒时间戳防重放。"""
+        ts = message.get("ts")
+        if ts is None and isinstance(message.get("p"), dict):
+            ts = message["p"].get("ts")
+        if ts is not None:
+            try:
+                ts_ms = int(float(ts))
+                # 兼容秒级时间戳
+                if ts_ms < 10_000_000_000:
+                    ts_ms *= 1000
+                now_ms = int(time.time() * 1000)
+                if abs(now_ms - ts_ms) > _CONFIRM_SKEW_MS:
+                    raise ChannelError("握手确认时间戳超出允许范围")
+            except (TypeError, ValueError) as exc:
+                raise ChannelError("握手确认时间戳不合法") from exc
+        connection = Connection(
+            self._pending_device_key,
+            self._send_message,
+            address=self._address,
+        )
+        connection.close_hook = self.close
+        self._connection = connection
+        self._confirmed = True
+        self.service.attach(connection)
+        observe.event("remote_channel_confirmed", address=self._address)
 
     def _send_message(self, message: dict) -> None:
         if self._secure is None:
@@ -120,7 +170,13 @@ class HostChannel:
             self.service.detach(self._connection)
             self._connection = None
         self._secure = None
+        self._confirmed = False
         try:
             self._queue.put_nowait(_STOP)
         except queue.Full:
             pass
+        if self._close_transport is not None:
+            try:
+                self._close_transport()
+            except Exception:
+                pass

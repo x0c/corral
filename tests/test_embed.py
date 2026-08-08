@@ -457,6 +457,12 @@ class ControlModeTests(unittest.TestCase):
         self.assertEqual(embed._ctl_quote("a\\b"), '"a\\\\b"')
         self.assertEqual(embed._ctl_quote(" "), '" "')  # 空格不在安全集，需包裹
 
+    def test_ctl_quote_rejects_newlines(self):
+        with self.assertRaises(embed.ControlQuoteError):
+            embed._ctl_quote("Enter\nrun-shell id")
+        with self.assertRaises(embed.ControlQuoteError):
+            embed._ctl_quote("a\rb")
+
     def test_sgr_mouse_sequence(self):
         self.assertEqual(embed.sgr_mouse_sequence(64, 5, 3), "\x1b[<64;5;3M")
         self.assertEqual(embed.sgr_mouse_sequence(65, 1, 1), "\x1b[<65;1;1M")

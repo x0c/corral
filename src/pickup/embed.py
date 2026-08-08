@@ -488,12 +488,24 @@ _CTL_SAFE = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./:%@=+,^")
 
 
+class ControlQuoteError(ValueError):
+    """控制模式参数含换行或危险控制字节——拒绝拼接，防止注入第二条命令。"""
+
+
 def _ctl_quote(arg: str) -> str:
     """控制模式命令行参数转义：干净 ASCII 原样通过，其余双引号包裹并转义 \\ " $ `。
 
-    参数不得含换行（行协议按行分隔命令）；ESC/BEL 等控制字节在双引号内字面有效
-    （refresh -r 的 OSC 应答序列就靠这个透传）。
+    参数不得含换行（行协议按行分隔命令）。含 ``\\n`` / ``\\r`` 或其它 C0 控制字节
+    （除 ESC/BEL，供 refresh -r 的 OSC 透传）时直接抛错，由调用方回退外部子进程，
+    绝不把它们写进控制通道——否则一行参数就能另起一条 ``run-shell``。
     """
+    if any(ch in arg for ch in "\n\r"):
+        raise ControlQuoteError("控制模式参数不能包含换行")
+    # 允许 ESC(\\x1b) 与 BEL(\\x07) 用于 OSC 应答；其余 C0 一律拒绝
+    for ch in arg:
+        code = ord(ch)
+        if code < 32 and ch not in "\x1b\x07":
+            raise ControlQuoteError("控制模式参数含非法控制字符")
     if arg and all(c in _CTL_SAFE for c in arg):
         return arg
     return '"' + (arg.replace("\\", "\\\\").replace('"', '\\"')
@@ -735,7 +747,11 @@ class ControlChannel:
         return self._send_command(cmd, None)
 
     def command(self, *args: str) -> bool:
-        return self.send(" ".join(_ctl_quote(a) for a in args))
+        try:
+            return self.send(" ".join(_ctl_quote(a) for a in args))
+        except ControlQuoteError:
+            # 参数不适合控制通道：返回 False，让上层走外部 fork（argv 数组无行注入）
+            return False
 
     def request(self, *args: str, timeout: float = _CALL_TIMEOUT) -> list[str] | None:
         """同步发命令并等待其 %begin…%end/%error 响应块，返回块内文本行列表。
@@ -748,7 +764,10 @@ class ControlChannel:
         if self.dead:
             return None
         waiter: queue.Queue[tuple[bool, list[str]]] = queue.Queue(maxsize=1)
-        cmd = " ".join(_ctl_quote(a) for a in args)
+        try:
+            cmd = " ".join(_ctl_quote(a) for a in args)
+        except ControlQuoteError:
+            return None
         if not self._send_command(cmd, waiter):
             return None
         try:

@@ -6,7 +6,7 @@ import os
 import tempfile
 import unittest
 
-from pickup.remote import protocol
+from pickup.remote import protocol, ratelimit
 from pickup.remote.service import Connection, RemoteService
 
 
@@ -87,7 +87,7 @@ class FakeHub:
     def delete_session(self, key: str) -> None:
         self._record("delete_session", key)
 
-    def new_session(self, runtime_id: str, cwd: str | None):
+    def new_session(self, runtime_id: str, cwd: str | None, *, whitelist=None):
         self._record("new_session", runtime_id, cwd)
         return {"key": "codex:new", "title": "新会话"}
 
@@ -111,6 +111,11 @@ class RemoteActionTests(unittest.TestCase):
         self._old_cache = os.environ.get("PICKUP_CACHE_DIR")
         os.environ["PICKUP_CACHE_DIR"] = self._tmp.name
         self.addCleanup(self._restore_cache)
+        ratelimit.PAIR_ATTEMPTS.reset()
+        ratelimit.PAIR_ATTEMPTS_HOURLY.reset()
+        ratelimit.INPUT_ACTIONS.reset()
+        ratelimit.SESSION_CREATE.reset()
+        ratelimit.PUSH_REGISTER.reset()
 
         self.hub = FakeHub()
         self.service = RemoteService(self.hub)  # type: ignore[arg-type]
@@ -159,10 +164,13 @@ class RemoteActionTests(unittest.TestCase):
 
     def test_new_session(self) -> None:
         connection = self._pair()
-        reply = self._call(connection, protocol.M_SESSION_NEW, {"runtime": "codex", "cwd": "/tmp"})
-        self.assertTrue(reply["ok"])
+        # cwd 必须是已知项目路径（FakeHub.projects 里是 /Codes/demo）
+        reply = self._call(
+            connection, protocol.M_SESSION_NEW, {"runtime": "codex", "cwd": "/Codes/demo"}
+        )
+        self.assertTrue(reply["ok"], reply)
         self.assertEqual(reply["d"]["session"]["key"], "codex:new")
-        self.assertEqual(self.hub.calls, [("new_session", ("codex", "/tmp"))])
+        self.assertEqual(self.hub.calls, [("new_session", ("codex", "/Codes/demo"))])
 
     def test_resume_session(self) -> None:
         connection = self._pair()
@@ -184,10 +192,14 @@ class RemoteActionTests(unittest.TestCase):
 
     def test_stop_and_delete(self) -> None:
         connection = self._pair()
-        stop = self._call(connection, protocol.M_SESSION_STOP, {"key": "codex:abc"})
-        delete = self._call(connection, protocol.M_SESSION_DELETE, {"key": "codex:abc"})
-        self.assertTrue(stop["ok"])
-        self.assertTrue(delete["ok"])
+        stop = self._call(
+            connection, protocol.M_SESSION_STOP, {"key": "codex:abc", "confirm": True}
+        )
+        delete = self._call(
+            connection, protocol.M_SESSION_DELETE, {"key": "codex:abc", "confirm": True}
+        )
+        self.assertTrue(stop["ok"], stop)
+        self.assertTrue(delete["ok"], delete)
         self.assertIn(("stop_session", ("codex:abc",)), self.hub.calls)
         self.assertIn(("delete_session", ("codex:abc",)), self.hub.calls)
 

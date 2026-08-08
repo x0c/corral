@@ -5,6 +5,8 @@
 同一套端到端加密），区别只是这一条连接是手机主动连进来的。
 
 内容加密照旧：即使有人在同一个 Wi-Fi 上，没有配对过就拿不到会话密钥。
+
+Origin 只接受「无 Origin」（原生客户端）；浏览器跨站 WebSocket 一律拒绝。
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import contextlib
 import socket
 
 from pickup import observe
-from pickup.remote import protocol
+from pickup.remote import protocol, ratelimit
 from pickup.remote.config import RemoteState
 from pickup.remote.crypto import random_id
 from pickup.remote.service import RemoteService
@@ -22,6 +24,7 @@ from pickup.remote.transport.channel import HostChannel
 from pickup.remote.transport.relay import _websockets
 
 _DEFAULT_PORT = 8737
+_MAX_LOCAL_CHANNELS = 8
 
 
 class LocalServer:
@@ -33,15 +36,26 @@ class LocalServer:
         self.static_private = static_private
         self.port = 0
         self._server = None
+        self._channels = 0
+        self._channels_lock = asyncio.Lock()
+        self.listen_failed = False
 
     async def run(self, stop: asyncio.Event) -> None:
         websockets = _websockets()
         port = self.state.local_port or _DEFAULT_PORT
         try:
+            # origins=[None]：只接受没有 Origin 头的握手（iOS/原生客户端）；
+            # 浏览器跨站一定会带 Origin，会被库直接拒掉。
             self._server = await websockets.serve(
-                self._handle, "0.0.0.0", port, max_size=8 * 1024 * 1024, ping_interval=20
+                self._handle,
+                "0.0.0.0",
+                port,
+                max_size=8 * 1024 * 1024,
+                ping_interval=20,
+                origins=[None],
             )
         except OSError as exc:
+            self.listen_failed = True
             observe.event("remote_local_listen_failed", port=port, error=str(exc))
             return
         self.port = next(
@@ -56,11 +70,28 @@ class LocalServer:
                 await self._server.wait_closed()
 
     async def _handle(self, socket_conn) -> None:
+        if not ratelimit.CHANNEL_OPENS.allow_request("local"):
+            observe.event("remote_local_rate_limited")
+            with contextlib.suppress(Exception):
+                await socket_conn.close()
+            return
+        async with self._channels_lock:
+            if self._channels >= _MAX_LOCAL_CHANNELS:
+                observe.event("remote_local_channel_limit")
+                with contextlib.suppress(Exception):
+                    await socket_conn.close()
+                return
+            self._channels += 1
         loop = asyncio.get_running_loop()
         channel_id = bytes.fromhex(random_id(protocol.CHANNEL_ID_LEN))
         address = ""
         with contextlib.suppress(Exception):
             address = str(socket_conn.remote_address[0])
+        closed = asyncio.Event()
+
+        def _close_transport() -> None:
+            asyncio.run_coroutine_threadsafe(_close_ws(socket_conn, closed), loop)
+
         channel = HostChannel(
             self.service,
             self.static_private,
@@ -69,12 +100,15 @@ class LocalServer:
                 _send(socket_conn, protocol.encode_frame(frame_type, channel_id, payload)), loop
             ),
             address=address,
+            close_transport=_close_transport,
         )
         # 直连时也先发一次通道分配，让手机端的收包逻辑与走中继时完全一致——
         # 客户端不必为两种连接方式各写一套。
         await _send(socket_conn, protocol.encode_frame(protocol.FRAME_DEVICE_OPEN, channel_id, b""))
         try:
             async for raw in socket_conn:
+                if closed.is_set():
+                    break
                 if isinstance(raw, str):
                     continue
                 try:
@@ -87,6 +121,16 @@ class LocalServer:
             pass
         finally:
             channel.close()
+            async with self._channels_lock:
+                self._channels = max(0, self._channels - 1)
+
+
+async def _close_ws(socket_conn, closed: asyncio.Event) -> None:
+    if closed.is_set():
+        return
+    closed.set()
+    with contextlib.suppress(Exception):
+        await socket_conn.close()
 
 
 async def _send(socket_conn, frame: bytes) -> None:

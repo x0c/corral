@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+import time
 
 from pickup import observe
 from pickup.remote import config as remote_config
@@ -17,6 +18,8 @@ from pickup.remote.service import RemoteService
 from pickup.remote.sessions import SessionHub
 from pickup.remote.transport.local import LocalServer
 from pickup.remote.transport.relay import RelayClient
+
+_RECONCILE_INTERVAL = 2.0
 
 
 class RemoteDaemon:
@@ -51,15 +54,41 @@ class RemoteDaemon:
             tasks.append(asyncio.create_task(self.local.run(stop)))
         if not tasks:
             raise RuntimeError("中继和局域网直连都被关掉了，服务没有任何入口")
+        tasks.append(asyncio.create_task(self._reconcile_loop(stop)))
         try:
             await stop.wait()
+            # 局域网若宣称开启却监听失败，给用户一个看得见的事件（进程不退出，中继仍可用）
+            if self.local is not None and self.local.listen_failed:
+                observe.event("remote_local_unavailable", port=self.state.local_port)
         finally:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.to_thread(self.hub.stop)
             remote_config.clear_pid()
+            remote_config.clear_status_snapshot()
             observe.event("remote_stopped")
+
+    async def _reconcile_loop(self, stop: asyncio.Event) -> None:
+        """定期把磁盘上的设备清单对到在线连接：unpair 后最多两秒内踢掉。"""
+        while not stop.is_set():
+            try:
+                await asyncio.to_thread(self._reconcile_once)
+            except Exception:
+                pass
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=_RECONCILE_INTERVAL)
+
+    def _reconcile_once(self) -> None:
+        self.service.reconcile_devices()
+        # 给另一进程的 `pickup remote status` 看：谁在线、最近干了啥
+        remote_config.write_status_snapshot(
+            {
+                "updated_at": time.time(),
+                "online": self.service.online_devices(),
+                "recent": self.service.recent_audit(12),
+            }
+        )
 
     @property
     def local_port(self) -> int:

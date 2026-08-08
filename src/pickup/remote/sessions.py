@@ -519,12 +519,16 @@ class SessionHub:
         )
         return self.session_payload(session, self._layout())
 
-    def new_session(self, runtime_id: str, cwd: str | None) -> dict:
+    def new_session(
+        self, runtime_id: str, cwd: str | None, *, whitelist: list[str] | None = None
+    ) -> dict:
         runtime_id = str(runtime_id or "").strip()
         if not runtime_id:
             raise ActionError("usage_error", "请选择助手")
         if cwd is not None:
             cwd = str(cwd).strip() or None
+        if cwd:
+            self._assert_cwd_allowed(cwd, whitelist or [])
         if not embed.available():
             raise ActionError("unavailable", "开发机上没有装 tmux，无法从手机启动会话")
         try:
@@ -536,6 +540,44 @@ class SessionHub:
         title = f"{runtime.display_name} · 新会话"
         del request  # 结构体只用于表达意图，实际启动只需要计划本身
         return self._host(plan, runtime_id, title, cwd)
+
+    def _assert_cwd_allowed(self, cwd: str, whitelist: list[str]) -> None:
+        """新建会话的工作目录必须落在已知项目或用户白名单内。"""
+        import os
+        from pathlib import Path
+
+        try:
+            target = str(Path(cwd).expanduser().resolve())
+        except OSError as exc:
+            raise ActionError("usage_error", "项目路径无效") from exc
+        allowed: set[str] = set()
+        for entry in self.projects():
+            for key in ("path", "cwd"):
+                raw = entry.get(key) or ""
+                if not raw:
+                    continue
+                try:
+                    allowed.add(str(Path(str(raw)).expanduser().resolve()))
+                except OSError:
+                    continue
+        for raw in whitelist:
+            try:
+                allowed.add(str(Path(str(raw)).expanduser().resolve()))
+            except OSError:
+                continue
+        if target in allowed:
+            return
+        # 也允许已知项目的子目录
+        for root in allowed:
+            try:
+                if os.path.commonpath([target, root]) == root:
+                    return
+            except ValueError:
+                continue
+        raise ActionError(
+            "usage_error",
+            "只能在已知项目或已配置的目录里新建会话",
+        )
 
     def resume_session(self, key: str) -> dict:
         """原生恢复：用助手自己的恢复命令重开这条会话，历史完整延续。"""

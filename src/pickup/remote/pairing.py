@@ -22,7 +22,8 @@ def build_payload(state: RemoteState, code: str, public_key: bytes, local_port: 
 
     params = {
         "v": "1",
-        "h": state.host_id,
+        # 公开路由标识：手机靠它找中继上的开发机；与可轮换的注册凭据分离
+        "h": state.routing_id or state.host_id,
         "n": state.host_name,
         "k": base64.urlsafe_b64encode(public_key).decode().rstrip("="),
         "c": code,
@@ -41,7 +42,7 @@ def as_json(state: RemoteState, code: str, public_key: bytes, local_port: int = 
     return json.dumps(
         {
             "url": build_payload(state, code, public_key, local_port),
-            "host_id": state.host_id,
+            "host_id": state.routing_id or state.host_id,
             "host_name": state.host_name,
             "code": code,
             "public_key": public_key.hex(),
