@@ -172,13 +172,15 @@ class SessionHub:
         if layout is not None:
             group = layout.get_group(key)
             if group is not None:
+                pinned_groups = getattr(layout, "pinned_group_ids", {}) or {}
                 payload["group"] = {
-                    "id": group.id,
+                    "id": group.group_id,
                     "name": group.name,
                     "emoji": group_emoji(group.name),
-                    "pinned": bool(getattr(group, "pinned", False)),
+                    "pinned": group.group_id in pinned_groups,
                 }
-            payload["pinned"] = key in getattr(layout, "pinned_sessions", set())
+            pinned_sessions = getattr(layout, "pinned_session_keys", {}) or {}
+            payload["pinned"] = key in pinned_sessions
         return payload
 
     def list_sessions(self, query: str = "", limit: int = 0) -> list[dict]:
