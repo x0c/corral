@@ -5942,6 +5942,24 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIsInstance(app.screen, ConfirmModal)
         self.assertIsNone(app.return_value)
 
+    async def test_pane_restart_never_starts_external_session(self) -> None:
+        """右栏静态预览格回车同样不得另起外部会话的恢复进程（2026-08-08 裁定）。"""
+        store, registry = _make_store(sessions=self._external_sessions())
+        registry.build_launch_plan = mock.Mock(
+            side_effect=AssertionError("外部会话不该构造启动计划")
+        )
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.3)
+            pane = _primary_embed_pane(app.screen)
+            self.assertTrue(pane._is_restart_target())  # noqa: SLF001
+            app.screen.set_focus(pane)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause(delay=0.3)
+        self.assertIsNone(app.return_value)
+        registry.build_launch_plan.assert_not_called()
+
     async def test_transcript_keeps_being_reloaded_while_running_elsewhere(self) -> None:
         """助手仍在写历史 → mtime 变、缓存失效；右栏必须自己补读，否则正文会空掉。"""
         store, _registry = _make_store(sessions=self._external_sessions())

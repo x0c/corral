@@ -183,3 +183,5 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 python3 scripts/benchmark.py
 PICKUP_NATIVE=0 python3 scripts/benchmark.py
 python3 -c "import time; from pickup.runtime import default_registry; r
+
+<!-- 该文档整理/压缩于 2026-08-08 -->

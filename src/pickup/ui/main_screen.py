@@ -875,8 +875,8 @@ class MainScreen(
     async def _restart_session_from_pane(self, session_key: str, dead: bool) -> None:
         """右栏静态预览格 / 已结束格上按回车：就地把这条会话重新拉起来。
 
-        与侧边栏回车走的是同一条启动路径（含"在别的窗口跑"的二次确认），区别只是
-        触发入口在右栏——已结束会话的右栏往往是用户当下唯一在看的地方。
+        与侧边栏回车走的是同一条启动路径，区别只是触发入口在右栏——已结束会话
+        的右栏往往是用户当下唯一在看的地方。
         """
         import pickup
 
@@ -885,6 +885,11 @@ class MainScreen(
             # 占位卡（接力 / 空白新建还没落盘历史就退出了）没有可恢复的会话，
             # 拿它去生成启动计划只会失败；这条会话卡本身下一轮重扫也会消失。
             self.app.bell()
+            return
+        if is_external_running(session):
+            # 外部窗口仍在写同一段历史时，只保留已经显示的静态预览；不能另起恢复
+            # 进程，既避免历史竞争，也不以确认弹窗打断用户（2026-08-08 裁定）。
+            self._focus_list()
             return
         if dead:
             # 这一格里的会话刚跑完退出，但 store 里的托管标记要等下一轮重扫才撤。
