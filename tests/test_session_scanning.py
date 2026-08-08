@@ -2550,6 +2550,12 @@ class TuiLayoutTests(unittest.TestCase):
             self.assertEqual(store.get_conversation(session)[0].text, "新内容")
             self.assertEqual(runtime.load_conversation.call_count, 2)
 
+            # 会话写入期（活跃中）缓存再次失效：严格模式返回 None，stale_ok
+            # 模式保留旧内容，让详情预览不闪「正在读取对话内容…」空态。
+            session["mtime"] = session["mtime"] + 60
+            self.assertIsNone(store.peek_conversation(session))
+            self.assertEqual(store.peek_conversation(session, stale_ok=True)[0].text, "新内容")
+
     def test_live_session_conversation_is_not_written_to_disk_cache(self) -> None:
         """还在写的会话不落盘：签名每写一次就变，落盘只是白写。
 

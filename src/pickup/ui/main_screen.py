@@ -257,6 +257,8 @@ class MainScreen(
         self._hud_expanded = True
         self._hud_cache: dict[str, object] = {}
         self._hud_warm_at: dict[str, float] = {}
+        # 静态详情预览的续温节流表（会话写入期按 _PREVIEW_WARM_INTERVAL 重解析）。
+        self._preview_warm_at: dict[str, float] = {}
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -513,6 +515,38 @@ class MainScreen(
         if self.store.dirty.is_set():
             self.store.dirty.clear()
             self.call_next(self._rebuild_list)
+        self._sustain_preview_warm()
+
+    # 详情预览在会话活跃写入期的续温节流间隔：会话每写一条历史，缓存版本就
+    # 作废一次；对正在看的预览会话按此间隔在后台重新解析，让右栏跟着会话走，
+    # 而不是一路停留在「正在读取对话内容…」空态。
+    _PREVIEW_WARM_INTERVAL = 2.0
+
+    def _sustain_preview_warm(self) -> None:
+        """当前右侧静态详情预览的会话若缓存已失效（会话正在写入），节流地后台
+        重新解析；其余场景（托管格、无预览）不动作。"""
+        if not self.embed_ok:
+            return
+        try:
+            area = self._split_area()
+        except Exception:
+            return
+        import time as _time
+
+        now = _time.monotonic()
+        for spec in area.pane_specs():
+            if spec.keepalive_name:
+                continue
+            session = self.store.find_session(spec.session_key)
+            if session is None:
+                continue
+            if self.store.peek_conversation(session) is not None:
+                continue
+            # 首次（从未解析过）立即重解析；之后按节流间隔限频。
+            if now - self._preview_warm_at.get(spec.session_key, float("-inf")) < self._PREVIEW_WARM_INTERVAL:
+                continue
+            self._preview_warm_at[spec.session_key] = now
+            self._warm_conversation(session, self._preview_gen)
 
     async def _rebuild_list(self, select_key: str | None = None) -> None:
         async with self._rebuild_lock:
@@ -718,11 +752,11 @@ class MainScreen(
         # 已不是 Store 当前对象，必须每次按稳定会话键重新解析最新快照。
         session = self.store.find_session(pickup.session_key(session)) or session
         head = self._detail_header(session)
-        messages = self.store.peek_conversation(session)
+        messages = self.store.peek_conversation(session, stale_ok=True)
         if messages is None:
-            # 缓存还没就绪（或刚被会话自身更新作废）时给个占位，避免渲染出
-            # 「只有表头、正文一片空白」的裸状态被误当成产品缺陷（共享库场景
-            # 下别的会话写入只影响各自的缓存，这里很快会被 warm 补齐）。
+            # 从未加载过时才显示占位（加载在 _warm_conversation 里异步补齐）；
+            # 已加载过但刚被会话自身写入作废的，继续渲染旧内容直到后台重新解析
+            # 完成（会话活跃期不会再闪回「正在读取对话内容…」空态）。
             return Group(head, Text(t("detail.loading_preview"), style="dim"))
         runtime = self.store.registry.get(str(session.get("source") or ""))
         width = self._preview_width(pickup.session_key(session))

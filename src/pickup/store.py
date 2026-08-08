@@ -847,13 +847,24 @@ class SessionStore:
             get_cache().put_conversation(runtime_id, key, path, list(messages))
         return messages
 
-    def peek_conversation(self, session: dict) -> list[ConversationMessage] | None:
-        """若缓存仍有效则返回对话副本，否则返回 None（不触发磁盘读取）。"""
+    def peek_conversation(
+        self, session: dict, *, stale_ok: bool = False
+    ) -> list[ConversationMessage] | None:
+        """若缓存仍有效则返回对话副本，否则返回 None（不触发磁盘读取）。
+
+        `stale_ok=True` 时，缓存有内容但版本已随历史写入失效的情况下返回旧副本——
+        给详情预览这类「宁可短暂显示旧内容，也不要在会话活跃期反复闪「正在读取…」
+        占位」的调用方用；关心新鲜度的调用方（如关注已读判定）保持严格模式。
+        """
         key = session_key(session)
         version = self._conversation_version(session)
         with self.lock:
             cached = self.conversations.get(key)
-            if cached is not None and cached[0] == version:
+            if cached is None:
+                return None
+            if cached[0] == version:
+                return list(cached[1])
+            if stale_ok:
                 return list(cached[1])
         return None
 

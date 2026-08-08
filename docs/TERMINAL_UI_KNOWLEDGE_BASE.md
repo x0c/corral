@@ -233,7 +233,7 @@ stateDiagram-v2
 | 本地文件 / 环境 / 内存状态 | 入口 | 业务语义 | 改动注意 |
 |---|---|---|---|
 | `~/.cache/pickup/titles.json` | `titles.CACHE_FILE`，由 `SessionStore.poll_cache_updates()` 读取 | 会话标题缓存与标题生成状态 | 写入方必须保持原子替换；界面仅轮询读取，不能在渲染线程生成标题或覆写缓存 |
-| 历史文件的 mtime | `SessionStore.conversations`、`get_conversation()` | 对话预览缓存的失效依据 | 路径 mtime 改变才重读；不要把旧详情闭包长期当作最新会话 |
+| 历史文件的 mtime | `SessionStore.conversations`、`get_conversation()` | 对话预览缓存的失效依据 | 路径 mtime 改变才重读；不要把旧详情闭包长期当作最新会话。**例外：OpenCode 全部会话共用同一个 `opencode.db`，任何会话写入都会带动文件 mtime——共享库会话的缓存改按「会话自身更新时间」（扫描时从 db session 行带出的毫秒时间戳）判失效**，否则别的会话一写，所有预览缓存连带作废、正文只剩表头（2026-08-08 实报修复，回归：`test_shared_db_session_cache_not_invalidated_by_other_sessions`） |
 | 进程内会话快照 | `SessionStore.sessions`、`_order`、`hosted`、`_force_ended` | 列表数据、稳定展示顺序、托管兜底和刚结束状态 | 扫描结果替换字典对象；界面必须按稳定会话键重新取最新对象 |
 | `PICKUP_LANG` 与 locale | `i18n.detect_lang()` | 终端界面的语言选择 | 优先级为 `PICKUP_LANG`、`LC_ALL`、`LC_MESSAGES`、`LANG`、`LANGUAGE`；机器接口不翻译 |
 | `PICKUP_DEBUG` / `PICKUP_LOG` | `observe.init()` | 是否记录额外界面诊断事件 | 日志应脱敏，不能把对话正文或启动参数写入 |

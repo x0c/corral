@@ -6395,5 +6395,73 @@ class SessionHudGatingTests(unittest.TestCase):
         self.assertTrue(screen._hud_expanded)  # noqa: SLF001 — 默认展开且无面板时不改状态
 
 
+class PreviewSustainWarmTests(unittest.TestCase):
+    """静态详情预览在会话活跃写入期的续温：缓存随 mtime 失效后，按节流间隔
+    后台重新解析，而不是一路停留在「正在读取对话内容…」空态。"""
+
+    def _make_preview(
+        self, *, keepalive: str | None = None,
+    ) -> tuple[object, object, mock.Mock, dict]:
+        import tempfile
+        import types
+
+        from pickup.ui.main_screen import MainScreen
+
+        store, _ = _make_store()
+        screen = MainScreen(store, embed_ok=True)
+        session = store.find_session("claude:s0")
+        assert session is not None
+        # 单文件运行时的版本签名依赖 path 的 stat，给会话挂一个真实文件：
+        # 先让缓存有内容，再把 mtime 推前模拟「会话又写了一条」，制造版本失效。
+        path = tempfile.NamedTemporaryFile(delete=False, suffix=".jsonl")
+        path.close()
+        session["path"] = path.name
+        try:
+            store.get_conversation(session)
+            future = os.stat(path.name).st_mtime + 3600
+            os.utime(path.name, (future, future))
+
+            spec = types.SimpleNamespace(
+                session_key="claude:s0", keepalive_name=keepalive,
+            )
+            area = mock.Mock()
+            area.pane_specs.return_value = [spec]
+            screen._preview_warm_at = {}  # noqa: SLF001 — 每例独立节流表
+            return store, screen, area, spec
+        finally:
+            os.unlink(path.name)
+
+    def test_missed_preview_warm_is_throttled(self) -> None:
+        from pickup.ui.main_screen import MainScreen
+
+        store, screen, area, spec = self._make_preview()
+        with mock.patch.object(MainScreen, "_split_area", return_value=area), mock.patch.object(
+            MainScreen, "_warm_conversation"
+        ) as warm:
+            screen._sustain_preview_warm()  # noqa: SLF001
+            screen._sustain_preview_warm()  # noqa: SLF001 — 节流窗口内不重复解析
+            self.assertEqual(warm.call_count, 1)
+            # 越过节流窗口后再次失效，应继续后台解析。
+            screen._preview_warm_at["claude:s0"] -= screen._PREVIEW_WARM_INTERVAL + 1  # noqa: SLF001
+            screen._sustain_preview_warm()  # noqa: SLF001
+            self.assertEqual(warm.call_count, 2)
+            # 记录解析后下一次会话已读到新版本（缓存有效），不再触发。
+            session = store.find_session("claude:s0")
+            assert session is not None
+            store.get_conversation(session)
+            screen._sustain_preview_warm()  # noqa: SLF001
+            self.assertEqual(warm.call_count, 2)
+
+    def test_keepalive_pane_never_triggers_rewarm(self) -> None:
+        from pickup.ui.main_screen import MainScreen
+
+        store, screen, area, spec = self._make_preview(keepalive="pickup-claude-abc")
+        with mock.patch.object(MainScreen, "_split_area", return_value=area), mock.patch.object(
+            MainScreen, "_warm_conversation"
+        ) as warm:
+            screen._sustain_preview_warm()  # noqa: SLF001 — 托管格由 embed 画面负责，不续温
+            warm.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
