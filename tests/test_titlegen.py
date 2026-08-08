@@ -46,6 +46,23 @@ class ResolveGeneratorTests(unittest.TestCase):
             generator = titlegen.resolve_generator()
         self.assertEqual(generator.id, "claude")
 
+    def test_available_generators_covers_all_runtimes_in_registry_order(self) -> None:
+        """本机五家助手都在时，标题后端顺序与 default_registry 一致。"""
+        names = {"claude", "codex", "opencode", "kimi", "agent"}
+        with mock.patch.object(titlegen.shutil, "which", side_effect=_which(names)), \
+                mock.patch.dict(os.environ, _NO_ENV):
+            generators = titlegen.available_generators()
+        self.assertEqual(
+            [generator.id for generator in generators],
+            ["claude", "codex", "opencode", "kimi", "cursor"],
+        )
+
+    def test_cursor_generator_accepts_cursor_agent_alias(self) -> None:
+        with mock.patch.object(titlegen.shutil, "which", side_effect=_which({"cursor-agent"})), \
+                mock.patch.dict(os.environ, _NO_ENV):
+            generators = titlegen.available_generators()
+        self.assertEqual([generator.id for generator in generators], ["cursor"])
+
     def test_available_generators_keeps_configured_choice_first_with_fallback(self) -> None:
         with mock.patch.object(titlegen.shutil, "which", side_effect=_which({"claude", "codex"})), \
                 mock.patch.dict(os.environ, {**_NO_ENV, titlegen.ENV_GENERATOR: "codex"}):
@@ -101,6 +118,75 @@ class ClaudeGeneratorTests(unittest.TestCase):
         with mock.patch.object(titlegen.subprocess, "run", side_effect=OSError()), \
                 mock.patch.dict(os.environ, _NO_ENV):
             self.assertIsNone(titlegen.ClaudeTitleGenerator().generate("p", timeout=5))
+
+
+class OpenCodeGeneratorTests(unittest.TestCase):
+    def test_argv_uses_run_auto_and_prompt_arg(self) -> None:
+        calls: dict = {}
+
+        def fake_run(argv, **kwargs):
+            calls["argv"] = list(argv)
+            calls["input"] = kwargs.get("input")
+            return _FakeProc(stdout='{"claude:s1": "标题"}')
+
+        with mock.patch.object(titlegen.subprocess, "run", side_effect=fake_run), \
+                mock.patch.dict(os.environ, _NO_ENV):
+            out = titlegen.OpenCodeTitleGenerator().generate("prompt 内容", timeout=5)
+
+        self.assertEqual(calls["argv"], ["opencode", "run", "--auto", "prompt 内容"])
+        self.assertIsNone(calls["input"])
+        self.assertEqual(out, '{"claude:s1": "标题"}')
+
+
+class KimiGeneratorTests(unittest.TestCase):
+    def test_argv_uses_yolo_and_print(self) -> None:
+        calls: dict = {}
+
+        def fake_run(argv, **kwargs):
+            calls["argv"] = list(argv)
+            return _FakeProc(stdout='{"kimi:s1": "标题"}')
+
+        with mock.patch.object(titlegen.subprocess, "run", side_effect=fake_run), \
+                mock.patch.dict(os.environ, _NO_ENV):
+            out = titlegen.KimiTitleGenerator().generate("prompt 内容", timeout=5)
+
+        self.assertEqual(calls["argv"], ["kimi", "-y", "-p", "prompt 内容"])
+        self.assertEqual(out, '{"kimi:s1": "标题"}')
+
+
+class CursorGeneratorTests(unittest.TestCase):
+    def test_argv_uses_print_ask_mode_and_force(self) -> None:
+        calls: dict = {}
+
+        def fake_run(argv, **kwargs):
+            calls["argv"] = list(argv)
+            return _FakeProc(stdout='{"cursor:s1": "标题"}')
+
+        with mock.patch.object(titlegen.shutil, "which", side_effect=_which({"agent"})), \
+                mock.patch.object(titlegen.subprocess, "run", side_effect=fake_run), \
+                mock.patch.dict(os.environ, _NO_ENV):
+            out = titlegen.CursorTitleGenerator().generate("prompt 内容", timeout=5)
+
+        self.assertEqual(calls["argv"], [
+            "agent", "-p", "--mode", "ask", "--output-format", "text",
+            "--trust", "--force", "prompt 内容",
+        ])
+        self.assertEqual(out, '{"cursor:s1": "标题"}')
+
+    def test_prefers_agent_over_cursor_agent_alias(self) -> None:
+        calls: dict = {}
+
+        def fake_run(argv, **kwargs):
+            calls["argv"] = list(argv)
+            return _FakeProc(stdout="ok")
+
+        with mock.patch.object(
+            titlegen.shutil, "which", side_effect=_which({"agent", "cursor-agent"}),
+        ), mock.patch.object(titlegen.subprocess, "run", side_effect=fake_run), \
+                mock.patch.dict(os.environ, _NO_ENV):
+            titlegen.CursorTitleGenerator().generate("p", timeout=5)
+
+        self.assertEqual(calls["argv"][0], "agent")
 
 
 class CodexGeneratorTests(unittest.TestCase):
@@ -260,6 +346,42 @@ class RefreshTitlesGeneratorTests(unittest.TestCase):
         self.assertEqual(len(result), len(sessions))
         failed.generate.assert_called_once()
         self.assertEqual(fallback.generate.call_count, 2)
+
+    def test_later_batch_fails_over_when_selected_generator_dies(self) -> None:
+        """首批探测选定的生成器若中途失效，后续批次应自动切到下一候选。"""
+        primary = mock.Mock(spec=titlegen.TitleGenerator)
+        primary.id = "claude"
+        backup = mock.Mock(spec=titlegen.TitleGenerator)
+        backup.id = "opencode"
+        calls = {"claude": 0, "opencode": 0}
+
+        def generate_primary(prompt: str, timeout: int) -> str:
+            calls["claude"] += 1
+            if calls["claude"] > 1:
+                raise RuntimeError("首选额度用尽")
+            payload = json.loads(prompt.rsplit("\n\n", 1)[1])
+            return json.dumps(
+                {item["id"]: f"标题{item['id']}" for item in payload}, ensure_ascii=False,
+            )
+
+        def generate_backup(prompt: str, timeout: int) -> str:
+            calls["opencode"] += 1
+            payload = json.loads(prompt.rsplit("\n\n", 1)[1])
+            return json.dumps(
+                {item["id"]: f"备{item['id']}" for item in payload}, ensure_ascii=False,
+            )
+
+        primary.generate.side_effect = generate_primary
+        backup.generate.side_effect = generate_backup
+        sessions = [_session(f"s{i}") for i in range(titles._BATCH_SIZE + 1)]
+        with mock.patch.object(titlegen, "available_generators", return_value=(primary, backup)), \
+                mock.patch.object(titles, "_MAX_PARALLEL_BATCHES", 1), \
+                mock.patch.object(titles, "save_cache"):
+            result = titles.refresh_titles(sessions, {})
+
+        self.assertEqual(len(result), len(sessions))
+        self.assertEqual(calls["claude"], 2)  # 首批成功 + 次批失败
+        self.assertEqual(calls["opencode"], 1)  # 次批切换成功
 
 
 class SaveCacheAtomicWriteTests(unittest.TestCase):

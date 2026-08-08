@@ -5,10 +5,13 @@
 本模块只依赖标准库,不 import runtime/。titles.py 负责批量 prompt 构建、
 结果解析和缓存;本模块的每个生成器只负责一次无头 CLI 调用并交回原始文本。
 
+覆盖范围与 pickup 默认运行时注册表对齐：claude / codex / opencode / kimi / cursor。
+本机装了哪个助手，标题生成就可以用哪个；首选失败时按优先级自动切换到下一个。
+
 选择策略:
-- 环境变量 PICKUP_TITLE_GENERATOR(claude/codex)显式指定(旧名 SC_TITLE_GENERATOR 仍生效);
-- 未指定或指定的不可用时,按注册顺序取第一个本机已安装的;
-- 环境变量 PICKUP_TITLE_MODEL 覆盖生成器默认模型(旧名 SC_TITLE_MODEL 仍生效)。
+- 环境变量 PICKUP_TITLE_GENERATOR 显式指定首选（旧名 SC_TITLE_GENERATOR 仍生效）；
+- 未指定或指定的不可用时,按注册顺序取本机已安装的全部候选；
+- 环境变量 PICKUP_TITLE_MODEL 覆盖生成器默认模型（旧名 SC_TITLE_MODEL 仍生效）。
 """
 
 from __future__ import annotations
@@ -111,7 +114,78 @@ class CodexTitleGenerator(TitleGenerator):
                 pass
 
 
-_GENERATORS: tuple[TitleGenerator, ...] = (ClaudeTitleGenerator(), CodexTitleGenerator())
+class OpenCodeTitleGenerator(TitleGenerator):
+    id = "opencode"
+    executable = "opencode"
+    default_model = None
+
+    def generate(self, prompt: str, timeout: int) -> str | None:
+        # `opencode run` 无头执行一次；--auto 跳过权限问询。
+        # 每次调用会真实落一条会话，扫描侧必须用 titles.PROMPT_MARKER 过滤。
+        argv = ["opencode", "run", "--auto"]
+        model = self._model()
+        if model:
+            argv += ["-m", model]
+        argv.append(prompt)
+        return _run(argv, None, timeout)
+
+
+class KimiTitleGenerator(TitleGenerator):
+    id = "kimi"
+    executable = "kimi"
+    default_model = None
+
+    def generate(self, prompt: str, timeout: int) -> str | None:
+        # `-p` 非交互打印；`-y` 跳过权限问询。会落盘会话，扫描侧过滤 PROMPT_MARKER。
+        argv = ["kimi", "-y", "-p", prompt]
+        model = self._model()
+        if model:
+            argv = ["kimi", "-y", "--model", model, "-p", prompt]
+        return _run(argv, None, timeout)
+
+
+class CursorTitleGenerator(TitleGenerator):
+    id = "cursor"
+    executable = "agent"
+    # 与 CursorRuntime.executable_aliases 对齐：官方主名 agent，兼容名 cursor-agent。
+    _aliases = ("agent", "cursor-agent")
+    default_model = None
+
+    def is_available(self) -> bool:
+        return any(shutil.which(name) for name in self._aliases)
+
+    def _exe(self) -> str:
+        for name in self._aliases:
+            if shutil.which(name):
+                return name
+        return self.executable
+
+    def generate(self, prompt: str, timeout: int) -> str | None:
+        # `-p` 无头打印；`--mode ask` 只读问答，避免标题请求去改文件；
+        # `--force`/`--trust` 跳过权限与工作区信任问询（用户约定默认免打断）。
+        argv = [
+            self._exe(),
+            "-p",
+            "--mode", "ask",
+            "--output-format", "text",
+            "--trust",
+            "--force",
+        ]
+        model = self._model()
+        if model:
+            argv += ["--model", model]
+        argv.append(prompt)
+        return _run(argv, None, timeout)
+
+
+# 顺序与 runtime/registry.default_registry 对齐：本机有哪些就按这个优先序用。
+_GENERATORS: tuple[TitleGenerator, ...] = (
+    ClaudeTitleGenerator(),
+    CodexTitleGenerator(),
+    OpenCodeTitleGenerator(),
+    KimiTitleGenerator(),
+    CursorTitleGenerator(),
+)
 
 
 def available_generators() -> tuple[TitleGenerator, ...]:

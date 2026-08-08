@@ -1624,6 +1624,38 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
         with mock.patch("pickup.scan.common.subprocess.check_output", side_effect=FileNotFoundError()):
             self.assertEqual(scan_opencode.live_pids_by_process_name("opencode"), {})
 
+    def test_scan_filters_self_generated_title_sessions(self) -> None:
+        """标题生成 `opencode run` 落盘会话必须以 PROMPT_MARKER 前缀过滤。"""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "opencode.db"
+            noise_msg = f"{titles.PROMPT_MARKER}（JSON 数组…）"
+            _make_opencode_db(
+                db_path,
+                sessions=[
+                    {"id": "ses_real", "directory": td, "title": "真实会话",
+                     "time_created": 0, "time_updated": 200_000},
+                    {"id": "ses_noise", "directory": td, "title": "噪音标题",
+                     "time_created": 0, "time_updated": 300_000},
+                ],
+                messages=[
+                    {"id": "m_real", "session_id": "ses_real", "time_created": 100_000,
+                     "data": {"role": "user", "time": {"created": 100_000}}},
+                    {"id": "m_noise", "session_id": "ses_noise", "time_created": 200_000,
+                     "data": {"role": "user", "time": {"created": 200_000}}},
+                ],
+                parts=[
+                    self._text_part("p_real", "m_real", "ses_real", "真实的用户问题", 100_000),
+                    self._text_part("p_noise", "m_noise", "ses_noise", noise_msg, 200_000),
+                ],
+            )
+
+            with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
+                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                sessions = scan_opencode.scan_sessions(limit=10)
+
+        self.assertEqual([s["id"] for s in sessions], ["ses_real"])
+        self.assertEqual(sessions[0]["first_user_msg"], "真实的用户问题")
+
     def test_load_conversation_merges_parts_filters_roles_and_avoids_none_literal(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "opencode.db"
@@ -1798,6 +1830,33 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
                 wire_rows=[_kimi_user_event("你好", 1_784_275_205_000)],
             )
             self.assertEqual(self._scan(sessions_dir, limit=10), [])
+
+    def test_scan_filters_self_generated_title_sessions(self) -> None:
+        """标题生成 `kimi -p` 落盘会话必须以 PROMPT_MARKER 前缀过滤。"""
+        with tempfile.TemporaryDirectory() as td:
+            sessions_dir = Path(td) / "sessions"
+            noise_msg = f"{titles.PROMPT_MARKER}（JSON 数组…）"
+            _make_kimi_session(
+                sessions_dir, "wd_demo", "session_real",
+                state={"title": "真实会话", "workDir": td, "updatedAt": "2026-07-17T08:05:00.000Z"},
+                wire_rows=[_kimi_user_event("真实的用户问题", 1_784_275_205_000)],
+            )
+            _make_kimi_session(
+                sessions_dir, "wd_demo", "session_noise_user",
+                state={"title": "噪音", "workDir": td, "updatedAt": "2026-07-17T08:06:00.000Z"},
+                wire_rows=[_kimi_user_event(noise_msg, 1_784_275_206_000)],
+            )
+            # 无 wire 用户消息时 fallback 取自 lastPrompt，也应被 fallback 前缀拦住。
+            _make_kimi_session(
+                sessions_dir, "wd_demo", "session_noise_prompt",
+                state={"title": None, "workDir": td, "lastPrompt": noise_msg,
+                       "updatedAt": "2026-07-17T08:07:00.000Z"},
+                wire_rows=[{"type": "metadata", "protocol_version": "1.4", "created_at": 1_784_275_200_000}],
+            )
+            sessions = self._scan(sessions_dir, limit=10)
+
+        self.assertEqual([s["id"] for s in sessions], ["session_real"])
+        self.assertEqual(sessions[0]["first_user_msg"], "真实的用户问题")
 
     def test_scan_returns_empty_when_dir_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -3603,6 +3662,51 @@ class CursorScanTests(unittest.TestCase):
             self.assertEqual(s["last_user_msg"], "最新一句")
             self.assertEqual(s["first_user_msg"], "最早一句")
             self.assertTrue(s["path"].endswith(s["id"]) or s["path"].endswith("store.db"))
+
+    def test_scan_filters_self_generated_title_sessions(self) -> None:
+        """标题生成 `agent -p` 落盘会话必须过滤 PROMPT_MARKER（首条/fallback/原生标题）。"""
+        from pickup.scan import cursor as scan_cursor
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = str(root / "proj")
+            Path(cwd).mkdir()
+            noise = f"{titles.PROMPT_MARKER}（JSON 数组…）"
+            self._chat(
+                root,
+                "ws1",
+                "real-chat-id-0001-0002-0003-000000000001",
+                title="真实会话",
+                cwd=cwd,
+                updated_ms=1_700_000_000_000,
+                prompts=["真实的用户问题"],
+            )
+            self._chat(
+                root,
+                "ws1",
+                "noise-first-id-0001-0002-0003-000000000002",
+                title="噪音首条",
+                cwd=cwd,
+                updated_ms=1_700_000_000_100,
+                prompts=[noise],
+            )
+            self._chat(
+                root,
+                "ws1",
+                "noise-native-id-0001-0002-0003-000000000003",
+                title=noise,
+                cwd=cwd,
+                updated_ms=1_700_000_000_200,
+                prompts=["普通用户消息"],
+            )
+            with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
+                scan_cursor, "live_processes", return_value=[]
+            ):
+                sessions = scan_cursor.scan_sessions(limit=10)
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["id"], "real-chat-id-0001-0002-0003-000000000001")
+        self.assertEqual(sessions[0]["first_user_msg"], "真实的用户问题")
 
     def test_load_conversation_extracts_user_query_and_assistant(self) -> None:
         from pickup.scan import cursor as scan_cursor

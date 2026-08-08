@@ -463,13 +463,24 @@ def refresh_titles(
             persist_chunk(chunk, {})
         return merged
 
-    def generate_chunk(chunk: list[dict]) -> dict[str, str]:
-        try:
-            return generate_titles_batch(chunk, selected_generator)
-        except Exception:
-            return {}
+    # 首选之后的降级顺序：健康首选先试，失败再按 available_generators 顺序切换。
+    failover_order = (
+        selected_generator,
+        *(generator for generator in generators if generator is not selected_generator),
+    )
 
-    # 首批已确认生成器健康；其余批次继续保持最多 5 路并发，不牺牲大批量补全速度。
+    def generate_chunk(chunk: list[dict]) -> dict[str, str]:
+        """单批生成；首选中途失效时自动切换到下一个可用生成器。"""
+        for candidate in failover_order:
+            try:
+                raw = generate_titles_batch(chunk, candidate)
+            except Exception:
+                raw = {}
+            if usable_results(chunk, raw):
+                return raw
+        return {}
+
+    # 首批已确认至少有一个生成器健康；其余批次继续最多 5 路并发。
     with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_BATCHES, len(remaining_chunks))) as pool:
         futures = {pool.submit(generate_chunk, chunk): chunk for chunk in remaining_chunks}
         for future in as_completed(futures):

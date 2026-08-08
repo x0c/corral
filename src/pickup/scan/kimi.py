@@ -286,6 +286,11 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
                 cache.put_session("kimi", wire_path, info)
         if info is None:
             continue
+        # 标题生成用 `kimi -p` 会落盘会话；用固定前缀拦掉自产噪音。
+        first_user = str(info.get("first_user_msg") or "")
+        fallback = str(info.get("fallback_title") or "")
+        if first_user.startswith(titles.PROMPT_MARKER) or fallback.startswith(titles.PROMPT_MARKER):
+            continue
         if is_ephemeral_agent_cwd(info["cwd"]):
             continue  # OpenConductor 管家临时 cwd，目录复活会刷屏
         if info["cwd"] and not cached_isdir(info["cwd"]):
