@@ -103,8 +103,9 @@ def _overlay_style(strip: Strip, style: Style) -> Strip:
 
 # 输入蒙版的压暗系数：0 = 完全化进背景（看不见），1 = 原样。前景比背景压得更狠，
 # 整格看起来像蒙了一层灰，但仍能看清助手在输出什么。
-_MASK_FG_FACTOR = 0.54
-_MASK_BG_FACTOR = 0.64
+# 2026-08-08：压暗强度相对上一档再降约 20%（保留更多原色，提高非激活格对比度）。
+_MASK_FG_FACTOR = 0.63
+_MASK_BG_FACTOR = 0.71
 
 
 @lru_cache(maxsize=4096)
