@@ -2508,6 +2508,48 @@ class TuiLayoutTests(unittest.TestCase):
             self.assertEqual(runtime.load_conversation.call_count, 2)
             conn.close()
 
+    def test_shared_db_session_cache_not_invalidated_by_other_sessions(self) -> None:
+        """OpenCode 全部会话共用一个 db 文件，别的会话写入会带动文件 mtime；
+        该信号不得让本会话预览缓存失效（否则预览频繁只剩表头）。本会话自身
+        有更新（mtime 前进）时仍必须重读。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "opencode.db"
+            path.write_text("", encoding="utf-8")
+            session = {
+                "source": "opencode", "id": "abc", "short_id": "abc",
+                "path": str(path),
+                "mtime": 1786121161.995, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "测试会话",
+            }
+            runtime = mock.Mock()
+            runtime.id = "opencode"
+            runtime.display_name = "OpenCode"
+            runtime.scan_sessions.return_value = [session]
+            runtime.load_conversation.side_effect = [
+                [pickup.ConversationMessage("user", "旧内容")],
+                [pickup.ConversationMessage("user", "新内容")],
+            ]
+            registry = pickup.RuntimeRegistry((runtime,))
+            with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+                store = pickup.SessionStore(limit=20, registry=registry)
+                store.load()
+
+            self.assertEqual(store.get_conversation(session)[0].text, "旧内容")
+            self.assertEqual(store.get_conversation(session)[0].text, "旧内容")
+            runtime.load_conversation.assert_called_once_with(session)
+
+            # 别的会话写入同一 db：文件 mtime 前进，但本会话版本不该因此失效。
+            future = os.stat(path).st_mtime + 60
+            os.utime(path, (future, future))
+            self.assertEqual(store.get_conversation(session)[0].text, "旧内容")
+            self.assertEqual(store.peek_conversation(session)[0].text, "旧内容")
+            self.assertEqual(runtime.load_conversation.call_count, 1)
+
+            # 本会话自身有更新：mtime 前进，必须重读。
+            session["mtime"] = session["mtime"] + 30
+            self.assertEqual(store.get_conversation(session)[0].text, "新内容")
+            self.assertEqual(runtime.load_conversation.call_count, 2)
+
     def test_live_session_conversation_is_not_written_to_disk_cache(self) -> None:
         """还在写的会话不落盘：签名每写一次就变，落盘只是白写。
 

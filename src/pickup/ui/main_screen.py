@@ -720,7 +720,10 @@ class MainScreen(
         head = self._detail_header(session)
         messages = self.store.peek_conversation(session)
         if messages is None:
-            return head
+            # 缓存还没就绪（或刚被会话自身更新作废）时给个占位，避免渲染出
+            # 「只有表头、正文一片空白」的裸状态被误当成产品缺陷（共享库场景
+            # 下别的会话写入只影响各自的缓存，这里很快会被 warm 补齐）。
+            return Group(head, Text(t("detail.loading_preview"), style="dim"))
         runtime = self.store.registry.get(str(session.get("source") or ""))
         width = self._preview_width(pickup.session_key(session))
         blocks = pickup._preview_blocks(

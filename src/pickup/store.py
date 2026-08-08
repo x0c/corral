@@ -790,8 +790,23 @@ class SessionStore:
             return self.display_titles.get(session_key(session), session["fallback_title"])
 
     @staticmethod
-    def _conversation_version(path: str) -> object | None:
-        """内存对话缓存版本：主历史 + 可选 SQLite WAL，任一端变化即失效。"""
+    def _conversation_version(session: dict) -> object | None:
+        """内存对话缓存版本。
+
+        - 单文件运行时（claude / codex / kimi / cursor）：主历史 + 可选 SQLite WAL，
+          任一端变化即失效——文件变化就是本会话内容变化。
+        - opencode：全部会话共用同一个 `opencode.db`，任何会话写入都会带动文件
+          mtime，拿文件签名判失效会把别的会话的写入算到本会话头上，导致关闭预览
+          频繁整体失效（表现为预览只出表头、正文一直空白）。这里改按会话自身的
+          更新时间（扫描时从 db session 行带出的毫秒时间戳）判失效：本会话有新
+          消息时时间戳推进、缓存自然失效；别的会话写入不影响本会话命中。
+        """
+        path = str(session.get("path") or "")
+        if str(session.get("source") or "") == "opencode":
+            mtime = session.get("mtime")
+            if mtime is None:
+                return None
+            return ("opencode", int(round(mtime * 1000)))
         if not path:
             return None
         try:
@@ -809,7 +824,7 @@ class SessionStore:
         重读，供预览页关闭重开和停留期间的轮询刷新使用。"""
         key = session_key(session)
         path = str(session.get("path") or "")
-        version = self._conversation_version(path)
+        version = self._conversation_version(session)
         with self.lock:
             cached = self.conversations.get(key)
             if cached is not None and cached[0] == version:
@@ -835,8 +850,7 @@ class SessionStore:
     def peek_conversation(self, session: dict) -> list[ConversationMessage] | None:
         """若缓存仍有效则返回对话副本，否则返回 None（不触发磁盘读取）。"""
         key = session_key(session)
-        path = str(session.get("path") or "")
-        version = self._conversation_version(path)
+        version = self._conversation_version(session)
         with self.lock:
             cached = self.conversations.get(key)
             if cached is not None and cached[0] == version:
