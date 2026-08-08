@@ -306,7 +306,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **pickup 自己会无头调用 `claude -p` / `codex exec` 生成标题**（`titlegen.py`）。放行判据里"非真实终端"和"参数命中无头/管理类词"两条**都不能删**，删任何一条都会让标题生成被包进 tmux 托管、静默失效并堆积进程。
 - **防递归三重保险**：shell 函数不被子进程继承（bash 不 `export -f`、zsh 不导出）、走 pickup 那一支带 `PICKUP_SHIM_ACTIVE=1`、托管会话里已注入的 `PICKUP_RUNTIME` 与 tmux 的 `TMUX` 同样触发放行。三条互相独立，不要因为"看起来重复"删掉任何一条。
 - **失败方向必须是"没托管"而不是"命令坏了"**：找不到 `pickup`、非 TTY、脚本文件缺失（配置里的 `source` 带 `-f` 判断）全部退回 `command <cmd>`。用户的 `claude` 因为装了 pickup 而不可用，是这个功能唯一不可接受的失败。
-- **绝不自动改用户 shell 配置**：只有显式 `pickup shim install` 才写入，写前备份原文件到缓存目录。配置里只放一行 `source`，函数正文在 `~/.cache/pickup/shim/` 的生成脚本里——升级只需重写脚本，不必反复动用户配置。
+- **首次使用必须无感自动启用**：安装脚本完成安装后立即尝试启用；交互式启动 pickup 时也必须幂等补齐，避免用户装完却以为裸 `codex` 已被托管。仅真实交互终端可触发这次补齐；版本查询、Agent 只读接口、管道/脚本调用和 `pickup shim ...` 管理命令绝不隐式写配置。没有可拦截运行时、未知 shell 或配置不可写时静默降级，不得阻断 pickup；用户仍可用 `pickup shim install` 主动修复。写入前备份原文件，配置里只放一行 `source`，函数正文在 `~/.cache/pickup/shim/` 的生成脚本里——升级只需重写脚本，不必反复动用户配置。
 - **状态判定按整行匹配函数定义**（`_shimmed_commands`）：`agent` 是 `cursor-agent` 的后缀，用子串判断会把"只拦了 cursor-agent"误报成"agent 也拦了"。回归：`test_agent_is_not_reported_as_shimmed_by_cursor_agent_suffix`。
 - **`agent` 默认不拦**：Cursor 占了这个极通用的名字，默认拦截会遮蔽用户机器上的其它同名工具（asdf 社区有 shim 误伤 `clear` 的先例），需 `--include agent` 显式开启。
 - **`TARGETS` 与默认注册表必须同步**：新增运行时要同时在这里登记可拦截命令名与放行子命令，`tests/test_shim.py::ShimTargetTableTests` 会断言两边不漂移。

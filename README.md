@@ -115,7 +115,7 @@ pickup observer install cursor --dry-run --json  # preview its user-level hook c
 pickup observer install cursor                   # repair/install it explicitly
 pickup observer uninstall cursor                 # remove only pickup-managed hooks
 pickup shim status                               # command interception status (type `claude`, get pickup)
-pickup shim install                              # install interception (only ever writes when you ask)
+pickup shim install                              # repair/install interception now
 pickup shim uninstall                            # remove interception
 ```
 
@@ -272,7 +272,7 @@ aliases for `pickup cursor` (Cursor's installer ships both `agent` and `cursor-a
 
 ## Command Interception (type the real command, get pickup)
 
-Once interception is installed, typing `claude`, `codex`, `opencode`, `kimi` or `cursor-agent` in your
+pickup automatically enables interception during installation and whenever it first opens interactively. Typing `claude`, `codex`, `opencode`, `kimi` or `cursor-agent` in your
 terminal is the same as typing `pickup <runtime>`: the new session is hosted, auto-approved, and
 survives disconnects.
 
@@ -284,9 +284,9 @@ pickup shim install --include agent   # also intercept the generic name `agent` 
 pickup shim uninstall                 # remove only pickup's block, leave everything else intact
 ```
 
-Supports bash / zsh / fish, auto-detected from `$SHELL` or pinned with `--shell`. **pickup never edits
-your shell config on its own** — writes happen only when you run `pickup shim install`, and the original
-file is backed up first.
+Supports bash / zsh / fish and detects the current shell automatically. The setup is idempotent, preserves
+unrelated configuration, and backs up a changed configuration file before writing. `pickup shim uninstall`
+removes only pickup's marked block.
 
 These always run the real command untouched:
 

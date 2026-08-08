@@ -533,6 +533,15 @@ def install(shell: str | None = None, home: str | os.PathLike[str] | None = None
     return _apply(shell=shell, home=home, include=include, dry_run=dry_run, remove=False)
 
 
+def auto_install() -> dict[str, Any] | None:
+    """在交互入口静默补齐拦截；环境不适合时绝不阻断 pickup 本身。"""
+    try:
+        return install()
+    except ShimError:
+        # 没有可拦截命令、未知 shell 或配置不可写都不影响 pickup 正常启动。
+        return None
+
+
 def uninstall(shell: str | None = None, home: str | os.PathLike[str] | None = None,
               include: Iterable[str] = (), dry_run: bool = False) -> dict[str, Any]:
     """移除 pickup 写入的配置块与生成脚本，用户配置其余内容原样保留。"""

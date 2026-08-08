@@ -19,6 +19,7 @@ _OSC_BACKGROUND_RE = re.compile(
     r"\x1b\]11;rgb:[0-9a-fA-F]+/[0-9a-fA-F]+/[0-9a-fA-F]+(?:\x07|\x1b\\)"
 )
 _MODE_RE = re.compile(r"\x1b\[\?997;([12])n")
+_THEME_MARKERS = (_OSC_BACKGROUND_MARKER, _MODE_MARKER)
 
 # iTerm2 不支持 DEC 2031 主动通知，只能定期查询 OSC 11。两秒足够贴近日落切换，
 # 同时查询只是很短的终端控制序列，不起进程、不访问网络。
@@ -44,12 +45,21 @@ if os.name != "nt":
     from textual.drivers import linux_driver
     from textual.drivers.linux_driver import LinuxDriver
 
-    class TerminalThemeParser(XTermParser):
+class TerminalThemeParser(XTermParser):
         """从 Textual 输入流中提取主题应答，其余输入原样交回框架。"""
 
         def __init__(self, debug: bool = False) -> None:
             super().__init__(debug)
             self._theme_pending = ""
+
+        @staticmethod
+        def _trailing_marker_prefix(data: str) -> str:
+            """返回可能在下一次读取中补全的主题消息开头。"""
+            for size in range(min(len(data), max(map(len, _THEME_MARKERS))), 0, -1):
+                suffix = data[-size:]
+                if any(marker.startswith(suffix) for marker in _THEME_MARKERS):
+                    return suffix
+            return ""
 
         def feed(self, data: str) -> Iterable[Message]:
             # 驱动关闭时会用空串让原解析器收尾；未完整的主题应答也交回去，
@@ -68,6 +78,16 @@ if os.name != "nt":
                 mode_at = pending.find(_MODE_MARKER)
                 starts = [index for index in (osc_at, mode_at) if index >= 0]
                 if not starts:
+                    # TTY 读取不保证控制消息一次到齐。若 ESC / ESC[ / ESC[?997;
+                    # 这类前缀被先交给原解析器，后半段会变成普通按键并泄漏到
+                    # 当前托管助手，Cursor 会把它画成 ^[[?997;2n。
+                    prefix = self._trailing_marker_prefix(pending)
+                    if prefix:
+                        body = pending[:-len(prefix)]
+                        if body:
+                            yield from super().feed(body)
+                        self._theme_pending = prefix
+                        return
                     yield from super().feed(pending)
                     return
 

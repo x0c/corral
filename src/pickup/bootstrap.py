@@ -41,6 +41,11 @@ def main() -> None:
         from pickup.shim import cli_main as shim_main
 
         raise SystemExit(shim_main(argv[1:]))
+    # 只有真人正在终端里使用 pickup 时才静默补齐拦截；Agent 只读接口、管道和版本查询不写配置。
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        from pickup.shim import auto_install
+
+        auto_install()
     from pickup.cli import main as cli_main
 
     cli_main()

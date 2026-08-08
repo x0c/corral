@@ -70,5 +70,9 @@ raise SystemExit(0 if ok else 1)
 "
 
 echo ""
-echo "完成。请重启已打开的 pickup TUI（旧进程不会热加载）。"
+echo "正在自动启用终端命令托管："
+"$CHECK_PY" -m pickup shim install || true
+
+echo ""
+echo "完成。新开的终端会自动托管 Agent；已打开的终端执行一次 source 对应配置文件后也会生效。"
 echo "日常开发：改 src/ 后直接再跑 pickup 即可，无需反复 force-reinstall。"

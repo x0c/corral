@@ -398,6 +398,16 @@ class RuntimeThemeParserTests(unittest.TestCase):
         self.assertTrue(light[0].is_light)
         self.assertFalse(dark[0].is_light)
 
+    def test_extracts_dec_2031_notifications_split_at_every_byte(self) -> None:
+        """主题回复被 TTY 拆包时也不能泄漏成 Cursor 的普通输入。"""
+        sequence = "\x1b[?997;2n"
+        for split_at in range(1, len(sequence)):
+            parser = TerminalThemeParser()
+            parsed = [*parser.feed(sequence[:split_at]), *parser.feed(sequence[split_at:])]
+            self.assertEqual(len(parsed), 1, f"拆在第 {split_at} 个字符后不应产生按键")
+            self.assertIsInstance(parsed[0], TerminalBackgroundReport)
+            self.assertTrue(parsed[0].is_light)
+
     def test_pickup_app_uses_runtime_theme_driver_on_unix(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
