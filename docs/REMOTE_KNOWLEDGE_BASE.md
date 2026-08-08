@@ -44,6 +44,7 @@
 | `session.markRead` | `{"attention": "none\|unread\|working\|waiting"}` |
 | `projects.list` | `{"projects":[{"path","name","cwd","label","count","mtime"}, …]}`（`path`/`name` 给 iOS 新建页；`cwd`/`label` 与桌面项目列表同义） |
 | `runtimes.list` | `{"runtimes":[{"id","name","available"}, …]}` |
+| `hello` | 含 `paired` / `runtimes`（未配对为空）以及 **`relay_url` / `relay_enabled` / `local_enabled`**（未配对也返回；关中继时 `relay_url` 为空串） |
 
 画面帧字段见 `remote/screen.py` 的 `to_dict()`：`cols/rows/full/lines/cursor/history/status`。`status` 取画面最后一行有内容的文本，供手机对话页做实时状态条（历史文件可能长时间不落盘）。
 
@@ -57,12 +58,17 @@
 
 ## 连接策略
 
-手机侧默认：**局域网提示地址优先**，失败再回落中继。开发机 `pair` 载荷里的 `l`（local hints）与 `r`（relay）都要填对，否则手机只能走一侧。
+产品目标：手机扫码配对一次后，**任意能上网的网络**都应能连开发机（对标 shell-gate）；局域网只是更快路径，不能当唯一通路。
+
+手机侧默认：**局域网提示地址优先**，失败再回落中继。关掉中继等于手机只能同网使用，**禁止当默认**（仅本机调试可显式 `--no-relay`）。
+
+开发机 `pair` 载荷里的 `l`（local hints）与 `r`（relay）都要填对；若旧配对二维码没有 `r=`，手机可在后续 `hello` 里读到 `relay_url` / `relay_enabled` / `local_enabled`（未配对也返回）并写回本地 Host 记录，无需重新扫码。公网默认中继为 `wss://pickup-relay.caozc.top`。
 
 ## 踩坑
 
 | 现象 | 原因 / 处理 |
 |---|---|
+| 扫码后换网不可用 | 开发机关了中继（`--no-relay`），或历史占位中继域名不可达；确认 `pickup remote status` 显示公网中继在线。手机侧：新客户端对无 `r=` 的旧配对会回落内置默认中继；也可靠 `hello.relay_url` 写回 Host |
 | 手机一开终端，电脑窗口变窄 | 某处发了 `screen.resize`；手机端必须删掉这条调用；服务端应拒绝而非执行 |
 | 新建会话页项目列表空白 | `projects.list` 缺 `path`/`name`（旧版只有 `cwd`/`label`）；两端需同时认两套字段 |
 | 发送失败但输入框已清空 | 客户端在 `try?` 后无条件清空草稿；应仅在成功时清空并展示服务端错误文案 |

@@ -188,6 +188,7 @@ class RemoteService:
 
     def _hello(self, connection: Connection, params: dict):
         connection.device_name = str(params.get("name") or "")[:60]
+        # 未配对也返回中继/局域网开关，便于旧配对手机补上中继地址、不必重新扫码。
         return {
             "protocol": protocol_version(),
             "pickup_version": __version__,
@@ -196,6 +197,9 @@ class RemoteService:
             "paired": connection.paired,
             "pairing_open": self.pairing_open(),
             "runtimes": self.hub.runtimes() if connection.paired else [],
+            "relay_url": self.state.relay_url if self.state.relay_enabled else "",
+            "relay_enabled": self.state.relay_enabled,
+            "local_enabled": self.state.local_enabled,
         }
 
     def _sessions_list(self, connection: Connection, params: dict):

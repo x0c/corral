@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pickup.split_layout import layout_cache_dir
 
-_DEFAULT_RELAY_URL = "wss://relay.pickup.sh"
+_DEFAULT_RELAY_URL = "wss://pickup-relay.caozc.top"
 _STATE_FILENAME = "remote.json"
 _KEY_FILENAME = "identity.key"
 

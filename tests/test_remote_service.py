@@ -141,6 +141,19 @@ class RemoteServiceTests(unittest.TestCase):
         self.assertTrue(reply["ok"])
         self.assertFalse(reply["d"]["paired"])
         self.assertEqual(reply["d"]["runtimes"], [], "没配对不该看到装了哪些助手")
+        # 未配对也要带中继信息，方便手机补全 Host 记录。
+        self.assertEqual(reply["d"]["relay_url"], self.service.state.relay_url)
+        self.assertTrue(reply["d"]["relay_enabled"])
+        self.assertTrue(reply["d"]["local_enabled"])
+
+    def test_hello_omits_relay_url_when_relay_disabled(self):
+        self.service.state.relay_enabled = False
+        connection = self._connect()
+        reply = self._call(connection, protocol.M_HELLO, {"name": "iPhone"})
+        self.assertTrue(reply["ok"])
+        self.assertEqual(reply["d"]["relay_url"], "")
+        self.assertFalse(reply["d"]["relay_enabled"])
+        self.assertTrue(reply["d"]["local_enabled"])
 
     def test_pairing_with_the_right_code_unlocks_everything(self):
         code = self.service.begin_pairing()
