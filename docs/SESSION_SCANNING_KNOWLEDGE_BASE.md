@@ -104,6 +104,7 @@ sequenceDiagram
    - Cursor：只读 `meta.json` 和 `prompt_history.json`；不在列表阶段打开 `store.db`。
 4. 各扫描器返回字段完整的会话列表项，按有效会话时间降序排列。`SessionStore._merge_scanned()` 合并所有来源；已在列表出现过的会话位置稳定，新出现会话才按时间插入顶部。
 5. `keepalive.annotate()` 可在合并后补充托管标记；这不改变扫描器只读本地历史和进程状态的边界。
+6. 刚由 pickup 创建、还没产生第一条用户消息的 Codex 会话，只有在进程仍运行时才保留并显示为「Codex 新会话」；进程已结束的空记录继续过滤，避免旧的无效记录占满列表。
 
 ### 2.2 运行中判定
 

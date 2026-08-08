@@ -390,6 +390,9 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         info["pid"] = live_ids.get(info["id"])
         if not info["first_user_msg"] and not info["live"]:
             continue  # 已结束且没有用户消息的空会话
+        if not info["first_user_msg"] and info["fallback_title"] == "(无消息)":
+            # 派生缓存可能来自更新前；让已有运行中空会话也立即获得可读标题。
+            info["fallback_title"] = "Codex 新会话"
         if info["first_user_msg"].startswith(titles.PROMPT_MARKER):
             continue  # 后台标题生成自产的噪音会话,和 Claude 侧同一套 PROMPT_MARKER 过滤
         if is_ephemeral_agent_cwd(info["cwd"]):
