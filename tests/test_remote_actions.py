@@ -35,6 +35,9 @@ class FakeHub:
     def watch_conversation(self, key: str):
         return []
 
+    def conversation_snapshot(self, key: str):
+        return []
+
     def unwatch_conversation(self, key: str):
         pass
 

@@ -227,9 +227,12 @@ class RemoteService:
     def _session_watch(self, connection: Connection, params: dict):
         key = _key(params)
         channel = protocol.session_channel(key)
-        history = []
         if self._subscribe(connection, channel):
             history = self.hub.watch_conversation(key)
+        else:
+            # 同连接重复 watch（对话页重进 / 状态条与聊天叠订）：订阅只记一次，
+            # 但仍要返回全文快照，否则第二次只能拿到空列表。
+            history = self.hub.conversation_snapshot(key)
         return {"messages": history}
 
     def _session_unwatch(self, connection: Connection, params: dict):

@@ -300,6 +300,11 @@ class SessionHub:
         with self._lock:
             self._sessions_watchers = max(0, self._sessions_watchers - 1)
 
+    def conversation_snapshot(self, key: str) -> list[dict]:
+        """不改订阅计数，只读当前富消息全文（给同连接重复 session.watch 用）。"""
+        session = self.require_session(key)
+        return [m.to_dict() for m in richmsg.RichReader(session).read_all()]
+
     def watch_conversation(self, key: str) -> list[dict]:
         """订阅一条会话的实时聊天流，同时把已有历史一次性返回。
 
@@ -318,8 +323,7 @@ class SessionHub:
         if created:
             # 推进共享游标到末尾，后续 poll 只推增量
             watch.reader.read_all()
-        snapshot = richmsg.RichReader(session).read_all()
-        return [m.to_dict() for m in snapshot]
+        return self.conversation_snapshot(key)
 
     def unwatch_conversation(self, key: str) -> None:
         with self._lock:

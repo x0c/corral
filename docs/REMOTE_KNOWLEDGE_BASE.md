@@ -73,6 +73,8 @@
 | Swift 里写了 `$(AppIdentifierPrefix)...` 却永远对不上钥匙串 | 宏只在 entitlements 展开；源码必须写死 `TEAMID.com.x0c.pickup` |
 | 只装主包没装 `[remote]` | `pickup remote` 导入失败；提示用户装可选依赖 |
 | 事件只到一个界面 | 客户端事件流做成了单消费者；必须按通道多播 |
+| 同一连接第二次 `session.watch` 历史为空 | 连接级订阅已存在时 `_subscribe` 返回 false，旧实现直接回空列表；应走 `conversation_snapshot`（与 `screen.watch`→`resync_screen` 同理），且不增加中枢订阅计数 |
+| 聊天状态条与终端页叠订后第二帧空白 | 同连接重复 `screen.watch` 必须 `resync_screen`，不能只加订阅 |
 
 ## 验证
 

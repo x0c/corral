@@ -53,10 +53,17 @@ class FakeHub:
         self.watching_screens[key] = self.watching_screens.get(key, 0) - 1
 
     def watch_conversation(self, key: str):
-        return []
+        self.watching_conversations = getattr(self, "watching_conversations", {})
+        self.watching_conversations[key] = self.watching_conversations.get(key, 0) + 1
+        return [{"id": "m1", "role": "user", "text": "你好"}]
+
+    def conversation_snapshot(self, key: str):
+        self._record("conversation_snapshot", key)
+        return [{"id": "m1", "role": "user", "text": "你好"}, {"id": "m2", "role": "assistant", "text": "在"}]
 
     def unwatch_conversation(self, key: str):
-        pass
+        self.watching_conversations = getattr(self, "watching_conversations", {})
+        self.watching_conversations[key] = self.watching_conversations.get(key, 0) - 1
 
     def send_text(self, key: str, text: str, submit: bool):
         self._record("send_text", key, text, submit)
@@ -210,6 +217,16 @@ class RemoteServiceTests(unittest.TestCase):
         self.assertEqual(first["d"]["frame"]["status"], "first")
         self.assertEqual(second["d"]["frame"]["status"], "resync")
         self.assertIn(("resync_screen", ("codex:abc",)), self.hub.calls)
+
+    def test_duplicate_session_watch_returns_snapshot_without_double_count(self):
+        """同连接第二次 session.watch 不得空历史，且不得再加一层订阅计数。"""
+        connection = self._paired()
+        first = self._call(connection, protocol.M_SESSION_WATCH, {"key": "codex:abc"})
+        second = self._call(connection, protocol.M_SESSION_WATCH, {"key": "codex:abc"})
+        self.assertEqual(self.hub.watching_conversations["codex:abc"], 1)
+        self.assertEqual(len(first["d"]["messages"]), 1)
+        self.assertEqual(len(second["d"]["messages"]), 2)
+        self.assertIn(("conversation_snapshot", ("codex:abc",)), self.hub.calls)
 
     def test_disconnect_releases_every_subscription(self):
         """断线不退订会让后台一直抓帧，是最典型的「电脑莫名发烫」来源。"""
