@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pickup"
-version = "0.24.81"
+version = "0.24.82"
 description = "Terminal session picker and handoff tool for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, and Cursor Agent CLI."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,6 +36,15 @@ classifiers = [
   "Topic :: Terminals",
 ]
 dependencies = ["textual>=8.0"]
+
+# 手机端接力（pickup remote）需要的额外组件。刻意不进主依赖：只在终端里用 pickup
+# 的人不该为一个用不上的功能付出安装体积和导入时间。
+[project.optional-dependencies]
+remote = [
+  "cryptography>=42",
+  "websockets>=13",
+  "segno>=1.6",
+]
 
 [project.urls]
 Homepage = "https://github.com/x0c/pickup"

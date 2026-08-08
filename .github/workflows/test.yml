@@ -42,7 +42,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install tmux
       - name: Install project and runtime dependencies
-        run: python -m pip install .
+        # 带上 remote 附加组件：手机端接力的加密与传输层有单测，缺了会整组跳过，
+        # 那等于这条链路在 CI 上没人看着。
+        run: python -m pip install ".[remote]"
       - name: Compile
         run: python -m compileall -q src/pickup tests
       - name: Lint

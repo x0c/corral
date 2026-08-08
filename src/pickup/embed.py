@@ -246,6 +246,35 @@ def pane_state(name: str) -> tuple[int, int, bool, bool, bool, int] | None:
     return int(xs), int(ys), fs == "1", ma == "1", ms == "1", int(hs)
 
 
+def pane_size(name: str) -> tuple[int, int] | None:
+    """返回 pane 的 (宽, 高)；查询失败返回 None。
+
+    抓帧结果不能用来倒推宽度：`capture-pane` 会把每行尾部的空格裁掉，一屏内容
+    稀疏时按最长行推出来的宽度会远小于真实列数，据此渲染会把画面挤成一条。
+    远程端把画面搬到手机上时必须拿真实列数，否则对齐全乱。
+    """
+    args = ["display-message", "-p", "-t", name, "#{pane_width}|#{pane_height}"]
+    ch = _active_channel(name)
+    out: str | None = None
+    if ch is not None:
+        lines = ch.request(*args)
+        if lines is not None:
+            out = "\n".join(lines).strip()
+    if out is None:
+        try:
+            out = subprocess.check_output(
+                [*keepalive._BASE_ARGV, *args],
+                stderr=subprocess.DEVNULL, timeout=_CALL_TIMEOUT,
+            ).decode().strip()
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return None
+    try:
+        width, height = out.split("|")
+        return int(width), int(height)
+    except ValueError:
+        return None
+
+
 # 托管窗过窄时，Cursor/Claude 等会按当前列数硬换行并写入 scrollback；
 # 之后哪怕右栏恢复正常宽度，往上滚仍会看到「只剩几列」的历史。创建时抬到下限；
 # 后续缩放若仍低于下限则跳过，保留上一次可用尺寸。
