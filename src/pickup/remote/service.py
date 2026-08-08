@@ -201,7 +201,7 @@ class RemoteService:
     def _sessions_list(self, connection: Connection, params: dict):
         return {
             "sessions": self.hub.list_sessions(
-                query=str(params.get("q") or ""), limit=int(params.get("limit") or 0)
+                query=str(params.get("q") or ""), limit=_int_param(params, "limit", 0)
             )
         }
 
@@ -219,7 +219,7 @@ class RemoteService:
         return self.hub.session_detail(_key(params))
 
     def _session_messages(self, connection: Connection, params: dict):
-        return {"messages": self.hub.messages(_key(params), int(params.get("limit") or 400))}
+        return {"messages": self.hub.messages(_key(params), _int_param(params, "limit", 400))}
 
     def _session_prompts(self, connection: Connection, params: dict):
         return {"prompts": self.hub.prompts(_key(params))}
@@ -241,9 +241,11 @@ class RemoteService:
     def _screen_watch(self, connection: Connection, params: dict):
         key = _key(params)
         channel = protocol.screen_channel(key)
-        frame = None
         if self._subscribe(connection, channel):
             frame = self.hub.watch_screen(key)
+        else:
+            # 同一连接重复 watch（聊天状态条 + 终端页）：不再加订阅计数，但要整帧。
+            frame = self.hub.resync_screen(key)
         return {"frame": frame}
 
     def _screen_unwatch(self, connection: Connection, params: dict):
@@ -253,28 +255,44 @@ class RemoteService:
         return {"ok": True}
 
     def _screen_scroll(self, connection: Connection, params: dict):
-        return {"frame": self.hub.scroll_screen(_key(params), int(params.get("offset") or 0))}
+        return {"frame": self.hub.scroll_screen(_key(params), _int_param(params, "offset", 0))}
 
     def _input_text(self, connection: Connection, params: dict):
-        self.hub.send_text(_key(params), str(params.get("text") or ""), bool(params.get("submit", True)))
+        text = str(params.get("text") or "")
+        submit = bool(params.get("submit", True))
+        if not text and not submit:
+            raise ActionError(protocol.E_USAGE, "没有要发送的内容")
+        self.hub.send_text(_key(params), text, submit)
         return {"ok": True}
 
     def _input_keys(self, connection: Connection, params: dict):
         keys = params.get("keys")
-        if not isinstance(keys, list) or not keys:
+        if not isinstance(keys, list):
             raise ActionError(protocol.E_USAGE, "没有要发送的按键")
-        self.hub.send_keys(_key(params), keys)
+        cleaned = [str(k) for k in keys if str(k).strip()]
+        if not cleaned:
+            raise ActionError(protocol.E_USAGE, "没有要发送的按键")
+        self.hub.send_keys(_key(params), cleaned)
         return {"ok": True}
 
     def _input_image(self, connection: Connection, params: dict):
         import base64
         import binascii
 
+        encoded = str(params.get("data") or "").strip()
+        if not encoded:
+            raise ActionError(protocol.E_USAGE, "没有图片数据")
         try:
-            raw = base64.b64decode(str(params.get("data") or ""), validate=True)
+            raw = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError) as exc:
             raise ActionError(protocol.E_USAGE, "图片数据不完整") from exc
+        if not raw:
+            raise ActionError(protocol.E_USAGE, "没有图片数据")
         return {"path": self.hub.send_image(_key(params), raw)}
+
+    def _screen_resize(self, connection: Connection, params: dict):
+        # 手机与桌面共享同一保活窗格：即使误发也不改桌面窗口尺寸。
+        raise ActionError(protocol.E_USAGE, "手机端不允许调整终端窗口大小")
 
     def _session_mark_read(self, connection: Connection, params: dict):
         return {"attention": self.hub.mark_read(_key(params))}
@@ -291,7 +309,13 @@ class RemoteService:
         return {"ok": True}
 
     def _session_new(self, connection: Connection, params: dict):
-        return {"session": self.hub.new_session(str(params.get("runtime") or ""), params.get("cwd") or None)}
+        runtime = str(params.get("runtime") or "").strip()
+        if not runtime:
+            raise ActionError(protocol.E_USAGE, "请选择助手")
+        cwd = params.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            raise ActionError(protocol.E_USAGE, "项目路径格式不对")
+        return {"session": self.hub.new_session(runtime, cwd)}
 
     def _session_resume(self, connection: Connection, params: dict):
         return {"session": self.hub.resume_session(_key(params))}
@@ -327,6 +351,18 @@ def _key(params: dict) -> str:
     return key
 
 
+def _int_param(params: dict, name: str, default: int) -> int:
+    """把请求参数收成非负整数；坏值按 usage_error，避免 int() 把整条请求打成 500。"""
+    raw = params.get(name, default)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ActionError(protocol.E_USAGE, f"参数 {name} 必须是整数") from exc
+    return max(0, value)
+
+
 def protocol_version() -> int:
     from pickup.remote import REMOTE_PROTOCOL_VERSION
 
@@ -346,6 +382,7 @@ _HANDLERS = {
     protocol.M_SCREEN_WATCH: RemoteService._screen_watch,
     protocol.M_SCREEN_UNWATCH: RemoteService._screen_unwatch,
     protocol.M_SCREEN_SCROLL: RemoteService._screen_scroll,
+    protocol.M_SCREEN_RESIZE: RemoteService._screen_resize,
     protocol.M_INPUT_TEXT: RemoteService._input_text,
     protocol.M_INPUT_KEYS: RemoteService._input_keys,
     protocol.M_INPUT_IMAGE: RemoteService._input_image,

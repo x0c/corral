@@ -276,6 +276,8 @@ class RichReader:
         self._seq = 0
         self._size = 0
         self._pending: dict[str, ToolCall] = {}
+        # call_id → 宿主助手消息：结果回填后要按原 seq 再推一次，手机端才能合并状态。
+        self._host_by_call: dict[str, RichMessage] = {}
 
     def reset(self) -> None:
         self._offset = 0
@@ -283,10 +285,35 @@ class RichReader:
         self._seq = 0
         self._size = 0
         self._pending = {}
+        self._host_by_call = {}
 
     def _next_seq(self) -> int:
         self._seq += 1
         return self._seq
+
+    def _register_tool(self, host: RichMessage, tool: ToolCall) -> None:
+        if not tool.call_id:
+            return
+        self._pending[tool.call_id] = tool
+        self._host_by_call[tool.call_id] = host
+
+    def _finish_tool(
+        self,
+        call_id: str,
+        *,
+        output: object,
+        failed: bool | None = None,
+    ) -> RichMessage | None:
+        """回填工具结果；返回需要重新推送的宿主消息（无则 None）。"""
+        tool = self._pending.pop(call_id, None)
+        if tool is None:
+            return None
+        tool.output = _result_text(output)
+        if failed is None:
+            tool.status = "error" if _looks_failed(tool.output) else "ok"
+        else:
+            tool.status = "error" if failed or _looks_failed(tool.output) else "ok"
+        return self._host_by_call.get(call_id)
 
     def poll(self) -> list[RichMessage]:
         parser = _PARSERS.get(self.runtime_id)
@@ -388,8 +415,9 @@ def _parse_codex(reader: RichReader) -> list[RichMessage]:
                 detail=detail,
                 options=_extract_options(args) if classify(name) in QUESTION_KINDS else [],
             )
-            reader._pending[tool.call_id] = tool
             attach(tool)
+            if messages:
+                reader._register_tool(messages[-1], tool)
         elif kind == "custom_tool_call":
             name = str(payload.get("name") or "tool")
             summary, detail = _codex_custom_input(str(payload.get("input") or ""))
@@ -400,13 +428,16 @@ def _parse_codex(reader: RichReader) -> list[RichMessage]:
                 summary=summary or name,
                 detail=detail,
             )
-            reader._pending[tool.call_id] = tool
             attach(tool)
+            if messages:
+                reader._register_tool(messages[-1], tool)
         elif kind in ("function_call_output", "custom_tool_call_output"):
-            tool = reader._pending.pop(str(payload.get("call_id") or ""), None)
-            if tool is not None:
-                tool.output = _result_text(payload.get("output"))
-                tool.status = "error" if _looks_failed(tool.output) else "ok"
+            host = reader._finish_tool(
+                str(payload.get("call_id") or ""),
+                output=payload.get("output"),
+            )
+            if host is not None and (not messages or messages[-1] is not host):
+                messages.append(host)
     return messages
 
 
@@ -454,12 +485,13 @@ def _parse_claude(reader: RichReader) -> list[RichMessage]:
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "tool_result":
                         handled = True
-                        tool = reader._pending.pop(str(part.get("tool_use_id") or ""), None)
-                        if tool is not None:
-                            tool.output = _result_text(part.get("content"))
-                            tool.status = (
-                                "error" if part.get("is_error") or _looks_failed(tool.output) else "ok"
-                            )
+                        host = reader._finish_tool(
+                            str(part.get("tool_use_id") or ""),
+                            output=part.get("content"),
+                            failed=bool(part.get("is_error")),
+                        )
+                        if host is not None and (not messages or messages[-1] is not host):
+                            messages.append(host)
                 if handled:
                     continue
             origin = entry.get("origin")
@@ -493,12 +525,14 @@ def _parse_claude(reader: RichReader) -> list[RichMessage]:
                 detail=detail,
                 options=_extract_options(args) if kind in QUESTION_KINDS else [],
             )
-            reader._pending[tool.call_id] = tool
             tools.append(tool)
         if texts or tools:
-            messages.append(
-                RichMessage(reader._next_seq(), "assistant", _clip("\n\n".join(texts), _MAX_TEXT), timestamp, tools)
+            message = RichMessage(
+                reader._next_seq(), "assistant", _clip("\n\n".join(texts), _MAX_TEXT), timestamp, tools
             )
+            messages.append(message)
+            for tool in tools:
+                reader._register_tool(message, tool)
     return messages
 
 
@@ -545,15 +579,20 @@ def _parse_cursor(reader: RichReader) -> list[RichMessage]:
         elif role == "assistant":
             texts, tools = _cursor_assistant(content, reader)
             if texts or tools:
-                messages.append(RichMessage(reader._next_seq(), "assistant", texts, None, tools))
+                message = RichMessage(reader._next_seq(), "assistant", texts, None, tools)
+                messages.append(message)
+                for tool in tools:
+                    reader._register_tool(message, tool)
         elif role == "tool" and isinstance(content, list):
             for part in content:
                 if not isinstance(part, dict) or part.get("type") != "tool-result":
                     continue
-                tool = reader._pending.pop(str(part.get("toolCallId") or ""), None)
-                if tool is not None:
-                    tool.output = _result_text(part.get("result"))
-                    tool.status = "error" if _looks_failed(tool.output) else "ok"
+                host = reader._finish_tool(
+                    str(part.get("toolCallId") or ""),
+                    output=part.get("result"),
+                )
+                if host is not None and (not messages or messages[-1] is not host):
+                    messages.append(host)
     conn.close()
     return messages
 
@@ -589,7 +628,6 @@ def _cursor_assistant(content: object, reader: RichReader) -> tuple[str, list[To
                 detail=detail,
                 options=_extract_options(args) if kind in QUESTION_KINDS else [],
             )
-            reader._pending[tool.call_id] = tool
             tools.append(tool)
     return _clip("\n\n".join(texts), _MAX_TEXT), tools
 
@@ -662,10 +700,10 @@ def pending_prompts(session: dict) -> list[dict]:
                 "id": tool.call_id,
                 "name": tool.name,
                 "summary": tool.summary,
+                # 始终带上 options（可为 []），避免手机端把缺字段当成整包解码失败。
+                "options": list(tool.options),
             }
             if tool.detail:
                 entry["detail"] = tool.detail
-            if tool.options:
-                entry["options"] = tool.options
             prompts.append(entry)
     return prompts

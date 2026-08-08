@@ -41,11 +41,34 @@ class FakeHub:
     def watch_screen(self, key: str):
         return None
 
+    def resync_screen(self, key: str):
+        self._record("resync_screen", key)
+        return {"cols": 80, "rows": 24, "full": True, "status": "resync", "lines": []}
+
     def unwatch_screen(self, key: str):
         pass
 
     def send_text(self, key: str, text: str, submit: bool):
         self._record("send_text", key, text, submit)
+
+    def send_keys(self, key: str, keys):
+        self._record("send_keys", key, tuple(keys))
+
+    def send_image(self, key: str, image_bytes: bytes) -> str:
+        self._record("send_image", key, len(image_bytes))
+        return "/tmp/paste.jpg"
+
+    def projects(self):
+        return [
+            {
+                "cwd": "/Codes/demo",
+                "path": "/Codes/demo",
+                "label": "demo",
+                "name": "demo",
+                "count": 2,
+                "mtime": 9.0,
+            }
+        ]
 
     def mark_read(self, key: str) -> str:
         self._record("mark_read", key)
@@ -183,6 +206,37 @@ class RemoteActionTests(unittest.TestCase):
         self.assertTrue(reply["ok"])
         self.assertEqual(reply["d"]["prompts"][0]["options"], ["是", "否"])
         self.assertIn(("prompts", ("codex:abc",)), self.hub.calls)
+
+    def test_input_text_and_image_shapes(self) -> None:
+        import base64
+
+        connection = self._pair()
+        text = self._call(
+            connection,
+            protocol.M_INPUT_TEXT,
+            {"key": "codex:abc", "text": "你好", "submit": True},
+        )
+        self.assertTrue(text["ok"])
+        self.assertEqual(text["d"], {"ok": True})
+        image = self._call(
+            connection,
+            protocol.M_INPUT_IMAGE,
+            {"key": "codex:abc", "data": base64.b64encode(b"\xff\xd8\xffdata").decode()},
+        )
+        self.assertTrue(image["ok"])
+        self.assertEqual(image["d"]["path"], "/tmp/paste.jpg")
+        self.assertIn(("send_text", ("codex:abc", "你好", True)), self.hub.calls)
+        self.assertIn(("send_image", ("codex:abc", 7)), self.hub.calls)
+
+    def test_projects_and_runtimes_list(self) -> None:
+        connection = self._pair()
+        projects = self._call(connection, protocol.M_PROJECTS_LIST)
+        runtimes = self._call(connection, protocol.M_RUNTIMES_LIST)
+        self.assertTrue(projects["ok"])
+        self.assertEqual(projects["d"]["projects"][0]["path"], "/Codes/demo")
+        self.assertEqual(projects["d"]["projects"][0]["name"], "demo")
+        self.assertTrue(runtimes["ok"])
+        self.assertEqual(runtimes["d"]["runtimes"][0]["id"], "codex")
 
 
 if __name__ == "__main__":

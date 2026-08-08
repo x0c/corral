@@ -146,36 +146,56 @@ class SessionHub:
         except Exception:
             return None
 
+    @staticmethod
+    def _wire_str(value: object) -> str | None:
+        """手机端把若干字段按 String 解码；类型不符会让整份列表解码失败而空白。"""
+        if value is None:
+            return None
+        text = str(value)
+        return text
+
+    @staticmethod
+    def _wire_float(value: object, default: float = 0.0) -> float:
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     def session_payload(self, session: dict, layout=None) -> dict:
         key = session_key(session)
         title = self.store.get_title(session)
         attention = str(session.get("attention_kind") or "none")
+        runtime = self._wire_str(session.get("source"))
         payload = {
             "key": key,
-            "runtime": session.get("source"),
-            "id": session.get("id"),
-            "short_id": session.get("short_id"),
-            "title": title,
-            "cwd": session.get("cwd") or "",
-            "cwd_display": session.get("cwd_display") or "",
-            "mtime": session.get("mtime") or 0.0,
-            "time": session.get("display_time") or "",
-            "size_kb": round(session.get("size_kb") or 0, 1),
+            "runtime": runtime,
+            "id": self._wire_str(session.get("id")),
+            "short_id": self._wire_str(session.get("short_id")),
+            "title": str(title or ""),
+            "cwd": str(session.get("cwd") or ""),
+            "cwd_display": str(session.get("cwd_display") or ""),
+            "mtime": self._wire_float(session.get("mtime")),
+            "time": str(session.get("display_time") or ""),
+            "size_kb": round(self._wire_float(session.get("size_kb")), 1),
             "status": str(session.get("status_tag") or ""),
             "live": bool(session.get("live")),
             "hosted": bool(session.get("keepalive_name")),
             "attention": _ATTENTION_LABELS.get(attention, "none"),
-            "last_user": (session.get("last_user_msg") or "")[:160],
-            "last_agent": (session.get("last_agent_msg") or "")[:160],
+            "last_user": str(session.get("last_user_msg") or "")[:160],
+            "last_agent": str(session.get("last_agent_msg") or "")[:160],
             "rich": richmsg.supports_tool_calls(str(session.get("source") or "")),
+            # 布局读失败时也给出稳定布尔，避免手机端 optional 与「未置顶」语义漂移
+            "pinned": False,
         }
         if layout is not None:
             group = layout.get_group(key)
             if group is not None:
                 pinned_groups = getattr(layout, "pinned_group_ids", {}) or {}
                 payload["group"] = {
-                    "id": group.group_id,
-                    "name": group.name,
+                    "id": str(group.group_id),
+                    "name": str(group.name or ""),
                     "emoji": group_emoji(group.name),
                     "pinned": group.group_id in pinned_groups,
                 }
@@ -196,6 +216,7 @@ class SessionHub:
                 or needle in (p["cwd_display"] or "").lower()
                 or needle in (p["last_user"] or "").lower()
                 or needle in (p["last_agent"] or "").lower()
+                or needle in str((p.get("group") or {}).get("name") or "").lower()
             ]
         if limit > 0:
             payloads = payloads[:limit]
@@ -231,10 +252,13 @@ class SessionHub:
         return richmsg.pending_prompts(session)
 
     def projects(self) -> list[dict]:
+        # path/name 与 iOS NewSessionSheet 对齐；cwd/label 保留给桌面侧同一套项目列表语义。
         return [
             {
                 "cwd": entry.get("cwd_key") or "",
+                "path": entry.get("cwd_key") or "",
                 "label": entry.get("label") or "",
+                "name": entry.get("label") or "",
                 "count": entry.get("count") or 0,
                 "mtime": entry.get("latest_mtime") or 0.0,
             }
@@ -277,16 +301,25 @@ class SessionHub:
             self._sessions_watchers = max(0, self._sessions_watchers - 1)
 
     def watch_conversation(self, key: str) -> list[dict]:
-        """订阅一条会话的实时聊天流，同时把已有历史一次性返回。"""
+        """订阅一条会话的实时聊天流，同时把已有历史一次性返回。
+
+        首包历史用独立 reader 读拍：共享 reader 只负责增量 poll。
+        否则第二台手机（或重连后的第二路订阅）会因为 watchers>1 拿到空列表，
+        而若对共享 reader 再 read_all 又会把增量游标打乱、把旧消息当新消息重推。
+        """
         session = self.require_session(key)
         with self._lock:
             watch = self._conversations.get(key)
+            created = watch is None
             if watch is None:
                 watch = _ConversationWatch(key, richmsg.RichReader(session))
                 self._conversations[key] = watch
             watch.watchers += 1
-        history = watch.reader.read_all() if watch.watchers == 1 else []
-        return [m.to_dict() for m in history]
+        if created:
+            # 推进共享游标到末尾，后续 poll 只推增量
+            watch.reader.read_all()
+        snapshot = richmsg.RichReader(session).read_all()
+        return [m.to_dict() for m in snapshot]
 
     def unwatch_conversation(self, key: str) -> None:
         with self._lock:
@@ -319,6 +352,20 @@ class SessionHub:
             watch.watchers -= 1
             if watch.watchers <= 0:
                 self._screens.pop(key, None)
+
+    def resync_screen(self, key: str) -> dict | None:
+        """已在订阅中的连接再要一帧整屏（不增加引用计数）。
+
+        聊天页为状态条、终端页为画面会各调一次 screen.watch；协议层对同一连接
+        只记一次订阅，第二次必须仍能拿到 full 基准帧，否则手机只能拿着空网格
+        硬套增量，画面会错乱。
+        """
+        with self._lock:
+            watch = self._screens.get(key)
+            if watch is None or watch.watchers <= 0:
+                raise ActionError("usage_error", "还没有在看这条会话的画面")
+            watch.encoder.reset()
+        return self._capture_frame(watch)
 
     def scroll_screen(self, key: str, offset: int) -> dict | None:
         with self._lock:
@@ -395,11 +442,14 @@ class SessionHub:
     def send_keys(self, key: str, keys: list[str]) -> None:
         name = self._keepalive_name(key)
         cleaned = [str(k) for k in keys if str(k).strip()]
-        if cleaned:
-            embed.send_key(name, *cleaned)
+        if not cleaned:
+            raise ActionError("usage_error", "没有要发送的按键")
+        embed.send_key(name, *cleaned)
 
     def send_image(self, key: str, image_bytes: bytes) -> str:
-        """把图片落到会话工作目录并把路径交给助手，复用桌面端已有的哨兵协议。"""
+        """把图片落到会话工作目录并把路径交给助手，复用桌面端已有的落盘+粘贴路径协议。"""
+        if not image_bytes:
+            raise ActionError("usage_error", "没有图片数据")
         name = self._keepalive_name(key)
         path = embed.save_image_and_paste_path(name, image_bytes)
         if not path:
@@ -413,8 +463,18 @@ class SessionHub:
         return _ATTENTION_LABELS.get(state.kind, "none")
 
     def toggle_pin(self, key: str) -> bool:
+        """切换置顶；组成员不能单独置顶，改为切换整组置顶（与桌面侧栏一致）。
+
+        返回值必须读 ``pinned_session_keys`` / ``pinned_group_ids``，不要再用已废弃的
+        ``pinned_sessions``——那个属性不存在时 ``getattr`` 会落到空集合，接口永远回 false。
+        """
+        snapshot = self.layout_db.read()
+        group = snapshot.get_group(key)
+        if group is not None:
+            layout = self.layout_db.toggle_group_pin(group.group_id)
+            return group.group_id in (getattr(layout, "pinned_group_ids", {}) or {})
         layout = self.layout_db.toggle_session_pin(key)
-        return key in getattr(layout, "pinned_sessions", set())
+        return key in (getattr(layout, "pinned_session_keys", {}) or {})
 
     def stop_session(self, key: str) -> None:
         session = self.require_session(key)
@@ -433,6 +493,11 @@ class SessionHub:
         except Exception as exc:
             self.store.abort_delete(key)
             raise ActionError("unavailable", f"删除失败：{exc}") from exc
+        # 删除成功后同步清掉侧栏置顶/分组记忆，避免剩余成员仍挂着「幽灵组」
+        try:
+            self.layout_db.remove_session(key)
+        except Exception:
+            pass
 
     def _host(self, plan, runtime_id: str, title: str, cwd: str | None) -> dict:
         ident = keepalive.new_session_ident()
@@ -451,6 +516,11 @@ class SessionHub:
         return self.session_payload(session, self._layout())
 
     def new_session(self, runtime_id: str, cwd: str | None) -> dict:
+        runtime_id = str(runtime_id or "").strip()
+        if not runtime_id:
+            raise ActionError("usage_error", "请选择助手")
+        if cwd is not None:
+            cwd = str(cwd).strip() or None
         if not embed.available():
             raise ActionError("unavailable", "开发机上没有装 tmux，无法从手机启动会话")
         try:

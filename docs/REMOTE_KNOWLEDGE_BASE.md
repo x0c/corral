@@ -8,7 +8,7 @@
 
 - 开发机跑 `pickup remote` 常驻服务；手机只连这台服务，不直接扫各助手历史文件。
 - 中继只做路由与代发推送，**看不到**会话明文；推送正文在手机本地用设备私钥解开。
-- 手机与桌面共享同一个保活窗格时，**手机端禁止发 `screen.resize`**——否则会把电脑正在看的窗口挤窄。
+- 手机与桌面共享同一个保活窗格时，**手机端禁止发 `screen.resize`**——否则会把电脑正在看的窗口挤窄。服务端即使收到也会以 `usage_error` 拒绝，**不会**改桌面窗口尺寸（不挂真实 resize 实现）。
 - 可选依赖：`pip install 'pickup[remote]'`（`cryptography` / `websockets` / `segno`），不进主依赖。
 
 ## 命令入口
@@ -31,7 +31,19 @@
 - 只读：`sessions.*` / `session.messages` / `session.prompts` / `projects.list` / `runtimes.list` / `search`
 - 订阅：`sessions.watch`、`session.watch`、`screen.watch`（事件通道 `sessions` / `session:<key>` / `screen:<key>`）
 - 输入：`input.text` / `input.keys` / `input.image`
+- 会话动作：`session.new` / `session.stop` / `session.delete` / `session.markRead` …
 - 配对与推送：`pair`、`push.register`
+
+成功返回形状（手机解码依赖这些字段，缺了会空白或静默失败）：
+
+| 方法 | 成功 `d` |
+|---|---|
+| `input.text` / `input.keys` / `session.stop` / `session.delete` | `{"ok": true}` |
+| `input.image` | `{"path": "<开发机落盘绝对路径>"}`（JPEG/PNG 等可识别字节；空/坏 base64 → `usage_error`） |
+| `session.new` / `resume` / `handoff` | `{"session": <SessionSummary>}`（含 `key` 等列表字段） |
+| `session.markRead` | `{"attention": "none\|unread\|working\|waiting"}` |
+| `projects.list` | `{"projects":[{"path","name","cwd","label","count","mtime"}, …]}`（`path`/`name` 给 iOS 新建页；`cwd`/`label` 与桌面项目列表同义） |
+| `runtimes.list` | `{"runtimes":[{"id","name","available"}, …]}` |
 
 画面帧字段见 `remote/screen.py` 的 `to_dict()`：`cols/rows/full/lines/cursor/history/status`。`status` 取画面最后一行有内容的文本，供手机对话页做实时状态条（历史文件可能长时间不落盘）。
 
@@ -51,7 +63,12 @@
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| 手机一开终端，电脑窗口变窄 | 某处发了 `screen.resize`；手机端必须删掉这条调用 |
+| 手机一开终端，电脑窗口变窄 | 某处发了 `screen.resize`；手机端必须删掉这条调用；服务端应拒绝而非执行 |
+| 新建会话页项目列表空白 | `projects.list` 缺 `path`/`name`（旧版只有 `cwd`/`label`）；两端需同时认两套字段 |
+| 发送失败但输入框已清空 | 客户端在 `try?` 后无条件清空草稿；应仅在成功时清空并展示服务端错误文案 |
+| 置顶接口永远回未置顶 / 组内会话点置顶无效 | `session.pin` 必须读 `pinned_session_keys`（不是已废弃的 `pinned_sessions`）；组成员不能单独置顶，应改切 `pinned_group_ids`（与桌面侧栏一致）。列表载荷里组字段用 `group.id`（值取自 `SplitGroup.group_id`） |
+| 手机删掉组内一条后，另一条仍挂着幽灵分组 | `session.delete` 成功后必须 `layout_db.remove_session`，不足两成员时解散组 |
+| 会话列表整页空白 | 手机 `SessionSummary` 对 `id`/`short_id` 按 String、数值按 Double 解码；`session_payload` 必须先做类型收口，任一字段类型不符会让整份 `sessions.list` 解码失败（客户端 `catch` 后静默空白） |
 | 推送仍是占位文案 | NSE 解不开：缺 `host_id`、钥匙串 access group 两边不一致、或主 App 未把开发机公钥写入共享组 |
 | Swift 里写了 `$(AppIdentifierPrefix)...` 却永远对不上钥匙串 | 宏只在 entitlements 展开；源码必须写死 `TEAMID.com.x0c.pickup` |
 | 只装主包没装 `[remote]` | `pickup remote` 导入失败；提示用户装可选依赖 |

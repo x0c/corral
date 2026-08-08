@@ -43,7 +43,11 @@ class FakeHub:
 
     def watch_screen(self, key: str):
         self.watching_screens[key] = self.watching_screens.get(key, 0) + 1
-        return {"cols": 80, "rows": 24, "rows_data": []}
+        return {"cols": 80, "rows": 24, "full": True, "status": "first", "lines": []}
+
+    def resync_screen(self, key: str):
+        self._record("resync_screen", key)
+        return {"cols": 80, "rows": 24, "full": True, "status": "resync", "lines": []}
 
     def unwatch_screen(self, key: str):
         self.watching_screens[key] = self.watching_screens.get(key, 0) - 1
@@ -59,6 +63,22 @@ class FakeHub:
 
     def send_keys(self, key: str, keys):
         self._record("send_keys", key, tuple(keys))
+
+    def send_image(self, key: str, image_bytes: bytes) -> str:
+        self._record("send_image", key, len(image_bytes))
+        return "/tmp/paste.jpg"
+
+    def projects(self):
+        return [
+            {
+                "cwd": "/tmp/demo",
+                "path": "/tmp/demo",
+                "label": "demo",
+                "name": "demo",
+                "count": 1,
+                "mtime": 1.0,
+            }
+        ]
 
     def delete_session(self, key: str):
         raise ActionError(protocol.E_NOT_FOUND, "会话不在了")
@@ -125,6 +145,14 @@ class RemoteServiceTests(unittest.TestCase):
         self.assertTrue(listing["ok"])
         self.assertEqual(listing["d"]["sessions"][0]["key"], "codex:abc")
 
+    def test_sessions_list_rejects_non_integer_limit(self):
+        code = self.service.begin_pairing()
+        connection = self._connect()
+        self.assertTrue(self._call(connection, protocol.M_PAIR, {"code": code})["ok"])
+        reply = self._call(connection, protocol.M_SESSIONS_LIST, {"limit": "很多"})
+        self.assertFalse(reply["ok"])
+        self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
+
     def test_pairing_code_is_single_use(self):
         code = self.service.begin_pairing()
         first = self._connect("aa" * 32)
@@ -172,6 +200,16 @@ class RemoteServiceTests(unittest.TestCase):
         self._call(connection, protocol.M_SESSIONS_WATCH)
         self._call(connection, protocol.M_SESSIONS_WATCH)
         self.assertEqual(self.hub.watching_sessions, 1)
+
+    def test_duplicate_screen_watch_resyncs_without_double_count(self):
+        """聊天状态条与终端页各调一次 watch：订阅只记一次，第二次必须仍有整帧。"""
+        connection = self._paired()
+        first = self._call(connection, protocol.M_SCREEN_WATCH, {"key": "codex:abc"})
+        second = self._call(connection, protocol.M_SCREEN_WATCH, {"key": "codex:abc"})
+        self.assertEqual(self.hub.watching_screens["codex:abc"], 1)
+        self.assertEqual(first["d"]["frame"]["status"], "first")
+        self.assertEqual(second["d"]["frame"]["status"], "resync")
+        self.assertIn(("resync_screen", ("codex:abc",)), self.hub.calls)
 
     def test_disconnect_releases_every_subscription(self):
         """断线不退订会让后台一直抓帧，是最典型的「电脑莫名发烫」来源。"""
@@ -234,6 +272,47 @@ class RemoteServiceTests(unittest.TestCase):
     def test_image_with_broken_base64_is_rejected(self):
         connection = self._paired()
         reply = self._call(connection, protocol.M_INPUT_IMAGE, {"key": "codex:abc", "data": "not-base64!!"})
+        self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
+
+    def test_image_with_empty_payload_is_rejected(self):
+        connection = self._paired()
+        reply = self._call(connection, protocol.M_INPUT_IMAGE, {"key": "codex:abc", "data": ""})
+        self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
+        self.assertEqual(self.hub.calls, [])
+
+    def test_whitespace_only_keys_are_rejected(self):
+        connection = self._paired()
+        reply = self._call(
+            connection, protocol.M_INPUT_KEYS, {"key": "codex:abc", "keys": ["  ", "\t"]}
+        )
+        self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
+        self.assertEqual(self.hub.calls, [])
+
+    def test_screen_resize_is_rejected_without_touching_desktop(self):
+        """手机误发 screen.resize 也绝不能改桌面窗口尺寸。"""
+        connection = self._paired()
+        reply = self._call(
+            connection,
+            protocol.M_SCREEN_RESIZE,
+            {"key": "codex:abc", "cols": 40, "rows": 20},
+        )
+        self.assertFalse(reply["ok"])
+        self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
+        self.assertEqual(self.hub.calls, [])
+
+    def test_projects_list_includes_ios_path_name_fields(self):
+        connection = self._paired()
+        reply = self._call(connection, protocol.M_PROJECTS_LIST)
+        self.assertTrue(reply["ok"])
+        project = reply["d"]["projects"][0]
+        self.assertEqual(project["path"], "/tmp/demo")
+        self.assertEqual(project["name"], "demo")
+        self.assertEqual(project["cwd"], "/tmp/demo")
+        self.assertEqual(project["label"], "demo")
+
+    def test_session_new_requires_runtime(self):
+        connection = self._paired()
+        reply = self._call(connection, protocol.M_SESSION_NEW, {"cwd": "/tmp"})
         self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
 
 

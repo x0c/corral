@@ -294,6 +294,36 @@ class ClaudeRichmsgTests(unittest.TestCase):
             self.assertEqual(len(prompts), 1)
             self.assertEqual(prompts[0]["options"], ["方案一", "方案二"])
 
+    def test_pending_prompts_always_include_options_array(self) -> None:
+        """无选项的提问也必须带 options:[]，否则手机端整份 prompts 解码失败。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "assistant",
+                        "uuid": "a1",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "AskUserQuestion",
+                                    "id": "ask-2",
+                                    "input": {
+                                        "questions": [{"question": "随便说点什么？"}]
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            )
+            prompts = richmsg.pending_prompts(_session("claude", path))
+            self.assertEqual(len(prompts), 1)
+            self.assertEqual(prompts[0]["options"], [])
+
 
 class CursorRichmsgTests(unittest.TestCase):
     def test_tool_call_and_result(self) -> None:
@@ -364,6 +394,107 @@ class RichmsgSerializationTests(unittest.TestCase):
         data = message.to_dict()
         self.assertIn("tools", data)
         self.assertEqual(data["tools"][0]["options"], ["A", "B"])
+
+class RichmsgIncrementalTests(unittest.TestCase):
+    def test_codex_tool_result_is_reemitted_on_poll(self) -> None:
+        """增量轮询时结果回填必须再推宿主消息，否则手机工具卡永远停在 running。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            path.write_text("", encoding="utf-8")
+            reader = richmsg.RichReader(_session("codex", path))
+
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "function_call",
+                            "name": "Bash",
+                            "call_id": "c1",
+                            "arguments": json.dumps({"command": "echo hi"}),
+                        },
+                    }
+                ],
+            )
+            first = reader.poll()
+            self.assertEqual(len(first), 1)
+            self.assertEqual(first[0].tools[0].status, "running")
+            seq = first[0].seq
+
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "function_call_output",
+                                "call_id": "c1",
+                                "output": "hi\n",
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            second = reader.poll()
+            self.assertEqual(len(second), 1)
+            self.assertEqual(second[0].seq, seq)
+            self.assertEqual(second[0].tools[0].status, "ok")
+            self.assertIn("hi", second[0].tools[0].output)
+
+    def test_claude_tool_result_is_reemitted_on_poll(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude.jsonl"
+            path.write_text("", encoding="utf-8")
+            reader = richmsg.RichReader(_session("claude", path))
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "assistant",
+                        "uuid": "a1",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "Bash",
+                                    "id": "b1",
+                                    "input": {"command": "true"},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            )
+            first = reader.poll()
+            self.assertEqual(first[0].tools[0].status, "running")
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "uuid": "u2",
+                            "message": {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": "b1",
+                                        "content": "ok",
+                                    }
+                                ],
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            second = reader.poll()
+            self.assertEqual(len(second), 1)
+            self.assertEqual(second[0].seq, first[0].seq)
+            self.assertEqual(second[0].tools[0].status, "ok")
 
 
 if __name__ == "__main__":
