@@ -510,6 +510,11 @@ def main() -> None:
               f"refresh -r 支持={'是' if embed.supports_theme_report() else '否'})",
               file=sys.stderr)
 
+    # 系统忙时默认调度等级会被浏览器 / IDE 饿死，TUI 表现为「自己不重却卡」。
+    # 进入交互界面前把主线程抬到用户交互优先级（抓帧线程在各自入口自抬）。
+    from pickup.schedprio import boost_interactive
+
+    boost_interactive()
     from pickup.ui.app import run_app
     chosen = run_app(store, embed.available(args.no_keepalive), osc_report=theme_mod._OSC_REPORT)
     # 兜底关闭内嵌控制通道：pane 聚焦时打开的 `tmux -C attach` 控制 client 只有

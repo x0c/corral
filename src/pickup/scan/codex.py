@@ -222,7 +222,7 @@ def _build_session_info(path: str, index: dict[str, str]) -> dict | None:
     if len(fallback) > 60:
         fallback = fallback[:60] + "…"
     if not fallback:
-        fallback = "(无消息)"
+        fallback = "Codex 新会话"
 
     return make_session_info(
         source="codex",
@@ -386,8 +386,10 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         if info["thread_source"] == "subagent":
             continue  # Codex 自身多智能体拆出的子代理线程，不是用户发起的顶层会话，
             # 会与父会话共享同一段历史开头造成列表重复
-        if not info["first_user_msg"] or info["fallback_title"] == "(无消息)":
-            continue  # 无用户消息的空会话
+        info["live"] = info["id"] in live_ids
+        info["pid"] = live_ids.get(info["id"])
+        if not info["first_user_msg"] and not info["live"]:
+            continue  # 已结束且没有用户消息的空会话
         if info["first_user_msg"].startswith(titles.PROMPT_MARKER):
             continue  # 后台标题生成自产的噪音会话,和 Claude 侧同一套 PROMPT_MARKER 过滤
         if is_ephemeral_agent_cwd(info["cwd"]):
@@ -396,8 +398,6 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
             continue  # cwd 已不存在（如子 agent 的临时 scratchpad 目录已被清理），无法 resume
         if cwd_filter and not info["cwd"].startswith(cwd_filter):
             continue
-        info["live"] = info["id"] in live_ids
-        info["pid"] = live_ids.get(info["id"])
         results.append(info)
         if len(results) >= limit:
             break

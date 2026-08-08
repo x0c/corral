@@ -4,6 +4,15 @@
 
 改、评审或排查启动、会话扫描、对话预览、内嵌终端渲染、缓存、原生扩展、安装包或发布流水线时先读本文；各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。
 
+## 系统高负载下的调度优先级（为什么「自己不重却卡」）
+
+用户常见体感：电脑 CPU 已经被浏览器 / IDE 打满时，pickup 占用并不高，界面却开始掉帧、按键迟钝。根因通常不是业务逻辑变慢，而是**调度等级偏低**：
+
+- **macOS**：未标注 QoS 的线程落在 Default。系统忙时会优先给 User Interactive / User Initiated 的进程（图形 App、前台 IDE）CPU，CLI 默认可被饿死。
+- **对策**（`schedprio.py`，进入 TUI 时生效）：主线程 `boost_interactive()` → User Interactive；抓帧 / 控制通道读 / 鼠标发送线程 `boost_ui_worker()` → User Initiated。Linux 尽力 `nice(-5)`，Windows 尽力抬到 Above Normal。调用失败一律忽略，不得挡启动。
+- **不要**给标题生成守护进程、纯扫描后台也抬到 Interactive——那些可以让路；只保「用户正在看的界面」。
+- 这解决的是**被别人抢走时间片**，不是替代抓帧节流 / 原生解析等业务侧优化。若空闲时也卡，仍按本文其它节排查。
+
 ## 性能架构
 
 pickup 的热路径分为四层：

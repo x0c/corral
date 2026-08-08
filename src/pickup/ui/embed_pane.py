@@ -577,6 +577,10 @@ class EmbedPane(Widget):
         self._poke.set()
 
     def _capture_loop(self) -> None:
+        # 抓帧线程喂右栏画面：抬到 User Initiated，避免系统忙时回显掉帧。
+        from pickup.schedprio import boost_ui_worker
+
+        boost_ui_worker()
         last_frame_key: tuple | None = None
         last_generation = -1
         misses = 0

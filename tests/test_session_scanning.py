@@ -1278,6 +1278,38 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
 
         self.assertEqual([s["first_user_msg"] for s in sessions], ["真实的用户问题"])
 
+    def test_scan_keeps_live_session_before_first_user_message(self) -> None:
+        """pickup 新建后尚未输入的 Codex 会话也必须在下次进入时重新发现。"""
+        old_sessions_dir = scan_codex.SESSIONS_DIR
+        old_session_index = scan_codex.SESSION_INDEX
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                scan_codex.SESSIONS_DIR = td
+                scan_codex.SESSION_INDEX = os.path.join(td, "session_index.jsonl")
+                real_cwd = Path(td) / "real_cwd"
+                real_cwd.mkdir()
+                live_uuid = "019efe42-6d51-7fb3-ad48-112a8eefaa11"
+                ended_uuid = "019efe42-6d51-7fb3-ad48-112a8eefaa12"
+                for offset, uuid in enumerate((live_uuid, ended_uuid)):
+                    path = Path(td) / f"rollout-2026-07-16T10-0{offset}-00-{uuid}.jsonl"
+                    _write_jsonl(
+                        path,
+                        [{
+                            "timestamp": "2026-07-16T02:00:00.000Z",
+                            "type": "session_meta",
+                            "payload": {"id": uuid, "cwd": str(real_cwd)},
+                        }],
+                    )
+                with mock.patch.object(scan_codex, "_live_session_ids", return_value={live_uuid: 47372}):
+                    sessions = scan_codex.scan_sessions(limit=10)
+        finally:
+            scan_codex.SESSIONS_DIR = old_sessions_dir
+            scan_codex.SESSION_INDEX = old_session_index
+
+        self.assertEqual([session["id"] for session in sessions], [live_uuid])
+        self.assertTrue(sessions[0]["live"])
+        self.assertEqual(sessions[0]["fallback_title"], "Codex 新会话")
+
     def test_is_ephemeral_agent_cwd(self) -> None:
         from pickup.scan.common import is_ephemeral_agent_cwd
 

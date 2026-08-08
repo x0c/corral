@@ -5548,7 +5548,7 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(i18n.t("status.running_external"), header)
             self.assertIn(i18n.t("detail.running_external"), header)
 
-    async def test_opening_external_session_asks_before_second_process(self) -> None:
+    async def test_opening_external_session_never_starts_a_second_process(self) -> None:
         """确认前不得构造启动计划，取消后也不得启动任何进程。"""
         store, registry = _make_store(sessions=self._external_sessions())
         registry.build_launch_plan = mock.Mock(
@@ -5559,26 +5559,19 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
-            self.assertIsInstance(app.screen, ConfirmModal)
-            await pilot.press("escape")  # 非确认键 = 取消
-            await pilot.pause(delay=0.2)
             self.assertNotIsInstance(app.screen, ConfirmModal)
         self.assertIsNone(app.return_value)
         registry.build_launch_plan.assert_not_called()
 
-    async def test_confirming_external_resume_proceeds(self) -> None:
+    async def test_external_running_session_stays_in_pickup(self) -> None:
         store, _registry = _make_store(sessions=self._external_sessions())
         app = PickupApp(store, embed_ok=False)  # embed 不可用 → 确认后退出交外层接管
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
             await pilot.pause(delay=0.3)
-            self.assertIsInstance(app.screen, ConfirmModal)
-            await pilot.press("r")
-            await pilot.pause(delay=0.3)
-        request = app.return_value
-        self.assertIsNotNone(request)
-        self.assertEqual(pickup.session_key(request.session), "claude:s0")
+            self.assertNotIsInstance(app.screen, ConfirmModal)
+        self.assertIsNone(app.return_value)
 
     async def test_transcript_keeps_being_reloaded_while_running_elsewhere(self) -> None:
         """助手仍在写历史 → mtime 变、缓存失效；右栏必须自己补读，否则正文会空掉。"""

@@ -206,7 +206,7 @@ head -1 "$(command -v pickup)"   # 若 #!.../pipx/venvs/pickup/bin/python → �
 | 会话扫描与对话内容 | src/pickup/scan/ · src/pickup/models.py · src/pickup/runtime/ |
 | 跨助手接力与启动 | src/pickup/runtime/ · src/pickup/models.py |
 | 新助手接入 | src/pickup/runtime/ · src/pickup/scan/ |
-| 性能、派生缓存与原生加速 | src/pickup/cache.py · src/pickup/cache_cli.py · src/pickup/native.py · src/pickup/bootstrap.py · rust/lib.rs · Cargo.toml · scripts/benchmark.py |
+| 性能、派生缓存与原生加速 | src/pickup/cache.py · src/pickup/cache_cli.py · src/pickup/native.py · src/pickup/schedprio.py · src/pickup/bootstrap.py · rust/lib.rs · Cargo.toml · scripts/benchmark.py |
 | 可观测与诊断 | src/pickup/observe.py · src/pickup/agent_api.py |
 | 会话保活 | src/pickup/keepalive.py |
 | 直启子命令 | src/pickup/cli.py · src/pickup/projects.py |

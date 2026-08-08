@@ -548,6 +548,10 @@ class ControlChannel:
             return None
 
     def _read_loop(self) -> None:
+        # 控制通道读线程：事件驱动抓帧依赖它，系统忙时不能掉到 Background。
+        from pickup.schedprio import boost_ui_worker
+
+        boost_ui_worker()
         # 块解析进度只在 reader 线程内读写；pending/active waiter 与写线程、
         # close 共享，统一用 _lock 保护。
         in_block = False
@@ -909,6 +913,9 @@ def send_mouse_sequence(name: str, seq: str) -> None:
 
 
 def _wheel_send_loop() -> None:
+    from pickup.schedprio import boost_ui_worker
+
+    boost_ui_worker()
     while True:
         with _wheel_lock:
             name = next((n for n, q in _wheel_queues.items() if q), None)

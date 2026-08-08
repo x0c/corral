@@ -849,6 +849,11 @@ class MainScreen(
             self._focus_list()
             return
         active = self._is_session_active(session_key)
+        if is_external_running(session):
+            # 外部窗口仍在写同一段历史时，只保留已经显示的静态预览；不能另起恢复
+            # 进程，既避免历史竞争，也不以确认弹窗打断用户。
+            self._focus_list()
+            return
         if self._split_store.get_group(session_key) is not None and active:
             # 还活着的组成员：回车 = 把输入交给它那一格。已结束的成员必须往下走
             # 到启动那一支——否则组里的历史会话点进去永远只有静态预览，再没有任何
@@ -916,8 +921,6 @@ class MainScreen(
 
         `add_pane=True` 时在当前右栏旁加一格（跨助手接力默认如此，保留被接力会话）。
         """
-        if not await self._confirm_external_resume(request):
-            return
         if self.embed_ok:
             self._embed_open(request, add_pane=add_pane)
         else:
