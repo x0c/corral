@@ -480,6 +480,13 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 
 仍无法保证永远零邮件（平台专属挂死、偶发竞态、GitHub 自身异常），但「本机以为绿、一推整矩阵 Lint 红」这类应被门禁拦在推送前。克隆后若尚未装 hook，先 `bash scripts/install-git-hooks.sh`。
 
+**多 Agent 并行时的发版卫生（2026-08-08）**：工作区常有别人半成品（版本号半 bump、未过单测的 WIP）。门禁会因「脏树 / 版本文件不一致」拒推或让 `publish-release.sh` 半途失败。约定：
+
+1. 发版前先看清**整棵**工作区；能一并纳入本次 release 的就纳入，不要只挑自己的文件。
+2. 别人半成品会污染版本号或测不过时：先 `git stash push -u`（含未跟踪）再 bump / 测 / 提交 / 打 tag / 推送 / 跑收尾脚本；成功后再 `stash pop`，冲突按「改动即发布」合并进后续版本，禁止丢弃他人改动。
+3. 推 tag 后必须用 `git ls-remote --tags origin` / `github` 核对远端真有该 tag；本地 `git push` 因门禁失败时可能**根本没推上去**，不能只看本机 tag 列表。
+4. `PICKUP_SKIP_PUSH_GATE=1` 只允许在：**GitHub 侧该版本已验证过**（或本机刚跑完完整 `ci-test`）、且阻塞原因是脏 WIP / 双 remote 重复跑门禁之类非产品缺陷时使用；禁止用跳过门禁掩盖未跑测试。
+
 
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：
 

@@ -81,12 +81,22 @@ class RemoteDaemon:
 
     def _reconcile_once(self) -> None:
         self.service.reconcile_devices()
-        # 给另一进程的 `pickup remote status` 看：谁在线、最近干了啥
+        # 给另一进程的 `pickup remote status` 看：谁在线、最近干了啥、中继是否真连上
+        relay_online = False
+        relay_connected_at = None
+        relay_error = ""
+        if self.relay is not None:
+            relay_online = self.relay.is_connected
+            relay_connected_at = self.relay.connected_at
+            relay_error = self.relay.last_error
         remote_config.write_status_snapshot(
             {
                 "updated_at": time.time(),
                 "online": self.service.online_devices(),
                 "recent": self.service.recent_audit(12),
+                "relay_online": relay_online,
+                "relay_connected_at": relay_connected_at,
+                "relay_error": relay_error,
             }
         )
 

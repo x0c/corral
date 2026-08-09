@@ -12,7 +12,7 @@
 
 - [cli/AGENTS.md](cli/AGENTS.md)：改、评审或发布 pickup CLI 工具前必读（含领域知识库、截图验收，以及**排查「GitHub 持续发单测失败邮件 / 流水线作业排队十几小时 / macOS 作业挂死」**的入口）。**用 pickup 导出的会话数据写周报 / 日报 / 工作总结，或排查「导出内容不够写总结」时，从这里进 `cli/docs/SKILL.md` 的「拿会话数据做总结 / 周报时的边界」节。** Remote：`ssh://git@10.10.10.2:2222/Max/pickup.git`
 - [ios/AGENTS.md](ios/AGENTS.md)：改、评审、构建或真机验收手机客户端前必读（含签名推送、钥匙串共享、禁止 resize、模拟器/真机脚本）。界面视觉与两端状态色见 [ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md](ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md)。
-- [cli/docs/REMOTE_KNOWLEDGE_BASE.md](cli/docs/REMOTE_KNOWLEDGE_BASE.md)：改、评审或排查手机 ↔ 开发机远程接力协议、配对、推送密文、画面差分前必读。
+- [cli/docs/REMOTE_KNOWLEDGE_BASE.md](cli/docs/REMOTE_KNOWLEDGE_BASE.md)：改、评审或排查手机 ↔ 开发机远程接力协议、配对、推送密文、画面差分、**换网连不上 / 中继开关与默认地址、任意网络可达策略**前必读。个人中继部署拓扑见 agentsync 基础设施知识库 `pickup-relay.caozc.top` 节。
 
 ## 组件一览
 
@@ -24,7 +24,7 @@
 
 ## 领域地图（doc-init）
 
-<!-- 覆盖度复核基线：2026-08-08 · 含 remote / ios / relay · 基线版本 0.24.86 -->
+<!-- 覆盖度复核基线：2026-08-08 · 含 remote / ios / relay · 基线版本 0.24.87 -->
 
 | 领域 | 入口锚点 |
 |------|---------|
@@ -42,9 +42,9 @@
 | 命令拦截（shim） | cli/src/pickup/shim.py · cli/src/pickup/bootstrap.py · cli/src/pickup/runtime/registry.py |
 | 标题补全 | cli/src/pickup/titles.py · cli/src/pickup/titlegen.py |
 | Agent 只读查询 | cli/src/pickup/agent_api.py |
-| 手机远程接力（开发机侧） | cli/src/pickup/remote/ · cli/docs/REMOTE_KNOWLEDGE_BASE.md · cli/src/pickup/bootstrap.py |
-| 手机客户端 | ios/ · ios/AGENTS.md |
-| 零知识中继与 APNs | relay/ |
+| 手机远程接力（开发机侧） | cli/src/pickup/remote/ · cli/docs/REMOTE_KNOWLEDGE_BASE.md · cli/src/pickup/bootstrap.py（任意网络 = 中继默认开；勿长期 `--no-relay`） |
+| 手机客户端 | ios/ · ios/AGENTS.md · ios/Pickup/Design/ · ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md（局域网优先、失败回落中继；换网冒烟） |
+| 零知识中继与 APNs | relay/ · 个人公网实例见 agentsync 基础设施知识库 `pickup-relay.caozc.top` |
 | 开源发布与一键安装 | cli/install.sh · cli/.github/workflows/ · cli/scripts/publish-release.sh |
 | CI 流水线 | cli/.github/workflows/test.yml · cli/scripts/ci-test.py · cli/.githooks/pre-push · cli/scripts/install-git-hooks.sh |
 | 客户端自动更新 | cli/src/pickup/updater.py · cli/src/pickup/ui/update_toast.py |
@@ -52,7 +52,7 @@
 
 ## 待补充知识库（doc-init backlog）
 
-（当前无待补充项；中继部署运维细节仍以 `relay/README.md` 为主，需要独立知识库时再登记。）
+（当前无待补充项；开源自建中继看 `relay/README.md`；本机公网中继运维看 agentsync 基础设施知识库 `pickup-relay.caozc.top` 节。）
 
 <!-- managed:inherited-agents:end -->
 
@@ -70,8 +70,8 @@
 - `docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md`：跨助手接力、高级操作、原生恢复、空白新建、启动计划与接力提示词
 - `docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md`：新增一种 AI 助手、补扫描/预览/恢复/接力/空白新建与注册验收
 - `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：事件日志、诊断、F12 截图观测、界面异常排查
-- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、会话关注状态与 Cursor 观察器、会话保活、直启、Agent 只读接口、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、要不要上 PyPI）、**CI 工作流（改 `.github/workflows/` / `scripts/ci-test.py` / 推送门禁与 `install-git-hooks.sh`、排查「GitHub 天天发单测失败邮件 / 作业排队十几小时 / macOS 作业挂死 / 本机漏跑 ruff」前必读「CI 工作流」节）**、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）
-- `docs/REMOTE_KNOWLEDGE_BASE.md`：改、评审或排查 `pickup remote`、手机配对、推送密文、画面差分、禁止手机 resize、可选依赖 `[remote]` 前必读；客户端工程见 `../ios/AGENTS.md`
+- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、会话关注状态与 Cursor 观察器、会话保活、直启、Agent 只读接口、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、要不要上 PyPI）、**CI 工作流（改 `.github/workflows/` / `scripts/ci-test.py` / 推送门禁与 `install-git-hooks.sh`、排查「GitHub 天天发单测失败邮件 / 作业排队十几小时 / macOS 作业挂死 / 本机漏跑 ruff / 多 Agent 脏树挡发版 / 推 tag 后要用 ls-remote 核对远端」前必读「CI 工作流」节）**、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）
+- `docs/REMOTE_KNOWLEDGE_BASE.md`：改、评审或排查 `pickup remote`、手机配对、推送密文、画面差分、禁止手机 resize、可选依赖 `[remote]`、**换网不可用 / 中继默认与 `--no-relay` 禁区、任意网络可达**前必读；客户端工程见 `../ios/AGENTS.md`；个人中继部署见 agentsync 基础设施知识库 `pickup-relay.caozc.top`
 - `docs/SKILL.md`：修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）；这是 Agent 侧唯一的使用文档，改命令行为必须同步这里。**用 `show`/`export` 的会话数据做周报、日报、工作总结、活动统计，或排查「导出的内容不够写总结 / 看不出到底改了什么」时，必读「拿会话数据做总结 / 周报时的边界」节**——那 5 条（对话不含工具调用与改码证据、标题只能当索引、`last_agent` 常为空、user 侧混着系统注入文本、没有成果字段）是不会改的产品边界，得在调用方侧校正
 - `PRIVACY.md`：修改、评审或排查历史文件读取、会话关注状态库、Cursor 用户级观察配置、缓存写入、标题生成、跨运行时接力和开源隐私边界
 - `CONTRIBUTING.md`：修改开源贡献流程、验证命令、设计边界或 PR 要求

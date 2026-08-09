@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import json
 import random
+import time
 
 from pickup import __version__, observe
 from pickup.remote import protocol, ratelimit
@@ -60,11 +61,17 @@ class RelayClient:
         self._socket = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected = asyncio.Event()
+        self.connected_at: float | None = None
+        self.last_error: str = ""
 
     @property
     def url(self) -> str:
         base = self.state.relay_url.rstrip("/")
         return f"{base}/v1/host"
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected.is_set()
 
     async def run(self, stop: asyncio.Event) -> None:
         websockets = _websockets()
@@ -80,16 +87,20 @@ class RelayClient:
                 ) as socket:
                     self._socket = socket
                     self._connected.set()
+                    self.connected_at = time.time()
+                    self.last_error = ""
                     backoff = _INITIAL_BACKOFF
                     observe.event("remote_relay_connected", url=self.url)
                     await self._pump(socket, stop)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self.last_error = str(exc)
                 observe.event("remote_relay_disconnected", error=str(exc))
             finally:
                 self._socket = None
                 self._connected.clear()
+                self.connected_at = None
                 self._drop_channels()
             if stop.is_set():
                 break

@@ -212,12 +212,35 @@ def _cmd_status(args) -> int:
     if snapshot:
         data["online"] = snapshot.get("online") or []
         data["recent"] = snapshot.get("recent") or []
+        data["relay_online"] = bool(snapshot.get("relay_online"))
+        data["relay_connected_at"] = snapshot.get("relay_connected_at")
+        data["relay_error"] = snapshot.get("relay_error") or ""
+    elif state.relay_enabled:
+        data["relay_online"] = False
+        data["relay_connected_at"] = None
+        data["relay_error"] = ""
     if args.json:
         print(_envelope(True, data))
         return EXIT_OK
     print(f"开发机：{state.host_name}")
     print(f"状态：{'运行中' if pid else '未启动'}" + (f"（进程 {pid}）" if pid else ""))
-    print(f"中继：{state.relay_url if state.relay_enabled else '已关闭'}")
+    if not state.relay_enabled:
+        print("中继：已关闭")
+    else:
+        relay_label = state.relay_url
+        if snapshot is not None:
+            if snapshot.get("relay_online"):
+                connected_at = snapshot.get("relay_connected_at")
+                since = ""
+                if isinstance(connected_at, (int, float)) and connected_at:
+                    since = time.strftime("，自 %H:%M:%S", time.localtime(connected_at))
+                print(f"中继：在线（{relay_label}{since}）")
+            else:
+                err = snapshot.get("relay_error") or ""
+                suffix = f"：{err}" if err else ""
+                print(f"中继：离线（{relay_label}）{suffix}")
+        else:
+            print(f"中继：{relay_label}（运行状态未知）")
     print(f"局域网直连：{'已开启' if state.local_enabled else '已关闭'}")
     print(f"已配对手机：{len(state.devices)} 台")
     for device in state.devices:
