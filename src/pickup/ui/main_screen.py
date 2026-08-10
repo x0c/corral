@@ -33,6 +33,7 @@ from pickup.ui.controllers.host_controller import HostControllerMixin
 from pickup.ui.controllers.hud_controller import HUD_POLL_INTERVAL, HudControllerMixin
 from pickup.ui.controllers.layout_controller import LayoutControllerMixin
 from pickup.ui.controllers.update_controller import UpdateControllerMixin
+from pickup.ui.dragon_easter_egg import DragonOverlay
 from pickup.ui.footer import PickupFooter
 from pickup.ui.modals import ConfirmModal, choose_target_runtime, new_session_flow
 from pickup.ui.nav import NavState
@@ -274,6 +275,7 @@ class MainScreen(
                 yield SplitPaneArea(
                     self.store,
                     on_runtime_pick=self._on_runtime_pick,
+                    on_dragon_click=self._play_dragon,
                     on_pane_close=self._on_pane_close,
                     on_focus_list=self._focus_list,
                     on_pane_focused=self._on_pane_focused,
@@ -290,6 +292,7 @@ class MainScreen(
             on_dismiss=self._on_update_toast_dismiss,
             id="update-toast",
         )
+        yield DragonOverlay(id="dragon-overlay")
         yield PickupFooter()
 
     def on_mount(self) -> None:
@@ -406,6 +409,12 @@ class MainScreen(
         # 焦点由 SplitPaneArea 收尾：还有剩余实时格就接着用，最后一格被关掉才
         # 回列表。这里再调一次 _focus_list() 会把焦点提前抢走，让接力落空。
 
+
+    def _play_dragon(self) -> None:
+        try:
+            self.query_one("#dragon-overlay", DragonOverlay).play()
+        except Exception:
+            pass
 
     def _on_runtime_pick(self, runtime_id: str) -> None:
         import pickup

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pickup"
-version = "0.24.89"
+version = "0.24.90"
 description = "Terminal session picker and handoff tool for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, and Cursor Agent CLI."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -57,6 +57,7 @@ pickup = "pickup.bootstrap:main"
 python-source = "src"
 module-name = "pickup._native"
 features = ["pyo3/abi3-py310"]
+include = ["pickup/ui/assets/*.json"]
 
 [tool.ruff]
 line-length = 120

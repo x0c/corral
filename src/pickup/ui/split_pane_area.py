@@ -477,6 +477,7 @@ class SplitPaneArea(Vertical):
         on_pane_focused: Callable[[str], None] | None = None,
         on_pane_restart: Callable[[str, bool], None] | None = None,
         on_hud_toggle: Callable[[], None] | None = None,
+        on_dragon_click: Callable[[], None] | None = None,
         osc_report: bytes | None = None,
         render_detail: Callable[[dict], Text] | None = None,
         sidebar_visible: bool = True,
@@ -490,6 +491,7 @@ class SplitPaneArea(Vertical):
         self._on_pane_focused = on_pane_focused
         self._on_pane_restart = on_pane_restart
         self._on_hud_toggle = on_hud_toggle
+        self._on_dragon_click = on_dragon_click
         self._osc_report = osc_report
         self._render_detail = render_detail
         self._sidebar_visible = sidebar_visible
@@ -511,6 +513,7 @@ class SplitPaneArea(Vertical):
             self.store.registry,
             self._on_runtime_pick,
             sidebar_visible=self._sidebar_visible,
+            on_dragon_click=self._on_dragon_click,
             id="runtime-top-bar",
         )
         with Horizontal(id="pane-row"):

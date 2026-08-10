@@ -75,6 +75,40 @@ class _TopBarSpacer(Widget):
         return Text("")
 
 
+class _DragonChip(Widget):
+    """彩蛋：点击触发全屏中国龙横飞动画。"""
+
+    ALLOW_SELECT = False
+    can_focus = False
+
+    DEFAULT_CSS = """
+    _DragonChip {
+        height: 1;
+        width: auto;
+        min-width: 6;
+        padding: 0 1;
+        margin: 0 0 0 1;
+        content-align: center middle;
+        color: $error;
+    }
+    _DragonChip:hover {
+        background: $boost;
+        color: $error;
+    }
+    """
+
+    def __init__(self, on_click: Callable[[], None], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._on_click = on_click
+
+    def render(self) -> Text:
+        return Text("Dragon", style="bold red")
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self._on_click()
+
+
 class _RuntimeChip(Widget):
     """单个助手按钮。"""
 
@@ -139,12 +173,14 @@ class RuntimeTopBar(Horizontal):
         on_runtime_pick: Callable[[str], None],
         *,
         sidebar_visible: bool = True,
+        on_dragon_click: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._registry = registry
         self._on_runtime_pick = on_runtime_pick
         self._sidebar_visible = sidebar_visible
+        self._on_dragon_click = on_dragon_click
 
     def set_sidebar_visible(self, visible: bool) -> None:
         self._sidebar_visible = visible
@@ -171,3 +207,5 @@ class RuntimeTopBar(Horizontal):
                 self._on_runtime_pick,
                 id=f"runtime-chip-{runtime.id}",
             )
+        if self._on_dragon_click is not None:
+            yield _DragonChip(self._on_dragon_click, id="dragon-chip")
