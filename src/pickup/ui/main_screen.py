@@ -23,7 +23,7 @@ from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Input
+from textual.widgets import Input
 from textual.worker import get_current_worker
 
 from pickup import i18n, ui_prefs
@@ -33,6 +33,7 @@ from pickup.ui.controllers.host_controller import HostControllerMixin
 from pickup.ui.controllers.hud_controller import HUD_POLL_INTERVAL, HudControllerMixin
 from pickup.ui.controllers.layout_controller import LayoutControllerMixin
 from pickup.ui.controllers.update_controller import UpdateControllerMixin
+from pickup.ui.footer import PickupFooter
 from pickup.ui.modals import ConfirmModal, choose_target_runtime, new_session_flow
 from pickup.ui.nav import NavState
 from pickup.ui.runtime_top_bar import RuntimeTopBar
@@ -289,7 +290,7 @@ class MainScreen(
             on_dismiss=self._on_update_toast_dismiss,
             id="update-toast",
         )
-        yield Footer()
+        yield PickupFooter()
 
     def on_mount(self) -> None:
         self._app_focused = bool(self.app.app_focus)

@@ -3181,7 +3181,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: len(area.cells()) == 1)
                 pane = area.cells()[0].embed_pane()
                 app.screen._focus_list()  # noqa: SLF001
-                await pilot.pause()
+                list_view = app.screen.query_one(SessionListView)
+                # 挂载 EmbedPane 后 Textual 可能先把焦点落到右栏；等侧栏真正持焦，
+                # 再同步蒙版，避免 pilot.pause 一帧里焦点还在路上就断言失败。
+                await _wait_until(lambda: list_view.has_focus and not pane.has_focus)
                 area.sync_input_mask()
                 self.assertTrue(pane.input_masked)
 
@@ -3721,6 +3724,28 @@ class FooterActionGatingTests(unittest.TestCase):
         store, _ = _make_store()
         screen = MainScreen(store, embed_ok=False)
         self.assertFalse(screen.check_action("toggle_sidebar", ()))
+
+
+class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
+    """底栏右端常驻版本号，紧挨 `^p palette` 左侧。"""
+
+    async def test_footer_shows_version_left_of_command_palette(self) -> None:
+        from pickup.ui.footer import PickupFooter
+
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)):
+            footer = app.screen.query_one(Footer)
+            self.assertIsInstance(footer, PickupFooter)
+            await _wait_until(lambda: bool(footer.query("#footer-version")))
+            version = footer.query_one("#footer-version", Label)
+            self.assertEqual(str(version.content), f"v{pickup.__version__}")
+            right = footer.query_one("#footer-right")
+            kids = list(right.children)
+            self.assertEqual(kids[0].id, "footer-version")
+            self.assertTrue(any("-command-palette" in c.classes for c in kids[1:]))
+            self.assertLess(version.region.x, kids[1].region.x)
+            self.assertLessEqual(version.region.x + version.region.width, kids[1].region.x)
 
 
 class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):

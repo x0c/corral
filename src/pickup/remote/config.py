@@ -32,7 +32,13 @@ _PID_FILENAME = "remote.pid"
 _STATUS_FILENAME = "remote-status.json"
 
 _lock = threading.Lock()
-_state_mtime: float = -1.0
+_state_mtime: int = -1
+
+
+def _file_mtime_token(path: Path) -> int:
+    """状态文件变更令牌：用纳秒 mtime，避免同秒多次写入被当成「没变」。"""
+    return path.stat().st_mtime_ns
+
 
 
 def remote_dir() -> Path:
@@ -259,11 +265,18 @@ def _write_state_unlocked(state: RemoteState) -> None:
     global _state_mtime
     payload = json.dumps(state.to_dict(), ensure_ascii=False, indent=2)
     path = state_path()
+    previous = _state_mtime
     _atomic_write_text(path, payload, 0o600)
     try:
-        _state_mtime = path.stat().st_mtime
+        token = _file_mtime_token(path)
+        # 远程盘 / virtiofs 等可能在同刻写入后仍返回旧 mtime_ns，unpair 会被漏掉。
+        if token == previous:
+            st = path.stat()
+            os.utime(path, ns=(st.st_atime_ns, token + 1))
+            token = _file_mtime_token(path)
+        _state_mtime = token
     except OSError:
-        _state_mtime = time.time()
+        _state_mtime = time.time_ns()
 
 
 def load_state() -> RemoteState:
@@ -291,18 +304,18 @@ def load_state() -> RemoteState:
         else:
             try:
                 global _state_mtime
-                _state_mtime = state_path().stat().st_mtime
+                _state_mtime = _file_mtime_token(state_path())
             except OSError:
                 pass
         return state
 
 
-def state_mtime() -> float:
-    """当前状态文件的 mtime；不存在时返回 -1。供常驻服务自持「上次加载」对照。"""
+def state_mtime() -> int:
+    """当前状态文件的变更令牌；不存在时返回 -1。供常驻服务自持「上次加载」对照。"""
     try:
-        return state_path().stat().st_mtime
+        return _file_mtime_token(state_path())
     except OSError:
-        return -1.0
+        return -1
 
 
 def read_state_from_disk() -> RemoteState:
@@ -312,17 +325,18 @@ def read_state_from_disk() -> RemoteState:
 
 
 def reload_state_if_changed(
-    current: RemoteState | None = None, *, known_mtime: float | None = None
+    current: RemoteState | None = None, *, known_mtime: int | None = None
 ) -> RemoteState:
-    """磁盘 mtime 变了就重读。
+    """磁盘状态文件变了就重读。
 
     写入方也会更新模块级 `_state_mtime`，同进程里「CLI 改盘、服务持旧快照」时
     不能靠那个全局值判断。调用方应传入自己上次加载时的 `known_mtime`。
+    令牌取自纳秒 mtime：秒级分辨率下同秒多次写入会漏掉 unpair。
     """
     global _state_mtime
     path = state_path()
     try:
-        mtime = path.stat().st_mtime
+        mtime = _file_mtime_token(path)
     except OSError:
         return load_state()
     baseline = known_mtime if known_mtime is not None else _state_mtime
