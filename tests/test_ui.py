@@ -44,7 +44,7 @@ _SIDEBAR_STATE_DB = os.path.join(_SIDEBAR_STATE_DIR, "sidebar-layout.sqlite3")
 from textual import events
 from textual.color import Color
 from textual.geometry import Offset, Size
-from textual.widgets import Footer, Input, Label, ListView
+from textual.widgets import Footer, Input, Label, ListView, TextArea
 
 import pickup
 from pickup import ui_prefs as _ui_prefs
@@ -6216,8 +6216,8 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         return modal
 
     async def _type(self, pilot, modal, text: str) -> None:
-        modal.query_one("#search-query", Input).value = text
-        # 先 pause 一次让 Input.Changed 落地、把防抖定时器挂上，再等它跑完。
+        modal.query_one("#search-query", TextArea).load_text(text)
+        # 先 pause 一次让 TextArea.Changed 落地、把防抖定时器挂上，再等它跑完。
         # 少了这一步会在定时器还没建起来时就判定「已完成」，查询其实一次没跑。
         await pilot.pause()
         await _wait_until(lambda: modal._debounce_timer is None)
@@ -6326,7 +6326,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
-            await pilot.click(modal.query_one("#search-query", Input))
+            await pilot.click(modal.query_one("#search-query", TextArea))
             await pilot.pause(delay=0.2)
             self.assertIsInstance(app.screen, FullTextSearchModal)
             await pilot.press("escape")
@@ -6339,7 +6339,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
 
             modal = await self._open_search(pilot, app)
-            self.assertEqual(modal.query_one("#search-query", Input).value, "字幕")
+            self.assertEqual(modal.query_one("#search-query", TextArea).text, "字幕")
             await _wait_until(lambda: modal._debounce_timer is None)
             self.assertEqual([m.session["id"] for m in modal._matches], ["b"])
             await pilot.press("escape")
@@ -6362,14 +6362,14 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             modal = await self._open_search(pilot, app)
             await self._type(pilot, modal, "/users/x")
             results = modal.query_one("#search-results", ListView)
-            query_input = modal.query_one("#search-query", Input)
-            self.assertTrue(query_input.has_focus)
+            query = modal.query_one("#search-query", TextArea)
+            self.assertTrue(query.has_focus)
             self.assertEqual(results.index, 0)
 
             await pilot.press("down")
             await pilot.pause()
             self.assertEqual(results.index, 1)
-            self.assertTrue(query_input.has_focus)  # 焦点没被抢走
+            self.assertTrue(query.has_focus)  # 焦点没被抢走
 
             await pilot.press("enter")
             await _wait_until(lambda: not isinstance(app.screen, FullTextSearchModal))
@@ -6434,12 +6434,12 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
-            query = modal.query_one("#search-query", Input)
+            query = modal.query_one("#search-query", TextArea)
             results = modal.query_one("#search-results", ListView)
 
             checked = 0
             for text in ("甲词", "乙词", "甲词 s1", "乙词", "甲词"):
-                query.value = text
+                query.load_text(text)
                 # 不等收敛：在重建正在进行的中间态上反复核对不变式
                 for _ in range(8):
                     await pilot.pause()
@@ -6911,19 +6911,30 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(huds[0].display)
             self.assertTrue(huds[1].display)
 
-    async def test_static_preview_pane_has_no_hud(self) -> None:
-        """已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文。"""
+    async def test_static_preview_pane_also_draws_hud(self) -> None:
+        """历史消息预览也要画 Your prompts：长对话里靠小窗扫提问脉络。"""
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
+            # 夹具默认选中已结束会话，右栏是静态对话预览。
             app.screen._sync_hud()  # noqa: SLF001
-            await pilot.pause()
-            for cell in area._cells():  # noqa: SLF001
-                hud = cell.session_hud()
-                self.assertIsNotNone(hud)
-                self.assertFalse(hud.display)
+            await _wait_until(
+                lambda: any(
+                    (hud := cell.session_hud()) is not None and hud.display
+                    for cell in area._cells()  # noqa: SLF001
+                )
+            )
+            visible = [
+                cell.session_hud()
+                for cell in area._cells()  # noqa: SLF001
+                if cell.session_hud() is not None and cell.session_hud().display
+            ]
+            self.assertTrue(visible)
+            for hud in visible:
+                self.assertTrue(hud.expanded)
+                self.assertIn("Your prompt", hud.render().plain)
 
 
 class SessionHudGatingTests(unittest.TestCase):

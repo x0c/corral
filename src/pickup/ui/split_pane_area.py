@@ -631,10 +631,10 @@ class SplitPaneArea(Vertical):
         ]
 
     def sync_hud(self, payloads: dict[str, object] | None, *, expanded: bool) -> None:
-        """每个实时托管格画自己的会话小窗；payloads 里没有的格一律收掉。
+        """每个右栏格画自己的会话小窗；payloads 里没有的格一律收掉。
 
-        数据来源与展开状态都由 `MainScreen` 决定，本类不查 store，也不判断会话
-        是不是实时托管的。展开/收起状态所有格共用一份。
+        数据来源与展开状态都由 `MainScreen` 决定，本类不查 store。展开/收起状态
+        所有格共用一份。
         """
         payloads = payloads or {}
         for cell in self._cells():

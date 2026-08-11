@@ -31,7 +31,7 @@ pickup 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 侧边栏会话列表 | 左栏的搜索框、新建入口、会话组三行卡和会话三行卡 | `SessionListView`、`SessionGroupCard`、`SessionCard`、`NewSessionCard` |
 | 筛选项目 | 顶部输入框按组名、项目名、路径和标题筛选会话 | `NavState.project_query`；不是独立项目列表页；**不搜对话正文** |
 | 全文搜索 | `Ctrl+F` 弹窗，在所有会话的对话正文里找关键词并展示命中行 | `ui/search_modal.py` + `search.py` 的 `ConversationIndex`；与筛选项目是两条路，不是同一个输入框的两种模式 |
-| 会话小窗 | 实时画面右上角的悬浮摘要：默认展开列出提问，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；每个实时托管格各自一份；不是弹窗、不抢焦点 |
+| 会话小窗 | 右栏格右上角的悬浮摘要：默认展开列出提问，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；实时托管格与静态预览格各自一份；不是弹窗、不抢焦点 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或右栏顶栏点助手加格；无底栏 `n` 快捷键 |
 | 高级操作 | 对当前会话选择目标助手并读历史后新建（含同助手另起）；原生恢复走回车 | `a` → `choose_target_runtime()` |
 | 删除会话 | 彻底抹掉选中会话的本地历史，不可恢复；运行中/托管会话先结束再删 | `x` → `ConfirmModal(confirm_key="x")` → `action_delete_session()`；光标停在会话组卡上时删的是**整组全部成员** |
@@ -123,9 +123,9 @@ stateDiagram-v2
 
 “预览加载中”不是用户可见的“连接中”页面：已有历史时立即显示已有详情；刚新建且还没首帧时显示空白终端画布。任何改动都不得重新引入“连接中…”中间文案。
 
-### 会话小窗（内嵌画面右上角浮层）
+### 会话小窗（右栏格右上角浮层）
 
-内嵌实时画面的右上角浮着一个会话小窗（`ui/session_hud.py`），用来"扫一眼就知道这个会话在干啥、进行到哪"：
+右栏格右上角浮着一个会话小窗（`ui/session_hud.py`），用来"扫一眼就知道这个会话在干啥、进行到哪"：
 
 - **两种形态都是从上到下、由旧到新**，与右栏完整对话方向一致。
 - **展开态（默认）**：最多 6 条，每条**整条换行显示、不加省略号**，续行缩进到与首行正文同一列（时间列固定 7 格）。条数超出时**砍中间、留两头**：最早那条恒在最上，被省掉的条数用"中间省略 N 条"画在它下面，再接最近几条。
@@ -134,7 +134,7 @@ stateDiagram-v2
 - **时间列不用 `format_message_time`**：小窗自己的 `_short_time()` 当天只给 `HH:MM`、更早只给 `MM-DD`，两种都恰好 5 格宽（列不会错位）。共用的 `MM-DD HH:MM` 是 11 格，在浮层里会把正文挤掉一截，而同一会话的提问绝大多数在当天，日期纯冗余。消息缺时间戳时（如 Cursor `store.db` blob 没有逐条时间）展开态用 `N/A` 占位（补齐到 5 格），不留空白缩进。
 - **宽度上限 55 格**（`_MAX_WIDTH`），实际宽度取 `min(上限, 本格可用宽度 - 4)`：三分屏那种窄格不受影响，只有单格 / 宽终端吃得到上限；收起态还会再按内容实宽收缩。既然展开态靠换行而不是靠宽度救截断，就没必要铺得更宽——浮层越宽盖住的助手画面越多。
 - **触发**：点击浮层任意位置切换；`Ctrl+G` 是同一动作，但属于列表侧按键，右栏实时格持有输入时让路给助手（见 §6）。
-- **只对实时托管画面画，且每个分屏格各自一份**：已结束会话的右栏本身就是完整对话，浮层只会挡住它自己的正文；多分屏时每一格都画自己的提问摘要，不再只给激活格。
+- **实时托管格与静态对话预览格都画，且每个分屏格各自一份**：长对话里完整预览仍要翻很久，小窗用来扫提问脉络；多分屏时每一格都画自己的提问摘要，不再只给激活格。
 - **数据来源**：`SessionStore.get_conversation()` 里 `role == "user"` 的消息，与右栏完整对话共用同一份内存缓存，不另开解析路径。
 
 ### 侧边栏关注状态
@@ -219,7 +219,7 @@ stateDiagram-v2
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |
 | 删除会话（不可恢复） | `ui/main_screen.py`、`ui/modals.py`、`store.py`、`runtime/base.py` | `action_delete_session()`、`_delete_session_group()`、`ConfirmModal(confirm_key="x")`、`SessionStore.remove_session()`、`BaseRuntime.delete_session()` | 选中的是会话组卡时走 `_delete_session_group()`（整组删，逐条容错）；`ConfirmModal` 的确认键已参数化（结束会话仍是 `q`，删除会话是 `x`）；实际删除逻辑收敛在各运行时适配器，见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`/`docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md` 各存储形态的删除方式 |
 | 右栏静态预览和实时画面挂接 | `ui/embed_pane.py` | `show_detail()`、`focus_session()`、`scroll_detail()` | 本域仅管理呈现切换、焦点与详情滚动；不描述 tmux 实现 |
-| 会话小窗（右上角浮层） | `ui/session_hud.py`、`ui/split_pane_area.py`、`ui/main_screen.py` | `SessionHud`、`summarize_user_messages()`、`PaneCell.update_hud()`、`SplitPaneArea.sync_hud()`、`MainScreen._sync_hud()` / `_hud_live_targets()` / `action_toggle_hud()` | 默认展开；每个实时托管格各自一份；浮层只负责画，数据与展开状态统一由主屏喂；`PaneCell` 的 `layers: default hud` + `dock: right` 决定它贴在标题栏下一行、命中区只有胶囊本身 |
+| 会话小窗（右上角浮层） | `ui/session_hud.py`、`ui/split_pane_area.py`、`ui/main_screen.py` | `SessionHud`、`summarize_user_messages()`、`PaneCell.update_hud()`、`SplitPaneArea.sync_hud()`、`MainScreen._sync_hud()` / `_hud_live_targets()` / `action_toggle_hud()` | 默认展开；实时托管格与静态预览格各自一份；浮层只负责画，数据与展开状态统一由主屏喂；`PaneCell` 的 `layers: default hud` + `dock: right` 决定它贴在标题栏下一行、命中区只有胶囊本身 |
 | 多语言文案 | `i18n.py` | `_MESSAGES`、`detect_lang()`、`t()` | 新增用户可见文案必须同时给 en / zh；环境优先级在此定义 |
 | 宽字符与预览正文格式 | `src/pickup/display.py` 等 | `_text_width()`、`_fit_cell()`、`_preview_blocks()`、`_markdown_renderable()` | 中文、emoji 和组合字符按终端显示宽度处理；预览按「角色色分隔横线 + 角色抬头一行（着色，右挂淡色时间）+ Markdown 正文顶格另起（不着色，吃满整格宽）」排版 |
 | 本地截图与界面观测 | `observe.py`、`ui/main_screen.py` | `save_tui_screenshot()`、`action_save_screenshot()` | F12 导出当前真实 TUI；对话内容仅由用户主动截图，不能提交 |
@@ -320,7 +320,7 @@ stateDiagram-v2
 - **AI 易错点**【浮层渲染的行数必须取"已分配给自己的"高度】`SessionHud.render()` 只能用 `self.content_size.height` 开窗，**不能**再拿 `container_size` 重算一遍 `_max_height()`：布局阶段（`get_content_height`）和渲染阶段看到的 container 尺寸不保证一致（首帧、resize 中间态都会差一拍），两边各算各的就会出现「底色框比正文高出一截」——框是按布局给的高度铺的，正文却按渲染时另算的行数画。同理，每行都必须 `_fit_cell` 补齐到同宽，否则底色右侧会露出锯齿。回归：`test_box_height_matches_rendered_lines_in_both_states`（去掉修复即失败）。
 - **AI 易错点**【展开态不省略、封顶靠滚动，页眉页脚常驻，默认钉底】提问在展开态必须**整条换行显示**（`_entry_lines()` 走 `_wrap_preview_text`），续行缩进到与首行正文同列；不要为了省行数改回单行加省略号——半句话常常刚好把关键信息切掉，那正是这个小窗要解决的问题。换行后行数不可控，所以另有高度上限（`_max_height()`），超出**只开窗不截内容**：页眉与页脚固定在首尾、正文按 `_scroll` 滚动；**默认 `_stick_bottom=True`**（与静态预览同语义），保证最新提问在视野里——不要改回从顶开窗，长提问封顶后会只看得见最早几条。用户上滚后取消钉底；滚回底部或收起再展开恢复钉底。**页脚是唯一写着"点击收起"的地方，绝不能跟着正文滚出去**，否则用户找不到出口（点浮层任意处也能收起，但那是隐藏知识）。回归：`test_expanded_wraps_long_prompt_instead_of_eliding_it`、`test_expanded_continuation_lines_align_with_the_first_line`、`test_expanded_caps_height_and_scrolls_instead_of_dropping_content`、`test_new_prompts_keep_viewport_pinned_to_latest`。
 - **AI 易错点**【小窗顺序恒为由旧到新，超长时砍中间】两种形态都按时间从上到下排，不得改成"最新在最前"——那和右栏完整对话、和人读聊天记录的方向都相反。条数超上限时**留两头砍中间**（`summarize_user_messages` 保证 `entries[0]` 恒为本会话最早那条），被砍掉的条数由 `omitted` 如实说明，不做静默截断。回归：`test_long_session_keeps_both_ends_and_drops_the_middle`、`test_expanded_is_oldest_to_newest_with_the_middle_reported`。
-- **AI 易错点**【小窗对每个实时托管格都画，不只激活格】已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文，故跳过静态预览格；多分屏时每一格画自己的提问摘要。判定入口是 `MainScreen._hud_live_targets()`（遍历 `pane_specs()`，要求 `keepalive_name` + store 能找到会话），不要下放到 `SplitPaneArea` 或 `PaneCell` 里各判一次。占位卡（直启/空白新建后还没写出真实历史）在扫描快照里找不到会话，此时不画。回归：`test_every_live_pane_draws_its_own_hud`。
+- **AI 易错点**【小窗对每个右栏格都画，不只激活格、也不跳过静态预览】实时托管格与历史消息预览格都要画 Your prompts：长对话里完整预览仍要翻很久，小窗用来扫提问脉络。多分屏时每一格画自己的提问摘要。判定入口是 `MainScreen._hud_live_targets()`（遍历 `pane_specs()`，要求 store 能找到会话），不要下放到 `SplitPaneArea` 或 `PaneCell` 里各判一次；不要再加回「只认 `keepalive_name`」的过滤。占位卡（直启/空白新建后还没写出真实历史）在扫描快照里找不到会话，此时不画。回归：`test_every_live_pane_draws_its_own_hud`、`test_static_preview_pane_also_draws_hud`。
 - **AI 易错点**【侧边栏未置顶区禁止按 mtime 重排】`SessionStore._order` 已保证进入后已有会话位置固定；`_sidebar_rows()` 必须跟这份顺序走（组卡落在最先出现的成员位置），不要再按成员当前 mtime / `group.updated_at` 对未置顶块排序——否则运行中会话一写盘，组卡就会在侧边栏里上下飘。新会话仍由 store 插最前。回归：`test_sidebar_order_stable_when_member_mtime_updates`、`test_newer_independent_session_sorts_above_unpinned_group`。
 - **AI 易错点**【侧边栏记忆禁止「启动读一次、之后整份覆盖」】会话组、置顶、折叠、上次焦点和侧栏显隐是**多窗口共享**的（`SidebarLayoutDB` → `~/.cache/pickup/sidebar-layout.sqlite3`）。界面手上的 `SplitLayoutStore` 只是**只读快照**，任何写入都必须经 `MainScreen._apply_layout_change()` 送进库，由库在 `BEGIN IMMEDIATE` 里重读最新状态再重放这次改动，最后整表写回并自增 `revision`。直接改快照再落盘就是 v0.24.x 之前那个缺陷：同时开两个窗口时后动手的那个会把先动手那个的改动**整份抹掉**（丢的不是一条，而是全部置顶 + 全部分组），两个窗口也永远看不到对方。**右栏只切焦点必须走 `_persist_split_focus()`（`set_focus`），不能走 `_persist_split_composition()`（`set_group`）**——后者会把当前组合整份重新断言一遍，另一个窗口刚把某成员移出去时这边一切焦点就又把组重建回来，组名还重新随机，两个窗口来回打架。跨窗口同步靠每秒读一次 `revision`（`PRAGMA data_version` 只对长连接有效，这里是用完即关的短连接，所以用持久化计数器），且只有 `sidebar_fingerprint()`（不含焦点字段）变了才重建列表——全量重建是秒级重活。回归：`SidebarLayoutDBTests.test_interleaved_windows_do_not_clobber_each_other`、`test_multiple_processes_can_write_concurrently`、`test_follows_sidebar_memory_changed_by_another_window`。
 - **AI 易错点**【碰侧边栏记忆的测试/验证脚本必须设 `PICKUP_CACHE_DIR`】库路径认 `PICKUP_CACHE_DIR` > `XDG_CACHE_HOME` > `~/.cache`，但**旧版 JSON 的一次性迁移**会额外去 `titles.CACHE_DIR`（写死 `~/.cache/pickup`）找文件——设了 `PICKUP_CACHE_DIR` 时这条回落必须关掉，否则临时库会把机主真实的历史记忆一起吃进去。真出过事（2026-08-04）：一个只想验证并发写的脚本没设该变量，把本机 `ui-prefs.json` 迁走了。同理，**迁移只读不动旧文件**：不改名、不删除——升级期间机器上很可能还开着跑旧代码的窗口，它仍在按秒往那两个文件里写，动它们既互相打架，回退版本时还会凭空丢记忆。回归：`test_imports_legacy_json_once_without_touching_the_files`、`test_ignores_legacy_files_outside_the_overridden_cache_dir`。**实测实例（2026-08-04，v0.24.45 修）：`test_attention_ui.py` 一直没设隔离，sqlite3 记忆库落地前侥幸不挂；v0.24.44 起本机必现「已读判定时序断言 Called 0 times」——真实组/置顶污染了测试的侧边栏布局，CI 干净环境不现，所以 CI 全绿、本机连挂 5 次。修复=测试文件顶部 `os.environ["PICKUP_CACHE_DIR"] = tempfile.mkdtemp(...)` + `_make_store` 里 `reset_default_layout_db()`。顺带：任何「按一次方向键就选中第一条会话」的测试假设都过时了——进入 pickup 默认高亮第一条会话（跳过「＋ 新建」），`down` 一次落到第二条，要显式 `select_session_key()`。**端到端脚本 `selftest.sh` 就是最后一处漏网（2026-08-05，v0.24.48 修）**：它启动后先按一次 `Down` 再回车托管，实际托管的是第二条会话，脚本却在等第一条的画面，于是 16 项断言只跑到第 2 项就退出——症状是「刚改的东西一跑冒烟就挂」，很容易误判成自己改坏了。这类脚本级过时假设不会被单测覆盖，改右栏 / 内嵌相关代码前先确认冒烟脚本在**未改动的 HEAD** 上也能跑通再归因。
@@ -371,9 +371,9 @@ python3 -m unittest discover -s tests -p 'test_ui.py' -v
 python3 docs/screenshots/capture.py
 ```
 
-检查 `docs/screenshots/list.png`：左栏搜索框、新建会话、会话卡的末行间隔是否连续可点击；会话卡是否固定三行、首行圆点在最左、无圆点的卡片标题顶到最左不留空格、运行时与时间靠右、标题未整行变绿；三条演示会话的时间是否呈现由亮到暗的梯度（夹具刻意铺成「刚刚 / 快一小时前 / 大半天前」，见 `capture.py` 的 `_DEMO_AGES`）；右栏是否为完整对话且详情头有文字状态；Footer 是否存在；中英文、宽字符与截断是否错乱；不得出现“最近提问 / 最近回复”或“连接中”。此图**不应出现会话小窗**（夹具里没有托管会话，浮层只画在实时托管格）。
+检查 `docs/screenshots/list.png`：左栏搜索框、新建会话、会话卡的末行间隔是否连续可点击；会话卡是否固定三行、首行圆点在最左、无圆点的卡片标题顶到最左不留空格、运行时与时间靠右、标题未整行变绿；三条演示会话的时间是否呈现由亮到暗的梯度（夹具刻意铺成「刚刚 / 快一小时前 / 大半天前」，见 `capture.py` 的 `_DEMO_AGES`）；右栏是否为完整对话且详情头有文字状态；右上角应出现会话小窗（夹具是静态预览，浮层同样要画）；Footer 是否存在；中英文、宽字符与截断是否错乱；不得出现“最近提问 / 最近回复”或“连接中”。
 
-改动会话小窗时，`capture.py` 覆盖不到它（夹具没有真实 tmux 托管会话），必须另跑一次带真实 tmux 的出图：把 `keepalive._BASE_ARGV` 指到一个临时 socket、在上面建一个会话、用 `SplitPaneArea.show_hosted_group()` 挂进右栏，再 `app.save_screenshot()` + 复用 `capture.py` 的 `_svg_to_png()`，深浅两种底色（`osc_report`）各出一张肉眼看。重点看：收起态是否恰好三行（条数 / 最初 / 最近）且贴在标题栏下一行、右侧留一列；上下顺序是否由旧到新；展开态的时间列与正文是否对齐、超过 6 条时"中间省略 N 条"是否画在最早那条的下面、末行“点击收起”是否在；`▶` / `▼` 是否被渲成豆腐块（换字形前先确认是出图字体问题还是产品问题——同块的 `◀` / `▶` 覆盖面最广，`▸` / `▾` 实测会缺字形）。
+改动会话小窗时，`list.png` 已能覆盖**静态预览格**上的浮层；实时托管格仍须另跑一次带真实 tmux 的出图：把 `keepalive._BASE_ARGV` 指到一个临时 socket、在上面建一个会话、用 `SplitPaneArea.show_hosted_group()` 挂进右栏，再 `app.save_screenshot()` + 复用 `capture.py` 的 `_svg_to_png()`，深浅两种底色（`osc_report`）各出一张肉眼看。重点看：收起态是否恰好三行（条数 / 最初 / 最近）且贴在标题栏下一行、右侧留一列；上下顺序是否由旧到新；展开态的时间列与正文是否对齐、超过 6 条时"中间省略 N 条"是否画在最早那条的下面、末行“点击收起”是否在；`▶` / `▼` 是否被渲成豆腐块（换字形前先确认是出图字体问题还是产品问题——同块的 `◀` / `▶` 覆盖面最广，`▸` / `▾` 实测会缺字形）。
 
 检查 `docs/screenshots/search.png`（全文搜索弹窗）：输入框是**单行、无边框**（Textual 的 `Input:focus` 会自带一圈边，压不住就会出现「外框套内框」两层边）；状态行的英文单复数正确（`1 session matched` 而不是 `1 sessions matched`）；每条结果是「项目: 标题 / 运行时 · 时间 · N 处命中 / 命中行」，关键词按 `$warning` 高亮；Footer 出现 `^f Search`。**PNG 里中文命中行的关键词两侧会出现明显空隙，这是 Rich SVG → cairosvg 对「同一行里换了样式的 CJK 文本」算错字符前进宽度的导出伪影，不是产品回归**——判定方法是直接断言 `SearchResultRow.render().plain`，真实终端和 `.plain` 里都没有多余空格。
 

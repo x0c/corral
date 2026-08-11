@@ -1,4 +1,4 @@
-"""会话小窗控制器：每个实时托管格右上角的提问概览浮层。
+"""会话小窗控制器：每个右栏格右上角的提问概览浮层。
 
 从 `main_screen.MainScreen` 拆出的方法组（架构整改阶段四）。主线程只做
 stat + 内存缓存命中判断（`peek_conversation`），真正解析历史有 HUD_WARM_INTERVAL
@@ -25,10 +25,11 @@ class HudControllerMixin:
     """依赖宿主提供：`embed_ok`、`store`、`_split_area()`。"""
 
     def _hud_live_targets(self) -> list[tuple[str, dict]]:
-        """返回该画小窗的 (会话键, 会话) 列表；只含实时托管格。
+        """返回该画小窗的 (会话键, 会话) 列表。
 
-        已结束会话的右栏本来就是完整对话，浮层只会挡住它自己的正文，故跳过。
-        占位卡（直启/空白新建后尚未写出真实历史）在快照里找不到，也先不画。
+        实时托管格与静态对话预览格都画：长对话里小窗仍能一眼扫到提问脉络，
+        不必整篇翻预览。占位卡（直启/空白新建后尚未写出真实历史）在快照里
+        找不到会话，先不画。
         """
         if not self.embed_ok:
             return []
@@ -39,8 +40,6 @@ class HudControllerMixin:
             return []
         targets: list[tuple[str, dict]] = []
         for spec in area.pane_specs():
-            if not spec.keepalive_name:
-                continue
             session = self.store.find_session(spec.session_key)
             if session is None:
                 continue
@@ -48,7 +47,7 @@ class HudControllerMixin:
         return targets
 
     def _sync_hud(self) -> None:
-        """把每个实时托管格的小窗刷成各自最新摘要。主线程调用，只做 stat + 内存缓存判定。"""
+        """把每个右栏格的小窗刷成各自最新摘要。主线程调用，只做 stat + 内存缓存判定。"""
         if not self.embed_ok:
             return
         try:
