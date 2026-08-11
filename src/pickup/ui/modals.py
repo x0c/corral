@@ -14,8 +14,9 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Label, ListView, Static
+from textual.widgets import Input, Label, ListView, Static
 
+from pickup.display import _fuzzy_match
 from pickup.i18n import t
 from pickup.ui.session_list import NoSelectListItem
 
@@ -191,8 +192,8 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
 
     左栏更宽——项目名后面还要跟路径，信息量远大于右栏的助手名。交互上
     ←→ 换栏、↑↓ 选行；左栏回车表示「项目定了，去选助手」，右栏回车才真正
-    确认。原来这是两个前后串起来的弹窗，选完项目会整屏一闪再弹一次，回头
-    改项目还得 Esc 退出重来。
+    确认。左栏顶有本地筛选框（`/` 聚焦）：按项目名 / 路径模糊收窄，查询串
+    不写回侧边栏 `NavState.project_query`，但打开时可带入侧边栏当前筛选作初值。
 
     返回 (项目目录, 运行时 id)；Esc 或点框外空白返回 None。
     """
@@ -204,7 +205,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     NewSessionModal > Vertical {
         width: 92;
         max-width: 94%;
-        height: 22;
+        height: 24;
         max-height: 86%;
         border: round $primary;
         background: $surface;
@@ -216,8 +217,21 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
     NewSessionModal #ns-columns {
         height: 1fr;
     }
-    NewSessionModal #ns-projects {
+    NewSessionModal #ns-project-column {
         width: 2fr;
+        height: 1fr;
+    }
+    /* 同全文搜索弹窗：压住 Input 默认 tall 边框，避免外框套内框。 */
+    NewSessionModal #ns-project-filter,
+    NewSessionModal #ns-project-filter:focus {
+        border: none;
+        padding: 0 1;
+        margin: 0;
+        height: 1;
+        background: $panel;
+    }
+    NewSessionModal #ns-projects {
+        height: 1fr;
     }
     NewSessionModal #ns-runtimes {
         width: 1fr;
@@ -246,25 +260,66 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         runtimes: list[RuntimeChoice],
         project_index: int = 0,
         runtime_index: int = 0,
+        initial_query: str = "",
     ) -> None:
         super().__init__()
         self._projects = projects
         self._runtimes = runtimes
-        self._project_index = project_index
         self._runtime_index = runtime_index
+        self._initial_query = initial_query
+        preferred = (
+            projects[project_index][0]
+            if projects and 0 <= project_index < len(projects)
+            else None
+        )
+        self._visible = self._matching_projects(initial_query)
+        self._project_index = self._index_of_cwd(self._visible, preferred)
+
+    @staticmethod
+    def _index_of_cwd(
+        projects: list[tuple[str, str, str]], cwd: str | None
+    ) -> int:
+        if not cwd:
+            return 0
+        for i, (cwd_key, _, _) in enumerate(projects):
+            if cwd_key == cwd:
+                return i
+        return 0
+
+    def _matching_projects(self, query: str) -> list[tuple[str, str, str]]:
+        needle = (query or "").strip()
+        if not needle:
+            return list(self._projects)
+        out: list[tuple[str, str, str]] = []
+        for cwd_key, label, hint in self._projects:
+            if _fuzzy_match(needle, label, cwd_key, _short_path(hint)):
+                out.append((cwd_key, label, hint))
+        return out
+
+    @staticmethod
+    def _project_items(
+        projects: list[tuple[str, str, str]],
+    ) -> list[NoSelectListItem]:
+        return [
+            NoSelectListItem(_ColumnRow(cwd_key, label, _short_path(hint)))
+            for cwd_key, label, hint in projects
+        ]
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label(f" {t('modal.new_session_title')} ", classes="title")
             with Horizontal(id="ns-columns"):
-                yield ListView(
-                    *[
-                        NoSelectListItem(_ColumnRow(cwd_key, label, _short_path(hint)))
-                        for cwd_key, label, hint in self._projects
-                    ],
-                    id="ns-projects",
-                    initial_index=self._project_index,
-                )
+                with Vertical(id="ns-project-column"):
+                    yield Input(
+                        value=self._initial_query,
+                        placeholder=t("modal.project_filter_placeholder"),
+                        id="ns-project-filter",
+                    )
+                    yield ListView(
+                        *self._project_items(self._visible),
+                        id="ns-projects",
+                        initial_index=self._project_index,
+                    )
                 yield ListView(
                     *[
                         NoSelectListItem(
@@ -286,7 +341,37 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         projects = self.query_one("#ns-projects", ListView)
         projects.border_title = t("modal.column_project")
         self.query_one("#ns-runtimes", ListView).border_title = t("modal.column_runtime")
-        projects.focus()
+        # 用 Screen.set_focus 同步钉住项目列表：Input 排在左栏更前，若走
+        # Widget.focus()/call_later，可能被默认焦点顺序抢走，快路径就断了。
+        self.set_focus(projects)
+
+    # ---- 筛选 ----
+
+    def _selected_cwd(self) -> str | None:
+        row = self._row("#ns-projects")
+        return row.value if row is not None else None
+
+    def _rebuild_projects(self, query: str) -> None:
+        """按查询重建左栏；尽量保住当前选中的 cwd，否则落到第一项。"""
+        keep_cwd = self._selected_cwd()
+        self._visible = self._matching_projects(query)
+        projects = self.query_one("#ns-projects", ListView)
+        filter_input = self.query_one("#ns-project-filter", Input)
+        filter_focused = filter_input.has_focus
+        list_focused = projects.has_focus
+        projects.clear()
+        if self._visible:
+            projects.extend(self._project_items(self._visible))
+            projects.index = self._index_of_cwd(self._visible, keep_cwd)
+        if list_focused and self._visible:
+            projects.focus()
+        elif filter_focused:
+            filter_input.focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "ns-project-filter":
+            return
+        self._rebuild_projects(event.value)
 
     # ---- 选择 ----
 
@@ -312,11 +397,41 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
             return
         self._confirm()
 
+    def _filter_focused(self) -> bool:
+        return self.query_one("#ns-project-filter", Input).has_focus
+
     def _on_key(self, event: events.Key) -> None:
         if event.key == "escape":
             event.stop()
+            filt = self.query_one("#ns-project-filter", Input)
+            if filt.has_focus and filt.value:
+                filt.value = ""
+                return
             self.dismiss(None)
-        elif event.key in ("left", "right"):
+            return
+        if event.key == "slash" and self.query_one("#ns-projects", ListView).has_focus:
+            # 与侧边栏「/ 聚焦筛选」同手感；项目列表持焦时 `/` 不当成可打印字符。
+            event.stop()
+            event.prevent_default()
+            self.query_one("#ns-project-filter", Input).focus()
+            return
+        if self._filter_focused():
+            # 筛选框持焦时 ←→ 无效，避免误跳过项目栏直接进运行时。
+            if event.key in ("left", "right"):
+                event.stop()
+                event.prevent_default()
+                return
+            if event.key in ("down", "enter"):
+                event.stop()
+                event.prevent_default()
+                projects = self.query_one("#ns-projects", ListView)
+                if self._visible:
+                    projects.focus()
+                else:
+                    self.app.bell()
+                return
+            return
+        if event.key in ("left", "right"):
             event.stop()
             event.prevent_default()
             target = "#ns-projects" if event.key == "left" else "#ns-runtimes"
@@ -448,7 +563,13 @@ async def new_session_flow(app, store, nav, session: dict | None):
     )
 
     picked = await app.push_screen_wait(
-        NewSessionModal(entries, choices, project_index, runtime_index)
+        NewSessionModal(
+            entries,
+            choices,
+            project_index,
+            runtime_index,
+            initial_query=getattr(nav, "project_query", "") or "",
+        )
     )
     if picked is None:
         return None

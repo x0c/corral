@@ -377,9 +377,13 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Runtime",
         "zh": "运行时",
     },
+    "modal.project_filter_placeholder": {
+        "en": "Filter projects…",
+        "zh": "筛选项目…",
+    },
     "modal.two_column_hint": {
-        "en": "↑↓ Select   ←→ Switch column   Enter Confirm   Esc Back",
-        "zh": "↑↓ 选择   ←→ 切换栏   Enter 确认   Esc 返回",
+        "en": "↑↓ Select   / Filter   ←→ Switch column   Enter Confirm   Esc Back",
+        "zh": "↑↓ 选择   / 筛选   ←→ 切换栏   Enter 确认   Esc 返回",
     },
     "confirm.kill_session": {
         "en": "End session “{title}”? Unsaved progress in the current task will be lost",

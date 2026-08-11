@@ -189,7 +189,7 @@ stateDiagram-v2
 
 | 目录（相对项目根） | 内容 | 关键文件 |
 |---|---|---|
-| `ui/` | Textual 终端界面组件、状态、终端主题监听与弹窗 | `main_screen.py`、`app.py`、`terminal_theme.py`、`session_list.py`、`nav.py`、`modals.py`、`embed_pane.py`、`split_pane_area.py`、`runtime_top_bar.py` |
+| `ui/` | Textual 终端界面组件、状态、终端主题监听与弹窗 | `main_screen.py`、`app.py`、`terminal_theme.py`、`session_list.py`、`nav.py`、`modals.py`、`embed_pane.py`、`split_pane_area.py`、`runtime_top_bar.py`、`dragon_easter_egg.py`、`ui/assets/dragon-grid.json` |
 | `ui/controllers/` | `MainScreen` 按领域拆出的方法容器（mixin，状态仍挂在 MainScreen 实例上；`MainScreen.<method>` 经继承仍全部可解析，文档锚点不失效） | `layout_controller.py`（分屏布局/会话组）、`attention_reader.py`（关注已读）、`host_controller.py`（内嵌托管）、`hud_controller.py`（会话小窗）、`update_controller.py`（更新浮层） |
 | 项目根 | 侧边栏记忆（会话组 / 置顶 / 折叠 / 上次焦点 / 侧栏显隐） | `split_layout.py`、`ui_prefs.py` → `~/.cache/pickup/sidebar-layout.sqlite3` |
 | `docs/screenshots/` | 虚构演示数据的截图验收脚本与产物位置 | `capture.py` |
@@ -215,7 +215,7 @@ stateDiagram-v2
 | 侧边栏记忆的多窗口一致性 | `split_layout.py`、`ui/main_screen.py` | `SidebarLayoutDB`、`MainScreen._apply_layout_change()`、`_poll_layout_state()` | 所有写入必须走库（事务内重读最新再叠加），界面只持有只读快照；每秒轮询 `revision`，只有 `sidebar_fingerprint()` 变了才重建列表；回归 `SidebarLayoutDBTests`、`test_follows_sidebar_memory_changed_by_another_window` |
 | 分屏组合在侧边栏的投影 | `ui/session_list.py`、`ui/main_screen.py` | `SessionListView.set_split_marks()`、`MainScreen._sync_split_marks()` | ≥2 格才标：当前组卡贴 `-in-split`；光标在组卡上时 `active=None`（不标子会话），光标在成员或右栏持有输入时才给该子会话贴 `-split-active`；光标叠加态仍用 `_SIDEBAR_SPLIT_LADDER` 的四级阶梯；单格与 `__hint__` 不标，全量重建后重新贴标；回归 `SidebarSplitHighlightTests` |
 | 状态详情与已读确认 | `ui/main_screen.py`、`store.py` | 详情头状态、稳定可见计时、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；只有红点在右侧成功稳定可见 0.5 秒后清除，切换、失败或失焦取消 |
-| 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`NewSessionModal`、`_on_runtime_pick()` | 侧边栏「＋ 新建」弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径）、右栏运行时；←→ 换栏、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
+| 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`NewSessionModal`、`_on_runtime_pick()` | 侧边栏「＋ 新建」弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径；顶栏本地筛选框，`/` 聚焦，按名/路径 `_fuzzy_match`，查询**不写回** `NavState.project_query`，但可带入侧边栏当前筛选作初值）、右栏运行时；←→ 换栏（筛选框持焦时无效）、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
 | 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |
 | 删除会话（不可恢复） | `ui/main_screen.py`、`ui/modals.py`、`store.py`、`runtime/base.py` | `action_delete_session()`、`_delete_session_group()`、`ConfirmModal(confirm_key="x")`、`SessionStore.remove_session()`、`BaseRuntime.delete_session()` | 选中的是会话组卡时走 `_delete_session_group()`（整组删，逐条容错）；`ConfirmModal` 的确认键已参数化（结束会话仍是 `q`，删除会话是 `x`）；实际删除逻辑收敛在各运行时适配器，见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`/`docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md` 各存储形态的删除方式 |
 | 右栏静态预览和实时画面挂接 | `ui/embed_pane.py` | `show_detail()`、`focus_session()`、`scroll_detail()` | 本域仅管理呈现切换、焦点与详情滚动；不描述 tmux 实现 |
@@ -225,6 +225,7 @@ stateDiagram-v2
 | 本地截图与界面观测 | `observe.py`、`ui/main_screen.py` | `save_tui_screenshot()`、`action_save_screenshot()` | F12 导出当前真实 TUI；对话内容仅由用户主动截图，不能提交 |
 | 截图夹具验收 | `docs/screenshots/capture.py` | `_demo_store()`、`_capture()` | 用虚构会话生成左右栏截图，不读真实会话历史 |
 | 界面回归验证 | `test_ui.py` | `MainScreenNavigationTests`、`RightPanePreviewTests`、`SidebarVisualLayoutTests` 等 | Textual Pilot 覆盖导航、预览、弹窗、卡片、刷新和内嵌接线 |
+| 中国龙横飞彩蛋 | `ui/dragon_easter_egg.py`、`ui/runtime_top_bar.py`、`ui/main_screen.py` | `DragonOverlay.play()`、`capture_screen_snapshot()`、`composite_snapshot_line()`、`_DragonChip` | 右栏顶栏 `#dragon-chip` 触发；`embed_ok=False` 时不显示；点阵数据 `ui/assets/dragon-grid.json`（[x0c/chinese-dragon-tui](https://github.com/x0c/chinese-dragon-tui) MIT）；单测 `test_dragon_easter_egg.py` 跨文件引用须 `from test_ui import _make_store`（`unittest discover -s tests` 无 `tests.` 包前缀） |
 
 ## §4 本域表与字段入口索引
 
@@ -269,6 +270,7 @@ stateDiagram-v2
 | 右栏流程 | 静态预览 / 实时画面 | `EmbedPane.show_detail()`、`EmbedPane.focus_session()` | 根据会话是否托管选择展示模式 |
 | 截图脚本 | 演示截图 | `docs/screenshots/capture.py` | 生成可提交的虚构数据截图 `docs/screenshots/list.png`（主界面）与 `search.png`（全文搜索弹窗） |
 | 用户触发截图 | 真机截图 | F12 → `MainScreen.action_save_screenshot()` | 排查用户真实界面；产物只能留在本地缓存 |
+| 中国龙横飞彩蛋 | 右栏顶栏 | `#dragon-chip` → `MainScreen._play_dragon()` → `DragonOverlay.play()` | 触发前 compositor 抓一帧快照；动画 ≤3s；期间底层 TUI 定格不刷新；`embed_ok=False` 无入口 |
 
 ## §6 核心业务规则与隐性约束
 
@@ -292,7 +294,7 @@ stateDiagram-v2
 - **AI 易错点**【确认弹窗的确认键已参数化】`ConfirmModal(message, confirm_key="q")` 的确认键不再写死为 `q`：结束会话仍用默认 `q`，删除会话显式传 `confirm_key="x"`。新增任何需要二次确认的危险动作时，必须选一个与触发键一致的 `confirm_key`（而不是复用默认 `q`），否则用户会按错键、或误把另一个动作的确认键当成本动作的确认键。`t("modal.confirm_hint", confirm_key=...)` 的提示行文案同步跟着变。
 - **AI 易错点**【弹窗一律「点框外空白＝取消」，且判定必须现查落点】所有 `ModalScreen`（运行时选择、新建会话、确认框、全文搜索）都要继承 `ui/modals.py` 的 `OutsideClickDismiss`（写在 `ModalScreen` 之前），新增弹窗照办——只留 Esc 一条出口，鼠标用户会觉得界面卡住。取消时回给调用方的值由子类的 `outside_click_result` 声明（默认 `None`；`ConfirmModal` 必须是 `False`，否则点背景会被当成确认，那是结束会话 / 删除会话这类危险动作）。**判定只能用 `get_widget_at(event.screen_x, event.screen_y) is self` 现查落点控件**：Click 会从列表项、输入框一路冒泡到弹窗，光看「收到了事件」会让弹窗点哪都关。`ConfirmModal` 的鼠标路径还要跟按键一样过 `_armed` 武装窗口。回归：`ModalOutsideClickTests`（背景关 + 内容不关成对）、`FullTextSearchModalTests.test_backdrop_click_closes_without_touching_the_sidebar`。
 - **AI 易错点**【宽度不是字符数】侧边栏列宽、标题截断、运行时名右对齐和预览折行一律使用 Rich 的终端显示宽度工具链（`_text_width()` / `_fit_cell()`）；禁止用 `len()`、`ljust()` 或自写 East Asian Width 表。中文、emoji、组合字符会使字符数与终端格宽不一致。
-- **AI 易错点**【筛选状态单一来源】筛选项目只认 `NavState.project_query`。搜索框输入、列表渲染、页头数量和新建会话目录推导必须共用它；不要在列表或弹窗另存一份筛选值。全文搜索弹窗是例外且只读——它把 `project_query` 当初始查询带进去，但自己的查询串不写回这份状态。
+- **AI 易错点**【筛选状态单一来源】筛选项目只认 `NavState.project_query`。搜索框输入、列表渲染、页头数量和新建会话目录推导必须共用它；不要在列表或弹窗另存一份筛选值。例外且只读：全文搜索弹窗与新建会话弹窗左栏筛选都可把 `project_query` 当初始查询带进去，但自己的查询串不写回这份状态。
 - **AI 易错点**【全文搜索是另一条路，不要往筛选框里塞】侧边栏筛选框只匹配组名 / 项目名 / 路径 / 标题，**永远不搜对话正文**：它是常驻的列表收窄工具，一旦混进正文匹配，随手输个常用词就会把列表撑成一堆看不出为什么命中的会话。搜正文走 `Ctrl+F` 弹窗（`ui/search_modal.py`），结果按会话分组、显式展示命中行并高亮关键词，让用户一眼看出「为什么它出现在这」。两者共用 `store` 的会话与标题快照，但匹配逻辑分别在 `display._filter_sessions_by_query()` / `SessionListView._sidebar_rows()` 和 `search.ConversationIndex.search()`，不要合并。
 - **AI 易错点**【`push_screen_wait` 必须在 worker 里】新增任何「推弹窗并等结果」的动作时，动作方法必须挂 `@work`（见 `action_handoff` / `action_search_content`），否则 Textual 直接抛 `NoActiveWorker`。这条在单测里才会暴露，静态看代码看不出来。
 - **AI 易错点**【全文搜索索引在后台线程建，且要等首屏画完】`ConversationIndex.refresh()` 要解析对话历史，只能跑在 `@work(thread=True)` 里（`_warm_search_index`），并且要经 `_schedule_search_index_warm` 延后到首屏渲染之后——后台线程也吃 GIL，直接在首屏那一秒开跑会让首次出卡片慢 110～165 ms。弹窗打开时若未就绪，由弹窗自己再建一次并显示进度。`refresh()` 内部有锁做串行，两条路同时触发也不会把同一批会话解析两遍。搜索结果里的会话字段一律从调用方传入的当前列表取，索引只存正文——否则标题补全、运行中状态会停在建索引那一刻。
@@ -305,6 +307,11 @@ stateDiagram-v2
 - **AI 易错点**【推导原选中条目必须以 DOM 为准】后台重扫是先 `store.refresh()` 再触发 `rebuild()`，这一刻 store 已经变了但 DOM 还是旧的。`rebuild()` 必须用 `_displayed_selected_identity()` 从当前 `ListItem` 子控件读取会话键或组身份，不能用新的扁平会话数组去索引 `self.index`；会话组卡和子项插入后，下标更不再等于 `visible_sessions()` 下标。真实复现过：后台刷出新会话后高亮串到相邻会话。用户交互期的 `selected_session()` / `selected_group()` 同样直接读取高亮 DOM 控件。
 - **AI 易错点**【详情缓存失效】对话预览按历史文件 mtime 失效；列表扫描后右栏详情也必须失效并按稳定会话键重新读取当前快照。否则标题、状态、摘要或对话会停留在旧字典闭包里。
 - **AI 易错点**【右栏滚动语义】静态对话的 `detail_offset`（0 为顶部，增大表示更靠后）与实时画面的 `history_offset`（0 为直播底部）方向相反。滚轮进入静态对话时必须取反，保证“下滚看更晚内容”。选中预览默认钉在最新（`_detail_stick_bottom`）；用户离开底部后刷新不得强行钉回。
+- **AI 易错点**【中国龙彩蛋：Textual overlay 不能靠透明透出下层】全屏或竖条 overlay 上渲染空格/`background: transparent` 仍会盖住 pickup UI（白底滑过）。正确做法：`play()` 在 overlay **显示前**用 `screen._compositor.render_strips()` 抓快照；每帧 `composite_snapshot_line()` 只在龙像素格（`backgroundIndex`）叠色，其余列保留快照。**动画约 3 秒内底层 TUI 定格**，结束后释放快照恢复正常刷新——产品可接受，勿改成每帧重绘下层。
+- **AI 易错点**【中国龙彩蛋：合成必须按终端列展开宽字符】`Strip.crop(x, x+1)` 逐列取背景会把 CJK/emoji 从中间拆开，定格画面中文变空白。须 `_strip_to_cell_columns` → 按列 patch 龙像素 → `_cell_columns_to_strip` 合并；逻辑同内嵌 pane 选区「字符索引 ≠ cell 列」那条（见 [维护指南](MAINTAINER_GUIDE.md) 选区裁切说明）。
+- **AI 易错点**【中国龙彩蛋：纵向采样除数是终端行数】▀ 两行合一终端行时，源图 row 映射用 `(y*2+0.5)/(render_height*2)`，**除数用 `render_height`（终端行）而非 `logical_height`**；用后者只会采样源图上半段，表现为「上半屏空白、只有龙上半身」。
+- **AI 易错点**【中国龙彩蛋单测 import】`scripts/ci-test.py` 用 `loader.discover(start_dir="tests")`，跨测试夹具必须 `from test_ui import _make_store`，**禁止** `from tests.test_ui`（CI 报 `ModuleNotFoundError: No module named 'tests'`）。
+- **AI 易错点**【中国龙点阵资源须进 wheel】`dragon-grid.json` 在 `pickup/ui/assets/`；`pyproject.toml` 的 `[tool.maturin] include = ["pickup/ui/assets/*.json"]` 必须保留，否则 pip 安装后运行时读不到 JSON。
 - **AI 易错点**【SSH 真彩失真】TUI 颜色变脏/退化到 256 或 16 色，通常是远端缺 `COLORTERM=truecolor`（sshd 未 `AcceptEnv COLORTERM`），不是 pickup 为省带宽降色。见 `docs/MAINTAINER_GUIDE.md` 对应踩坑。
 - **AI 易错点**【点击选择】会动态增删的会话卡、新建项和弹窗菜单项必须关闭 Textual 文本拖选；它们的点击语义是选择/确认。右栏内嵌实时终端保留文本选择（划词抬起自动 OSC 52 复制；Ctrl+C 可再复制），不能全局关闭。
 - **AI 易错点**【窗口缩放必须防抖 + 冻结重排】拖动期禁止每次 Resize 都 `resize-window`/抓帧；停稳后再改托管窗。改窗后助手常会整屏重排数秒，**禁止把重排中间帧刷到右栏**——已有 live 画面时开启 capture hold，稳定或超时后再一次跳到最新（见 `EmbedPane._begin_resize_capture_hold`）。

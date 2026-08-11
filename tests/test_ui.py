@@ -5419,6 +5419,156 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             bell.assert_called_once()
             self.assertIsInstance(app.screen, NewSessionModal)  # 未安装项不应关闭弹窗
 
+    async def test_new_session_modal_filters_projects(self) -> None:
+        """左栏筛选框按名/路径收窄项目列表，清空后还原。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            result_holder = {}
+
+            async def _open():
+                result_holder["result"] = await app.push_screen_wait(
+                    NewSessionModal(
+                        [
+                            ("/tmp/alpha", "alpha", "/tmp/alpha"),
+                            ("/tmp/beta", "beta", "/tmp/beta"),
+                            ("/Codes/pickup", "pickup", "/Codes/pickup"),
+                        ],
+                        [RuntimeChoice("claude", "Claude", "", True)],
+                    )
+                )
+
+            app.run_worker(_open())
+            await pilot.pause(delay=0.2)
+            modal = app.screen
+            self.assertIsInstance(modal, NewSessionModal)
+            self.assertEqual(len(modal.query_one("#ns-projects").children), 3)
+            await pilot.press("slash")
+            await pilot.pause()
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
+            await pilot.press("p", "i", "c", "k")
+            await pilot.pause()
+            projects = modal.query_one("#ns-projects")
+            self.assertEqual(len(projects.children), 1)
+            self.assertEqual(modal._row("#ns-projects").value, "/Codes/pickup")
+            await pilot.press("down")  # 筛选框 -> 项目列表
+            await pilot.pause()
+            self.assertTrue(projects.has_focus)
+            filt = modal.query_one("#ns-project-filter")
+            filt.focus()
+            await pilot.pause()
+            filt.value = ""
+            await pilot.pause()
+            self.assertEqual(len(modal.query_one("#ns-projects").children), 3)
+            await pilot.press("escape")
+            await pilot.pause(delay=0.2)
+        self.assertIsNone(result_holder.get("result"))
+
+    async def test_new_session_modal_initial_query_seeds_filter(self) -> None:
+        """侧边栏 project_query 作初值时，打开即已收窄，且不写回 nav。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            nav = app.screen.nav
+            nav.project_query = "sidebar-seed"
+
+            async def _open():
+                await app.push_screen_wait(
+                    NewSessionModal(
+                        [
+                            ("/tmp/alpha", "alpha", "/tmp/alpha"),
+                            ("/tmp/beta", "beta", "/tmp/beta"),
+                        ],
+                        [RuntimeChoice("claude", "Claude", "", True)],
+                        initial_query="beta",
+                    )
+                )
+
+            app.run_worker(_open())
+            await pilot.pause(delay=0.3)
+            modal = app.screen
+            self.assertIsInstance(modal, NewSessionModal)
+            self.assertEqual(modal.query_one("#ns-project-filter").value, "beta")
+            self.assertEqual(len(modal.query_one("#ns-projects").children), 1)
+            self.assertEqual(modal._row("#ns-projects").value, "/tmp/beta")
+            # 焦点偶发仍在 Input 上时再钉一次，避免套件并行压力下的竞态。
+            if not modal.query_one("#ns-projects").has_focus:
+                modal.set_focus(modal.query_one("#ns-projects"))
+                await pilot.pause()
+            self.assertTrue(modal.query_one("#ns-projects").has_focus)
+            modal.query_one("#ns-project-filter").value = "alpha"
+            await pilot.pause()
+            self.assertEqual(len(modal.query_one("#ns-projects").children), 1)
+            self.assertEqual(nav.project_query, "sidebar-seed")
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause(delay=0.2)
+
+    async def test_new_session_modal_empty_filter_bells_on_confirm(self) -> None:
+        """无命中时确认响铃、弹窗不关。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+
+            async def _open():
+                await app.push_screen_wait(
+                    NewSessionModal(
+                        [("/tmp/alpha", "alpha", "/tmp/alpha")],
+                        [RuntimeChoice("claude", "Claude", "", True)],
+                        initial_query="zzz-no-match",
+                    )
+                )
+
+            app.run_worker(_open())
+            await pilot.pause(delay=0.2)
+            modal = app.screen
+            self.assertEqual(len(modal.query_one("#ns-projects").children), 0)
+            await pilot.press("right")
+            with mock.patch.object(app, "bell") as bell:
+                await pilot.press("enter")
+                await pilot.pause()
+            bell.assert_called_once()
+            self.assertIsInstance(app.screen, NewSessionModal)
+
+    async def test_new_session_modal_escape_clears_filter_then_dismisses(self) -> None:
+        """筛选框持焦且有内容时 Esc 先清空；再 Esc 才关窗。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            result_holder = {}
+
+            async def _open():
+                result_holder["result"] = await app.push_screen_wait(
+                    NewSessionModal(
+                        [
+                            ("/tmp/alpha", "alpha", "/tmp/alpha"),
+                            ("/tmp/beta", "beta", "/tmp/beta"),
+                        ],
+                        [RuntimeChoice("claude", "Claude", "", True)],
+                    )
+                )
+
+            app.run_worker(_open())
+            await pilot.pause(delay=0.2)
+            modal = app.screen
+            await pilot.press("slash")
+            await pilot.press("b", "e")
+            await pilot.pause()
+            self.assertEqual(len(modal.query_one("#ns-projects").children), 1)
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, NewSessionModal)
+            self.assertEqual(modal.query_one("#ns-project-filter").value, "")
+            self.assertEqual(len(modal.query_one("#ns-projects").children), 2)
+            await pilot.press("escape")
+            await pilot.pause(delay=0.2)
+        self.assertIsNone(result_holder.get("result"))
+
     async def test_sidebar_new_session_opens_single_modal(self) -> None:
         """回归：侧边栏「＋ 新建会话」只弹一个窗，项目与运行时在同一屏选完。"""
         codex = mock.Mock()
