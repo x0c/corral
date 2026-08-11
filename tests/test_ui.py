@@ -44,7 +44,7 @@ _SIDEBAR_STATE_DB = os.path.join(_SIDEBAR_STATE_DIR, "sidebar-layout.sqlite3")
 from textual import events
 from textual.color import Color
 from textual.geometry import Offset, Size
-from textual.widgets import Footer, Input, Label, ListView, TextArea
+from textual.widgets import Footer, Input, Label, ListView
 
 import pickup
 from pickup import ui_prefs as _ui_prefs
@@ -6216,8 +6216,8 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         return modal
 
     async def _type(self, pilot, modal, text: str) -> None:
-        modal.query_one("#search-query", TextArea).load_text(text)
-        # 先 pause 一次让 TextArea.Changed 落地、把防抖定时器挂上，再等它跑完。
+        modal.query_one("#search-query", Input).value = text
+        # 先 pause 一次让 Input.Changed 落地、把防抖定时器挂上，再等它跑完。
         # 少了这一步会在定时器还没建起来时就判定「已完成」，查询其实一次没跑。
         await pilot.pause()
         await _wait_until(lambda: modal._debounce_timer is None)
@@ -6326,7 +6326,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
-            await pilot.click(modal.query_one("#search-query", TextArea))
+            await pilot.click(modal.query_one("#search-query", Input))
             await pilot.pause(delay=0.2)
             self.assertIsInstance(app.screen, FullTextSearchModal)
             await pilot.press("escape")
@@ -6339,7 +6339,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
 
             modal = await self._open_search(pilot, app)
-            self.assertEqual(modal.query_one("#search-query", TextArea).text, "字幕")
+            self.assertEqual(modal.query_one("#search-query", Input).value, "字幕")
             await _wait_until(lambda: modal._debounce_timer is None)
             self.assertEqual([m.session["id"] for m in modal._matches], ["b"])
             await pilot.press("escape")
@@ -6362,7 +6362,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             modal = await self._open_search(pilot, app)
             await self._type(pilot, modal, "/users/x")
             results = modal.query_one("#search-results", ListView)
-            query = modal.query_one("#search-query", TextArea)
+            query = modal.query_one("#search-query", Input)
             self.assertTrue(query.has_focus)
             self.assertEqual(results.index, 0)
 
@@ -6434,12 +6434,12 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
-            query = modal.query_one("#search-query", TextArea)
+            query = modal.query_one("#search-query", Input)
             results = modal.query_one("#search-results", ListView)
 
             checked = 0
             for text in ("甲词", "乙词", "甲词 s1", "乙词", "甲词"):
-                query.load_text(text)
+                query.value = text
                 # 不等收敛：在重建正在进行的中间态上反复核对不变式
                 for _ in range(8):
                     await pilot.pause()
