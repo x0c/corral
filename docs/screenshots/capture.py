@@ -501,7 +501,7 @@ async def _capture_search() -> None:
                     else:
                         raise RuntimeError("全文搜索弹窗没有就绪")
                     modal = app.screen
-                    modal.query_one("#search-query").value = "回归"
+                    modal.query_one("#search-query").load_text("回归")
                     await pilot.pause(delay=0.5)
                     if not modal._matches:
                         raise RuntimeError("演示查询没有命中，截图会是空列表")

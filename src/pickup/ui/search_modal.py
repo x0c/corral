@@ -4,9 +4,9 @@
 工具；本弹窗负责「我记得在某个会话里聊过某件事，但想不起是哪个项目」，是一次性
 的检索动作，选中后跳回主列表定位到那个会话。
 
-交互上刻意让输入框始终持有焦点：↑↓ / PageUp / PageDown 会被转发给结果列表，
-Enter 直接打开当前高亮项。用户从头到尾只跟一个输入框打交道，不需要在输入框和
-列表之间来回切焦点。
+交互上刻意让输入框始终持有焦点：查询框是两行软换行的 TextArea，↑↓ /
+PageUp / PageDown 会被转发给结果列表，Enter 直接打开当前高亮项（不会在框里换
+行）。用户从头到尾只跟一个输入框打交道，不需要在输入框和列表之间来回切焦点。
 """
 
 from __future__ import annotations
@@ -15,12 +15,13 @@ import asyncio
 import os
 
 from rich.text import Text
-from textual import events, work
+from textual import work
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import Input, ListView, Static
+from textual.widgets import ListView, Static, TextArea
 
 from pickup.i18n import t
 from pickup.search import DEFAULT_MAX_LINES, MatchLine, SessionMatch, split_keywords
@@ -140,6 +141,17 @@ class SearchResultRow(Widget):
 class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
     """返回选中的会话键；Esc 或点框外空白返回 None。"""
 
+    # Enter / ↑↓ 必须 priority：否则两行 TextArea 会先吃掉这些键（换行、移光标），
+    # 用户就无法在输入框持焦时直接打开结果或挪高亮。
+    BINDINGS = [
+        Binding("escape", "cancel", show=False, priority=True),
+        Binding("enter", "confirm", show=False, priority=True),
+        Binding("up", "results_up", show=False, priority=True),
+        Binding("down", "results_down", show=False, priority=True),
+        Binding("pageup", "results_page_up", show=False, priority=True),
+        Binding("pagedown", "results_page_down", show=False, priority=True),
+    ]
+
     DEFAULT_CSS = """
     FullTextSearchModal {
         align: center middle;
@@ -153,15 +165,19 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
         background: $surface;
         padding: 0 1;
     }
-    /* Textual 的 Input 自带 `border: tall $border`，且 :focus 还会换一套带伪类
-       的规则——只写 `FullTextSearchModal Input` 压不住聚焦态（伪类选择器权重更
-       高），弹窗顶部会出现「外框套内框」两层边。两个状态都显式清掉。 */
-    FullTextSearchModal Input,
-    FullTextSearchModal Input:focus {
+    /* Textual 的 TextArea 默认 tall 边框，且 :focus 权重更高——两个状态都清掉，
+       避免弹窗顶部「外框套内框」。compact 去掉边框类，这里再钉死高度与底色。 */
+    FullTextSearchModal TextArea,
+    FullTextSearchModal TextArea:focus {
         border: none;
         padding: 0 1;
         margin: 0;
-        height: 1;
+        height: 2;
+        background: $panel;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
+    }
+    FullTextSearchModal TextArea .text-area--cursor-line {
         background: $panel;
     }
     FullTextSearchModal #search-status {
@@ -198,17 +214,21 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Input(
-                value=self._initial_query,
-                placeholder=t("search.placeholder"),
+            yield TextArea(
+                self._initial_query,
                 id="search-query",
+                soft_wrap=True,
+                show_line_numbers=False,
+                compact=True,
+                highlight_cursor_line=False,
+                placeholder=t("search.placeholder"),
             )
             yield Static("", id="search-status")
             yield ListView(id="search-results")
             yield Static(t("search.hint"), classes="hint")
 
     def on_mount(self) -> None:
-        self.query_one("#search-query", Input).focus()
+        self.query_one("#search-query", TextArea).focus()
         # 索引已就绪就先用它立刻出结果（毫秒级），同时仍去后台补一次增量刷新：
         # 首屏预热之后新产生的会话和新追加的消息只有这样才搜得到。签名没变的会话
         # 直接复用，实测全命中时整轮只要 0.3ms，等于白捡。
@@ -254,15 +274,15 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
 
     # ---- 查询 ----
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id != "search-query":
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id != "search-query":
             return
         if self._debounce_timer is not None:
             self._debounce_timer.stop()
         self._debounce_timer = self.set_timer(_DEBOUNCE, self._run_search)
 
     def _query(self) -> str:
-        return self.query_one("#search-query", Input).value
+        return self.query_one("#search-query", TextArea).text
 
     def _run_search(self) -> None:
         self._debounce_timer = None
@@ -338,29 +358,30 @@ class FullTextSearchModal(OutsideClickDismiss, ModalScreen[str | None]):
         rows = item.query(SearchResultRow)
         return rows.first().match.key if rows else None
 
-    def _on_key(self, event: events.Key) -> None:
-        results = self.query_one("#search-results", ListView)
-        if event.key == "escape":
-            event.stop()
-            self.dismiss(None)
-        elif event.key == "enter":
-            event.stop()
-            key = self._selected_key()
-            if key is None:
-                self.app.bell()
-            else:
-                self.dismiss(key)
-        elif event.key in ("down", "up", "pagedown", "pageup"):
-            # 焦点始终留在输入框，方向键转发给结果列表，用户不用切焦点
-            event.stop()
-            event.prevent_default()
-            action = {
-                "down": results.action_cursor_down,
-                "up": results.action_cursor_up,
-                "pagedown": results.action_page_down,
-                "pageup": results.action_page_up,
-            }[event.key]
-            action()
+    def _results(self) -> ListView:
+        return self.query_one("#search-results", ListView)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_confirm(self) -> None:
+        key = self._selected_key()
+        if key is None:
+            self.app.bell()
+        else:
+            self.dismiss(key)
+
+    def action_results_up(self) -> None:
+        self._results().action_cursor_up()
+
+    def action_results_down(self) -> None:
+        self._results().action_cursor_down()
+
+    def action_results_page_up(self) -> None:
+        self._results().action_page_up()
+
+    def action_results_page_down(self) -> None:
+        self._results().action_page_down()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """鼠标点选结果直接打开。"""
