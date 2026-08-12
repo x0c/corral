@@ -341,9 +341,17 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         projects = self.query_one("#ns-projects", ListView)
         projects.border_title = t("modal.column_project")
         self.query_one("#ns-runtimes", ListView).border_title = t("modal.column_runtime")
+        # Input 挂载时 Textual 可能先派发空串 Changed、再落到初值，把 __init__
+        # 里已按 initial_query 收窄的列表冲成全量；高负载套件下断言会看到 2 项。
+        # 挂载末尾按筛选框现值再收一次，打开即与初值一致。
+        filt = self.query_one("#ns-project-filter", Input)
+        self._rebuild_projects(filt.value)
         # 用 Screen.set_focus 同步钉住项目列表：Input 排在左栏更前，若走
         # Widget.focus()/call_later，可能被默认焦点顺序抢走，快路径就断了。
-        self.set_focus(projects)
+        if self._visible:
+            self.set_focus(projects)
+        else:
+            self.set_focus(filt)
 
     # ---- 筛选 ----
 
