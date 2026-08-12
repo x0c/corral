@@ -237,9 +237,21 @@ def _choose_claude_fallback_title(candidates: list[tuple[str, str | None]]) -> s
     return "(仅本地命令)"
 
 
-def _build_session_info(fpath: str, proj: str) -> dict:
+def _is_internal_claude_session(entries: list[dict]) -> bool:
+    """Teammates/subagent 会话：非用户直接发起的顶层 Claude 会话。"""
+    for entry in entries:
+        if entry.get("isSidechain"):
+            return True
+        if entry.get("type") == "agent-name" and entry.get("agentName"):
+            return True
+    return False
+
+
+def _build_session_info(fpath: str, proj: str) -> dict | None:
     session_id = os.path.basename(fpath).replace(".jsonl", "")
     head_entries = _read_head(fpath)
+    if _is_internal_claude_session(head_entries):
+        return None
     tail_entries = _read_tail(fpath)
 
     cwd = None
@@ -374,8 +386,8 @@ def _live_session_ids() -> dict[str, int]:
     return live_ids
 
 
-def _peek_head_meta(path: str, max_lines: int = 40) -> tuple[str | None, str | None]:
-    """只读文件头部少量行，廉价探出 cwd 和首条用户消息，供跳过前置过滤用。
+def _peek_head_meta(path: str, max_lines: int = 40) -> tuple[str | None, str | None, bool]:
+    """只读文件头部少量行，廉价探出 cwd、首条用户消息与 teammates/subagent 标记。
 
     对撞上首屏 1s 硬指标的两个根因做提前拦截：自产噪音会话（后台标题生成
     调 claude/codex 留下的、以 PROMPT_MARKER 开头的会话）和 cwd 已删的会话，
@@ -385,6 +397,7 @@ def _peek_head_meta(path: str, max_lines: int = 40) -> tuple[str | None, str | N
     """
     cwd: str | None = None
     first_user: str | None = None
+    peeked: list[dict] = []
     try:
         with open(path, errors="replace") as f:
             for i, line in enumerate(f):
@@ -397,6 +410,7 @@ def _peek_head_meta(path: str, max_lines: int = 40) -> tuple[str | None, str | N
                     obj = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
+                peeked.append(obj)
                 if cwd is None and obj.get("cwd"):
                     cwd = obj.get("cwd")
                 if obj.get("type") == "user" and first_user is None:
@@ -407,7 +421,7 @@ def _peek_head_meta(path: str, max_lines: int = 40) -> tuple[str | None, str | N
                     break
     except OSError:
         pass
-    return cwd, first_user
+    return cwd, first_user, _is_internal_claude_session(peeked)
 
 
 def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:
@@ -460,7 +474,9 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         if len(results) >= limit:
             break
 
-        peek_cwd, peek_first_user = _peek_head_meta(fpath)
+        peek_cwd, peek_first_user, is_internal = _peek_head_meta(fpath)
+        if is_internal:
+            continue  # Teammates/subagent 内部会话，不是用户发起的顶层 chat
         if titles.is_title_generation_prompt(peek_first_user):
             continue  # 廉价探测已确认是自产噪音会话，跳过整文件解析
         if peek_cwd and is_ephemeral_agent_cwd(peek_cwd):
@@ -475,7 +491,10 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
                 info = _build_session_info(fpath, proj)
             except OSError:
                 continue
-            cache.put_session("claude", fpath, info)
+            if info is not None:
+                cache.put_session("claude", fpath, info)
+        if info is None:
+            continue
         if not info["first_user_msg"] or info["fallback_title"] == "(仅本地命令)":
             continue  # 无用户消息的空会话
         if titles.is_title_generation_prompt(info["first_user_msg"]):

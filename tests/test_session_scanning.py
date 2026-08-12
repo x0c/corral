@@ -538,6 +538,57 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
 
             self.assertEqual(info["fallback_title"], "(仅本地命令)")
 
+    def test_scan_filters_teammate_subagent_sessions(self) -> None:
+        old_projects_dir = scan_claude.PROJECTS_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                scan_claude.PROJECTS_DIR = td
+                project = Path(td) / "proj"
+                project.mkdir()
+                cwd = str(project / "workspace")
+                Path(cwd).mkdir()
+                _write_jsonl(
+                    project / "parent-session.jsonl",
+                    [
+                        {"type": "user", "message": {"content": "顶层用户问题"}, "cwd": cwd},
+                        {"type": "assistant", "message": {"content": [{"type": "text", "text": "好的"}]}},
+                    ],
+                )
+                _write_jsonl(
+                    project / "teammate-session.jsonl",
+                    [
+                        {"type": "ai-title", "aiTitle": "reviewer"},
+                        {"type": "agent-name", "agentName": "reviewer"},
+                        {"type": "user", "message": {"content": "请审查这段代码"}, "cwd": cwd},
+                        {"type": "assistant", "message": {"content": [{"type": "text", "text": "审查完成"}]}},
+                    ],
+                )
+                sessions = scan_claude.scan_sessions(limit=10)
+                self.assertEqual([s["id"] for s in sessions], ["parent-session"])
+        finally:
+            scan_claude.PROJECTS_DIR = old_projects_dir
+
+    def test_scan_keeps_team_lead_with_team_name_on_messages(self) -> None:
+        old_projects_dir = scan_claude.PROJECTS_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                scan_claude.PROJECTS_DIR = td
+                project = Path(td) / "proj"
+                project.mkdir()
+                cwd = str(project / "workspace")
+                Path(cwd).mkdir()
+                _write_jsonl(
+                    project / "team-lead-session.jsonl",
+                    [
+                        {"type": "user", "message": {"content": "启动 agent team"}, "cwd": cwd, "teamName": "audit"},
+                        {"type": "assistant", "message": {"content": [{"type": "text", "text": "已创建团队"}]}},
+                    ],
+                )
+                sessions = scan_claude.scan_sessions(limit=10)
+                self.assertEqual([s["id"] for s in sessions], ["team-lead-session"])
+        finally:
+            scan_claude.PROJECTS_DIR = old_projects_dir
+
     def test_low_value_cached_title_is_ignored(self) -> None:
         session = {
             "source": "codex",
@@ -3729,22 +3780,21 @@ class CursorScanTests(unittest.TestCase):
         updated_ms: int,
         prompts: list[str],
         has_conversation: bool = True,
+        is_subagent: bool = False,
     ) -> Path:
         d = root / ws / chat_id
         d.mkdir(parents=True)
-        (d / "meta.json").write_text(
-            json.dumps(
-                {
-                    "schemaVersion": 1,
-                    "createdAtMs": updated_ms - 1000,
-                    "updatedAtMs": updated_ms,
-                    "hasConversation": has_conversation,
-                    "title": title,
-                    "cwd": cwd,
-                }
-            ),
-            encoding="utf-8",
-        )
+        meta = {
+            "schemaVersion": 1,
+            "createdAtMs": updated_ms - 1000,
+            "updatedAtMs": updated_ms,
+            "hasConversation": has_conversation,
+            "title": title,
+            "cwd": cwd,
+        }
+        if is_subagent:
+            meta["isSubagent"] = True
+        (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
         if prompts:
             (d / "prompt_history.json").write_text(
                 json.dumps(prompts, ensure_ascii=False), encoding="utf-8"
@@ -3835,6 +3885,40 @@ class CursorScanTests(unittest.TestCase):
         self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0]["id"], "real-chat-id-0001-0002-0003-000000000001")
         self.assertEqual(sessions[0]["first_user_msg"], "真实的用户问题")
+
+    def test_scan_filters_subagent_sessions(self) -> None:
+        """Cursor subagent 即使带 title/cwd/prompt 也不得进入列表。"""
+        from pickup.scan import cursor as scan_cursor
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = str(root / "proj")
+            Path(cwd).mkdir()
+            self._chat(
+                root,
+                "ws1",
+                "parent-chat-id-0001-0002-0003-000000000001",
+                title="父会话",
+                cwd=cwd,
+                updated_ms=1_700_000_000_000,
+                prompts=["用户的顶层问题"],
+            )
+            self._chat(
+                root,
+                "ws1",
+                "subagent-id-0001-0002-0003-000000000002",
+                title="Subagent 任务",
+                cwd=cwd,
+                updated_ms=1_700_000_000_100,
+                prompts=["派生给 subagent 的任务"],
+                is_subagent=True,
+            )
+            with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
+                scan_cursor, "live_processes", return_value=[]
+            ):
+                sessions = scan_cursor.scan_sessions(limit=10)
+
+        self.assertEqual([s["id"] for s in sessions], ["parent-chat-id-0001-0002-0003-000000000001"])
 
     def test_load_conversation_extracts_user_query_and_assistant(self) -> None:
         from pickup.scan import cursor as scan_cursor

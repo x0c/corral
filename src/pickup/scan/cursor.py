@@ -146,6 +146,8 @@ def _build_session_info(chat_dir: str, chat_id: str) -> dict | None:
         return None
     if meta.get("hasConversation") is False:
         return None
+    if meta.get("isSubagent") is True:
+        return None  # Cursor Task/subagent 派生的内部会话，不是用户发起的顶层 chat
 
     cwd = str(meta.get("cwd") or "").strip()
     native_title = str(meta.get("title") or "").strip() or None
