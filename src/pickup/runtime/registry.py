@@ -137,11 +137,35 @@ class RuntimeRegistry:
         source_id = str(request.session.get("source") or "")
         source = self.get(source_id)
         target = self.get(request.target_runtime_id)
+        # 复制会话：同助手官方分叉（磁盘克隆路径在 prepare_copy_request 里已换成新会话 + 原生恢复）。
+        if request.copy_session:
+            if source.id != target.id:
+                raise LaunchError("复制会话只能在同一助手内进行")
+            fork_plan = source.build_fork_plan(request.session)
+            if fork_plan is None:
+                raise LaunchError(
+                    f"运行时 {source.id} 未提供分叉计划；请先经 prepare_copy_request 完成磁盘克隆"
+                )
+            return fork_plan
         # 同助手且未强制新建 → 原生恢复；跨助手或 force_new → 导出接力后新建。
         if source.id == target.id and not request.force_new:
             return source.build_resume_plan(request.session)
         handoff = source.export_handoff(request.session, request.title)
         return target.build_new_plan(handoff)
+
+    def prepare_copy_request(self, session: SessionInfo, title: str) -> LaunchRequest:
+        """高级操作「复制会话」：优先官方分叉，否则磁盘克隆后再原生恢复。"""
+        source_id = str(session.get("source") or "")
+        source = self.get(source_id)
+        if not source.is_available():
+            raise LaunchError(f"{source.display_name} 未安装，无法复制会话")
+        if source.build_fork_plan(session) is not None:
+            return LaunchRequest(
+                session, source.id, title, copy_session=True,
+            )
+        cloned = source.clone_session(session)
+        copy_title = title if title.endswith("（副本）") or title.endswith(" (copy)") else f"{title}（副本）"
+        return LaunchRequest(cloned, source.id, copy_title)
 
     def build_new_session_plan(self, request: NewSessionRequest) -> LaunchPlan:
         """构造不关联任何已有会话历史的空白新会话计划。"""

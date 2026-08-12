@@ -29,10 +29,12 @@ class HostControllerMixin:
         from pickup import keepalive
         from pickup.split_layout import MAX_PANES
 
-        # 原生恢复 = 同助手且未 force_new；高级操作同助手另起走接力新建分支。
+        # 原生恢复 = 同助手且未 force_new / copy_session；
+        # 高级操作同助手另起 / 复制会话的官方分叉走新建分支（旁挂 + 占位卡）。
         native_resume = isinstance(request, pickup.LaunchRequest) and (
             request.session.get("source") == request.target_runtime_id
             and not request.force_new
+            and not request.copy_session
         )
         area = self._split_area()
         if isinstance(request, pickup.LaunchRequest):
@@ -43,6 +45,7 @@ class HostControllerMixin:
                 request.target_runtime_id,
                 request.title,
                 force_new=request.force_new,
+                copy_session=request.copy_session,
             )
             existing = request.session.get("keepalive_name") if native_resume else None
             if existing:
@@ -158,7 +161,10 @@ class HostControllerMixin:
                 source_name = self.store.registry.get(
                     str(request.session.get("source") or "")
                 ).display_name
-                title = request.title or f"接力自 {source_name}"
+                if request.copy_session:
+                    title = request.title or f"复制自 {source_name}"
+                else:
+                    title = request.title or f"接力自 {source_name}"
                 current = self.store.register_hosted_session(
                     runtime_id=request.target_runtime_id,
                     keepalive_name=name,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from pickup.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
-from pickup.runtime.base import BaseRuntime, usable_cwd
+from pickup.runtime.base import BaseRuntime, LaunchError, usable_cwd
 from pickup.scan import kimi as scan_kimi
 
 
@@ -32,6 +32,12 @@ class KimiRuntime(BaseRuntime):
 
     def delete_session(self, session: SessionInfo) -> None:
         scan_kimi.delete_session(str(session.get("path") or ""))
+
+    def clone_session(self, session: SessionInfo) -> SessionInfo:
+        try:
+            return scan_kimi.clone_session(session)
+        except ValueError as exc:
+            raise LaunchError(str(exc)) from exc
 
     def build_resume_plan(self, session: SessionInfo) -> LaunchPlan:
         return LaunchPlan(

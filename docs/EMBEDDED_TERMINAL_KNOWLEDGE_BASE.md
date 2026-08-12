@@ -99,6 +99,7 @@ stateDiagram-v2
 ### 输入与滚动分流
 
 - 普通字符经 `send_literal()` 原样发送；特殊键经 `translate_textual_key()` 转成 tmux 键名后由 `send_key()` 发送。仅在右栏持有键盘焦点时转发。
+- **输入转发是黑名单不是白名单**：右栏持焦时，pickup **只拦截壳层键**（`Ctrl+\` 回列表、`Ctrl+Shift+B` 显隐侧栏、有选区时的 `Ctrl+C` 复制、主界面高优先级的 `Ctrl+F` 全文搜索等），其余按键一律尽量译成 tmux 键名后放行；译不出但仍有 `event.character`（含 `Ctrl+_` 的 `\x1f` 等控制字节）时走 `send_literal` 兜底。禁止再写成「只转发 Ctrl+字母」——那会让 `Ctrl+/`（多数终端 ≡ `Ctrl+_`，Claude Code 撤销输入）等静默丢失。回归：`TranslateTextualKeyTests`。
 - `Ctrl+C` 有选中文本时复制；没有选区时发送给助手中断运行，不能让终端界面自身退出。
 - **这一格没有活着的助手时，回车不转发、改为重启该会话**（`_is_restart_target()`：静态对话预览格与「会话已结束」格）。托管首帧尚未到达那种回退态**不算**——那条会话活着，回车必须原样发给助手。重启动作本身由界面层执行，见 [终端界面知识库](TERMINAL_UI_KNOWLEDGE_BASE.md) §6「已结束会话必须永远留着重启入口」。
 - 粘贴走 `set-buffer` + `paste-buffer -p`，保留 bracketed paste 语义。
@@ -208,6 +209,7 @@ stateDiagram-v2
 
 ## §6 核心业务规则与隐性约束
 
+- **AI 易错点**【输入转发是黑名单】**右栏持焦时只拦壳层快捷键，其余一律放行**。`translate_textual_key` 必须覆盖 `Ctrl+_` / `Ctrl+/`（→ `C-_`）、带修饰方向键、`Alt+字母` 等；译不出时 EmbedPane 还要用 `event.character`（含非打印控制字节）`send_literal` 兜底。禁止退回「只转发 `Ctrl+字母`」白名单——真机事故：内嵌 Claude Code 里 `Ctrl+/` 撤销输入无效。壳层键清单：`Ctrl+\`、`Ctrl+Shift+B`、有选区的 `Ctrl+C`、主界面 `Ctrl+F`（priority）。回归：`TranslateTextualKeyTests`。
 - **AI 易错点**【禁止】用 tmux attach 来实现右栏显示 -> 必须以 `capture-pane` 抓画面、以输入转发操作原 pane（原因：attach 会接管终端，破坏终端界面左右分栏与多会话切换）。
 - **AI 易错点**【隐性依赖】内嵌实时终端与会话保活必须共用专用 socket 和 `pickup-*` / `sc-*` 命名空间，否则已托管会话无法被正确接回、标注或回收。
 - **AI 易错点**【禁止】把「运行中(其他窗口)」的会话当成可以直接打开的运行中会话 -> 不得弹确认框，也不得针对同一份历史另起恢复进程（2026-08-08 裁定，原因：那不是接管，而是对同一份历史另起一个恢复进程；原窗口那个还在跑，右栏冒出来的新界面看着就像"会话已中断"，两个进程还会互相覆盖历史。旧版"打开前必须确认"的表述已废止）。右栏对这类会话只能给静态预览 + 明示原因，等待原窗口结束后才可正常恢复；不要试图去"抓"它的画面——它根本不在任何 tmux 里。

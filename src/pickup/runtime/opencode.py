@@ -81,6 +81,18 @@ class OpenCodeRuntime(BaseRuntime):
             cwd=usable_cwd(str(session.get("cwd") or "")),
         )
 
+    def build_fork_plan(self, session: SessionInfo) -> LaunchPlan | None:
+        return LaunchPlan(
+            argv=(
+                self.executable,
+                *self.auto_approve_args,
+                "-s",
+                str(session["id"]),
+                "--fork",
+            ),
+            cwd=usable_cwd(str(session.get("cwd") or "")),
+        )
+
     def build_new_plan(self, handoff: Handoff) -> LaunchPlan:
         # OpenCode 主命令的位置参数是项目路径，提示词只能通过 --prompt 传入；也没有
         # --add-dir 等价物，读取源历史落在工作目录外时仍会命中「外部目录」权限，

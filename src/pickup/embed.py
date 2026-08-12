@@ -1037,6 +1037,10 @@ def report_theme(channel: ControlChannel, report: bytes) -> bool:
 # ---------------------------------------------------------------------------
 # 按键翻译：Textual 按键事件的 key 名 → tmux send-keys 键名
 # ---------------------------------------------------------------------------
+# 设计原则：内嵌面板「只拦壳层快捷键，其余一律放行」。壳层键在 EmbedPane /
+# MainScreen 里先吃掉；这里负责把剩下的 Textual key 名尽量译成 tmux 能认的
+# 键名。以前只放行 Ctrl+字母，导致 Ctrl+/（终端里常等于 Ctrl+_，Claude Code
+# 用它撤销输入）等静默丢失。
 
 _TEXTUAL_KEY_NAMES = {
     "up": "Up",
@@ -1049,37 +1053,116 @@ _TEXTUAL_KEY_NAMES = {
     "pagedown": "NPage",
     "delete": "DC",
     "insert": "IC",
+    "enter": "Enter",
+    "return": "Enter",
+    "tab": "Tab",
+    "backspace": "BSpace",
+    "escape": "Escape",
+    "space": "Space",
 }
 _TEXTUAL_KEY_NAMES.update({f"f{n}": f"F{n}" for n in range(1, 13)})
+
+# Textual 对标点常用 Unicode 名；无修饰时也可作 send-keys 基键。
+_TEXTUAL_BASE_CHARS = {
+    "slash": "/",
+    "backslash": "\\",
+    "underscore": "_",
+    "minus": "-",
+    "plus": "+",
+    "equals": "=",
+    "at": "@",
+    "left_square_bracket": "[",
+    "right_square_bracket": "]",
+    "circumflex_accent": "^",
+    "grave_accent": "`",
+    "apostrophe": "'",
+    "comma": ",",
+    "period": ".",
+    "semicolon": ";",
+}
+
+# 传统终端里 Ctrl+这些标点只有约 32 个控制字符；tmux 也不认 C-/。
+# 多数终端 Ctrl+/ ≡ Ctrl+_ ≡ ASCII 0x1F，Claude Code 撤销就绑在这上面。
+_CTRL_ONLY_PUNCT = {
+    "underscore": "C-_",
+    "_": "C-_",
+    "slash": "C-_",
+    "/": "C-_",
+    "minus": "C-_",
+    "-": "C-_",
+    "space": "C-Space",
+    "at": "C-@",
+    "@": "C-@",
+    "left_square_bracket": "C-[",
+    "[": "C-[",
+    "right_square_bracket": "C-]",
+    "]": "C-]",
+    "backslash": "C-\\",
+    "\\": "C-\\",
+    "circumflex_accent": "C-^",
+    "^": "C-^",
+}
 
 
 def translate_textual_key(key: str) -> tuple[str, str] | None:
     """把 Textual 按键事件的 key 名翻译成 ("keys", tmux 键名)；无法翻译返回 None。
 
     可打印字符经 Textual 的 event.character 直接走 send_literal，不经过这里；
-    这里只处理控制键与特殊键名（Textual 的 key 是稳定字符串，如 "up"/"ctrl+c"，
-    不再是 curses 那种平台相关的整数键码）。
+    这里处理控制键、带修饰键与特殊键名。译不出时 EmbedPane 还会用
+    event.character（含非打印控制字节）做兜底注入，避免再静默丢键。
     """
-    if key in ("enter", "return"):
-        return ("keys", "Enter")
-    if key == "tab":
-        return ("keys", "Tab")
     if key == "shift+tab":
-        # tmux 没有 S-Tab：终端里 Shift+Tab 是 backtab，tmux 的具名键是 BTab
-        # （tmux(1) 手册明确列出——大多数带 Shift 的键改用有专名的形式，不走
-        # S- 前缀）。Claude Code 用这个键循环 plan/权限模式，是高频操作，漏掉
-        # 会在内嵌面板里表现为「按了没反应」且没有任何提示（真实缺口，非假设）。
+        # tmux 没有 S-Tab：终端里 Shift+Tab 是 backtab，tmux 的具名键是 BTab。
+        # Claude Code 用这个键循环 plan/权限模式，漏译会表现为「按了没反应」。
         return ("keys", "BTab")
-    if key == "backspace":
-        return ("keys", "BSpace")
-    if key == "escape":
-        return ("keys", "Escape")
-    if key.startswith("ctrl+") and len(key) == 6 and key[5].isalpha():
-        return ("keys", f"C-{key[5]}")
-    name = _TEXTUAL_KEY_NAMES.get(key)
-    if name is not None:
-        return ("keys", name)
-    return None
+
+    named = _TEXTUAL_KEY_NAMES.get(key)
+    if named is not None:
+        return ("keys", named)
+
+    parts = key.split("+")
+    mods: list[str] = []
+    base_parts: list[str] = []
+    for part in parts:
+        if part == "ctrl":
+            mods.append("C")
+        elif part in ("alt", "meta"):
+            mods.append("M")
+        elif part == "shift":
+            mods.append("S")
+        else:
+            base_parts.append(part)
+    if not base_parts:
+        return None
+    base = "+".join(base_parts)
+
+    if not mods:
+        # 无修饰的单字符留给 is_printable + send_literal；具名标点可直译。
+        char = _TEXTUAL_BASE_CHARS.get(base)
+        if char is not None:
+            return ("keys", char)
+        return None
+
+    # 仅 Ctrl、无 Shift/Meta：走传统控制字符别名（含 Ctrl+/ → C-_）。
+    if mods == ["C"]:
+        alias = _CTRL_ONLY_PUNCT.get(base)
+        if alias is not None:
+            return ("keys", alias)
+
+    if base in _TEXTUAL_KEY_NAMES:
+        tmux_base = _TEXTUAL_KEY_NAMES[base]
+    elif base in _TEXTUAL_BASE_CHARS:
+        tmux_base = _TEXTUAL_BASE_CHARS[base]
+    elif len(base) == 1:
+        # tmux：没有 S-a，Shift+字母就是大写；Ctrl+Shift+a 用 C-S-a。
+        if mods == ["S"] and base.isalpha():
+            return ("keys", base.upper())
+        tmux_base = base
+    else:
+        return None
+
+    order = [flag for flag in ("C", "M", "S") if flag in mods]
+    return ("keys", f"{'-'.join(order)}-{tmux_base}")
 
 
 # ---------------------------------------------------------------------------

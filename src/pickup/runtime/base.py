@@ -89,6 +89,22 @@ class BaseRuntime(ABC):
     def build_new_session_plan(self, cwd: str | None) -> LaunchPlan:
         """构造不关联任何已有会话历史的空白新会话计划。"""
 
+    def build_fork_plan(self, session: SessionInfo) -> LaunchPlan | None:
+        """构造同助手「完整克隆历史」的原生分叉启动计划。
+
+        返回 None 表示本运行时没有可用的官方分叉参数，调用方应改走
+        `clone_session`（磁盘复制历史并换新身份）后再 `build_resume_plan`。
+        默认不支持；有官方分叉的适配器覆写本方法。
+        """
+        return None
+
+    def clone_session(self, session: SessionInfo) -> SessionInfo:
+        """把会话历史复制为独立新会话（不改写原文件），返回新 SessionInfo。
+
+        仅在没有官方分叉计划时作为回退。默认不支持。
+        """
+        raise LaunchError(f"运行时 {self.id} 尚未支持复制会话")
+
     def compose_passthrough_argv(self, user_args: tuple[str, ...]) -> tuple[str, ...]:
         """直启透传（`pickup <运行时> [参数…]`）的完整 argv。
 

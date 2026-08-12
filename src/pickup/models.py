@@ -223,12 +223,17 @@ class LaunchRequest:
     `force_new=True`：即使目标与来源是同一助手，也走「导出接力 → 新建会话」，
     不原生恢复原会话。高级操作（`a`）用这个路径处理「原会话卡住 / 出 bug、
     需要同助手另起一局」；侧边栏回车等入口保持默认原生恢复。
+
+    `copy_session=True`：同助手完整克隆（官方分叉或磁盘复制历史后恢复）。
+    与 `force_new` 互斥语义上优先：走分叉计划，不得 attach 到原保活窗，
+    也不得把源会话键 mark 成已托管。
     """
 
     session: SessionInfo
     target_runtime_id: str
     title: str
     force_new: bool = False
+    copy_session: bool = False
 
 
 @dataclass(frozen=True)

@@ -504,21 +504,42 @@ class ConfirmModal(OutsideClickDismiss, ModalScreen[bool]):
 # 业务流程封装：project/runtime 选择 + 新建会话组合流程
 # ---------------------------------------------------------------------------
 
-async def choose_target_runtime(app, store, source: str) -> str | None:
-    """高级操作：选择接力目标运行时。
+# 高级操作里「复制会话」选项的哨兵 id（不是真实运行时）。
+COPY_SESSION_CHOICE = "__copy_session__"
 
-    列表里每一个助手（含来源自身）都是「读取源历史后新建会话」——同助手另起
-    用于原会话卡住 / 出 bug 时；真正的原生恢复走侧边栏回车，不走本入口。
+
+async def choose_target_runtime(app, store, source: str) -> str | None:
+    """高级操作：复制会话，或选择接力目标运行时。
+
+    列表第一项是「复制会话」（同助手完整克隆）；其后每一个助手（含来源自身）
+    都是「读取源历史后新建会话」——同助手另起用于原会话卡住 / 出 bug 时；真正的
+    原生恢复走侧边栏回车，不走本入口。
     """
     runtimes = list(store.registry)
-    source_name = store.registry.get(source).display_name
-    choices = []
+    source_runtime = store.registry.get(source)
+    source_name = source_runtime.display_name
+    choices = [
+        RuntimeChoice(
+            COPY_SESSION_CHOICE,
+            t("modal.copy_session"),
+            t("modal.copy_session_action"),
+            source_runtime.is_available(),
+        )
+    ]
     for runtime in runtimes:
         action = t("modal.read_history_new", source=source_name)
         choices.append(RuntimeChoice(runtime.id, runtime.display_name, action, runtime.is_available()))
+    # 默认仍落在第一个已安装的「其他助手」接力项（复制占 index 0，故 +1）。
     default_index = next(
-        (i for i, runtime in enumerate(runtimes) if runtime.id != source and runtime.is_available()),
-        next((i for i, runtime in enumerate(runtimes) if runtime.id == source), 0),
+        (
+            i + 1
+            for i, runtime in enumerate(runtimes)
+            if runtime.id != source and runtime.is_available()
+        ),
+        next(
+            (i + 1 for i, runtime in enumerate(runtimes) if runtime.id == source),
+            0,
+        ),
     )
     return await app.push_screen_wait(
         RuntimePickerModal(t("modal.handoff_title"), choices, default_index)

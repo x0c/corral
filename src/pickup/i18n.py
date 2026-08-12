@@ -361,6 +361,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Read {source} history, then start a new session",
         "zh": "读取 {source} 历史后新建会话",
     },
+    "modal.copy_session": {
+        "en": "Copy session",
+        "zh": "复制会话",
+    },
+    "modal.copy_session_action": {
+        "en": "Full clone of current chat (same assistant, open beside)",
+        "zh": "完整克隆当前对话（同助手，旁挂分屏）",
+    },
+    "modal.copy_session_failed": {
+        "en": "Could not copy session: {error}",
+        "zh": "无法复制会话：{error}",
+    },
     "modal.handoff_title": {
         "en": "Advanced: choose handoff runtime",
         "zh": "高级操作：选择接力运行时",

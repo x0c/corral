@@ -327,6 +327,64 @@ def delete_session(path: str) -> None:
         shutil.rmtree(session_dir)
 
 
+def clone_session(session: SessionInfo) -> SessionInfo:
+    """整目录复制会话并换新 session id；重写 state.json 里的绝对路径与标题。
+
+    Kimi CLI 没有官方分叉参数（仅会话内 /fork），复制是自动化路径。扫描走目录
+    遍历，不依赖 session_index.jsonl；索引残留不影响识别。
+    """
+    import uuid
+    from datetime import datetime, timezone
+
+    path = str(session.get("path") or "")
+    if not path:
+        raise ValueError("原会话未记录历史路径，无法复制")
+    src_dir = os.path.dirname(os.path.dirname(os.path.dirname(path)))
+    old_id = str(session.get("id") or os.path.basename(src_dir))
+    if not os.path.isdir(src_dir):
+        raise ValueError(f"原会话目录不存在：{src_dir}")
+    parent = os.path.dirname(src_dir)
+    new_uuid = str(uuid.uuid4())
+    new_id = f"session_{new_uuid}" if old_id.startswith("session_") else new_uuid
+    dst_dir = os.path.join(parent, new_id)
+    if os.path.exists(dst_dir):
+        raise ValueError(f"目标会话目录已存在：{dst_dir}")
+    shutil.copytree(src_dir, dst_dir)
+    state_path = os.path.join(dst_dir, "state.json")
+    state = _load_state(dst_dir)
+    # 把 state 里所有仍指向旧会话目录的绝对路径改到新目录。
+    raw = json.dumps(state, ensure_ascii=False)
+    if src_dir in raw:
+        raw = raw.replace(src_dir, dst_dir)
+    if old_id in raw:
+        raw = raw.replace(old_id, new_id)
+    try:
+        state = json.loads(raw)
+    except json.JSONDecodeError:
+        state = _load_state(dst_dir)
+    title = str(state.get("title") or session.get("native_title") or session.get("fallback_title") or "")
+    if title and not title.endswith("（副本）") and not title.endswith(" (copy)"):
+        state["title"] = f"{title}（副本）"
+    state["updatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except OSError as exc:
+        shutil.rmtree(dst_dir, ignore_errors=True)
+        raise ValueError(f"写入复制会话元数据失败：{exc}") from exc
+    # 碰一下 mtime，让列表排序立刻看到副本。
+    try:
+        os.utime(_wire_path(dst_dir), None)
+    except OSError:
+        pass
+    info = _build_session_info(dst_dir, new_id)
+    if info is None:
+        shutil.rmtree(dst_dir, ignore_errors=True)
+        raise ValueError("复制后的会话无法被扫描识别")
+    return info
+
+
 def load_conversation(path: str) -> list[ConversationMessage]:
     """按时间顺序读取真人用户消息和助手每轮文本回复。
 

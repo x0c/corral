@@ -53,6 +53,17 @@ class CodexRuntime(BaseRuntime):
             cwd=usable_cwd(str(session.get("cwd") or "")),
         )
 
+    def build_fork_plan(self, session: SessionInfo) -> LaunchPlan | None:
+        return LaunchPlan(
+            argv=(
+                self.executable,
+                "fork",
+                *self.auto_approve_args,
+                str(session["id"]),
+            ),
+            cwd=usable_cwd(str(session.get("cwd") or "")),
+        )
+
     def build_new_plan(self, handoff: Handoff) -> LaunchPlan:
         history_dir = os.path.dirname(handoff.history_path)
         return LaunchPlan(

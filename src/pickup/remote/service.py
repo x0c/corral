@@ -59,11 +59,13 @@ _CONFIRM_METHODS = frozenset(
     }
 )
 
-# tmux 键名白名单：字母数字、常见修饰前缀、以及一组具名特殊键
+# tmux 键名白名单：字母数字、修饰前缀（含 C-_ / S-Up / C-S-minus）、具名特殊键。
+# 与桌面内嵌「其余一律放行」对齐，避免手机侧合法控制键被误拒。
 _TMUX_KEY_RE = re.compile(
     r"^(?:"
     r"[A-Za-z0-9]"
-    r"|(?:[CMS]-)+[A-Za-z0-9]"
+    r"|(?:[CMS]-)+[A-Za-z0-9_\\^[\]@/-]+"
+    r"|C-Space|M-Space"
     r"|Enter|Escape|Space|Tab|BSpace|BTab|DC|IC"
     r"|Up|Down|Left|Right|Home|End|PageUp|PageDown|PPage|NPage"
     r"|F(?:[1-9]|1[0-2])"

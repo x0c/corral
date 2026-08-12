@@ -72,6 +72,18 @@ class ClaudeRuntime(BaseRuntime):
             cwd=usable_cwd(str(session.get("cwd") or "")),
         )
 
+    def build_fork_plan(self, session: SessionInfo) -> LaunchPlan | None:
+        return LaunchPlan(
+            argv=(
+                self.executable,
+                *self.auto_approve_args,
+                "--resume",
+                str(session["id"]),
+                "--fork-session",
+            ),
+            cwd=usable_cwd(str(session.get("cwd") or "")),
+        )
+
     def build_new_plan(self, handoff: Handoff) -> LaunchPlan:
         history_dir = os.path.dirname(handoff.history_path)
         return LaunchPlan(

@@ -35,7 +35,12 @@ from pickup.ui.controllers.layout_controller import LayoutControllerMixin
 from pickup.ui.controllers.update_controller import UpdateControllerMixin
 from pickup.ui.dragon_easter_egg import DragonOverlay
 from pickup.ui.footer import PickupFooter
-from pickup.ui.modals import ConfirmModal, choose_target_runtime, new_session_flow
+from pickup.ui.modals import (
+    COPY_SESSION_CHOICE,
+    ConfirmModal,
+    choose_target_runtime,
+    new_session_flow,
+)
 from pickup.ui.nav import NavState
 from pickup.ui.runtime_top_bar import RuntimeTopBar
 from pickup.ui.session_list import SessionListView
@@ -973,8 +978,12 @@ class MainScreen(
 
         if not isinstance(request, pickup.LaunchRequest):
             return True
-        # 接力新建（跨助手或同助手 force_new）只读原历史、另建目标会话，不拦。
-        if request.force_new or request.session.get("source") != request.target_runtime_id:
+        # 接力新建 / 复制会话只读原历史或另建目标，不拦。
+        if (
+            request.force_new
+            or request.copy_session
+            or request.session.get("source") != request.target_runtime_id
+        ):
             return True
         session = self.store.find_session(pickup.session_key(request.session)) or request.session
         if not is_external_running(session):
@@ -1315,12 +1324,28 @@ class MainScreen(
             self.app.bell()
             return
         source = str(session.get("source") or self.nav.source)
+        from pickup.runtime.base import LaunchError
+
         target = await choose_target_runtime(
             self.app, self.store, source
         )
         if target is None:
             return
         import pickup
+
+        if target == COPY_SESSION_CHOICE:
+            try:
+                request = self.store.registry.prepare_copy_request(
+                    session, self.store.get_title(session),
+                )
+            except LaunchError as exc:
+                self.notify(t("modal.copy_session_failed", error=str(exc)))
+                self.app.bell()
+                return
+            if self.embed_ok:
+                self._prepare_handoff_split(session)
+            await self._open_or_exit(request, add_pane=self.embed_ok)
+            return
         # 高级操作一律「读历史后新建」——含同助手（原会话卡住时另起）；
         # 原生恢复留给侧边栏回车。新建默认旁挂被接力会话。
         request = pickup.LaunchRequest(

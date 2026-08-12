@@ -3652,6 +3652,65 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                     "同助手另起必须是新会话卡，不能 mark 到原会话",
                 )
 
+    async def test_copy_session_advanced_action_opens_fork_split(self) -> None:
+        """高级操作选「复制会话」：走 copy_session 分叉计划，旁挂分屏。"""
+        store, registry = _make_store()
+        captured: list = []
+
+        def capture_plan(request):
+            captured.append(request)
+            return LaunchPlan(
+                ("claude", "--dangerously-skip-permissions", "--resume", "x", "--fork-session"),
+                "/tmp",
+            )
+
+        registry.build_launch_plan = capture_plan
+        app = PickupApp(store, embed_ok=True)
+
+        with (
+            mock.patch(
+                "pickup.embed.host_session", return_value="pickup-claude-copy-fork"
+            ) as host_mock,
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                source = list_view.selected_session()
+                self.assertIsNotNone(source)
+                source_key = pickup.session_key(source)
+
+                await pilot.press("a")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, RuntimePickerModal)
+                # 默认高亮在接力项；上移到第一项「复制会话」
+                await pilot.press("up")
+                await pilot.press("enter")
+                await _wait_until(lambda: host_mock.call_count == 1)
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                await _wait_until(
+                    lambda: any(
+                        s.get("keepalive_name") == "pickup-claude-copy-fork"
+                        for s in list_view.visible_sessions()
+                    )
+                )
+
+                self.assertEqual(len(captured), 1)
+                self.assertTrue(captured[0].copy_session)
+                self.assertFalse(captured[0].force_new)
+                self.assertEqual(captured[0].target_runtime_id, "claude")
+
+                area = app.screen.query_one(SplitPaneArea)
+                keys = area.ordered_session_keys()
+                self.assertGreaterEqual(len(keys), 2, "复制会话应与源会话并排")
+                self.assertIn(source_key, keys)
+                hosted = [
+                    s for s in list_view.visible_sessions()
+                    if s.get("keepalive_name") == "pickup-claude-copy-fork"
+                ]
+                self.assertEqual(len(hosted), 1)
+                self.assertNotEqual(pickup.session_key(hosted[0]), source_key)
+
 
 class PaneCellHeaderSyncTests(unittest.TestCase):
     """分栏标题栏在重建中间态可能缺失；焦点同步不得因此崩掉（真机：双击顶栏 OpenCode）。"""

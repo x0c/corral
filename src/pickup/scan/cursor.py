@@ -454,6 +454,59 @@ def delete_session(path: str) -> None:
         shutil.rmtree(chat_dir)
 
 
+def clone_session(session: SessionInfo) -> SessionInfo:
+    """复制整个聊天目录并换新 UUID，原目录不动；返回新 SessionInfo。
+
+    Cursor 没有官方 CLI 分叉参数，只能靠目录克隆。会话身份完全由目录名决定；
+    样例 blob 里通常不嵌 chatId。同时拷贝 store.db 的 -wal/-shm，避免漏掉尚未
+    checkpoint 的最近几轮。
+    """
+    import time
+    import uuid
+
+    path = str(session.get("path") or "")
+    if not path:
+        raise ValueError("原会话未记录历史路径，无法复制")
+    src_dir = path if os.path.isdir(path) else os.path.dirname(path)
+    if not os.path.isdir(src_dir):
+        raise ValueError(f"原会话目录不存在：{src_dir}")
+    parent = os.path.dirname(src_dir)
+    new_id = str(uuid.uuid4())
+    dst_dir = os.path.join(parent, new_id)
+    if os.path.exists(dst_dir):
+        raise ValueError(f"目标会话目录已存在：{dst_dir}")
+    shutil.copytree(src_dir, dst_dir)
+    meta_path = os.path.join(dst_dir, "meta.json")
+    meta: dict = {}
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                meta = loaded
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+    now_ms = int(time.time() * 1000)
+    title = str(meta.get("title") or session.get("native_title") or session.get("fallback_title") or "")
+    if title and not title.endswith("（副本）") and not title.endswith(" (copy)"):
+        meta["title"] = f"{title}（副本）"
+    meta["updatedAtMs"] = now_ms
+    if "createdAtMs" not in meta:
+        meta["createdAtMs"] = now_ms
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except OSError as exc:
+        shutil.rmtree(dst_dir, ignore_errors=True)
+        raise ValueError(f"写入复制会话元数据失败：{exc}") from exc
+    info = _build_session_info(dst_dir, new_id)
+    if info is None:
+        shutil.rmtree(dst_dir, ignore_errors=True)
+        raise ValueError("复制后的会话无法被扫描识别")
+    return info
+
+
 def _connect_store_ro(store_path: str) -> sqlite3.Connection | None:
     """只读打开 Cursor store.db；必须能看见 WAL，不能加 immutable=1。
 

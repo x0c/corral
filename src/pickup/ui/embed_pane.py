@@ -1261,6 +1261,12 @@ class EmbedPane(Widget):
         translated = embed.translate_textual_key(event.key)
         if translated is not None:
             embed.send_key(name, translated[1])
+            return
+        # 译表漏网时：把 Textual 带上的原始字符（含 Ctrl+_ 的 \x1f 等控制字节）
+        # 原样注入。壳层键已在上面拦截；这里是「其余一律放行」的最后兜底，
+        # 避免再出现按了没反应、又没有任何提示的静默丢键。
+        if event.character:
+            embed.send_literal(name, event.character)
 
     def _on_paste(self, event: events.Paste) -> None:
         if not self.session_name or self.dead:

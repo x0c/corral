@@ -715,6 +715,22 @@ class TranslateTextualKeyTests(unittest.TestCase):
         self.assertEqual(embed.translate_textual_key("ctrl+z"), ("keys", "C-z"))
         self.assertEqual(embed.translate_textual_key("ctrl+a"), ("keys", "C-a"))
 
+    def test_control_underscore_and_slash_aliases(self):
+        # 多数终端 Ctrl+/ ≡ Ctrl+_（ASCII 0x1F）；tmux 不认 C-/，统一成 C-_。
+        # Claude Code 撤销输入就绑在这上面——以前只放行 Ctrl+字母会静默丢键。
+        self.assertEqual(embed.translate_textual_key("ctrl+underscore"), ("keys", "C-_"))
+        self.assertEqual(embed.translate_textual_key("ctrl+slash"), ("keys", "C-_"))
+        self.assertEqual(embed.translate_textual_key("ctrl+/"), ("keys", "C-_"))
+        self.assertEqual(embed.translate_textual_key("ctrl+minus"), ("keys", "C-_"))
+
+    def test_modifier_arrows_and_meta(self):
+        # 「其余一律放行」：带修饰的方向键 / Alt 字母必须能译出，不能再返回 None。
+        self.assertEqual(embed.translate_textual_key("shift+up"), ("keys", "S-Up"))
+        self.assertEqual(embed.translate_textual_key("ctrl+up"), ("keys", "C-Up"))
+        self.assertEqual(embed.translate_textual_key("ctrl+shift+up"), ("keys", "C-S-Up"))
+        self.assertEqual(embed.translate_textual_key("alt+b"), ("keys", "M-b"))
+        self.assertEqual(embed.translate_textual_key("ctrl+shift+minus"), ("keys", "C-S--"))
+
     def test_special_keys(self):
         self.assertEqual(embed.translate_textual_key("up"), ("keys", "Up"))
         self.assertEqual(embed.translate_textual_key("pageup"), ("keys", "PPage"))
@@ -724,7 +740,7 @@ class TranslateTextualKeyTests(unittest.TestCase):
 
     def test_untranslatable(self):
         self.assertIsNone(embed.translate_textual_key("x"))
-        self.assertIsNone(embed.translate_textual_key("shift+up"))
+        self.assertIsNone(embed.translate_textual_key("shift+unknown_key"))
 
 
 class ParseScreenTests(unittest.TestCase):

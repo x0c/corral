@@ -144,6 +144,135 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("不是对原会话的原生恢复", plan.argv[-1])
             self.assertEqual(plan.cwd, td)
 
+    def test_copy_session_claude_uses_native_fork(self) -> None:
+        """复制会话：Claude 走官方 --fork-session，不读历史另起。"""
+        with tempfile.TemporaryDirectory() as td:
+            history = Path(td) / "claude.jsonl"
+            history.write_text("{}\n", encoding="utf-8")
+            session = self._session("claude", str(history), td)
+            registry = default_registry()
+
+            request = registry.prepare_copy_request(session, "复杂讨论")
+            self.assertTrue(request.copy_session)
+            self.assertEqual(request.session["id"], session["id"])
+
+            plan = registry.build_launch_plan(request)
+            self.assertEqual(plan.argv[0], "claude")
+            self.assertIn("--resume", plan.argv)
+            self.assertIn("--fork-session", plan.argv)
+            self.assertIn("session-123", plan.argv)
+            self.assertNotIn("不是对原会话的原生恢复", " ".join(plan.argv))
+
+    def test_copy_session_codex_and_opencode_use_native_fork(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            history = Path(td) / "rollout.jsonl"
+            history.write_text("{}\n", encoding="utf-8")
+            registry = default_registry()
+
+            codex = self._session("codex", str(history), td)
+            codex_req = registry.prepare_copy_request(codex, "讨论")
+            codex_plan = registry.build_launch_plan(codex_req)
+            self.assertEqual(codex_plan.argv[:2], ("codex", "fork"))
+            self.assertIn("session-123", codex_plan.argv)
+
+            opencode = self._session("opencode", str(history), td)
+            oc_req = registry.prepare_copy_request(opencode, "讨论")
+            oc_plan = registry.build_launch_plan(oc_req)
+            self.assertIn("-s", oc_plan.argv)
+            self.assertIn("--fork", oc_plan.argv)
+            self.assertIn("session-123", oc_plan.argv)
+
+    def test_copy_session_cursor_clones_directory(self) -> None:
+        """Cursor 无官方分叉：磁盘复制目录并换新 id，再原生恢复。"""
+        import json
+        import uuid
+
+        with tempfile.TemporaryDirectory() as td:
+            old_id = str(uuid.uuid4())
+            chat_dir = Path(td) / old_id
+            chat_dir.mkdir()
+            (chat_dir / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "cwd": td,
+                        "title": "原标题",
+                        "hasConversation": True,
+                        "createdAtMs": 1_700_000_000_000,
+                        "updatedAtMs": 1_700_000_000_000,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (chat_dir / "prompt_history.json").write_text(
+                json.dumps(["你好世界"]), encoding="utf-8"
+            )
+            (chat_dir / "store.db").write_bytes(b"")
+            session = self._session("cursor", str(chat_dir / "store.db"), td)
+            session["id"] = old_id
+
+            registry = default_registry()
+            request = registry.prepare_copy_request(session, "原标题")
+            self.assertFalse(request.copy_session)
+            self.assertNotEqual(request.session["id"], old_id)
+            self.assertTrue(str(request.session.get("native_title") or "").endswith("（副本）"))
+            new_dir = Path(td) / request.session["id"]
+            self.assertTrue((new_dir / "store.db").is_file())
+            self.assertTrue((chat_dir / "store.db").is_file(), "原会话不得被改动")
+
+            plan = registry.build_launch_plan(request)
+            self.assertIn("--resume", plan.argv)
+            self.assertIn(request.session["id"], plan.argv)
+            self.assertNotIn("--fork-session", plan.argv)
+
+    def test_copy_session_kimi_clones_directory(self) -> None:
+        import json
+        import uuid
+
+        with tempfile.TemporaryDirectory() as td:
+            old_id = f"session_{uuid.uuid4()}"
+            session_dir = Path(td) / "ws" / old_id
+            wire_dir = session_dir / "agents" / "main"
+            wire_dir.mkdir(parents=True)
+            (session_dir / "state.json").write_text(
+                json.dumps(
+                    {
+                        "workDir": td,
+                        "title": "Kimi 讨论",
+                        "updatedAt": "2026-08-01T00:00:00Z",
+                        "agents": {"main": {"homedir": str(session_dir)}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            user_event = {
+                "type": "context.append_message",
+                "time": 1_700_000_000_000,
+                "message": {
+                    "role": "user",
+                    "origin": {"kind": "user"},
+                    "content": [{"type": "text", "text": "解释一下这个名词"}],
+                },
+            }
+            (wire_dir / "wire.jsonl").write_text(
+                json.dumps(user_event) + "\n", encoding="utf-8"
+            )
+            session = self._session("kimi", str(wire_dir / "wire.jsonl"), td)
+            session["id"] = old_id
+
+            registry = default_registry()
+            request = registry.prepare_copy_request(session, "Kimi 讨论")
+            self.assertFalse(request.copy_session)
+            self.assertNotEqual(request.session["id"], old_id)
+            new_dir = Path(td) / "ws" / request.session["id"]
+            self.assertTrue((new_dir / "agents" / "main" / "wire.jsonl").is_file())
+            state = json.loads((new_dir / "state.json").read_text(encoding="utf-8"))
+            self.assertIn(str(new_dir), str(state.get("agents", {})))
+            self.assertNotIn(old_id, json.dumps(state))
+
+            plan = registry.build_launch_plan(request)
+            self.assertIn("-S", plan.argv)
+            self.assertIn(request.session["id"], plan.argv)
+
     def test_claude_session_can_handoff_to_codex(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             history = Path(td) / "claude.jsonl"
