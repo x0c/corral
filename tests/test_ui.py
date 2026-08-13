@@ -1855,6 +1855,164 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(active_row.has_class("-split-active"))
 
 
+class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
+    """侧边栏块级斑马纹：独立会话一块、会话组一块，分隔线后重置。"""
+
+    def _stripe_by_identity(self, list_view: SessionListView) -> dict[str, bool]:
+        return {row.identity: row.stripe for row in list_view._sidebar_rows()}
+
+    def _assert_dom_matches_rows(self, list_view: SessionListView) -> None:
+        rows = list_view._sidebar_rows()
+        new_item = list_view.children[0]
+        self.assertEqual(new_item.id, NEW_SESSION_ID)
+        self.assertFalse(new_item.children[0].has_class("-stripe"))
+        for item, row in zip(
+            [child for child in list_view.children if child.id != NEW_SESSION_ID],
+            rows,
+            strict=True,
+        ):
+            card = item.children[0]
+            if isinstance(card, (SessionCard, SessionGroupCard)):
+                self.assertEqual(
+                    card.has_class("-stripe"),
+                    row.stripe,
+                    f"{row.identity} DOM 条纹与 rows 不一致",
+                )
+            else:
+                self.assertFalse(card.has_class("-stripe"))
+                self.assertFalse(row.stripe)
+
+    async def test_independent_sessions_alternate_by_block(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = [
+                pickup.session_key(session) for session in store.all_sessions()
+            ]
+            self.assertGreaterEqual(len(keys), 3)
+            stripes = self._stripe_by_identity(list_view)
+            self.assertEqual(stripes[keys[0]], False)
+            self.assertEqual(stripes[keys[1]], True)
+            self.assertEqual(stripes[keys[2]], False)
+            self._assert_dom_matches_rows(list_view)
+
+    async def test_group_and_members_share_phase(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            sessions = store.all_sessions()
+            group_keys = [
+                pickup.session_key(session) for session in sessions[:2]
+            ]
+            independent_key = pickup.session_key(sessions[2])
+            list_view.on_layout_change(
+                lambda s: s.set_group("/tmp", group_keys, focus_key=group_keys[0])
+            )
+            await list_view.rebuild()
+            rows = list_view._sidebar_rows()
+            self.assertEqual(rows[0].kind, "group")
+            self.assertFalse(rows[0].stripe)
+            members = [row for row in rows if row.kind == "session" and row.tree_position]
+            self.assertEqual(len(members), 2)
+            self.assertTrue(all(not row.stripe for row in members))
+            independent = next(row for row in rows if row.identity == independent_key)
+            self.assertTrue(independent.stripe)
+            self._assert_dom_matches_rows(list_view)
+
+    async def test_collapse_does_not_flip_later_blocks(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            sessions = store.all_sessions()
+            group_keys = [
+                pickup.session_key(session) for session in sessions[:2]
+            ]
+            independent_key = pickup.session_key(sessions[2])
+            list_view.on_layout_change(
+                lambda s: s.set_group("/tmp", group_keys, focus_key=group_keys[0])
+            )
+            await list_view.rebuild()
+            expanded = self._stripe_by_identity(list_view)
+            group_id = list_view.group_store.get_group(group_keys[0]).group_id
+            list_view.on_layout_change(lambda s: s.set_collapsed(group_id, True))
+            await list_view.rebuild()
+            collapsed = self._stripe_by_identity(list_view)
+            self.assertEqual(expanded[independent_key], collapsed[independent_key])
+            self.assertTrue(collapsed[independent_key])
+            self.assertEqual(
+                collapsed[f"{GROUP_ID_PREFIX}{group_id}"],
+                expanded[f"{GROUP_ID_PREFIX}{group_id}"],
+            )
+            self._assert_dom_matches_rows(list_view)
+
+    async def test_separator_resets_phase(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            sessions = store.all_sessions()
+            pinned_key = pickup.session_key(sessions[0])
+            unpinned = [pickup.session_key(session) for session in sessions[1:]]
+            list_view.on_layout_change(lambda s: s.toggle_session_pin(pinned_key))
+            await list_view.rebuild()
+            rows = list_view._sidebar_rows()
+            kinds = [row.kind for row in rows]
+            self.assertEqual(kinds[0], "session")
+            self.assertEqual(kinds[1], "separator")
+            self.assertFalse(rows[0].stripe)
+            self.assertFalse(rows[1].stripe)
+            self.assertEqual(rows[2].identity, unpinned[0])
+            self.assertFalse(rows[2].stripe)
+            self.assertEqual(rows[3].identity, unpinned[1])
+            self.assertTrue(rows[3].stripe)
+            self._assert_dom_matches_rows(list_view)
+
+    async def test_stripes_survive_in_place_and_full_rebuild(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            before = self._stripe_by_identity(list_view)
+            store.all_sessions()[0]["mtime"] = time.time() + 10
+            await list_view.rebuild()
+            self.assertEqual(self._stripe_by_identity(list_view), before)
+            self._assert_dom_matches_rows(list_view)
+
+            store.sessions["claude"] = store.sessions["claude"][:-1]
+            await list_view.rebuild()
+            after = self._stripe_by_identity(list_view)
+            self.assertEqual(len(after), len(before) - 1)
+            remaining = [
+                pickup.session_key(session) for session in store.all_sessions()
+            ]
+            self.assertEqual(after[remaining[0]], False)
+            self.assertEqual(after[remaining[1]], True)
+            self._assert_dom_matches_rows(list_view)
+
+    async def test_stripe_background_is_translucent(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            striped = next(
+                card
+                for card in list_view.query(SessionCard)
+                if card.has_class("-stripe")
+            )
+            alpha = striped.styles.background.a
+            self.assertGreater(alpha, 0)
+            self.assertLess(alpha, 1)
+
+
 class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     """会话组在侧边栏按三行组卡 + 缩进子会话展示，并支持折叠与置顶。"""
 

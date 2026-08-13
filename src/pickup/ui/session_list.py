@@ -6,6 +6,11 @@
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
 无末行空行）。置顶块与未置顶块都非空时，中间插一行 `$primary` 蓝横线
 分隔（高 1、无文案、disabled，键盘跳过；置顶已有 ↑，不必再贬低下方会话）。
+斑马纹按**块**交替，不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
+`＋ 新建` 与置顶分隔线不参与、不计入相位，分隔线之后相位重置（两区都以无条纹
+起头）。条纹画在 `SessionCard` / `SessionGroupCard` 上，用 `$foreground` 的半透明
+底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类 DEFAULT_CSS 会压过
+ListView 自带的 `.-highlight`，把选中底色吃掉。
 
 业务格式化逻辑（相对时间、宽字符对齐、标题兜底）直接复用 pickup.py 里已测试的
 纯函数，这里只负责「怎么在 Textual 里画卡片、怎么响应选择」。
@@ -17,7 +22,7 @@ import asyncio
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from rich.style import Style
@@ -113,6 +118,32 @@ class _SidebarRow:
     member_sessions: tuple[dict, ...] = ()
     tree_position: str | None = None
     pinned: bool = False
+    stripe: bool = False
+
+
+def _assign_block_stripes(rows: list[_SidebarRow]) -> list[_SidebarRow]:
+    """给侧边栏行打块级斑马纹相位。
+
+    一块 = 一张独立会话卡，或「组卡 + 它全部成员」。分隔线不着色、不计相位，
+    其后重置，让置顶区与未置顶区都从无条纹起头。组内成员继承组卡相位，因此
+    展开/收起不会翻转其后块的条纹。
+    """
+    striped: list[_SidebarRow] = []
+    next_stripe = False
+    current = False
+    for row in rows:
+        if row.kind == "separator":
+            next_stripe = False
+            striped.append(replace(row, stripe=False))
+            continue
+        is_block_start = row.kind == "group" or (
+            row.kind == "session" and row.tree_position is None
+        )
+        if is_block_start:
+            current = next_stripe
+            next_stripe = not next_stripe
+        striped.append(replace(row, stripe=current))
+    return striped
 
 
 class SessionCard(Widget):
@@ -143,6 +174,10 @@ class SessionCard(Widget):
            （alpha 与当前背景混合，深浅色主题各自成立）。关注状态只由首行最左
            的圆点表达，避免整行标题变色压过真正需要用户处理的状态。 */
         color: $foreground 80%;
+        &.-stripe {
+            /* 半透明叠在 ListItem 底上，不跟选中/分屏高亮抢 background。 */
+            background: $foreground 4%;
+        }
     }
     /* 第三行时间按新鲜度分档着色：半小时内与标题同亮（=卡片基础色，着重显示），
        之后逐级压暗到几乎只剩轮廓。全部用 $foreground + alpha 表达，深浅色主题
@@ -393,6 +428,9 @@ class SessionGroupCard(Widget):
         width: 1fr;
         pointer: pointer;
         color: $foreground 88%;
+        &.-stripe {
+            background: $foreground 4%;
+        }
     }
     """
 
@@ -769,6 +807,7 @@ class SessionListView(ListView):
                     tree_position=row.tree_position,
                     pinned=row.pinned,
                 )
+        self._apply_stripes(rows)
 
     def visible_sessions(self) -> list[dict]:
         import pickup
@@ -941,7 +980,7 @@ class SessionListView(ListView):
         if pinned_rows and unpinned_rows:
             rows.append(_SidebarRow(kind="separator", identity=PIN_SEP_ID))
         rows.extend(unpinned_rows)
-        return rows
+        return _assign_block_stripes(rows)
 
     def selected_session(self) -> dict | None:
         idx = self.index
@@ -1018,6 +1057,17 @@ class SessionListView(ListView):
             is_active = active is not None and key == active
             item.set_class(False, "-in-split")
             item.set_class(is_active, "-split-active")
+
+    def _apply_stripes(self, rows: list[_SidebarRow]) -> None:
+        """把块级斑马纹贴到卡片上；＋新建与分隔线不参与。幂等。"""
+        widgets = [
+            item.children[0]
+            for item in self.children
+            if item.id != NEW_SESSION_ID and item.children
+        ]
+        for widget, row in zip(widgets, rows, strict=False):
+            if isinstance(widget, (SessionCard, SessionGroupCard)):
+                widget.set_class(row.stripe, "-stripe")
 
     def _apply_multi_markers(self) -> None:
         import pickup
@@ -1372,6 +1422,7 @@ class SessionListView(ListView):
         # 全量重建换掉了全部 ListItem，分屏底色标记要重新贴一遍（原地更新那条
         # 路径不动列表项结构，标记还在，不必重贴）。
         self._apply_split_marks()
+        self._apply_stripes(rows)
         # Textual 已知问题（issue #6300）：clear()+extend() 后紧接着设置 index，
         # 高亮理论上可能只在内部状态里正确、要等用户交互才真正刷新到屏幕。在当前
         # 锁定版本（8.2.8）下用 Pilot 直接探查过 compositor 的增量重绘路径，没有

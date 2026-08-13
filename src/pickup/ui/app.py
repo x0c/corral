@@ -47,7 +47,7 @@ _PICKUP_DARK = Theme(
     variables={
         # 选中抬一层冷灰蓝，不用高饱和 primary 铺满
         "block-cursor-background": "#243447",
-        "block-cursor-blurred-background": "#24344766",
+        "block-cursor-blurred-background": "#243447CC",
         # 分栏激活顶/底条：$primary-muted 再提亮约 10%
         "pane-active-background": "#31475E",
         # 侧边栏投影分屏组合的四级底色（见 _SIDEBAR_SPLIT_LADDER 的说明）
@@ -72,7 +72,7 @@ _PICKUP_LIGHT = Theme(
     dark=False,
     variables={
         "block-cursor-background": "#C5D6E8",
-        "block-cursor-blurred-background": "#C5D6E880",
+        "block-cursor-blurred-background": "#C5D6E8CC",
         # 分栏激活顶/底条：$primary-muted 再提亮约 10%
         "pane-active-background": "#D1E7F7",
         # 浅色下"更显著"是更深更饱和，梯度方向与深色相反，见 _SIDEBAR_SPLIT_LADDER

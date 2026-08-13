@@ -422,10 +422,9 @@ async def _capture() -> None:
             split_layout.default_layout_db().apply(
                 lambda store: (
                     setattr(store.groups[group_id], "name", "Group Pineapple"),
-                    setattr(store.groups[group_id], "collapsed", True),
+                    setattr(store.groups[group_id], "collapsed", False),
                 )
             )
-            split_layout.default_layout_db().toggle_group_pin(group_id)
             split_layout.reset_default_layout_db()
 
             app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
@@ -435,7 +434,8 @@ async def _capture() -> None:
                 )
             async with app.run_test(size=(140, 36)) as pilot:
                 await pilot.pause(delay=0.4)
-                # 跳过「新建会话」，选中置顶会话组 → 右栏显示整组预览。
+                # 默认高亮独立会话；再 ↓ 一次落到会话组，让截图同时看到
+                # 「独立卡无条纹 / 组卡+成员同色条纹 / 选中底压过条纹」。
                 await pilot.press("down")
                 await pilot.pause(delay=0.5)
                 with tempfile.TemporaryDirectory() as td:
