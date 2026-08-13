@@ -298,6 +298,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "1 session",
         "zh": "1 个会话",
     },
+    "group.attention_waiting": {
+        "en": "Waiting {count}",
+        "zh": "等待 {count}",
+    },
+    "group.attention_working": {
+        "en": "Working {count}",
+        "zh": "执行中 {count}",
+    },
+    "group.attention_unread": {
+        "en": "New {count}",
+        "zh": "新结果 {count}",
+    },
+    "group.all_read": {
+        "en": "{count} read",
+        "zh": "{count} 个已读",
+    },
     "pin.enabled": {
         "en": "Pinned to top",
         "zh": "已置顶",

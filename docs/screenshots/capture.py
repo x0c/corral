@@ -420,7 +420,10 @@ async def _capture() -> None:
             )
             group_id = seed.get_group(keys[0]).group_id
             split_layout.default_layout_db().apply(
-                lambda store: setattr(store.groups[group_id], "name", "Group Pineapple")
+                lambda store: (
+                    setattr(store.groups[group_id], "name", "Group Pineapple"),
+                    setattr(store.groups[group_id], "collapsed", True),
+                )
             )
             split_layout.default_layout_db().toggle_group_pin(group_id)
             split_layout.reset_default_layout_db()

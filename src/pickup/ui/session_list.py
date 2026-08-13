@@ -408,17 +408,55 @@ class SessionGroupCard(Widget):
         self._render_signature = self._compute_signature()
 
     def _compute_signature(self) -> tuple:
-        # 组卡不展示时间，mtime 变化不必触发重绘；成员身份/数量变了才要刷新。
+        # 组卡不展示时间，mtime 变化不必触发重绘；收起时则要随成员关注状态更新。
         return (
             self.group.name,
             self.group.project_cwd,
             self.group.collapsed,
             self.pinned,
             tuple(
-                (session.get("source"), session.get("id"))
+                (
+                    session.get("source"),
+                    session.get("id"),
+                    session.get("attention_kind"),
+                )
                 for session in self.member_sessions
             ),
         )
+
+    def _collapsed_attention_summary(self, width: int, indent: str) -> Text:
+        """汇总收起组内仍需关注的会话，避免收起后把状态一起藏掉。"""
+        import pickup
+
+        statuses = (
+            ("waiting", "bold yellow", "group.attention_waiting"),
+            ("working", "bold green", "group.attention_working"),
+            ("unread", "bold red", "group.attention_unread"),
+        )
+        counts = {
+            kind: sum(
+                str(session.get("attention_kind") or "none") == kind
+                for session in self.member_sessions
+            )
+            for kind, _, _ in statuses
+        }
+        out = Text(indent)
+        has_status = False
+        for kind, style, label_key in statuses:
+            count = counts[kind]
+            if count == 0:
+                continue
+            if has_status:
+                out.append(" · ", style="dim")
+            out.append("●", style=style)
+            out.append(f" {t(label_key, count=count)}")
+            has_status = True
+        if not has_status:
+            count = len(self.member_sessions)
+            out.append(t("group.all_read", count=count), style="dim")
+        out.truncate(width, overflow="crop")
+        out.append(" " * max(0, width - pickup._text_width(out.plain)))
+        return out
 
     def apply_update(
         self,
@@ -462,8 +500,11 @@ class SessionGroupCard(Widget):
         count = len(self.member_sessions)
         count_key = "group.session_count_one" if count == 1 else "group.session_count"
         indent = " " * pickup._text_width(name_prefix)
-        summary = f"{indent}{project} · {t(count_key, count=count)}"
-        summary_cell = pickup._fit_cell(summary, width)
+        count_cell = f" · {t(count_key, count=count)}"
+        project_cell = pickup._fit_cell(
+            f"{indent}{project}",
+            max(1, width - pickup._text_width(count_cell)),
+        )
         title = title.rstrip()
         out = Text()
         if emoji and emoji in title:
@@ -477,11 +518,15 @@ class SessionGroupCard(Widget):
             out.append(title, style="bold")
         out.append(" " * max(0, width - pickup._text_width(title)))
         out.append("\n")
-        out.append(summary_cell.rstrip(), style="dim")
-        out.append(" " * max(0, width - pickup._text_width(summary_cell.rstrip())))
+        out.append(project_cell.rstrip(), style="bold")
+        out.append(count_cell.rstrip(), style="dim")
+        out.append(" " * max(0, width - pickup._text_width(project_cell.rstrip() + count_cell.rstrip())))
         out.append("\n")
-        # 第三行留白占位，高度仍是 3，与会话卡对齐；时间只在成员卡上显示。
-        out.append(" " * width)
+        # 收起后成员卡不可见，第三行改为状态汇总；展开时仍留白，避免与成员卡重复。
+        if self.group.collapsed:
+            out.append_text(self._collapsed_attention_summary(width, indent))
+        else:
+            out.append(" " * width)
         return out
 
 

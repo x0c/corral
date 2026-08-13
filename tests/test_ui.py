@@ -1759,13 +1759,14 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=False)
         return store, app
 
-    async def test_group_card_has_three_lines_without_attention_dot(self) -> None:
+    async def test_collapsed_group_card_summarizes_member_attention(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             sessions[0]["attention_kind"] = "working"
+            sessions[1]["attention_kind"] = "waiting"
             keys = [pickup.session_key(session) for session in sessions[:2]]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
@@ -1778,7 +1779,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             emoji = _split_layout.group_emoji(group_cards[0].group.name)
             self.assertTrue(emoji, "水果组名必须能取到对应 emoji")
             self.assertTrue(group_text.startswith(f"▼ {emoji} Group "))
-            self.assertNotIn("●", group_text, "会话组标题不能重复显示会话状态圆点")
+            self.assertNotIn("●", lines[0], "会话组标题不能重复显示会话状态圆点")
             # 第二行项目名与第一行 Group 文字同列起笔（按终端显示宽度比较，
             # emoji 是宽字符：1 个 Python 字符占 2 格，不能直接比字符下标）。
             from rich.cells import cell_len
@@ -1786,9 +1787,13 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             group_col = cell_len(lines[0][: lines[0].index("Group")])
             tmp_col = cell_len(lines[1][: lines[1].find("tmp")])
             self.assertEqual(tmp_col, group_col)
-            # 第三行留白：成员卡已有时间，组卡不再重复「多久以前」。
+            # 展开时成员卡自己表达状态，组卡第三行继续留白。
             self.assertEqual(lines[2].strip(), "")
-            self.assertNotRegex(lines[2], r"\d")
+
+            group_cards[0].group.collapsed = True
+            collapsed_lines = group_cards[0].render().plain.splitlines()
+            self.assertIn("● Waiting 1", collapsed_lines[2])
+            self.assertIn("● Working 1", collapsed_lines[2])
 
             child_cards = [
                 card
