@@ -13,6 +13,13 @@ from collections.abc import Iterable
 
 from textual.message import Message
 
+from pickup.ui.pointer_shape import (
+    enable_tmux_passthrough,
+    reset_sequence,
+    restore_tmux_passthrough,
+    sequence,
+)
+
 _OSC_BACKGROUND_MARKER = "\x1b]11;rgb:"
 _MODE_MARKER = "\x1b[?997;"
 _OSC_BACKGROUND_RE = re.compile(
@@ -131,8 +138,14 @@ if os.name != "nt":
         def start_application_mode(self) -> None:
             super().start_application_mode()
             enable_runtime_theme_tracking(self)
+            enable_tmux_passthrough()
+            # Textual 只在形状变化时发 OSC 22；终端被重置后会回落到 I 型光标。
+            # 进应用模式时主动补一次箭头，tmux 穿透也在 sequence() 里带上。
+            _write(self, sequence("default"))
 
         def stop_application_mode(self) -> None:
+            _write(self, reset_sequence())
+            restore_tmux_passthrough()
             disable_runtime_theme_tracking(self)
             super().stop_application_mode()
 

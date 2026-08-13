@@ -52,6 +52,12 @@ class _ChoiceItem(Static):
     # （见 ui/app.py 里 PickupApp 的说明）。
     ALLOW_SELECT = False
 
+    DEFAULT_CSS = """
+    _ChoiceItem {
+        pointer: pointer;
+    }
+    """
+
     def __init__(self, main: str, hint: str, available: bool) -> None:
         style = "" if available else "dim"
         text = Text(main, style=style)

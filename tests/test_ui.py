@@ -57,7 +57,13 @@ from pickup.ui.modals import (
     RuntimeChoice,
     RuntimePickerModal,
 )
-from pickup.ui.runtime_top_bar import _SidebarToggleChip
+from pickup.ui.pointer_shape import (
+    enable_tmux_passthrough,
+    reset_sequence,
+    restore_tmux_passthrough,
+    sequence,
+)
+from pickup.ui.runtime_top_bar import _SidebarToggleChip, _TopBarSpacer
 from pickup.ui.search_modal import FullTextSearchModal, SearchResultRow
 from pickup.ui.session_list import (
     GROUP_ID_PREFIX,
@@ -412,6 +418,104 @@ class RuntimeThemeParserTests(unittest.TestCase):
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
         self.assertEqual(app.driver_class.__name__, "TerminalThemeLinuxDriver")
+
+
+def _pointer_env(*drop: str, **extra: str):
+    """构造一份干净环境：去掉 TMUX / XTERM_VERSION 等，再按需补回。"""
+    env = {key: value for key, value in os.environ.items() if key not in drop and key not in extra}
+    env.update(extra)
+    return mock.patch.dict(os.environ, env, clear=True)
+
+
+class PointerShapeSequenceTests(unittest.TestCase):
+    """OSC 22 序列必须按终端 / tmux / xterm 四种组合发出正确的形状名。"""
+
+    def test_bare_css_name_without_tmux(self) -> None:
+        with _pointer_env("TMUX", "XTERM_VERSION"):
+            self.assertEqual(sequence("pointer"), "\x1b]22;pointer\x07")
+            self.assertEqual(sequence("default"), "\x1b]22;default\x07")
+            self.assertEqual(sequence("text"), "\x1b]22;text\x07")
+
+    def test_tmux_passthrough_appends_dcs_copy(self) -> None:
+        with _pointer_env("XTERM_VERSION", TMUX="1,0,0"):
+            raw = sequence("pointer")
+            self.assertTrue(raw.startswith("\x1b]22;pointer\x07"))
+            self.assertIn("\x1bPtmux;\x1b\x1b]22;pointer\x07\x1b\\", raw)
+
+    def test_xterm_uses_x11_cursor_names(self) -> None:
+        with _pointer_env("TMUX", XTERM_VERSION="XTerm(379)"):
+            self.assertEqual(sequence("default"), "\x1b]22;left_ptr\x07")
+            self.assertEqual(sequence("pointer"), "\x1b]22;hand2\x07")
+            self.assertEqual(sequence("text"), "\x1b]22;xterm\x07")
+            self.assertEqual(sequence("wait"), "\x1b]22;watch\x07")
+
+    def test_xterm_inside_tmux_wraps_x11_name(self) -> None:
+        with _pointer_env(TMUX="1,0,0", XTERM_VERSION="XTerm(379)"):
+            raw = sequence("pointer")
+            self.assertTrue(raw.startswith("\x1b]22;hand2\x07"))
+            self.assertIn("\x1bPtmux;\x1b\x1b]22;hand2\x07\x1b\\", raw)
+
+    def test_reset_sequence_uses_empty_shape(self) -> None:
+        with _pointer_env("TMUX", "XTERM_VERSION"):
+            self.assertEqual(reset_sequence(), "\x1b]22;\x07")
+        with _pointer_env("XTERM_VERSION", TMUX="1,0,0"):
+            self.assertIn("\x1bPtmux;\x1b\x1b]22;\x07\x1b\\", reset_sequence())
+
+    def test_passthrough_skipped_without_tmux(self) -> None:
+        with _pointer_env("TMUX", "TMUX_PANE"):
+            with mock.patch("pickup.ui.pointer_shape.subprocess.run") as run:
+                enable_tmux_passthrough()
+                restore_tmux_passthrough()
+                run.assert_not_called()
+
+    def test_passthrough_sets_and_unsets_pane_option(self) -> None:
+        with _pointer_env(TMUX="1,0,0", TMUX_PANE="%0"):
+            with mock.patch("pickup.ui.pointer_shape.subprocess.run") as run:
+                enable_tmux_passthrough()
+                restore_tmux_passthrough()
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["tmux", "set", "-p", "allow-passthrough", "on"],
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["tmux", "set", "-pu", "allow-passthrough"],
+        )
+
+
+class PointerShapeUiTests(unittest.IsolatedAsyncioTestCase):
+    """悬停可点区域是手型，内嵌终端是 I 型，空白处是箭头。"""
+
+    async def test_hover_updates_pointer_shape_by_widget(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            card = app.screen.query_one(SessionCard)
+            self.assertEqual(str(card.styles.pointer), "pointer")
+            await pilot.hover(card)
+            await pilot.pause()
+            self.assertEqual(app.screen._pointer_shape, "pointer")  # noqa: SLF001
+
+            pane = app.screen.query_one(EmbedPane)
+            self.assertEqual(str(pane.styles.pointer), "text")
+            await pilot.hover(pane)
+            await pilot.pause()
+            self.assertEqual(app.screen._pointer_shape, "text")  # noqa: SLF001
+
+            spacer = app.screen.query_one(_TopBarSpacer)
+            await pilot.hover(spacer)
+            await pilot.pause()
+            self.assertEqual(app.screen._pointer_shape, "default")  # noqa: SLF001
+
+    async def test_set_pointer_shape_does_not_raise_in_headless(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            app._set_pointer_shape("pointer")
+            app._set_pointer_shape("text")
+            app._set_pointer_shape("default")
 
 
 class AppThemeTests(unittest.IsolatedAsyncioTestCase):

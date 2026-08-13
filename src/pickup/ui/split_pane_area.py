@@ -37,6 +37,7 @@ class _PaneClose(Static):
         height: 1;
         content-align: center middle;
         color: $text-muted;
+        pointer: pointer;
     }
     _PaneClose:hover {
         color: $error;

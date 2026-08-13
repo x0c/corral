@@ -291,6 +291,7 @@ class EmbedPane(Widget):
         width: 1fr;
         height: 1fr;
         content-align: left top;
+        pointer: text;
     }
     EmbedPane:focus {
         border: none;

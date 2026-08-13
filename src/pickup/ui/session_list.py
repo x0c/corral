@@ -138,6 +138,7 @@ class SessionCard(Widget):
     SessionCard {
         height: 3;
         width: 1fr;
+        pointer: pointer;
         /* 标题行统一吃这里的基础色：满亮前景整栏铺开太扎眼，压到 8 成
            （alpha 与当前背景混合，深浅色主题各自成立）。关注状态只由首行最左
            的圆点表达，避免整行标题变色压过真正需要用户处理的状态。 */
@@ -390,6 +391,7 @@ class SessionGroupCard(Widget):
     SessionGroupCard {
         height: 3;
         width: 1fr;
+        pointer: pointer;
         color: $foreground 88%;
     }
     """
@@ -550,6 +552,7 @@ class NewSessionCard(Widget):
     NewSessionCard {
         height: 2;
         width: 1fr;
+        pointer: pointer;
     }
     """
 

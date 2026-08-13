@@ -33,6 +33,7 @@ class _SidebarToggleChip(Widget):
         margin: 0 1 0 0;
         content-align: center middle;
         color: $text-muted;
+        pointer: pointer;
     }
     _SidebarToggleChip:hover {
         background: $boost;
@@ -94,6 +95,7 @@ class _DragonChip(Widget):
         margin: 0 0 0 1;
         content-align: center middle;
         color: $error;
+        pointer: pointer;
     }
     _DragonChip:hover {
         background: $boost;
@@ -127,6 +129,7 @@ class _ShellChip(Widget):
         padding: 0 1;
         margin: 0 1 0 0;
         content-align: center middle;
+        pointer: pointer;
     }
     _ShellChip:hover {
         background: $boost;
@@ -159,6 +162,7 @@ class _RuntimeChip(Widget):
         padding: 0 1;
         margin: 0 1 0 0;
         content-align: center middle;
+        pointer: pointer;
     }
     _RuntimeChip:hover {
         background: $boost;

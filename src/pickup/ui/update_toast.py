@@ -55,6 +55,12 @@ class _ToastBody(Static):
 
     ALLOW_SELECT = False
 
+    DEFAULT_CSS = """
+    _ToastBody {
+        pointer: pointer;
+    }
+    """
+
     def __init__(self, on_click: Callable[[], None], **kwargs) -> None:
         super().__init__("", **kwargs)
         self._on_click_cb = on_click
@@ -77,6 +83,7 @@ class _ToastClose(Static):
         border-left: none;
         content-align: center middle;
         color: $text-muted;
+        pointer: pointer;
     }
     _ToastClose:hover {
         color: $text;

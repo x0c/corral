@@ -12,6 +12,7 @@ from textual.theme import Theme
 from textual.timer import Timer
 
 from pickup.ui.main_screen import MainScreen
+from pickup.ui.pointer_shape import sequence as pointer_shape_sequence
 from pickup.ui.terminal_theme import (
     BACKGROUND_POLL_INTERVAL,
     TerminalBackgroundReport,
@@ -157,6 +158,11 @@ class PickupApp(App):
     def get_driver_class(self):
         """默认 Unix 驱动增加终端主题应答解析，其他驱动保持 Textual 原行为。"""
         return enhance_driver(super().get_driver_class())
+
+    def _set_pointer_shape(self, shape: str) -> None:
+        """覆写 Textual 原实现：同样的 OSC 22，但套 tmux 时带 DCS 穿透。"""
+        if self._driver is not None:
+            self._driver.write(pointer_shape_sequence(shape))
 
     def __init__(self, store, embed_ok: bool, direct=None, osc_report: bytes | None = None) -> None:
         super().__init__()

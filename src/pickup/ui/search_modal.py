@@ -59,6 +59,7 @@ class SearchResultRow(Widget):
     SearchResultRow {
         width: 1fr;
         color: $foreground 80%;
+        pointer: pointer;
     }
     SearchResultRow .search-result--hit {
         color: $warning;
