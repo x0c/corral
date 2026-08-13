@@ -280,6 +280,7 @@ class MainScreen(
                 yield SplitPaneArea(
                     self.store,
                     on_runtime_pick=self._on_runtime_pick,
+                    on_shell_pick=self._on_shell_pick,
                     on_dragon_click=self._play_dragon,
                     on_pane_close=self._on_pane_close,
                     on_focus_list=self._focus_list,
@@ -441,6 +442,55 @@ class MainScreen(
             return
         request = pickup.NewSessionRequest(runtime_id, cwd)
         self._embed_open(request, add_pane=True)
+
+    def _on_shell_pick(self) -> None:
+        import pickup
+        from pickup.split_layout import MAX_PANES
+
+        area = self._split_area()
+        if not area.can_add_pane():
+            self.notify(t("split.full", n=MAX_PANES))
+            self.app.bell()
+            return
+        session_list = self.query_one(SessionListView)
+        session = session_list.selected_session()
+        cwd = area.current_project or pickup.usable_cwd(
+            pickup._new_session_cwd(self.store, self.nav, session)
+        )
+        if cwd is None:
+            self.notify(t("split.no_project"))
+            self.app.bell()
+            return
+        self._embed_open_shell(cwd)
+
+    def _cleanup_shell_pane(self, session_key: str) -> None:
+        """关 shell 分屏或 shell 进程退出：结束 tmux 会话并摘掉占位，避免堆积。"""
+        from pickup.models import SHELL_RUNTIME_ID, is_shell_session
+
+        if not session_key.startswith(f"{SHELL_RUNTIME_ID}:"):
+            return
+        session = self.store.find_session(session_key)
+        if session is not None and not is_shell_session(session):
+            return
+        keepalive_name = None
+        if session is not None:
+            keepalive_name = session.get("keepalive_name")
+        if not keepalive_name:
+            area = self._split_area()
+            for spec in area.pane_specs():
+                if spec.session_key == session_key:
+                    keepalive_name = spec.keepalive_name
+                    break
+        if keepalive_name:
+            from pickup import embed, keepalive
+
+            keepalive.kill(str(keepalive_name))
+            embed.close_channel(str(keepalive_name))
+        self.store.remove_session(session_key)
+
+    def _on_pane_close(self, session_key: str) -> None:
+        self._cleanup_shell_pane(session_key)
+        LayoutControllerMixin._on_pane_close(self, session_key)
 
 
     # ---- 首屏异步加载：main() 把 store.load() 挪到后台线程异步跑，这里等它跑完
@@ -897,11 +947,15 @@ class MainScreen(
         的右栏往往是用户当下唯一在看的地方。
         """
         import pickup
+        from pickup.models import is_shell_session
 
         session = self.store.find_session(session_key)
         if session is None or session.get("provisional"):
             # 占位卡（接力 / 空白新建还没落盘历史就退出了）没有可恢复的会话，
             # 拿它去生成启动计划只会失败；这条会话卡本身下一轮重扫也会消失。
+            self.app.bell()
+            return
+        if is_shell_session(session):
             self.app.bell()
             return
         if is_external_running(session):

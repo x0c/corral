@@ -7091,5 +7091,112 @@ class PreviewSustainWarmTests(unittest.TestCase):
             warm.assert_not_called()
 
 
+class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
+    """顶栏「终端」：内嵌自由 shell 分屏与生命周期清理。"""
+
+    async def _open_shell_pane(self, pilot, app, *, keepalive_name: str = "pickup-shell-abc123"):
+        area = app.screen.query_one(SplitPaneArea)
+        area.current_project = "/tmp"
+        app.screen._on_shell_pick()
+        await _wait_until(lambda: app.screen._host_pending == 0)
+        await _wait_until(
+            lambda: any(spec.is_shell for spec in area.pane_specs()),
+        )
+        return area
+
+    async def test_shell_chip_opens_hosted_pane(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-shell-abc123") as host_mock,
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                chip = app.screen.query_one("#shell-chip")
+                from pickup.i18n import t
+                self.assertIn(t("shell.chip_label"), chip.render().plain)
+                area = await self._open_shell_pane(pilot, app)
+                host_mock.assert_called_once()
+                runtime_id = host_mock.call_args[0][1]
+                self.assertEqual(runtime_id, pickup.models.SHELL_RUNTIME_ID)
+                shell_specs = [spec for spec in area.pane_specs() if spec.is_shell]
+                self.assertEqual(len(shell_specs), 1)
+                self.assertEqual(shell_specs[0].keepalive_name, "pickup-shell-abc123")
+
+    async def test_shell_not_listed_in_sidebar(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-shell-sidebar"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                await self._open_shell_pane(pilot, app, keepalive_name="pickup-shell-sidebar")
+                list_view = app.screen.query_one(SessionListView)
+                keys = {pickup.session_key(s) for s in list_view.visible_sessions()}
+                self.assertTrue(all(not key.startswith("shell:") for key in keys))
+
+    async def test_close_shell_pane_kills_tmux_session(self) -> None:
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-shell-closeme"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.keepalive.kill", return_value=True) as kill_mock,
+            mock.patch("pickup.embed.close_channel") as close_mock,
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                area = await self._open_shell_pane(
+                    pilot, app, keepalive_name="pickup-shell-closeme",
+                )
+                shell_key = next(
+                    spec.session_key for spec in area.pane_specs() if spec.is_shell
+                )
+                area.focus_session_key(shell_key, only_live=False)
+                await _wait_until(lambda: area.any_embed_focused())
+                before = len(area.pane_specs())
+                app.screen.action_close_pane()
+                await _wait_until(lambda: len(area.pane_specs()) == before - 1)
+                kill_mock.assert_called_once_with("pickup-shell-closeme")
+                close_mock.assert_called_once_with("pickup-shell-closeme")
+
+    async def test_close_agent_pane_does_not_kill_tmux(self) -> None:
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.keepalive.kill", return_value=True) as kill_mock,
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+                before = len(app.screen.query_one(SplitPaneArea).pane_specs())
+                app.screen.action_close_pane()
+                await _wait_until(
+                    lambda: len(app.screen.query_one(SplitPaneArea).pane_specs()) == before - 1,
+                )
+                kill_mock.assert_not_called()
+
+    def test_shell_launch_plan_uses_login_shell(self) -> None:
+        from pickup.ui.controllers.host_controller import _shell_launch_plan
+
+        with (
+            mock.patch.dict(os.environ, {"SHELL": "/bin/zsh"}, clear=False),
+            mock.patch("os.path.isfile", return_value=True),
+            mock.patch("os.access", return_value=True),
+        ):
+            plan = _shell_launch_plan("/tmp/work")
+        self.assertEqual(plan.argv, ("/bin/zsh",))
+        self.assertEqual(plan.cwd, "/tmp/work")
+
+
 if __name__ == "__main__":
     unittest.main()

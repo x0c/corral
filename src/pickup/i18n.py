@@ -262,6 +262,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Pick a session or tap a runtime above",
         "zh": "选择会话，或点击上方助手",
     },
+    "shell.chip_label": {
+        "en": "Terminal",
+        "zh": "终端",
+    },
+    "shell.pane_title": {
+        "en": "Terminal",
+        "zh": "终端",
+    },
     "split.full": {
         "en": "At most {n} panes — close one first",
         "zh": "最多 {n} 格 — 请先关闭一格",

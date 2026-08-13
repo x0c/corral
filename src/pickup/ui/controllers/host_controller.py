@@ -13,6 +13,14 @@ import os
 from textual import work
 
 from pickup.i18n import t
+from pickup.models import SHELL_RUNTIME_ID, LaunchPlan
+
+
+def _shell_launch_plan(cwd: str) -> LaunchPlan:
+    shell = (os.environ.get("SHELL") or "").strip() or "/bin/bash"
+    if not os.path.isfile(shell) or not os.access(shell, os.X_OK):
+        shell = "/bin/sh"
+    return LaunchPlan(argv=(shell,), cwd=cwd)
 
 
 class HostControllerMixin:
@@ -213,6 +221,81 @@ class HostControllerMixin:
         self._persist_split_composition()
         self._begin_attention_read(pickup.session_key(current))
         self.call_next(self._rebuild_list, select_key)
+
+    def _embed_open_shell(self, cwd: str) -> None:
+        """顶栏「终端」：在当前项目目录下内嵌一个可自由输入的 shell 分屏。"""
+        from pickup.split_layout import MAX_PANES
+
+        area = self._split_area()
+        if not area.can_add_pane():
+            self.notify(t("split.full", n=MAX_PANES))
+            self.app.bell()
+            return
+        if self._host_pending > 0:
+            self.app.bell()
+            return
+        if area.pane_count() + self._host_pending >= MAX_PANES:
+            self.notify(t("split.full", n=MAX_PANES))
+            self.app.bell()
+            return
+        plan = _shell_launch_plan(cwd)
+        from pickup import keepalive
+
+        ident = keepalive.new_session_ident()
+        width, height = area.host_pane_size()
+        self._host_pending += 1
+        self._host_shell_and_focus(cwd, plan, ident, width, height)
+
+    @work(thread=True, group="host")
+    def _host_shell_and_focus(
+        self, cwd: str, plan: LaunchPlan, ident: str, width: int, height: int,
+    ) -> None:
+        import time
+
+        import pickup
+        from pickup import embed, observe
+
+        t0 = time.perf_counter()
+        try:
+            name = embed.host_session(
+                plan, SHELL_RUNTIME_ID, ident, width, height, osc_report=self.osc_report,
+            )
+        except Exception as exc:
+            observe.event(
+                "host_session",
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+                runtime=SHELL_RUNTIME_ID,
+                ok=False,
+            )
+            pickup._log_embed_error("内嵌 shell 启动线程", exc)
+            self.app.call_from_thread(self._on_host_failed)
+            return
+        observe.event(
+            "host_session",
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            runtime=SHELL_RUNTIME_ID,
+            ok=True,
+        )
+        self.app.call_from_thread(self._on_shell_hosted, name, cwd)
+
+    def _on_shell_hosted(self, name: str, cwd: str) -> None:
+        self._host_pending = max(0, self._host_pending - 1)
+        area = self._split_area()
+        current = self.store.register_hosted_session(
+            runtime_id=SHELL_RUNTIME_ID,
+            keepalive_name=name,
+            title=t("shell.pane_title"),
+            cwd=cwd,
+        )
+        area.add_hosted_pane(
+            current,
+            name,
+            None,
+            focus=True,
+            focus_pane=self._can_autofocus(),
+            is_shell=True,
+        )
+        self._persist_split_composition()
 
     def _host_direct_launch(self) -> None:
         if self._host_pending >= 3:

@@ -713,6 +713,7 @@ class SessionListView(ListView):
 
     def visible_sessions(self) -> list[dict]:
         import pickup
+        from pickup.models import SHELL_RUNTIME_ID
 
         display_titles = self.store.snapshot()
         sessions = self.store.all_sessions()
@@ -721,6 +722,9 @@ class SessionListView(ListView):
             self.nav.project_query,
             titles=display_titles,
         )
+        visible = [
+            session for session in visible if session.get("source") != SHELL_RUNTIME_ID
+        ]
         query = self.nav.project_query.strip().casefold()
         if not query or self.group_store is None:
             return visible

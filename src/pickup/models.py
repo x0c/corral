@@ -143,6 +143,14 @@ def format_message_time(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp).strftime("%m-%d %H:%M")
 
 
+SHELL_RUNTIME_ID = "shell"
+
+
+def is_shell_session(session: SessionInfo | dict) -> bool:
+    """内嵌自由 shell 分屏占位，不是 AI 助手会话。"""
+    return str(session.get("source") or "") == SHELL_RUNTIME_ID
+
+
 def session_key(session: SessionInfo | dict) -> str:
     """返回跨运行时唯一的会话键，避免不同运行时的 ID 相互覆盖。"""
     runtime_id = str(session.get("source") or "unknown")

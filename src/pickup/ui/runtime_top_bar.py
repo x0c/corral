@@ -10,6 +10,10 @@ from textual import events
 from textual.containers import Horizontal
 from textual.widget import Widget
 
+from pickup.i18n import t
+
+_SHELL_CHIP_STYLE = "dim bold"
+
 if TYPE_CHECKING:
     from pickup.runtime.registry import RuntimeRegistry
 
@@ -109,6 +113,38 @@ class _DragonChip(Widget):
         self._on_click()
 
 
+class _ShellChip(Widget):
+    """内嵌自由 shell 分屏入口。"""
+
+    ALLOW_SELECT = False
+    can_focus = False
+
+    DEFAULT_CSS = """
+    _ShellChip {
+        height: 1;
+        width: auto;
+        min-width: 6;
+        padding: 0 1;
+        margin: 0 1 0 0;
+        content-align: center middle;
+    }
+    _ShellChip:hover {
+        background: $boost;
+    }
+    """
+
+    def __init__(self, on_pick: Callable[[], None], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._on_pick = on_pick
+
+    def render(self) -> Text:
+        return Text(t("shell.chip_label"), style=_SHELL_CHIP_STYLE)
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self._on_pick()
+
+
 class _RuntimeChip(Widget):
     """单个助手按钮。"""
 
@@ -174,6 +210,7 @@ class RuntimeTopBar(Horizontal):
         *,
         sidebar_visible: bool = True,
         on_dragon_click: Callable[[], None] | None = None,
+        on_shell_pick: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -181,6 +218,7 @@ class RuntimeTopBar(Horizontal):
         self._on_runtime_pick = on_runtime_pick
         self._sidebar_visible = sidebar_visible
         self._on_dragon_click = on_dragon_click
+        self._on_shell_pick = on_shell_pick
 
     def set_sidebar_visible(self, visible: bool) -> None:
         self._sidebar_visible = visible
@@ -197,6 +235,8 @@ class RuntimeTopBar(Horizontal):
             id="sidebar-toggle",
         )
         yield _TopBarSpacer()
+        if self._on_shell_pick is not None:
+            yield _ShellChip(self._on_shell_pick, id="shell-chip")
         for runtime in self._registry:
             if not runtime.is_available():
                 continue

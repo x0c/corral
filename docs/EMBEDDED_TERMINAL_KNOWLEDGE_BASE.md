@@ -23,7 +23,8 @@
 本域只负责运行时画面和交互：
 
 - **内嵌实时终端**（代码别名 `embed`、`EmbedPane`、`capture-pane`）：不执行 tmux attach；抓取 tmux 已经渲染好的屏幕，再把按键、粘贴和部分滚轮动作发送回原 pane。
-- **运行中(托管)**（`host_session`）：启动计划被放入专用 tmux 会话后持续运行。关闭右栏或退出 pickup 不会停止它。
+- **运行中(托管)**（`host_session`）：启动计划被放入专用 tmux 会话后持续运行。关闭右栏或退出 pickup 不会停止它（**内嵌自由 shell 除外**，见下条）。
+- **内嵌自由 shell**（`models.SHELL_RUNTIME_ID`，顶栏「终端」）：托管 `$SHELL` 交互会话，可随意输入命令。与助手 deliberately 不同：**关分栏 `c` 或 shell 进程退出都会 `keepalive.kill` + 清占位**，避免保活 socket 堆积；不提供 Enter 重启；占位不进侧边栏列表。
 - **会话保活**（`keepalive`）：提供独立 tmux socket、会话命名、环境注入、状态标注和回收；本域依赖它，但不定义其回收策略。
 - **运行中(其他窗口)**（`main_screen.is_external_running`）：扫描器报 `live`、但没有 `keepalive_name`——用户自己开终端窗口直接跑起来的会话，不在保活 socket 里。**这类会话永远拿不到实时画面**：画面只存在于那个窗口自己的终端连接里，事后无法从外部接管（把已运行进程换到新终端只有 reptyr 一条路，靠 ptrace 实现，不支持 macOS；即便在 Linux 上也会抢走原窗口且全屏 TUI 助手常需手动重绘）。右栏只能给静态对话预览，必须在详情头如实写明原因（`status.running_external` + `detail.running_external`），否则用户会当成“会话已中断”。**2026-08-08 裁定：外部运行会话不得弹确认框，也不得针对同一份历史另起恢复进程**（同一份历史被两个进程写有互相覆盖风险），只能保持静态预览，等待原窗口结束后才可正常恢复；跨运行时接力只读原历史、另建目标会话，不受这条限制。
 - **控制通道**（`ControlChannel`）：常驻的 `tmux -C attach` 客户端。它降低输入和抓帧延迟，并把 pane 输出变成抓帧唤醒信号。

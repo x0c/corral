@@ -25,6 +25,7 @@ class PaneSpec:
     session_key: str
     keepalive_name: str | None = None
     cell_id: str = ""
+    is_shell: bool = False
 
 
 class _PaneClose(Static):
@@ -411,6 +412,11 @@ class PaneCell(Vertical):
     def on_mode_changed(self, event: ModeChanged) -> None:
         """静态预览 ↔ 托管 ↔ 已结束：顶底 Enter 重启提示要跟着变。"""
         event.stop()
+        if self.spec.is_shell:
+            pane = self.embed_pane()
+            if pane is not None and pane.dead:
+                self._close_self()
+                return
         self._sync_active_marker()
 
     def _notify_pane_focused(self) -> None:
@@ -420,7 +426,7 @@ class PaneCell(Vertical):
 
     def _is_restart_chrome_target(self) -> bool:
         """预览/已结束格才在顶底 chrome 写 Enter 重启；占位格与托管中不算。"""
-        if self.spec.session_key.startswith("__"):
+        if self.spec.is_shell or self.spec.session_key.startswith("__"):
             return False
         pane = self.embed_pane()
         return pane is not None and pane._is_restart_target()  # noqa: SLF001
@@ -474,6 +480,7 @@ class SplitPaneArea(Vertical):
         on_runtime_pick: Callable[[str], None],
         on_pane_close: Callable[[str], None],
         on_focus_list: Callable[[], None],
+        on_shell_pick: Callable[[], None] | None = None,
         on_pane_focused: Callable[[str], None] | None = None,
         on_pane_restart: Callable[[str, bool], None] | None = None,
         on_hud_toggle: Callable[[], None] | None = None,
@@ -486,6 +493,7 @@ class SplitPaneArea(Vertical):
         super().__init__(**kwargs)
         self.store = store
         self._on_runtime_pick = on_runtime_pick
+        self._on_shell_pick = on_shell_pick
         self._on_pane_close = on_pane_close
         self._on_focus_list = on_focus_list
         self._on_pane_focused = on_pane_focused
@@ -514,6 +522,7 @@ class SplitPaneArea(Vertical):
             self._on_runtime_pick,
             sidebar_visible=self._sidebar_visible,
             on_dragon_click=self._on_dragon_click,
+            on_shell_pick=self._on_shell_pick,
             id="runtime-top-bar",
         )
         with Horizontal(id="pane-row"):
@@ -762,10 +771,17 @@ class SplitPaneArea(Vertical):
                 entries, focus_key=focus_key, focus_pane=focus_pane,
             )
             return
+        from pickup.models import SHELL_RUNTIME_ID
+
         specs: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]] = []
         for session, kname, renderer in entries:
             key = make_session_key(session)
-            spec = PaneSpec(session_key=key, keepalive_name=kname, cell_id=self._new_cell_id())
+            spec = PaneSpec(
+                session_key=key,
+                keepalive_name=kname,
+                cell_id=self._new_cell_id(),
+                is_shell=str(session.get("source") or "") == SHELL_RUNTIME_ID,
+            )
             specs.append((spec, session, renderer))
         self._panes = [s for s, _, _ in specs]
         self._focus_key = focus_key or (self._panes[0].session_key if self._panes else None)
@@ -809,6 +825,7 @@ class SplitPaneArea(Vertical):
         *,
         focus: bool = False,
         focus_pane: bool = False,
+        is_shell: bool = False,
     ) -> None:
         import pickup
 
@@ -819,7 +836,12 @@ class SplitPaneArea(Vertical):
             self._panes = []
         elif not self.current_project:
             self.current_project = project
-        spec = PaneSpec(session_key=key, keepalive_name=keepalive_name, cell_id=self._new_cell_id())
+        spec = PaneSpec(
+            session_key=key,
+            keepalive_name=keepalive_name,
+            cell_id=self._new_cell_id(),
+            is_shell=is_shell,
+        )
         existing = [(p, self._find_session(p.session_key)) for p in self._panes]
         rebuild: list[tuple[PaneSpec, dict, Callable[[], Text | str] | None]] = []
         for p, sess in existing:
@@ -900,9 +922,13 @@ class SplitPaneArea(Vertical):
         return uuid.uuid4().hex[:8]
 
     def _pane_title(self, session: dict) -> str:
+        from pickup.models import SHELL_RUNTIME_ID
+
         source = str(session.get("source") or "")
         if not source:
             return ""
+        if source == SHELL_RUNTIME_ID:
+            return t("shell.pane_title")
         runtime = self.store.registry.get(source)
         title = self.store.get_title(session)
         return f"{runtime.display_name} · {title}"
