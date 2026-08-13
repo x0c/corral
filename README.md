@@ -5,9 +5,9 @@
 [![test](https://github.com/x0c/pickup/actions/workflows/test.yml/badge.svg)](https://github.com/x0c/pickup/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Fast terminal session picker for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, and Cursor Agent CLI.
+Fast terminal session picker for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi.
 
-`pickup` scans your local Claude Code, Codex CLI, OpenCode, Kimi Code CLI, and Cursor Agent CLI history, shows recent coding sessions in a terminal UI (built with [Textual](https://github.com/Textualize/textual)), and lets you resume the selected session in its native runtime. It can also hand off a session from one runtime to another (e.g. Claude to Codex, or OpenCode to Claude) by starting a new target session with a structured pointer to the original history.
+`pickup` scans your local Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi history, shows recent coding sessions in a terminal UI (built with [Textual](https://github.com/Textualize/textual)), and lets you resume the selected session in its native runtime. It can also hand off a session from one runtime to another (e.g. Claude to Codex, or Pi to Claude) by starting a new target session with a structured pointer to the original history.
 
 Keywords: Claude Code session manager, Codex CLI resume, OpenCode session manager, Kimi Code CLI session manager, terminal TUI, AI coding agent workflow, JSONL chat history, cross-runtime handoff.
 
@@ -19,7 +19,7 @@ Press `Ctrl+F` to search the conversation bodies of every session and jump strai
 
 ## Why Use It
 
-- Browse recent Claude Code, Codex CLI, OpenCode, Kimi Code CLI, and Cursor Agent CLI sessions from one terminal screen.
+- Browse recent Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi sessions from one terminal screen.
 - Resume with the original runtime using native commands such as `claude --resume`, `codex resume`, `opencode -s <id>`, and `kimi -S <id>`, and `agent --resume`.
 - Select a finished session to preview the full conversation in the right pane (live/hosted sessions show embedded terminals instead), or keep up to three active sessions side by side.
 - See which session needs attention without opening it: yellow means the agent is waiting for an answer, green means it is working, and red means a new result is unread. The same state is written in the detail header, so color is not the only cue.
@@ -32,10 +32,10 @@ Press `Ctrl+F` to search the conversation bodies of every session and jump strai
 
 The tool is local-first.
 
-- It reads local history under `~/.claude/projects/`, `~/.codex/sessions/`, `~/.kimi-code/sessions/`, `~/.cursor/chats/`, and (read-only) OpenCode's SQLite database at `~/.local/share/opencode/opencode.db`.
+- It reads local history under `~/.claude/projects/`, `~/.codex/sessions/`, `~/.kimi-code/sessions/`, `~/.cursor/chats/`, `~/.pi/agent/sessions/`, and (read-only) OpenCode's SQLite database at `~/.local/share/opencode/opencode.db`.
 - It does not upload session history by itself.
 - Cross-runtime handoff passes the original history file path to the target runtime instead of copying the whole conversation into command-line arguments.
-- Optional title generation distributes batches evenly among installed Claude Code, Codex, OpenCode, Kimi Code, and Cursor Agent CLIs; a failed assistant automatically yields its batch to another available one. It may consume the corresponding account quota.
+- Optional title generation distributes batches evenly among installed Claude Code, Codex, OpenCode, Kimi Code, Cursor Agent, and Pi CLIs; a failed assistant automatically yields its batch to another available one. It may consume the corresponding account quota.
 - Title and derived performance caches are stored under `~/.cache/pickup/`; they can be inspected or cleared locally.
 - Attention state is local and content-free: it stores only runtime/session identifiers, opaque change tokens, timestamps, and read state. Cursor live-state support adds pickup-managed entries to your user-level hooks file without replacing existing hooks.
 
@@ -46,7 +46,7 @@ See [PRIVACY.md](PRIVACY.md) for the detailed privacy and data-flow notes.
 - Python 3.10 or newer.
 - `tmux` 3.2 or newer (hard requirement — session hosting, embedded panes, and SSH keep-alive are all built on it; `pickup` checks the version at startup and refuses to run on older tmux, since `new-session -e` environment injection requires 3.2+).
 - macOS or Linux terminal (any modern ANSI-capable terminal works; the UI is built with Textual, not curses).
-- Claude Code, Codex CLI, OpenCode, Kimi Code CLI, and/or Cursor Agent CLI installed if you want to resume those sessions.
+- Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and/or Pi installed if you want to resume those sessions.
 
 ## Install
 
@@ -234,7 +234,7 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
 ## Direct Launch
 
 `pickup claude [args...]`, `pickup codex [args...]`, `pickup opencode [args...]`,
-`pickup kimi [args...]`, and `pickup cursor [args...]` start a brand-new session.
+`pickup kimi [args...]`, `pickup cursor [args...]`, and `pickup pi [args...]` start a brand-new session.
 In a real terminal they open the same sidebar TUI with the new session already hosted and
 focused in the right-hand pane; outside a real terminal (piped/scripted) or with
 `--no-keepalive` they take over the terminal the classic way instead.
@@ -257,6 +257,7 @@ pickup claude --print "hi"          # passthrough flags/args to claude
 pickup codex --resume <id>          # `codex --resume`, auto-approved and hosted in the TUI
 pickup opencode                     # blank OpenCode TUI session, hosted in the TUI
 pickup kimi                         # blank auto-approved Kimi session, hosted in the TUI
+pickup pi                           # blank auto-approved Pi session, hosted in the TUI
 pickup --no-keepalive claude        # classic full-terminal launch without the background tmux wrapper
 ```
 
@@ -272,7 +273,7 @@ aliases for `pickup cursor` (Cursor's installer ships both `agent` and `cursor-a
 
 ## Command Interception (type the real command, get pickup)
 
-pickup automatically enables interception during installation and whenever it first opens interactively. Typing `claude`, `codex`, `opencode`, `kimi` or `cursor-agent` in your
+pickup automatically enables interception during installation and whenever it first opens interactively. Typing `claude`, `codex`, `opencode`, `kimi`, `cursor-agent` or `pi` in your
 terminal is the same as typing `pickup <runtime>`: the new session is hosted, auto-approved, and
 survives disconnects.
 
@@ -292,7 +293,7 @@ These always run the real command untouched:
 
 - headless/scripted calls (`claude -p "..."`, `codex exec ...`, pipes, CI, editor extensions, agents
   spawning agents);
-- management subcommands (`claude update`, `cursor-agent login`, …);
+- management subcommands (`claude update`, `pi install`, `cursor-agent login`, …);
 - anything already inside tmux / screen / a pickup-hosted session (no double wrapping);
 - when `pickup` isn't on PATH (e.g. you uninstalled it) — your original command always still works.
 
@@ -393,8 +394,9 @@ The original session history is left untouched (opened read-only). The target ru
 ## Title Generation
 
 The TUI first shows a local fallback title so the first screen is immediate. A detached background
-process can then generate better Chinese titles in small batches through an available Claude or
-Codex CLI.
+process can then generate better Chinese titles in small batches through an available installed runtime.
+
+Pi title requests use `--no-session --no-tools --print`: they do not create Pi history and cannot invoke tools.
 
 Cost controls:
 

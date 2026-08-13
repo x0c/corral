@@ -17,6 +17,7 @@ RUNTIME_LABEL_STYLES = {
     "cursor": "#A78BFA",
     "kimi": "#F472B6",
     "opencode": "#34D399",
+    "pi": "#FBBF24",
 }
 
 

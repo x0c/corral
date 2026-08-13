@@ -5,7 +5,7 @@
 本模块只依赖标准库,不 import runtime/。titles.py 负责批量 prompt 构建、
 结果解析和缓存;本模块的每个生成器只负责一次无头 CLI 调用并交回原始文本。
 
-覆盖范围与 pickup 默认运行时注册表对齐：claude / codex / opencode / kimi / cursor。
+覆盖范围与 pickup 默认运行时注册表对齐：claude / codex / opencode / kimi / pi / cursor。
 本机装了哪个助手，标题生成就可以用哪个；每批随机起点轮转，失败时自动切换到其余可用助手。
 
 选择策略:
@@ -141,6 +141,20 @@ class KimiTitleGenerator(TitleGenerator):
         return _run(argv, None, timeout)
 
 
+class PiTitleGenerator(TitleGenerator):
+    id = "pi"
+    executable = "pi"
+
+    def generate(self, prompt: str, timeout: int) -> str | None:
+        # --no-session 不落盘会话；--no-tools 保证标题请求不调用工具；
+        # --approve 遵循免权限打断的产品默认，--print 只输出一次结果。
+        return _run(
+            ["pi", "--approve", "--no-session", "--no-tools", "--print", prompt],
+            None,
+            timeout,
+        )
+
+
 class CursorTitleGenerator(TitleGenerator):
     id = "cursor"
     executable = "agent"
@@ -180,6 +194,7 @@ _GENERATORS: tuple[TitleGenerator, ...] = (
     OpenCodeTitleGenerator(),
     KimiTitleGenerator(),
     CursorTitleGenerator(),
+    PiTitleGenerator(),
 )
 
 

@@ -47,14 +47,14 @@ class ResolveGeneratorTests(unittest.TestCase):
         self.assertEqual(generator.id, "claude")
 
     def test_available_generators_covers_all_runtimes_in_registry_order(self) -> None:
-        """本机五家助手都在时，标题后端顺序与 default_registry 一致。"""
-        names = {"claude", "codex", "opencode", "kimi", "agent"}
+        """本机六家助手都在时，标题后端顺序与 default_registry 一致。"""
+        names = {"claude", "codex", "opencode", "kimi", "pi", "agent"}
         with mock.patch.object(titlegen.shutil, "which", side_effect=_which(names)), \
                 mock.patch.dict(os.environ, _NO_ENV):
             generators = titlegen.available_generators()
         self.assertEqual(
             [generator.id for generator in generators],
-            ["claude", "codex", "opencode", "kimi", "cursor"],
+            ["claude", "codex", "opencode", "kimi", "cursor", "pi"],
         )
 
     def test_cursor_generator_accepts_cursor_agent_alias(self) -> None:
@@ -152,6 +152,26 @@ class KimiGeneratorTests(unittest.TestCase):
 
         self.assertEqual(calls["argv"], ["kimi", "-y", "-p", "prompt 内容"])
         self.assertEqual(out, '{"kimi:s1": "标题"}')
+
+
+class PiGeneratorTests(unittest.TestCase):
+    def test_argv_is_ephemeral_tool_free_and_print_only(self) -> None:
+        calls: dict = {}
+
+        def fake_run(argv, **kwargs):
+            calls["argv"] = list(argv)
+            calls["input"] = kwargs.get("input")
+            return _FakeProc(stdout='{"pi:s1": "标题"}')
+
+        with mock.patch.object(titlegen.subprocess, "run", side_effect=fake_run), \
+                mock.patch.dict(os.environ, _NO_ENV):
+            out = titlegen.PiTitleGenerator().generate("prompt 内容", timeout=5)
+
+        self.assertEqual(calls["argv"], [
+            "pi", "--approve", "--no-session", "--no-tools", "--print", "prompt 内容",
+        ])
+        self.assertIsNone(calls["input"])
+        self.assertEqual(out, '{"pi:s1": "标题"}')
 
 
 class CursorGeneratorTests(unittest.TestCase):

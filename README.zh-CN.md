@@ -5,9 +5,9 @@
 [![test](https://github.com/x0c/pickup/actions/workflows/test.yml/badge.svg)](https://github.com/x0c/pickup/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-面向 Claude Code、Codex CLI、OpenCode、Kimi Code CLI 和 Cursor Agent CLI 的终端会话选择器。
+面向 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Agent CLI 和 Pi 的终端会话选择器。
 
-`pickup` 扫描你本机的 Claude Code、Codex CLI、OpenCode、Kimi Code CLI 和 Cursor Agent CLI 历史，在终端界面（基于 [Textual](https://github.com/Textualize/textual)）里列出最近的编码会话，并让你用它原本的助手恢复选中的会话。它还能把会话从一个助手接力到另一个（例如 Claude 转 Codex、OpenCode 转 Claude）：在目标助手里新建会话，并把指向原始历史的结构化线索交给它。
+`pickup` 扫描你本机的 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Agent CLI 和 Pi 历史，在终端界面（基于 [Textual](https://github.com/Textualize/textual)）里列出最近的编码会话，并让你用它原本的助手恢复选中的会话。它还能把会话从一个助手接力到另一个（例如 Claude 转 Codex、Pi 转 Claude）：在目标助手里新建会话，并把指向原始历史的结构化线索交给它。
 
 关键词：Claude Code 会话管理、Codex CLI 恢复会话、OpenCode 会话管理、Kimi Code CLI 会话管理、终端 TUI、AI 编码助手工作流、JSONL 聊天历史、跨助手接力。
 
@@ -19,7 +19,7 @@
 
 ## 为什么用它
 
-- 在一块终端屏幕上浏览最近的 Claude Code、Codex CLI、OpenCode、Kimi Code CLI 和 Cursor Agent CLI 会话。
+- 在一块终端屏幕上浏览最近的 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Agent CLI 和 Pi 会话。
 - 用原助手的原生命令恢复，例如 `claude --resume`、`codex resume`、`opencode -s <id>`、`kimi -S <id>` 和 `agent --resume`。
 - 选中已结束的会话即可在右栏预览完整对话（运行中／已托管的会话则显示内嵌终端），也可以让最多三个活跃会话并排。
 - 不打开会话也能看出谁需要关注：黄点表示助手在等你回答，绿点表示正在工作，红点表示有未读新结果；详情头会同时写出状态，不只靠颜色传达。
@@ -32,10 +32,10 @@
 
 本工具以本地优先。
 
-- 它读取本机历史：`~/.claude/projects/`、`~/.codex/sessions/`、`~/.kimi-code/sessions/`、`~/.cursor/chats/`，以及（只读方式）OpenCode 位于 `~/.local/share/opencode/opencode.db` 的 SQLite 数据库。
+- 它读取本机历史：`~/.claude/projects/`、`~/.codex/sessions/`、`~/.kimi-code/sessions/`、`~/.cursor/chats/`、`~/.pi/agent/sessions/`，以及（只读方式）OpenCode 位于 `~/.local/share/opencode/opencode.db` 的 SQLite 数据库。
 - 它自身不上传任何会话历史。
 - 跨助手接力传递的是原始历史文件路径，而不是把整段对话塞进命令行参数。
-- 可选的标题生成会调用本机已安装的助手 CLI（优先 Claude Code，其次 Codex），可能消耗对应账号额度。
+- 可选的标题生成会在本机已安装的助手 CLI 间轮转（包括 Pi），可能消耗对应账号额度。
 - 标题缓存和派生性能缓存存放在 `~/.cache/pickup/`，可以本地查看或清空。
 - 会话关注状态只在本地保存运行时／会话标识、不透明变化令牌、时间和已读状态，不保存对话正文。Cursor 实时状态会在用户级观察配置中增量加入 pickup 自己的条目，不覆盖已有条目。
 
@@ -46,7 +46,7 @@
 - Python 3.10 或更高版本。
 - `tmux` 3.2 或更高版本（硬性依赖——会话托管、内嵌面板和 SSH 保活全部构建在它之上；`pickup` 启动时会检查版本，低于 3.2 直接拒绝运行，因为 `new-session -e` 注入环境变量需要 3.2+）。
 - macOS 或 Linux 终端（任何现代支持 ANSI 的终端都可以；界面基于 Textual，不是 curses）。
-- 想恢复哪种会话，就需要装上对应的 Claude Code、Codex CLI、OpenCode、Kimi Code CLI 和／或 Cursor Agent CLI。
+- 想恢复哪种会话，就需要装上对应的 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Agent CLI 和／或 Pi。
 
 ## 安装
 
@@ -129,7 +129,7 @@ JSON 输出包含助手、会话 ID、标题、工作目录、更新时间、大
 
 ## 内嵌面板（同时处理多个会话）
 
-`pickup` 是一条统一按时间排序的会话时间线：Claude Code、Codex CLI、OpenCode、Kimi Code 和 Cursor Agent 的会话混在同一个列表里，而不是按助手分标签页。每张卡片占三行，分别是「圆点 项目 标题」、助手名、更新时间。标题正在生成时卡片只显示兜底标题、不画加载动画，生成好了再就地刷新。右侧跟随选中项：已结束的会话展示完整对话并钉在最新消息，已托管的会话则渲染实时终端。右侧上方的助手按钮可以在同一项目下再加一格，最多四格并排，且这个组合会被记住。列表一旦显示出来顺序就是稳定的——卡片不会因为内容更新而跳来跳去，只有真正新增的会话才会出现，且总是插在最上面。
+`pickup` 是一条统一按时间排序的会话时间线：Claude Code、Codex CLI、OpenCode、Kimi Code、Cursor Agent 和 Pi 的会话混在同一个列表里，而不是按助手分标签页。每张卡片占三行，分别是「圆点 项目 标题」、助手名、更新时间。标题正在生成时卡片只显示兜底标题、不画加载动画，生成好了再就地刷新。右侧跟随选中项：已结束的会话展示完整对话并钉在最新消息，已托管的会话则渲染实时终端。右侧上方的助手按钮可以在同一项目下再加一格，最多四格并排，且这个组合会被记住。列表一旦显示出来顺序就是稳定的——卡片不会因为内容更新而跳来跳去，只有真正新增的会话才会出现，且总是插在最上面。
 
 首行最左的小圆点刻意只表达最需要关注的一件事：
 
@@ -160,7 +160,7 @@ Claude Code、Codex CLI、OpenCode 和 Kimi Code 从本地历史推导这些信�
 
 ## 直启子命令
 
-`pickup claude [参数...]`、`pickup codex [参数...]`、`pickup opencode [参数...]`、`pickup kimi [参数...]` 和 `pickup cursor [参数...]` 会启动一个全新会话。在真实终端里，它们会打开同一套侧边栏界面，新会话已经托管在右栏并获得焦点；在非真实终端（管道／脚本）中，或加了 `--no-keepalive` 时，则按传统方式直接接管整个终端。
+`pickup claude [参数...]`、`pickup codex [参数...]`、`pickup opencode [参数...]`、`pickup kimi [参数...]`、`pickup cursor [参数...]` 和 `pickup pi [参数...]` 会启动一个全新会话。在真实终端里，它们会打开同一套侧边栏界面，新会话已经托管在右栏并获得焦点；在非真实终端（管道／脚本）中，或加了 `--no-keepalive` 时，则按传统方式直接接管整个终端。
 
 助手名后面有两种写法：
 
@@ -174,6 +174,7 @@ pickup claude --print "hi"          # 把参数透传给 claude
 pickup codex --resume <id>          # 执行 `codex --resume`，自动免审批并托管在界面里
 pickup opencode                     # 新建空白 OpenCode 会话，托管在界面里
 pickup kimi                         # 新建空白且免审批的 Kimi 会话，托管在界面里
+pickup pi                           # 新建空白且免审批的 Pi 会话，托管在界面里
 pickup --no-keepalive claude        # 传统的全终端接管启动，不套后台 tmux
 ```
 
@@ -183,7 +184,7 @@ Cursor 可以用你平时敲的命令名直接进来：`pickup agent` 和 `picku
 
 ## 命令拦截（敲原命令自动走 pickup）
 
-装完拦截以后，在终端里正常敲 `claude`、`codex`、`opencode`、`kimi`、`cursor-agent`，就等于敲了 `pickup <助手>`：新会话直接被托管、带上免审批参数、断线也不会丢。
+装完拦截以后，在终端里正常敲 `claude`、`codex`、`opencode`、`kimi`、`cursor-agent`、`pi`，就等于敲了 `pickup <助手>`：新会话直接被托管、带上免审批参数、断线也不会丢。
 
 ```bash
 pickup shim status                  # 查看当前 shell 装没装、拦了哪些命令
@@ -272,7 +273,7 @@ pickup describe [command]                   # 机器可读的命令／参数／�
 
 ## 标题生成
 
-界面先显示一个本地兜底标题，保证首屏立刻可用。随后一个脱离的后台进程会通过可用的 Claude 或 Codex CLI，分小批生成更好的中文标题。
+界面先显示一个本地兜底标题，保证首屏立刻可用。随后一个脱离的后台进程会通过本机可用的助手 CLI，分小批生成更好的中文标题。Pi 的标题请求带 `--no-session --no-tools --print`，不会写入 Pi 历史，也不会调用工具。
 
 成本控制：
 

@@ -26,6 +26,7 @@ from pickup.scan import claude as scan_claude
 from pickup.scan import codex as scan_codex
 from pickup.scan import kimi as scan_kimi
 from pickup.scan import opencode as scan_opencode
+from pickup.scan import pi as scan_pi
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -4446,6 +4447,43 @@ class DeleteSessionScanTests(unittest.TestCase):
                  mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
                 remaining = scan_opencode.scan_sessions(limit=10)
             self.assertEqual([s["id"] for s in remaining], ["ses_other"])
+
+
+class PiScanTests(unittest.TestCase):
+    def test_scan_and_preview_only_follow_current_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            session = Path(td) / "2026-01-01T00-00-00-000Z_demo.jsonl"
+            _write_jsonl(session, [
+                {"type": "session", "id": "pi-demo", "timestamp": "2026-01-01T00:00:00Z", "cwd": td},
+                {
+                    "type": "session_info", "id": "meta", "parentId": None,
+                    "timestamp": "2026-01-01T00:00:01Z", "name": "Pi 标题",
+                },
+                {
+                    "type": "message", "id": "u1", "parentId": "meta",
+                    "timestamp": "2026-01-01T00:00:02Z",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "首个需求"}]},
+                },
+                {
+                    "type": "message", "id": "old", "parentId": "u1",
+                    "timestamp": "2026-01-01T00:00:03Z",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": "旧分支"}]},
+                },
+                {
+                    "type": "message", "id": "new", "parentId": "u1",
+                    "timestamp": "2026-01-01T00:00:04Z",
+                    "message": {"role": "assistant", "content": [
+                        {"type": "thinking", "thinking": "忽略"}, {"type": "text", "text": "当前分支"},
+                    ]},
+                },
+            ])
+            with mock.patch.object(scan_pi, "SESSIONS_DIR", td):
+                sessions = scan_pi.scan_sessions(limit=10)
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0]["id"], "pi-demo")
+            self.assertEqual(sessions[0]["native_title"], "Pi 标题")
+            self.assertEqual(sessions[0]["last_agent_msg"], "当前分支")
+            self.assertEqual([item.text for item in scan_pi.load_conversation(str(session))], ["首个需求", "当前分支"])
 
 
 class StartupLatencyTests(unittest.TestCase):

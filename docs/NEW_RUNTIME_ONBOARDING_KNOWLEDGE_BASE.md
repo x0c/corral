@@ -22,7 +22,7 @@
 
 文档主称谓为「新助手」和「助手运行时」。实现中分别对应新的扫描器、`BaseRuntime` 子类（adapter）和注册表中的一项。助手运行时的职责是解释该助手私有的历史格式与命令行语义；统一列表、跨助手编排、保活和内嵌终端不是某个助手运行时的职责。
 
-一条会话在统一层以 `SessionInfo` 表示；跨助手时，源助手运行时将其导出为 `Handoff`，目标助手运行时再生成仅描述启动方式的 `LaunchPlan`。这让第六种及后续助手不需要针对 Claude、Codex、OpenCode、Kimi、Cursor 分别实现转换。
+一条会话在统一层以 `SessionInfo` 表示；跨助手时，源助手运行时将其导出为 `Handoff`，目标助手运行时再生成仅描述启动方式的 `LaunchPlan`。这让第七种及后续助手不需要针对 Claude、Codex、OpenCode、Kimi、Cursor、Pi 分别实现转换。
 
 ## §1.5 架构概览
 
@@ -112,6 +112,7 @@ sequenceDiagram
 | `scan/opencode.py` | OpenCode SQLite 只读扫描 | OpenCode 扫描器 |
 | `scan/kimi.py` | Kimi `state.json` / `wire.jsonl` 扫描 | Kimi 扫描器 |
 | `scan/cursor.py` | Cursor CLI 目录、JSON 与 SQLite 扫描 | Cursor 扫描器 |
+| `scan/pi.py` | Pi JSONL 扫描、活动分支回溯与对话预览 | Pi 扫描器 |
 | `models.py` | 统一会话、接力和启动计划数据模型 | `SessionInfo`、`Handoff`、`LaunchPlan` |
 | `theme.py` | 运行时配色唯一来源 | `RUNTIME_LABEL_STYLES`、`runtime_label_style` |
 | `cli.py`、`bootstrap.py` | 启动入口与直启分发 | `main()`、`_dispatch_direct_launch()` |
@@ -142,6 +143,7 @@ sequenceDiagram
 | 外部数据入口 | 典型路径形态 | 用途 | 改动注意 |
 |---|---|---|---|
 | Claude 历史 | `~/.claude/projects/<项目>/<会话>.jsonl` | JSONL 会话扫描与预览 | 标题生成产生的 `PROMPT_MARKER` 会话必须过滤 |
+| Pi 历史 | `~/.pi/agent/sessions/**/*.jsonl` | JSONL 会话扫描与预览 | 首行是会话头；只能沿当前叶子回溯的 `parentId` 链读取活动分支 |
 | Codex 历史 | `~/.codex/sessions/**/rollout-*.jsonl` | JSONL 会话扫描与预览 | 过滤 `thread_source=subagent` 的内部子任务 |
 | OpenCode 历史 | `~/.local/share/opencode/opencode.db` 或配置的数据目录 | SQLite 只读扫描与预览 | 处理 WAL；必须只读连接并保留读失败语义 |
 | Kimi 历史 | `~/.kimi-code/sessions/<工作区>/<会话>/agents/main/wire.jsonl` | 状态与预览 | 只读主助手流水，忽略旁路子助手 |
@@ -225,12 +227,12 @@ sequenceDiagram
 
 ## §9 覆盖度与待补充项
 
-- 代码推断覆盖：已覆盖五个现有助手的运行时抽象、注册、扫描入口、统一会话模型、接力编排、自动批准参数、标题过滤、配色和测试模式。
+- 代码推断覆盖：已覆盖六个现有助手的运行时抽象、注册、扫描入口、统一会话模型、接力编排、自动批准参数、标题过滤、配色和测试模式；Pi 的原生恢复用会话文件路径，原生分叉用 `--fork`。
 - 领域语言统一：正文统一使用「新助手」「助手运行时」；首次出现时保留 runtime、`BaseRuntime`、adapter 等实现别名，避免把产品概念误当成某个目录或类名。
-- 多源证据补强：已读取抽象层、注册层、五个现有适配器、五个扫描器、统一模型、运行时测试、维护指南与界面配色入口。
+- 多源证据补强：已读取抽象层、注册层、六个现有适配器、六个扫描器、统一模型、运行时测试、维护指南与界面配色入口。
 - 用户 / 资料补充：当前缺少待接入助手的真实历史样本、命令行版本与权限参数证据；接入时必须由真机数据补齐。
 - Q&A 补充：本次根据既有架构约束沉淀 12 条核心规则，其中 10 条标为 AI 易错点；提供 7 条可执行验证路径。
-- 待补充：未来新增助手的历史保留策略、历史目录是否可配置、会话删除/归档语义、子助手标识、原生恢复与预置首条提示词能力，均需逐个助手实测，不可从现有五种助手外推。
+- 待补充：未来新增助手的历史保留策略、历史目录是否可配置、会话删除/归档语义、子助手标识、原生恢复与预置首条提示词能力，均需逐个助手实测，不可从现有六种助手外推。
 
 <!-- 该文档由 doc-init 生成于 2026-07-19；定位：AI 修改新助手接入域前的快速参考文档 -->
 

@@ -29,6 +29,16 @@ class ShimTargetTableTests(unittest.TestCase):
             valid = {runtime.executable, *runtime.executable_aliases}
             self.assertIn(target.command, valid, f"{target.command} 不是该运行时的可执行名")
 
+    def test_pi_is_default_shimmed_and_management_calls_pass_through(self):
+        pi = next(target for target in shim.TARGETS if target.command == "pi")
+        self.assertTrue(pi.default_on)
+        self.assertEqual(pi.runtime_id, "pi")
+        self.assertEqual(
+            pi.passthrough_words,
+            ("install", "remove", "uninstall", "update", "list", "config", "auth",
+             "--export", "--list-models"),
+        )
+
     def test_agent_is_opt_in_because_the_name_is_too_generic(self):
         agent = next(t for t in shim.TARGETS if t.command == "agent")
         self.assertFalse(agent.default_on)
@@ -83,6 +93,15 @@ class ShimScriptRenderTests(unittest.TestCase):
         codex = next(t for t in shim.TARGETS if t.command == "codex")
         self.assertIn("exec", codex.passthrough_words)
 
+    def test_pi_routes_interactive_commands_and_passes_management_calls_through(self):
+        pi = next(target for target in shim.TARGETS if target.command == "pi")
+        script = shim.render_script("bash", (pi,))
+        self.assertIn('PICKUP_SHIM_ACTIVE=1 command pickup pi "$@"', script)
+        self.assertIn(
+            '"install remove uninstall update list config auth --export --list-models"',
+            script,
+        )
+
 
 @unittest.skipIf(shutil.which("bash") is None, "本机没有 bash")
 class ShimScriptSyntaxTests(unittest.TestCase):
@@ -127,11 +146,11 @@ class ShimBehaviourTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.bin = root / "bin"
         self.bin.mkdir()
-        for name in ("claude", "pickup"):
+        for name in ("claude", "pi", "pickup"):
             fake = self.bin / name
             fake.write_text(f'#!/usr/bin/env bash\necho "{name} $*"\n', encoding="utf-8")
             fake.chmod(0o755)
-        targets = tuple(t for t in shim.TARGETS if t.command == "claude")
+        targets = tuple(t for t in shim.TARGETS if t.command in {"claude", "pi"})
         self.script = root / "pickup-shim.sh"
         self.script.write_text(shim.render_script("bash", targets), encoding="utf-8")
 
@@ -197,6 +216,20 @@ class ShimBehaviourTests(unittest.TestCase):
     def test_interactive_bare_command_is_routed_through_pickup(self):
         out = self._run_on_pty("claude")
         self.assertIn("pickup claude", out)
+
+    def test_pi_interactive_command_is_routed_through_pickup(self):
+        out = self._run_on_pty("pi")
+        self.assertIn("pickup pi", out)
+
+    def test_pi_management_command_passes_through(self):
+        out = self._run_on_pty("pi --list-models")
+        self.assertIn("pi --list-models", out)
+        self.assertNotIn("pickup pi", out)
+
+    def test_pi_recursion_guard_passes_through(self):
+        out = self._run_on_pty("pi", env={"PICKUP_SHIM_ACTIVE": "1"})
+        self.assertIn("pi ", out)
+        self.assertNotIn("pickup pi", out)
 
     def test_interactive_headless_flag_still_reaches_the_real_command(self):
         out = self._run_on_pty("claude -p 标题")

@@ -127,6 +127,41 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertIsNone(plan.cwd)
 
+    def test_pi_resume_fork_and_handoff_plans_use_session_path_without_rewriting_source(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            history = Path(td) / "pi.jsonl"
+            history.write_text('{"type":"session"}\n', encoding="utf-8")
+            session = self._session("pi", str(history), td)
+            registry = default_registry()
+
+            resumed = registry.build_launch_plan(LaunchRequest(session, "pi", "继续 Pi 会话"))
+            self.assertEqual(resumed.argv, ("pi", "--approve", "--session", str(history)))
+            forked = registry.build_launch_plan(
+                registry.prepare_copy_request(session, "继续 Pi 会话")
+            )
+            self.assertEqual(forked.argv, ("pi", "--approve", "--fork", str(history)))
+            handoff = registry.build_launch_plan(
+                LaunchRequest(session, "claude", "交给 Claude", force_new=True)
+            )
+            self.assertIn(str(history), handoff.argv[-1])
+            self.assertEqual(history.read_text(encoding="utf-8"), '{"type":"session"}\n')
+
+    def test_pi_is_registered_and_builds_blank_and_cross_runtime_plans(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            registry = default_registry()
+            self.assertIn("pi", registry.ids)
+            blank = registry.build_new_session_plan(NewSessionRequest("pi", td))
+            self.assertEqual(blank.argv, ("pi", "--approve"))
+            self.assertEqual(blank.cwd, td)
+
+            history = Path(td) / "source.jsonl"
+            history.write_text("{}\n", encoding="utf-8")
+            session = self._session("claude", str(history), td)
+            plan = registry.build_launch_plan(LaunchRequest(session, "pi", "交给 Pi"))
+            self.assertEqual(plan.argv[:2], ("pi", "--approve"))
+            self.assertNotIn("--session", plan.argv)
+            self.assertIn(str(history), plan.argv[-1])
+
     def test_force_new_same_runtime_uses_handoff_not_resume(self) -> None:
         """高级操作同助手另起：读历史后新建，不得带原生 --resume。"""
         with tempfile.TemporaryDirectory() as td:
@@ -443,7 +478,7 @@ class RuntimeTests(unittest.TestCase):
                 LaunchRequest(session, "gemini", "验证扩展能力")
             )
 
-        self.assertEqual(registry.ids, ("claude", "codex", "opencode", "kimi", "cursor", "gemini"))
+        self.assertEqual(registry.ids, ("claude", "codex", "opencode", "kimi", "cursor", "pi", "gemini"))
         self.assertEqual(plan.argv[0], "gemini")
         self.assertIn("验证扩展能力", plan.argv[-1])
 

@@ -7,9 +7,9 @@
 - Claude Code 自带 `aiTitle` 不稳定，只能作为临时兜底的最后来源，不能绕过生成缓存直接展示。
 - 无缓存时必须先生成本地短标题，再交给后台模型优化。首屏不能依赖后台生成器（`claude`/`codex` 无头调用）是否及时返回。
 - Claude 标题生成必须使用 `--no-session-persistence`，从源头禁止一次性标题请求写入 Claude 会话历史；扫描侧仍须过滤历史版本已落盘的自产标题 prompt 和只有低价值消息的记录，避免旧噪音反过来进入列表。
-- 标题生成以 5 条会话为一批，最多 5 路并发。自动模式每次从随机助手开始，批次间依次轮转，让本机可用的 Claude、Codex、OpenCode、Kimi、Cursor 平均分担；轮到的助手失败、超时或返回无有效标题时，仅在该批依次交给其余助手接管，并且后续批次不再重复调用已失败的助手。每次后端调用仍以 90 秒为上限。每批完成立即原子写缓存，界面可陆续显示结果。生成出的有效标题一旦写入缓存即为该会话的固定标题，后续对话内容增长不能让它再次排队。会话只有“在吗”等无任务信息时保留本地标题且不调用模型。
+- 标题生成以 5 条会话为一批，最多 5 路并发。自动模式每次从随机助手开始，批次间依次轮转，让本机可用的 Claude、Codex、OpenCode、Kimi、Cursor、Pi 平均分担；轮到的助手失败、超时或返回无有效标题时，仅在该批依次交给其余助手接管，并且后续批次不再重复调用已失败的助手。每次后端调用仍以 90 秒为上限。每批完成立即原子写缓存，界面可陆续显示结果。生成出的有效标题一旦写入缓存即为该会话的固定标题，后续对话内容增长不能让它再次排队。会话只有“在吗”等无任务信息时保留本地标题且不调用模型。
 - **标题生成的失败是带冷却的终态，不是“永远不再试”，也不是“下次启动立刻再试”**：调用失败、超时、不可解析/低价值/机器 slug、批量结果部分缺项，以及本机没有任何可用生成器时，都给受影响会话写入当前 `TITLE_CACHE_VERSION` 的 `generation_state=failed` 与 `failed_at`，保留本地兜底并立即清掉 `generating` 状态。冷却期内（默认 6 小时）同一缓存版本不再自动提交模型，避免瞬时故障反复排队花额度；冷却过期或历史失败条目缺少 `failed_at` 时允许再入队。提升缓存版本后失败标记也会自然失效。成功、失败和部分缺项都要逐批 `save_cache`，不能只保存成功项，否则缺项会永远重新排队。
-- 标题生成后端已抽象为 `titlegen.py` 的 `TitleGenerator`，覆盖与默认运行时注册表一致的五家：claude / codex / opencode / kimi / cursor。`titles.py` 只负责批量 prompt、JSON 解析和缓存，不感知具体 CLI；新增生成器只在 `titlegen.py` 加实现并注册进 `_GENERATORS`（候选集合与 `default_registry` 对齐），禁止在 `titles.py` 里写 `subprocess` 调用，也禁止 `titlegen` import `runtime/`。除非用户明确设置 `PICKUP_TITLE_GENERATOR`（旧名 `SC_TITLE_GENERATOR`）指定所用助手，自动模式不得设默认优先级；未设置 `PICKUP_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）时，标题生成必须继承对应助手的全局默认模型；该变量仅用于用户明确指定标题生成的模型。缓存与生成器无关，换生成器不重算已有成功标题；冷却期内也不绕过当前缓存版本的失败终态。
+- 标题生成后端已抽象为 `titlegen.py` 的 `TitleGenerator`，覆盖与默认运行时注册表一致的六家：claude / codex / opencode / kimi / cursor / pi。`titles.py` 只负责批量 prompt、JSON 解析和缓存，不感知具体 CLI；新增生成器只在 `titlegen.py` 加实现并注册进 `_GENERATORS`（候选集合与 `default_registry` 对齐），禁止在 `titles.py` 里写 `subprocess` 调用，也禁止 `titlegen` import `runtime/`。Pi 必须用 `pi --approve --no-session --no-tools --print <prompt>`：不落盘会话、不调用工具、只输出结果。除非用户明确设置 `PICKUP_TITLE_GENERATOR`（旧名 `SC_TITLE_GENERATOR`）指定所用助手，自动模式不得设默认优先级；未设置 `PICKUP_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）时，标题生成必须继承对应助手的全局默认模型；该变量仅用于用户明确指定标题生成的模型。缓存与生成器无关，换生成器不重算已有成功标题；冷却期内也不绕过当前缓存版本的失败终态。
 - **真实冒烟时某家 CLI 因本机账号 / 模型列表刷新 / 网络失败，不算 pickup 缺陷**：验收口径是「该助手失败后，本批其余可用助手能顶上，且成功标题可解析」。例如本机 Codex 因模型管理器刷新超时失败、Claude/OpenCode/Cursor 仍能出标题，属于环境侧问题；不要为绕过某家账号限制去改变自动模式的平权轮转，除非用户明确选择固定某个助手。
 - 自产噪音会话的过滤，每个可能被生成器落盘的运行时扫描器都要有：Claude 用 `--no-session-persistence`、Codex 用 `--ephemeral` 尽量不落盘，扫描侧仍须按标题请求标记的**任意出现位置**兜底过滤；OpenCode 会把整段请求额外包一层引号，不能只判断开头。OpenCode（`run --auto`）、Kimi（`-p`）、Cursor（`agent -p`）每次调用都会落盘，同样必须过滤，漏掉会让标题生成会话刷屏列表。
 - **`titles.save_cache` 是原子写（临时文件 + `os.replace`），不是直接覆写**：后台标题生成进程逐批写、TUI 每约 1 秒轮询读同一份 `titles.json`；直接 `open(..., "w")` 覆写会被并发读到半截 JSON（`load_cache` 解析失败静默退回 `{}`，界面标题短暂回退临时兜底）。并行批次落盘时必须对共享 cache 字典加锁后再 `save_cache`。改这个函数前确认没有退回裸覆写。
@@ -25,7 +25,7 @@
 
 ## 跨扫描器共享 helper（scan/common.py）
 
-五个扫描器（scan/claude.py/scan/codex.py/scan/opencode.py/scan/kimi.py/scan/cursor.py）互不
+六个扫描器（scan/claude.py/scan/codex.py/scan/opencode.py/scan/kimi.py/scan/cursor.py/scan/pi.py）互不
 依赖运行时私有格式，但都需要几个完全相同的小工具：`shorten_cwd`（路径展示时
 把用户主目录替换成 `~`）、`parse_timestamp`（ISO8601 字符串转 epoch 秒）、
 `live_processes` / `live_pids_by_process_name`（存活同名进程及其 cwd）、
@@ -74,6 +74,13 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **判活同 OpenCode 思路**：Kimi 没有 pid 注册表，历史也不独占单文件。`_live_pids_by_cwd` 用 `pgrep -x kimi-code`（进程 comm 是 `kimi-code`，不是 `kimi`）拿存活进程，读其 cwd 与会话 `workDir` 归一化匹配，同 cwd 只标最新一条存活。已知局限：`kimi server`/`kimi web` 等同名进程会被计入；判活失败静默降级为空集。
 - **接力到 Kimi 只能走非交互模式（相对 claude/codex 的已知能力差距）**：Kimi 的 `-p/--prompt` 是「跑一个 prompt 并打印，跑完退出」的 headless 模式；根命令不接受位置参数形式的初始 prompt（带位置参数会报 `unknown command`），交互式 TUI 也没有从命令行预置首条消息的入口（实测 dist 里根 action 是 `opts.prompt !== void 0 ? "run prompt" : "start shell"`，二选一）。因此 `KimiRuntime.build_new_plan`（跨运行时接力读别家历史新建 Kimi 会话）只能用 `kimi --add-dir <源历史目录> -y -p <接力提示词>`：Kimi 读原始历史、把最后一个未完成任务跑完并打印结果后退出，用户随后可用 `kimi -c`（continue previous session for working dir）在同一会话上继续交互。同运行时原生恢复（`kimi -y -S <sessionId>`）和空白新会话（`kimi -y`）不受此限。Kimi 作为接力**源**（被别家读取）完全正常：`export_handoff` 指向 `wire.jsonl`，`history_reading_hint` 说明上面的格式。未来 Kimi 若新增交互式预置 prompt 的入口，应把 `build_new_plan` 切成交互式，与 claude/codex 对齐。
 - **`-y/--yolo` 在根命令即生效**：不像 OpenCode 的危险参数只在子命令下可用，Kimi 的 `-y` 主命令直接接受，所以正常放进 `KimiRuntime.auto_approve_args`，`pickup kimi` 裸直启会自动垫上，与 claude/codex 一致。
+
+## Pi 扫描与启动
+
+- Pi 历史位于 `~/.pi/agent/sessions/` 的 JSONL。首行必须是 session header；其后的 message entry 可以形成分叉树。扫描和预览都只能从最新叶子沿 `parentId` 回溯后再正向展示，禁止平铺文件里全部 message，否则已经分叉出去的旧对话会重新出现在用户当前会话里。
+- Pi 的可展示正文只取 user/assistant 的 text 分片；thinking 与工具分片一律不进入标题摘录、状态判定和对话预览。最后可展示角色是 user 时为待回复，是 assistant 时为已完成；没有真实 user 文本的记录不进列表。
+- Pi 同运行时恢复用 `pi --approve --session <历史文件>`，复制会话用 `pi --approve --fork <历史文件>`；跨助手接力和空白新建同样带 `--approve`。接力只能读取原始 JSONL，不得修改原会话或把其内容重写成新文件。
+- Pi 是默认命令托管目标：交互式裸 `pi` 进入 pickup 托管；`install`、`remove`、`uninstall`、`update`、`list`、`config`、`auth`、`--export`、`--list-models` 必须直通真实 Pi。已有 pickup 托管标识时也必须放行，防止嵌套托管递归。
 
 ## 扫描性能
 

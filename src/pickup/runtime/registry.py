@@ -15,6 +15,7 @@ from pickup.runtime.codex import CodexRuntime
 from pickup.runtime.cursor import CursorRuntime
 from pickup.runtime.kimi import KimiRuntime
 from pickup.runtime.opencode import OpenCodeRuntime
+from pickup.runtime.pi import PiRuntime
 
 
 class RuntimeRegistry:
@@ -183,7 +184,7 @@ class RuntimeRegistry:
 def default_registry() -> RuntimeRegistry:
     """创建默认运行时注册表；新增运行时只需在这里注册一次。"""
     return RuntimeRegistry(
-        (ClaudeRuntime(), CodexRuntime(), OpenCodeRuntime(), KimiRuntime(), CursorRuntime())
+        (ClaudeRuntime(), CodexRuntime(), OpenCodeRuntime(), KimiRuntime(), CursorRuntime(), PiRuntime())
     )
 
 

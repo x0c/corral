@@ -42,7 +42,7 @@ pickup 的会话扫描负责从本机已安装助手的私有历史中读取可�
 
 本域边界：
 
-- 包含：五种助手的历史格式解析、统一会话列表项、轻量排序与过滤、判活、关注状态证据、完整对话按需加载、扫描签名跳过、预览缓存失效。
+- 包含：六种助手的历史格式解析、统一会话列表项、轻量排序与过滤、判活、关注状态证据、完整对话按需加载、扫描签名跳过、预览缓存失效。
 - 不包含：终端界面布局与交互、托管会话实时画面、标题生成算法、跨助手接力提示词的渲染规则、机器接口 JSON 契约全文。
 - 接力只消费本域导出的历史入口和对话预览数据；接力如何生成或执行目标命令属于“跨助手接力与启动”域。
 
@@ -184,7 +184,7 @@ flowchart TD
 
 | 场景 | 入口 | 类/方法/配置 | 说明 |
 |---|---|---|---|
-| 新增或修改统一列表字段 | 统一数据模型 | `models.py` 的 `SessionInfo` | 五个扫描器都必须填充统一语义，跨运行时唯一键是“运行时 + 会话 ID” |
+| 新增或修改统一列表字段 | 统一数据模型 | `models.py` 的 `SessionInfo` | 六个扫描器都必须填充统一语义，跨运行时唯一键是“运行时 + 会话 ID” |
 | 新增或修改预览消息规则 | 统一数据模型 | `models.py` 的 `ConversationMessage` | 只允许 `user` 与 `assistant` 两种角色；时间戳可为空 |
 | 修改 Claude 扫描或列表轻量化 | Claude 扫描器 | `scan.claude.scan_sessions()`、`_peek_head_meta()`、`_build_session_info()` | 先 mtime 排序，预探过滤噪音和失效 cwd，再头尾解析 |
 | 修改 Claude 完整预览 | Claude 扫描器 | `scan.claude.load_conversation()` | 只根据文本内容决定是否展示 assistant 消息；保留真人用户消息 |
@@ -194,6 +194,7 @@ flowchart TD
 | 修改 OpenCode 完整预览 | OpenCode 扫描器 | `scan.opencode.load_conversation()` | 从 `message` 与 `part` 表合并同一消息的多个 text part |
 | 修改 Kimi 事件过滤或预览 | Kimi 扫描器 | `scan.kimi._iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent |
 | 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；对话缓存签名含 `store.db-wal`；同 cwd 多 `agent` 必须按打开的 store.db / 完整 PICKUP_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底 |
+| 修改 Pi 扫描或预览 | Pi 扫描器 | `scan.pi.scan_sessions()`、`load_conversation()` | JSONL 首行必须是 session；从最新叶子沿 `parentId` 回溯，只展示当前活动分支的 user/assistant 文本并忽略 thinking/工具分片 |
 | 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`is_cursor_agent_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`） |
 | 修改跨运行时并发或扫描复用 | 注册表 | `runtime.registry.RuntimeRegistry.scan_all()` | 各运行时并发、异常隔离、结果副本隔离、签名命中跳过 |
 | 修改异步首屏、列表合并或预览缓存 | 会话存储 | `pickup.SessionStore.load()`、`refresh()`、`get_conversation()` | `store.load` 在后台线程，预览缓存按 mtime 失效 |
@@ -211,6 +212,7 @@ flowchart TD
 |---|---|---|---|---|---|
 | Claude Code | `~/.claude/projects/<project>/<session>.jsonl` | JSONL | 头部最多 300 行 + 尾部 64KB | 整个 JSONL | 另用 `~/.claude/sessions/<pid>.json` 判活；系统注入可能伪装成 user |
 | Codex | `~/.codex/sessions/**/rollout-*.jsonl` | JSONL | 头部最多 30 行 + 尾部 8KB | 整个 JSONL | 可读取 `~/.codex/session_index.jsonl` 取原生标题；子代理 rollout 必须过滤 |
+| Pi | `~/.pi/agent/sessions/**/*.jsonl` | JSONL | 当前活动分支 | 整个 JSONL | 首行 session header；同一文件的分叉历史只能展示叶子 `parentId` 链，不能串入旧分支 |
 | OpenCode | `~/.local/share/opencode/opencode.db` | SQLite，可能 WAL | `session`、`message`、`part` 三表的只读 SQL | 同三表、按消息与分片合并 | `OPENCODE_DATA_DIR` 或 `XDG_DATA_HOME` 可改入口；只读打开失败不能伪装为空历史；删除会话是唯一写入例外，见下方「外部数据读取原则」 |
 | Kimi Code | `~/.kimi-code/sessions/<workspace>/<session>/` | `state.json` + `agents/main/wire.jsonl` | state + wire 头尾 | 主 `wire.jsonl` | 忽略 `agents/<other>/wire.jsonl`；事件流含大系统行 |
 | Cursor Agent CLI | `~/.cursor/chats/<workspace>/<chatId>/` | `meta.json`、`prompt_history.json`、`store.db` | meta + prompt history | SQLite `blobs` JSON blob | 只扫 CLI 历史，不扫 IDE 的 agent transcripts；二进制 DAG blob 跳过 |
@@ -260,6 +262,7 @@ flowchart TD
 - **AI 易错点**【禁止】Cursor 判活按「同 cwd 最新会话」猜测 → 只能用 `--resume`、已打开的 `store.db` 路径或完整 `PICKUP_SESSION_ID`（原因：空白新建的临时 8 位标识与历史 chatId 无关，cwd 兜底会把空壳欢迎页绑到同目录旧会话，侧边栏标题与右栏画面串台）。
 - **AI 易错点**【必须】Cursor/`live_processes("agent")` 不能只靠 `pgrep -x agent`：新版 agent 的 `comm` 是 `MainThread`，必须按 cmdline 兜底；同一 chat 同时有无 resume 原托管与二次 `--resume` 时优先绑前者，否则占位卡退不掉会双卡（原因：2026-07-23 真机双份会话）。
 - **AI 易错点**【必须】过滤标题生成自产会话：所有运行时的用户消息、原生标题或回退标题只要包含 `titles.PROMPT_MARKER` 就丢弃（原因：OpenCode 会给请求额外加引号，若只匹配开头会让后台标题生成反向污染用户会话列表）。
+- **Pi 特例**：Pi 标题生成固定使用 `--no-session --no-tools --print`，不应产生会话；扫描器仍只接受以 session header 起始的文件，忽略 thinking 和工具分片，防止非对话记录混入预览。
 - **AI 易错点**【必须】过滤 OpenConductor 管家临时 cwd：路径任一段以 `oc-manager-` 开头（如 `/tmp/oc-manager-codex/...`）时丢弃（`is_ephemeral_agent_cwd`）。原因：这类目录会删了再建，旧会话因「cwd 不存在」被滤掉后又整批复活；若再被 `SessionStore` 当成 fresh 插最前，侧边栏会被几天前的管家会话刷屏。
 - **AI 易错点**【必须】`SessionStore` 合并 fresh 时：mtime 在约 2 天内才 prepend；更旧的 fresh 追加到 `_order` 末尾（原因：即使漏过滤的目录复活，也不能把冷会话顶到视口）。
 - **AI 易错点**【必须】Codex 过滤 `thread_source == "subagent"`，OpenCode 过滤 `parent_id IS NOT NULL`，Kimi 忽略非 main agent 的 wire 文件，Cursor 过滤 `meta.json` 的 `isSubagent === true`，Claude 过滤文件头 `type=="agent-name"` 或 `isSidechain`（**禁止**用 `teamName` 过滤，team lead 会话同样带该字段）（原因：这些是助手内部子任务，不是用户发起的顶层会话，列出会造成重复）。Claude Task 子 agent 在 `<sessionId>/subagents/` 子目录，扫描器不递归，天然不列出；Teammates 模式队友是顶层 `.jsonl`，必须显式过滤。
@@ -354,10 +357,10 @@ print(f'{(time.perf_counter()-t)*1000:.0f}ms')
 
 ## §9 覆盖度与待补充项
 
-- 代码推断覆盖：已覆盖 Claude、Codex、OpenCode、Kimi、Cursor 五种历史入口；统一列表项、完整对话、判活、有效时间、签名缓存、异步加载与预览 mtime 缓存均有代码和测试证据。
+- 代码推断覆盖：已覆盖 Claude、Codex、OpenCode、Kimi、Cursor、Pi 六种历史入口；统一列表项、完整对话、判活、有效时间、签名缓存、异步加载与预览 mtime 缓存均有代码和测试证据。
 - 领域语言统一：主称谓已固定为会话扫描、对话预览数据、会话列表项（`SessionInfo`）、完整对话（`ConversationMessage`）；“运行中”已与对话状态完成消歧。
 - 用户/资料补充：当前未取得用户对所有本机助手版本和历史样本分布的额外说明；不同版本新增字段应先以真实历史抽查验证。
-- 多源证据补强：已读取统一模型、五种扫描器、运行时抽象/注册表、会话存储、维护指南和扫描测试；未连接任何业务数据库，因为本域没有业务数据库。
+- 多源证据补强：已读取统一模型、六种扫描器、运行时抽象/注册表、会话存储、维护指南和扫描测试；未连接任何业务数据库，因为本域没有业务数据库。
 - Q&A 补充：本次没有额外用户问答；关键隐性规则来自维护指南、实现注释和测试断言。
 - 待补充：新助手历史格式、Cursor CLI `store.db` blob schema 的版本兼容性、OpenCode 多数据目录在真实机器上的恢复策略，需要后续真实数据与版本升级时用 doc-update 补充。
 

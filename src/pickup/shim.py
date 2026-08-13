@@ -81,6 +81,10 @@ TARGETS: tuple[ShimTarget, ...] = (
     ShimTarget("opencode", "opencode", True,
                ("run", "serve", "auth", "upgrade", "models", "github")),
     ShimTarget("kimi", "kimi", True, ("update", "mcp", "config", "login", "logout")),
+    # Pi 的主命令名不通用，默认接管；安装、维护、认证与导出类调用不能进托管会话。
+    ShimTarget("pi", "pi", True,
+               ("install", "remove", "uninstall", "update", "list", "config", "auth",
+                "--export", "--list-models")),
     ShimTarget("cursor-agent", "cursor", True,
                ("update", "login", "logout", "status", "ls", "mcp", "create-chat")),
     # Cursor 把极通用的 `agent` 也占了；默认不拦，需显式 --include agent。
