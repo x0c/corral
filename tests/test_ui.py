@@ -1785,10 +1785,12 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             from rich.cells import cell_len
 
             group_col = cell_len(lines[0][: lines[0].index("Group")])
+            self.assertTrue(lines[1].startswith("│"))
+            self.assertTrue(lines[2].startswith("│"))
             tmp_col = cell_len(lines[1][: lines[1].find("tmp")])
             self.assertEqual(tmp_col, group_col)
-            # 展开时成员卡自己表达状态，组卡第三行继续留白。
-            self.assertEqual(lines[2].strip(), "")
+            # 组标题下的树干要无缝接到首个成员分叉。
+            self.assertEqual(lines[2].strip(), "│")
 
             group_cards[0].group.collapsed = True
             collapsed_lines = group_cards[0].render().plain.splitlines()

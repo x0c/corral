@@ -424,6 +424,13 @@ class SessionGroupCard(Widget):
             ),
         )
 
+    def _tree_style(self) -> Style:
+        """让组卡延伸的树干与成员卡使用同一条树线颜色。"""
+        style = self.get_component_rich_style("session-card--tree", default=Style())
+        if style.color is None:
+            return Style()
+        return Style(color=style.color)
+
     def _collapsed_attention_summary(self, width: int, indent: str) -> Text:
         """汇总收起组内仍需关注的会话，避免收起后把状态一起藏掉。"""
         import pickup
@@ -500,9 +507,13 @@ class SessionGroupCard(Widget):
         count = len(self.member_sessions)
         count_key = "group.session_count_one" if count == 1 else "group.session_count"
         indent = " " * pickup._text_width(name_prefix)
+        # 展开时让树干从组标题的三角正下方一路接到成员分叉；收起后没有成员，
+        # 不画这条线，避免把已隐藏的内容误画成还在列表里。
+        branch_prefix = "│" if not self.group.collapsed else " "
+        lower_indent = branch_prefix + indent[1:]
         count_cell = f" · {t(count_key, count=count)}"
         project_cell = pickup._fit_cell(
-            f"{indent}{project}",
+            f"{lower_indent}{project}",
             max(1, width - pickup._text_width(count_cell)),
         )
         title = title.rstrip()
@@ -526,7 +537,7 @@ class SessionGroupCard(Widget):
         if self.group.collapsed:
             out.append_text(self._collapsed_attention_summary(width, indent))
         else:
-            out.append(" " * width)
+            out.append(branch_prefix + " " * (width - 1), style=self._tree_style())
         return out
 
 
