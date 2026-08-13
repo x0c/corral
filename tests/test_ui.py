@@ -2128,6 +2128,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list_view.selected_session()["id"], "a")
             self.assertEqual(len(list_view.visible_sessions()), 3)
             self.assertIn("Filter groups / projects / titles", search.placeholder)
+            self.assertFalse(search.has_class("-active"))
 
             await pilot.press("down")
             await pilot.pause()
@@ -2139,6 +2140,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("p", "r", "o", "x", "y")
             await pilot.pause()
             self.assertEqual(list_view.nav.project_query, "proxy")
+            self.assertTrue(search.has_class("-active"))
             visible = list_view.visible_sessions()
             self.assertEqual(len(visible), 1)
             self.assertEqual(visible[0]["id"], "a")
@@ -2148,6 +2150,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
             await pilot.pause()
             self.assertEqual(list_view.nav.project_query, "")
+            self.assertFalse(search.has_class("-active"))
             self.assertEqual(len(list_view.visible_sessions()), 3)
             self.assertIsNone(app.return_value)
 

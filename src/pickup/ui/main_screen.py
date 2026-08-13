@@ -580,11 +580,14 @@ class MainScreen(
                 self._schedule_follow_selection()
 
     def _update_header(self) -> None:
-        """刷新搜索框占位文案：空查询时展示命中数；出错/无会话时给出原因。"""
+        """刷新搜索框占位文案与「有筛选」高亮：空查询时展示命中数；出错/无会话时给出原因。"""
         session_list = self.query_one(SessionListView)
         search = self.query_one("#project-search", Input)
         count = len(session_list.visible_sessions())
         load_error = self.store.get_load_error()
+        active = bool(self.nav.project_query.strip())
+        # 关键字非空就贴 -active：失焦也不退回灰底，用户才看得出列表为什么变少。
+        search.set_class(active, "-active")
         # 首屏扫描已经跑完（store.loaded）且全部运行时都没扫到任何会话时，给出
         # 友好提示，而不是让用户面对一个永远空白、原因不明的列表——旧版是在 main()
         # 里同步扫完就直接打印错误退出，扫描挪到后台 worker 后这个判断只能挪到这里，
@@ -596,7 +599,7 @@ class MainScreen(
                 [runtime.display_name for runtime in self.store.registry]
             )
             search.placeholder = t("filter.no_sessions", names=names)
-        elif self.nav.project_query.strip():
+        elif active:
             search.placeholder = t("filter.placeholder_count_active", count=count)
         else:
             search.placeholder = t("filter.placeholder_count", count=count)
@@ -1005,7 +1008,7 @@ class MainScreen(
         if _filter_looks_like_osc_leak(search.value):
             search.value = ""
             self.nav.project_query = ""
-
+            self._update_header()
 
     def _focus_list(self) -> None:
         # 用户主动回列表：撤销右栏还没兑现的自动聚焦意图，别让它随后把焦点抢回去。

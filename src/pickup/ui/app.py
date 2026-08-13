@@ -140,6 +140,14 @@ class PickupApp(App):
         color: $foreground;
         background: $primary-muted;
     }
+
+    /* 有关键字时失焦也高亮：否则列表变少时用户常怪会话丢了，其实只是没注意到筛着。
+       警告色留给「别漏看」态；底仍用 muted，不铺高饱和大色块。 */
+    #project-search.-active,
+    #project-search.-active:focus {
+        color: $warning;
+        background: $primary-muted;
+    }
     """
 
     def get_theme_variable_defaults(self) -> dict[str, str]:
