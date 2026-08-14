@@ -569,6 +569,44 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
         finally:
             scan_claude.PROJECTS_DIR = old_projects_dir
 
+    def test_scan_filters_teammate_session_dispatched_by_team_lead(self) -> None:
+        old_projects_dir = scan_claude.PROJECTS_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                scan_claude.PROJECTS_DIR = td
+                project = Path(td) / "proj"
+                project.mkdir()
+                cwd = str(project / "workspace")
+                Path(cwd).mkdir()
+                _write_jsonl(
+                    project / "parent-session.jsonl",
+                    [
+                        {"type": "user", "message": {"content": "顶层用户问题"}, "cwd": cwd},
+                        {"type": "assistant", "message": {"content": [{"type": "text", "text": "好的"}]}},
+                    ],
+                )
+                _write_jsonl(
+                    project / "team-lead-dispatched-session.jsonl",
+                    [
+                        {
+                            "type": "user",
+                            "message": {
+                                "content": (
+                                    '<teammate-message teammate_id="team-lead">\\n'
+                                    "请审查这段代码\\n"
+                                    "</teammate-message>"
+                                )
+                            },
+                            "cwd": cwd,
+                        },
+                        {"type": "assistant", "message": {"content": [{"type": "text", "text": "审查完成"}]}},
+                    ],
+                )
+                sessions = scan_claude.scan_sessions(limit=10)
+                self.assertEqual([s["id"] for s in sessions], ["parent-session"])
+        finally:
+            scan_claude.PROJECTS_DIR = old_projects_dir
+
     def test_scan_keeps_team_lead_with_team_name_on_messages(self) -> None:
         old_projects_dir = scan_claude.PROJECTS_DIR
         try:

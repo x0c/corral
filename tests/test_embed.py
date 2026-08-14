@@ -252,12 +252,15 @@ class SessionIoTests(unittest.TestCase):
         self.assertEqual(calls[1][-1], "sc-claude-1")
 
     def test_pane_state_parses_formats(self):
-        # (光标 x, 光标 y, 光标可见, 程序申请鼠标, SGR 鼠标模式, 回滚行数)
+        # (光标 x, 光标 y, 光标可见, 程序申请鼠标, SGR 鼠标模式, 回滚行数, 宽, 高)
+        with mock.patch.object(embed.subprocess, "check_output", return_value=b"12|7|1|1|1|234|80|24\n"):
+            self.assertEqual(embed.pane_state("s"), (12, 7, True, True, True, 234, 80, 24))
+        with mock.patch.object(embed.subprocess, "check_output", return_value=b"0|0|0|0|0|0|40|10\n"):
+            self.assertEqual(embed.pane_state("s"), (0, 0, False, False, False, 0, 40, 10))
+        # 旧版 6 段输出（解析失败兜底 None，不崩）
         with mock.patch.object(embed.subprocess, "check_output", return_value=b"12|7|1|1|1|234\n"):
-            self.assertEqual(embed.pane_state("s"), (12, 7, True, True, True, 234))
-        with mock.patch.object(embed.subprocess, "check_output", return_value=b"0|0|0|0|0|0\n"):
-            self.assertEqual(embed.pane_state("s"), (0, 0, False, False, False, 0))
-        # 旧版 5 段输出（解析失败兜底 None，不崩）
+            self.assertIsNone(embed.pane_state("s"))
+        # 更旧的 5 段输出同样拒绝
         with mock.patch.object(embed.subprocess, "check_output", return_value=b"12|7|1|1|1\n"):
             self.assertIsNone(embed.pane_state("s"))
 

@@ -239,12 +239,18 @@ def _choose_claude_fallback_title(candidates: list[tuple[str, str | None]]) -> s
 
 def _is_internal_claude_session(entries: list[dict]) -> bool:
     """Teammates/subagent 会话：非用户直接发起的顶层 Claude 会话。"""
+    first_user_text = None
     for entry in entries:
         if entry.get("isSidechain"):
             return True
         if entry.get("type") == "agent-name" and entry.get("agentName"):
             return True
-    return False
+        if entry.get("type") == "user" and first_user_text is None:
+            first_user_text = _extract_text(entry.get("message", {}).get("content", ""))
+    return bool(
+        first_user_text
+        and first_user_text.startswith('<teammate-message teammate_id="team-lead"')
+    )
 
 
 def _build_session_info(fpath: str, proj: str) -> dict | None:

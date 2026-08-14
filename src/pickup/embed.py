@@ -213,17 +213,19 @@ def capture(name: str, scroll_offset: int = 0, pane_height: int = 0) -> str | No
     return out.decode("utf-8", errors="replace")
 
 
-def pane_state(name: str) -> tuple[int, int, bool, bool, bool, int] | None:
+def pane_state(name: str) -> tuple[int, int, bool, bool, bool, int, int, int] | None:
     """一次查询拿全 pane 交互状态：(光标 x, 光标 y, 光标可见, 程序申请了鼠标,
-    SGR 鼠标模式, 回滚行数 history_size)。
+    SGR 鼠标模式, 回滚行数 history_size, pane 宽, pane 高)。
 
     合并进单个 display-message 调用——capture 循环每轮都要光标位置，滚轮转发要鼠标
-    模式，应用层滚动的上限判定要回滚量，分开查每轮就是三次 fork。查询失败返回 None。
-    控制通道优先，回退路径同 capture()。
+    模式，应用层滚动的上限判定要回滚量，抓帧解析还要真实列数，分开查每轮就是
+    多次 fork。查询失败返回 None。控制通道优先，回退路径同 capture()。
+
+    宽高必须放在元组尾部，既有 `state[3..5]` 下标（鼠标/历史）保持不变。
     """
     args = ["display-message", "-p", "-t", name,
             "#{cursor_x}|#{cursor_y}|#{cursor_flag}|#{mouse_any_flag}|#{mouse_sgr_flag}"
-            "|#{history_size}"]
+            "|#{history_size}|#{pane_width}|#{pane_height}"]
     ch = _active_channel(name)
     out: str | None = None
     if ch is not None:
@@ -239,11 +241,15 @@ def pane_state(name: str) -> tuple[int, int, bool, bool, bool, int] | None:
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return None
     try:
-        xs, ys, fs, ma, ms, hs = out.split("|")
+        xs, ys, fs, ma, ms, hs, pw, ph = out.split("|")
+        width, height = int(pw), int(ph)
     except ValueError:
         return None
     note_alive(name)
-    return int(xs), int(ys), fs == "1", ma == "1", ms == "1", int(hs)
+    return (
+        int(xs), int(ys), fs == "1", ma == "1", ms == "1", int(hs),
+        width, height,
+    )
 
 
 def pane_size(name: str) -> tuple[int, int] | None:

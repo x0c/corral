@@ -397,15 +397,10 @@ class SessionHub:
         state = embed.pane_state(name)
         if state is None:
             return None
-        cursor_x, cursor_y, cursor_visible, _mouse_any, _mouse_sgr, history_size = state
-        # pane 尺寸不必每帧都问：桌面端改窗口大小是低频动作，两秒查一次足够，
-        # 却能把抓帧路径上的 tmux 往返从两次减到一次。
-        now = time.monotonic()
-        if watch.cols <= 0 or now - watch.size_checked_at > 2.0:
-            size = embed.pane_size(name)
-            if size is not None:
-                watch.cols, watch.rows = size
-            watch.size_checked_at = now
+        cursor_x, cursor_y, cursor_visible, _mouse_any, _mouse_sgr, history_size, pane_w, pane_h = state
+        # 宽高已并进 pane_state，不必再单独问一次 pane_size。
+        if pane_w > 0 and pane_h > 0:
+            watch.cols, watch.rows = pane_w, pane_h
         if watch.cols <= 0:
             return None
         # 抓一屏画面。刻意不调用 resize：手机端订阅不该改变会话窗口尺寸，
