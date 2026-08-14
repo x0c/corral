@@ -17,7 +17,7 @@ import sys as sys
 # 回归用例全挂正是这么来的。包顶层是唯一「任何用法都必经」的位置。
 os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
 
-__version__ = "0.24.105"
+__version__ = "0.24.106"
 
 _MODULE_EXPORTS = {
     "embed", "keepalive", "titles", "updater", "split_layout", "observe", "theme", "search",
@@ -44,6 +44,7 @@ _SYMBOL_EXPORTS = {
     "_fuzzy_match": ("pickup.display", "_fuzzy_match"),
     "_time_brightness_tier": ("pickup.display", "_time_brightness_tier"),
     "TIME_BRIGHTNESS_TIERS": ("pickup.display", "TIME_BRIGHTNESS_TIERS"),
+    "TODAY_SECONDS": ("pickup.display", "TODAY_SECONDS"),
     "_normalize_cwd": ("pickup.display", "_normalize_cwd"),
     "_preview_blocks": ("pickup.display", "_preview_blocks"),
     "_project_groups": ("pickup.display", "_project_groups"),

@@ -4,10 +4,11 @@
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
 或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
-无末行空行）。置顶块与未置顶块都非空时，中间插一行 `$primary` 蓝横线
-分隔（高 1、无文案、disabled，键盘跳过；置顶已有 ↑，不必再贬低下方会话）。
-斑马纹按**块**交替，不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
-`＋ 新建` 与置顶分隔线不参与、不计入相位，分隔线之后相位重置（两区都以无条纹
+无末行空行）。置顶块与未置顶块都非空时，中间插一行居中 `Pinned`/`置顶` 的
+`$primary` 蓝横线；未置顶再按滚动 24 小时切 today / older 两桶（桶内不重排），
+两侧都有时再插 `Today`/`今天` 线。分隔高 1、disabled、键盘跳过；禁止 Older/其他
+标签。斑马纹按**块**交替，不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
+`＋ 新建` 与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
 起头）。条纹画在 `SessionCard` / `SessionGroupCard` 上，用 `$foreground` 的半透明
 底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类 DEFAULT_CSS 会压过
 ListView 自带的 `.-highlight`，把选中底色吃掉。
@@ -37,11 +38,18 @@ if TYPE_CHECKING:
     import pickup
     from pickup.split_layout import SplitGroup, SplitLayoutStore
 
+from pickup.display import TODAY_SECONDS
 from pickup.i18n import t
 
 NEW_SESSION_ID = "__new_session__"
 PIN_SEP_ID = "__pin_sep__"
+TODAY_SEP_ID = "__today_sep__"
 GROUP_ID_PREFIX = "__group__-"
+_SEPARATOR_IDS = frozenset({PIN_SEP_ID, TODAY_SEP_ID})
+_SEP_LABEL_KEYS = {
+    PIN_SEP_ID: "list.sep_pinned",
+    TODAY_SEP_ID: "list.sep_today",
+}
 
 # 时间行档位在「控件还没挂载」时的兜底样式：单测会直接构造 SessionCard 调
 # render()，此时主题变量尚未解析，退回旧的二值 dim 表现，不让渲染整体失败。
@@ -125,7 +133,7 @@ def _assign_block_stripes(rows: list[_SidebarRow]) -> list[_SidebarRow]:
     """给侧边栏行打块级斑马纹相位。
 
     一块 = 一张独立会话卡，或「组卡 + 它全部成员」。分隔线不着色、不计相位，
-    其后重置，让置顶区与未置顶区都从无条纹起头。组内成员继承组卡相位，因此
+    其后重置，让置顶 / today / older 各区都从无条纹起头。组内成员继承组卡相位，因此
     展开/收起不会翻转其后块的条纹。
     """
     striped: list[_SidebarRow] = []
@@ -144,6 +152,30 @@ def _assign_block_stripes(rows: list[_SidebarRow]) -> list[_SidebarRow]:
             next_stripe = not next_stripe
         striped.append(replace(row, stripe=current))
     return striped
+
+
+def _session_in_today_window(session: dict | None, now: float) -> bool:
+    """独立会话是否落在滚动 24 小时（或正在跑）。未来 mtime 算今天。"""
+    if not session:
+        return False
+    if session.get("live"):
+        return True
+    try:
+        mtime = float(session.get("mtime") or 0)
+    except (TypeError, ValueError):
+        return False
+    return (now - mtime) < TODAY_SECONDS
+
+
+def _block_is_today(block: list[_SidebarRow], now: float) -> bool:
+    """会话组不可拆：任一成员 live 或 mtime 落在 24h 内，整组进 today。"""
+    for row in block:
+        if _session_in_today_window(row.session, now):
+            return True
+        for member in row.member_sessions:
+            if _session_in_today_window(member, now):
+                return True
+    return False
 
 
 class SessionCard(Widget):
@@ -602,10 +634,10 @@ class NewSessionCard(Widget):
 
 
 class PinSeparatorCard(Widget):
-    """置顶区与未置顶区之间的单行分隔：拉满栏宽的 `─`，整行 `$primary` 冷蓝。
+    """区尾分隔：两侧 `─`、居中标签，整行 `$primary` 冷蓝。
 
-    故意不写「其他」之类文案——置顶已有 ↑，再给下方贴标签会像在说那些会话
-    不重要；横线只做分区，不排序优先级。
+    标签标明**上面**这一段（Pinned / Today），不写 Older/其他——避免把下方
+    会话说成次要。窄栏用显示宽度截标签，不用 `len()`。
     """
 
     ALLOW_SELECT = False
@@ -618,12 +650,29 @@ class PinSeparatorCard(Widget):
     }
     """
 
+    def __init__(self, label_key: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.label_key = label_key
+
     def render(self) -> Text:
         import pickup
 
         width = max(10, self.size.width or 40)
+        label = t(self.label_key)
+        # 至少留 ─␠label␠─ 四格；放不下就只画截断后的标签。
+        max_label = max(1, width - 4)
+        fitted = pickup._fit_cell(label, max_label).rstrip(" ")
+        inner = f" {fitted} "
+        inner_w = pickup._text_width(inner)
+        if inner_w >= width:
+            line = pickup._fit_cell(fitted, width).rstrip(" ")
+        else:
+            leftover = width - inner_w
+            left = leftover // 2
+            right = leftover - left
+            line = ("─" * left) + inner + ("─" * right)
         # 颜色吃 CSS `$primary`，不写死也不 dim。
-        return Text(pickup._fit_cell("─" * width, width))
+        return Text(line)
 
 
 class SessionListView(ListView):
@@ -774,8 +823,9 @@ class SessionListView(ListView):
             if item.id == NEW_SESSION_ID or not item.children:
                 continue
             card = item.children[0]
-            if isinstance(card, PinSeparatorCard) or item.id == PIN_SEP_ID:
-                identities.append(PIN_SEP_ID)
+            if isinstance(card, PinSeparatorCard) or item.id in _SEPARATOR_IDS:
+                if item.id:
+                    identities.append(item.id)
             elif isinstance(card, SessionGroupCard):
                 identities.append(f"{GROUP_ID_PREFIX}{card.group.group_id}")
             elif isinstance(card, SessionCard):
@@ -841,9 +891,10 @@ class SessionListView(ListView):
     def _sidebar_rows(self) -> list[_SidebarRow]:
         """把持久会话组投影成「组卡 + 缩进子会话」，其余会话保持扁平。
 
-        未置顶区的顺序跟 `SessionStore.all_sessions()` 的稳定顺序走：进入 pickup
-        后已有项位置固定，后台重扫只因 mtime/标题更新而重排的「飘」不再发生；
-        新会话仍由 store 插到最前（或冷会话追加末尾）。置顶块仍按置顶时间单独排在最上。
+        未置顶区先按 `SessionStore.all_sessions()` 的稳定顺序走一遍，再只切
+        today / older 两桶（桶内相对顺序不变）：进入 pickup 后已有项位置固定，
+        后台重扫只因 mtime/标题更新而整列重排的「飘」不再发生；新会话仍由 store
+        插到最前（或冷会话追加末尾）。置顶块仍按置顶时间单独排在最上。
         """
         import pickup
 
@@ -941,8 +992,18 @@ class SessionListView(ListView):
             pinned_rows.extend(block)
 
         # 未置顶区：按 store 稳定顺序走一遍，组卡落在其「最先出现的成员」位置。
-        # 禁止再按当前 mtime 重排——否则运行中会话一写盘整组就会在侧边栏里上下飘。
-        unpinned_rows: list[_SidebarRow] = []
+        # 禁止再按当前 mtime 整列重排——否则运行中会话一写盘整组就会在侧边栏里上下飘。
+        # 只做 today / older 两桶：桶内相对顺序不变，live 或 24h 内的块整块进 today。
+        today_rows: list[_SidebarRow] = []
+        older_rows: list[_SidebarRow] = []
+        now = time.time()
+
+        def _emit_unpinned(block: list[_SidebarRow]) -> None:
+            if _block_is_today(block, now):
+                today_rows.extend(block)
+            else:
+                older_rows.extend(block)
+
         emitted: set[str] = set()
         for session in filtered:
             key = pickup.session_key(session)
@@ -965,21 +1026,25 @@ class SessionListView(ListView):
             block = unpinned_by_id.get(block_id)
             if block is None:
                 continue
-            unpinned_rows.extend(block)
+            _emit_unpinned(block)
             emitted.add(block_id)
 
         # 搜索把组名命中、成员却不在 filtered 主序里时的兜底（visible_sessions
         # 已尽量补齐；这里只防止漏块）。
         for block_id, block in unpinned_by_id.items():
             if block_id not in emitted:
-                unpinned_rows.extend(block)
+                _emit_unpinned(block)
                 emitted.add(block_id)
 
         rows: list[_SidebarRow] = list(pinned_rows)
+        unpinned_visible = today_rows or older_rows
         # 两侧都有可见项时才画分隔，避免「只剩置顶」或「没有置顶」时多出一条空线。
-        if pinned_rows and unpinned_rows:
+        if pinned_rows and unpinned_visible:
             rows.append(_SidebarRow(kind="separator", identity=PIN_SEP_ID))
-        rows.extend(unpinned_rows)
+        rows.extend(today_rows)
+        if today_rows and older_rows:
+            rows.append(_SidebarRow(kind="separator", identity=TODAY_SEP_ID))
+        rows.extend(older_rows)
         return _assign_block_stripes(rows)
 
     def selected_session(self) -> dict | None:
@@ -1159,11 +1224,14 @@ class SessionListView(ListView):
         super().action_cursor_up()
 
     def watch_index(self, old_index: int | None, new_index: int | None) -> None:
-        """点到置顶分隔行时拨到相邻可选项，避免高亮消失、右栏跟随被清空。"""
+        """点到 disabled 分隔行时拨到相邻可选项，避免高亮消失、右栏跟随被清空。"""
         if (
             new_index is not None
             and 0 <= new_index < len(self._nodes)
-            and getattr(self._nodes[new_index], "id", None) == PIN_SEP_ID
+            and (
+                self._nodes[new_index].disabled
+                or getattr(self._nodes[new_index], "id", None) in _SEPARATOR_IDS
+            )
         ):
             direction = 1
             if old_index is not None and new_index < old_index:
@@ -1373,7 +1441,11 @@ class SessionListView(ListView):
             if row.kind == "separator":
                 items.append(
                     NoSelectListItem(
-                        PinSeparatorCard(), id=PIN_SEP_ID, disabled=True
+                        PinSeparatorCard(
+                            _SEP_LABEL_KEYS.get(row.identity, "list.sep_pinned")
+                        ),
+                        id=row.identity,
+                        disabled=True,
                     )
                 )
                 continue

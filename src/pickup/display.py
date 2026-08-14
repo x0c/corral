@@ -16,10 +16,12 @@ from pickup.models import ConversationMessage, format_message_time, session_key
 # 组件样式按主题解析，这里只定义分档语义与边界。
 JUST_NOW_SECONDS = 180  # 「刚刚」文案上界：3 分钟内（侧边栏对该文案再加粗）
 RECENT_HIGHLIGHT_SECONDS = 1800  # 首档上界：半小时内算「刚刚还在动」
+# 「今天」与侧边栏 Today 分隔线共用这条滚动 24 小时界，不是日历午夜。
+TODAY_SECONDS = 86400
 TIME_BRIGHTNESS_TIERS: tuple[tuple[float | None, str], ...] = (
     (RECENT_HIGHLIGHT_SECONDS, "fresh"),  # 半小时内：与标题同色
     (3 * 3600, "recent"),                 # 三小时内
-    (86400, "today"),                     # 一天内
+    (TODAY_SECONDS, "today"),             # 一天内
     (None, "old"),                        # 更早（显示绝对日期）
 )
 
@@ -56,7 +58,7 @@ def _format_relative_time(mtime: float, now: float | None = None) -> str:
         return t("time.just_now")
     if delta < 3600:
         return t("time.minutes_ago", n=int(delta // 60))
-    if delta < 86400:
+    if delta < TODAY_SECONDS:
         return t("time.hours_ago", n=int(delta // 3600))
     return datetime.fromtimestamp(mtime).strftime("%m-%d %H:%M")
 

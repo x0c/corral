@@ -69,10 +69,12 @@ from pickup.ui.session_list import (
     GROUP_ID_PREFIX,
     NEW_SESSION_ID,
     PIN_SEP_ID,
+    TODAY_SEP_ID,
     PinSeparatorCard,
     SessionCard,
     SessionGroupCard,
     SessionListView,
+    _session_in_today_window,
 )
 from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.terminal_theme import TerminalBackgroundReport, TerminalThemeParser
@@ -189,6 +191,27 @@ def _make_store(sessions=None, extra_runtimes=()):
         store = pickup.SessionStore(limit=20, registry=registry)
         store.load()
     return store, registry
+
+
+def _claude_session(
+    sid: str,
+    mtime: float,
+    title: str | None = None,
+    *,
+    live: bool = False,
+) -> dict:
+    return {
+        "source": "claude",
+        "id": sid,
+        "short_id": sid,
+        "mtime": mtime,
+        "size_bytes": 1,
+        "size_kb": 1,
+        "native_title": None,
+        "fallback_title": title or sid,
+        "cwd": "/tmp",
+        "live": live,
+    }
 
 
 class KittyKeyboardProtocolTests(unittest.TestCase):
@@ -2232,14 +2255,15 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(seps), 1)
             sep_item = list_view.query_one(f"#{PIN_SEP_ID}")
             self.assertTrue(sep_item.disabled)
-            plain = seps[0].render().plain.strip()
-            self.assertTrue(plain)
-            self.assertTrue(set(plain) <= {"─"})
+            plain = seps[0].render().plain
+            self.assertIn("Pinned", plain)
+            self.assertNotIn("Today", plain)
             self.assertNotIn("其他", plain)
             self.assertNotIn("Other", plain)
 
             identities = list_view._current_row_identities()
             self.assertIn(PIN_SEP_ID, identities)
+            self.assertNotIn(TODAY_SEP_ID, identities)
             sep_at = identities.index(PIN_SEP_ID)
             self.assertEqual(identities[0], pinned_key)
             self.assertEqual(identities[sep_at + 1], other_key)
@@ -2277,6 +2301,245 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 pickup.session_key(list_view.selected_session()),
                 pinned_key,
             )
+
+
+    def test_live_or_recent_mtime_counts_as_today(self) -> None:
+        """滚动 24 小时界：live 优先，与时间行 today 档共用 TODAY_SECONDS。"""
+        now = time.time()
+        old = now - 10 * pickup.TODAY_SECONDS
+        self.assertTrue(
+            _session_in_today_window({"live": True, "mtime": old}, now)
+        )
+        self.assertFalse(
+            _session_in_today_window({"live": False, "mtime": old}, now)
+        )
+        self.assertTrue(
+            _session_in_today_window({"live": False, "mtime": now - 60}, now)
+        )
+        self.assertTrue(
+            _session_in_today_window({"live": False, "mtime": now + 30}, now)
+        )
+        self.assertFalse(_session_in_today_window(None, now))
+        self.assertFalse(_session_in_today_window({}, now))
+
+    def test_separator_render_centers_label(self) -> None:
+        card = PinSeparatorCard("list.sep_pinned")
+        plain = card.render().plain
+        self.assertIn("Pinned", plain)
+        self.assertTrue(plain.startswith("─"))
+        after = plain.split("Pinned", 1)[1]
+        self.assertTrue(after.lstrip().startswith("─") or after.startswith("─"))
+        self.assertNotIn("Other", plain)
+        self.assertNotIn("其他", plain)
+
+    async def test_today_separator_between_recent_and_older(self) -> None:
+        """今天与更早都有时画 Today 线；today 全在线前、older 全在线后。"""
+        now = time.time()
+        sessions = [
+            _claude_session("new-a", now - 60, "新A"),
+            _claude_session("new-b", now - 120, "新B"),
+            _claude_session("old-c", now - 180, "旧C"),
+        ]
+        store, _ = _make_store(sessions=sessions)
+        store.find_session("claude:old-c")["mtime"] = now - 3 * pickup.TODAY_SECONDS
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            await list_view.rebuild()
+            identities = [row.identity for row in list_view._sidebar_rows()]
+            self.assertIn(TODAY_SEP_ID, identities)
+            self.assertNotIn(PIN_SEP_ID, identities)
+            sep_at = identities.index(TODAY_SEP_ID)
+            self.assertEqual(
+                identities[:sep_at],
+                ["claude:new-a", "claude:new-b"],
+            )
+            self.assertEqual(identities[sep_at + 1 :], ["claude:old-c"])
+            plains = [card.render().plain for card in list_view.query(PinSeparatorCard)]
+            joined = "\n".join(plains)
+            self.assertIn("Today", joined)
+            self.assertNotIn("Pinned", joined)
+            self.assertNotIn("Other", joined)
+            self.assertNotIn("其他", joined)
+            self.assertEqual(
+                list_view._current_row_identities(),
+                identities,
+            )
+
+    async def test_today_separator_absent_when_all_recent(self) -> None:
+        store, app = await self._grouped_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            identities = [row.identity for row in list_view._sidebar_rows()]
+            self.assertNotIn(TODAY_SEP_ID, identities)
+            self.assertEqual(len(list(list_view.query(PinSeparatorCard))), 0)
+
+    async def test_today_separator_absent_when_all_old(self) -> None:
+        now = time.time()
+        sessions = [
+            _claude_session("old-a", now - 60, "旧A"),
+            _claude_session("old-b", now - 120, "旧B"),
+        ]
+        store, _ = _make_store(sessions=sessions)
+        age = now - 3 * pickup.TODAY_SECONDS
+        for session in store.all_sessions():
+            session["mtime"] = age
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            await list_view.rebuild()
+            identities = [row.identity for row in list_view._sidebar_rows()]
+            self.assertNotIn(TODAY_SEP_ID, identities)
+            self.assertEqual(len(list(list_view.query(PinSeparatorCard))), 0)
+
+    async def test_unpinned_bucket_keeps_store_relative_order(self) -> None:
+        """夹在两个今天会话之间的更早项，分桶后 today 桶仍跟 store 原序。"""
+        now = time.time()
+        sessions = [
+            _claude_session("new-a", now - 60, "新A"),
+            _claude_session("mid-old", now - 120, "中间旧"),
+            _claude_session("new-b", now - 180, "新B"),
+        ]
+        store, _ = _make_store(sessions=sessions)
+        store.find_session("claude:mid-old")["mtime"] = (
+            now - 3 * pickup.TODAY_SECONDS
+        )
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            await list_view.rebuild()
+            identities = [row.identity for row in list_view._sidebar_rows()]
+            self.assertEqual(
+                identities,
+                [
+                    "claude:new-a",
+                    "claude:new-b",
+                    TODAY_SEP_ID,
+                    "claude:mid-old",
+                ],
+            )
+
+    async def test_group_with_one_recent_member_stays_above_today_line(self) -> None:
+        """组内一个新成员 + 两个旧成员 → 整组在 Today 线前。"""
+        now = time.time()
+        sessions = [
+            _claude_session("g-new", now - 60, "新成员"),
+            _claude_session("g-old1", now - 120, "旧成员1"),
+            _claude_session("g-old2", now - 180, "旧成员2"),
+            _claude_session("solo-old", now - 200, "独立旧"),
+        ]
+        store, _ = _make_store(sessions=sessions)
+        age = now - 3 * pickup.TODAY_SECONDS
+        for key in ("claude:g-old1", "claude:g-old2", "claude:solo-old"):
+            store.find_session(key)["mtime"] = age
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = ["claude:g-new", "claude:g-old1", "claude:g-old2"]
+            list_view.on_layout_change(
+                lambda s: s.set_group("/tmp", keys, focus_key=keys[0])
+            )
+            await list_view.rebuild()
+            identities = [row.identity for row in list_view._sidebar_rows()]
+            self.assertIn(TODAY_SEP_ID, identities)
+            sep_at = identities.index(TODAY_SEP_ID)
+            before = identities[:sep_at]
+            self.assertTrue(before[0].startswith(GROUP_ID_PREFIX))
+            self.assertEqual(
+                before[1:],
+                ["claude:g-new", "claude:g-old1", "claude:g-old2"],
+            )
+            self.assertEqual(identities[sep_at + 1 :], ["claude:solo-old"])
+
+    async def test_keyboard_skips_both_separators(self) -> None:
+        now = time.time()
+        sessions = [
+            _claude_session("pin-me", now - 60, "置顶"),
+            _claude_session("today-b", now - 120, "今天"),
+            _claude_session("old-c", now - 180, "更早"),
+        ]
+        store, _ = _make_store(sessions=sessions)
+        store.find_session("claude:old-c")["mtime"] = (
+            now - 3 * pickup.TODAY_SECONDS
+        )
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            list_view.on_layout_change(
+                lambda s: s.toggle_session_pin("claude:pin-me")
+            )
+            await list_view.rebuild()
+            identities = list_view._current_row_identities()
+            self.assertEqual(
+                identities,
+                [
+                    "claude:pin-me",
+                    PIN_SEP_ID,
+                    "claude:today-b",
+                    TODAY_SEP_ID,
+                    "claude:old-c",
+                ],
+            )
+            list_view.focus()
+            list_view.index = 1  # 置顶会话
+            list_view.action_cursor_down()
+            self.assertEqual(
+                pickup.session_key(list_view.selected_session()),
+                "claude:today-b",
+            )
+            self.assertNotIn(
+                getattr(list_view.highlighted_child, "id", None),
+                {PIN_SEP_ID, TODAY_SEP_ID},
+            )
+            list_view.action_cursor_down()
+            self.assertEqual(
+                pickup.session_key(list_view.selected_session()),
+                "claude:old-c",
+            )
+            self.assertNotIn(
+                getattr(list_view.highlighted_child, "id", None),
+                {PIN_SEP_ID, TODAY_SEP_ID},
+            )
+
+    async def test_separator_labels_follow_language(self) -> None:
+        now = time.time()
+        sessions = [
+            _claude_session("pin-me", now - 60, "置顶会话"),
+            _claude_session("today-b", now - 120, "今天会话"),
+            _claude_session("old-c", now - 180, "更早会话"),
+        ]
+        store, _ = _make_store(sessions=sessions)
+        store.find_session("claude:old-c")["mtime"] = (
+            now - 3 * pickup.TODAY_SECONDS
+        )
+        i18n.set_lang("zh")
+        try:
+            app = PickupApp(store, embed_ok=False)
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                list_view.on_layout_change(
+                    lambda s: s.toggle_session_pin("claude:pin-me")
+                )
+                await list_view.rebuild()
+                plains = [
+                    card.render().plain for card in list_view.query(PinSeparatorCard)
+                ]
+                joined = "\n".join(plains)
+                self.assertIn("置顶", joined)
+                self.assertIn("今天", joined)
+                self.assertNotIn("Pinned", joined)
+                self.assertNotIn("Today", joined)
+                self.assertNotIn("其他", joined)
+                self.assertNotIn("Other", joined)
+        finally:
+            i18n.set_lang("en")
 
     async def test_newer_independent_session_sorts_above_unpinned_group(self) -> None:
         """未置顶组不霸榜：比组成员更新的独立会话应排在组前面。"""
@@ -3456,8 +3719,17 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 list_view = app.screen.query_one(SessionListView)
                 # 挂载 EmbedPane 后 Textual 可能先把焦点落到右栏；等侧栏真正持焦，
                 # 再同步蒙版，避免 pilot.pause 一帧里焦点还在路上就断言失败。
-                await _wait_until(lambda: list_view.has_focus and not pane.has_focus)
-                area.sync_input_mask()
+                # 全量套件负载高时，托管声明 / session_name 可能比焦点晚一拍，
+                # 单次 sync 会看到「右栏仍持有输入」或「还不算 live」而不压暗。
+                def _list_focused_and_masked() -> bool:
+                    if not list_view.has_focus or pane.has_focus:
+                        return False
+                    if area._input_claim_key is not None:  # noqa: SLF001
+                        return False
+                    area.sync_input_mask()
+                    return pane.input_masked
+
+                await _wait_until(_list_focused_and_masked)
                 self.assertTrue(pane.input_masked)
 
                 area.show_hosted_group(

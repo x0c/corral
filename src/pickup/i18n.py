@@ -210,6 +210,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "+ New session",
         "zh": "＋ 新建会话",
     },
+    "list.sep_pinned": {
+        "en": "Pinned",
+        "zh": "置顶",
+    },
+    "list.sep_today": {
+        "en": "Today",
+        "zh": "今天",
+    },
     "status.running": {
         "en": "Running",
         "zh": "运行中",
