@@ -115,7 +115,7 @@ pickup observer install cursor --dry-run --json  # 预演用户级观察配置�
 pickup observer install cursor                   # 显式安装或修复
 pickup observer uninstall cursor                 # 只移除 pickup 管理的条目
 pickup shim status                               # 查看命令拦截安装情况（敲原命令自动走 pickup）
-pickup shim install                              # 安装命令拦截（显式执行才会改 shell 配置）
+pickup shim install                              # 安装或修复命令拦截
 pickup shim uninstall                            # 移除命令拦截
 ```
 
@@ -184,26 +184,26 @@ Cursor 可以用你平时敲的命令名直接进来：`pickup agent` 和 `picku
 
 ## 命令拦截（敲原命令自动走 pickup）
 
-装完拦截以后，在终端里正常敲 `claude`、`codex`、`opencode`、`kimi`、`cursor-agent`、`pi`，就等于敲了 `pickup <助手>`：新会话直接被托管、带上免审批参数、断线也不会丢。
+装完拦截以后，在终端里正常敲 `claude`、`codex`、`opencode`、`kimi`、`cursor-agent`、`agent`（认出是 Cursor 时）、`pi`，就等于敲了 `pickup <助手>`：新会话直接被托管、带上免审批参数、断线也不会丢。
 
 ```bash
 pickup shim status                  # 查看当前 shell 装没装、拦了哪些命令
 pickup shim install                 # 安装（会往 shell 配置里加一小段带标记的引用）
 pickup shim install --dry-run --json  # 只预演，不写任何文件
-pickup shim install --include agent # 额外拦截通用名 agent（默认不拦，见下）
+pickup shim install --include agent # 强制拦截未能自动识别的 agent
 pickup shim uninstall               # 只移除 pickup 加的那一段，其余配置原样保留
 ```
 
-支持 bash / zsh / fish，默认按 `$SHELL` 自动探测，也可以用 `--shell` 显式指定。**pickup 不会自动改你的 shell 配置**——只有你显式执行 `pickup shim install` 才会写入，写之前还会把原文件备份一份。
+支持 bash / zsh / fish，默认按 `$SHELL` 自动探测，也可以用 `--shell` 显式指定。安装脚本和每次交互式打开 pickup 都会幂等补齐拦截；重复执行不会叠加。写配置前会把原文件备份一份。
 
 下面这些情况一律原样执行原命令，不会被托管：
 
 - 无头 / 脚本调用（`claude -p "..."`、`codex exec ...`、管道、CI、编辑器插件、别的 Agent 拉起的子进程）；
-- 管理类子命令（`claude update`、`cursor-agent login` 等）；
-- 已经在 tmux／screen／pickup 托管会话里（不会套第二层）；
+- 管理类子命令（`claude update`、`agent login`、`agent about` 等）；
+- 已经在 pickup 托管会话里（不会套第二层）；你自己开的 tmux / screen 里敲命令仍会拦截；
 - 找不到 `pickup` 命令时（例如你卸载了 pickup）——你的原命令永远保底可用。
 
-`agent` 默认不拦：Cursor 占用了这个很通用的名字，自动拦截容易遮蔽你机器上的其它同名工具，需要就用 `--include agent` 显式打开。
+`agent` 只有在认出是 Cursor 命令行（官方安装，或本机的 Cursor 包装入口）时才自动拦截。其它同名工具不会被拦；认不出时可以用 `--include agent` 强制打开。
 
 ## 会话保活（扛住 SSH 断线）
 

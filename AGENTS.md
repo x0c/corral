@@ -2,7 +2,7 @@
 <!-- source: /Users/geraltgraham/Codes/pickup/AGENTS.md -->
 # pickup
 
-终端会话接力 CLI，支持跨 Claude Code / Codex / OpenCode / Kimi Code / Cursor 会话恢复与接力。
+终端会话接力 CLI，支持跨 Claude Code / Codex / OpenCode / Kimi Code / Cursor / Pi 会话恢复与接力。
 
 通用工程规范：[Python 规范](../_standards/python.md)
 
@@ -32,9 +32,9 @@
 | 会话关注状态 | cli/src/pickup/attention.py · cli/src/pickup/attention_signals.py · cli/src/pickup/cursor_observer.py · cli/src/pickup/store.py · cli/src/pickup/ui/ |
 | 会话全文搜索 | cli/src/pickup/search.py · cli/src/pickup/ui/search_modal.py |
 | 内嵌实时终端 | cli/src/pickup/embed.py · cli/src/pickup/ui/embed_pane.py |
-| 会话扫描与对话内容 | cli/src/pickup/scan/ · cli/src/pickup/models.py · cli/src/pickup/runtime/ |
-| 跨助手接力与启动 | cli/src/pickup/runtime/ · cli/src/pickup/models.py |
-| 新助手接入 | cli/src/pickup/runtime/ · cli/src/pickup/scan/ |
+| 会话扫描与对话内容 | cli/src/pickup/scan/ · cli/src/pickup/scan/pi.py · cli/src/pickup/models.py · cli/src/pickup/runtime/ |
+| 跨助手接力与启动 | cli/src/pickup/runtime/ · cli/src/pickup/runtime/pi.py · cli/src/pickup/models.py |
+| 新助手接入 | cli/src/pickup/runtime/ · cli/src/pickup/scan/ · cli/src/pickup/runtime/pi.py · cli/src/pickup/scan/pi.py |
 | 性能、派生缓存与原生加速 | cli/src/pickup/cache.py · cli/src/pickup/cache_cli.py · cli/src/pickup/native.py · cli/src/pickup/schedprio.py · cli/src/pickup/bootstrap.py · cli/rust/lib.rs · cli/Cargo.toml · cli/scripts/benchmark.py |
 | 可观测与诊断 | cli/src/pickup/observe.py · cli/src/pickup/agent_api.py |
 | 会话保活 | cli/src/pickup/keepalive.py |

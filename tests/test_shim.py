@@ -16,6 +16,12 @@ from pickup.runtime.claude import ClaudeRuntime
 
 
 class ShimTargetTableTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_cursor = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp_cursor.cleanup()
+
     def test_every_registered_runtime_has_a_shim_target(self):
         """拦截表和默认注册表不得漂移：新增运行时必须同时登记可拦截命令。"""
         registry = default_registry()
@@ -39,12 +45,43 @@ class ShimTargetTableTests(unittest.TestCase):
              "--export", "--list-models"),
         )
 
-    def test_agent_is_opt_in_because_the_name_is_too_generic(self):
+    def test_agent_stays_opt_in_when_the_binary_is_not_cursor(self):
         agent = next(t for t in shim.TARGETS if t.command == "agent")
         self.assertFalse(agent.default_on)
-        selected = {t.command for t in shim.selected_targets()}
+        with mock.patch.object(shim.shutil, "which", return_value=None):
+            selected = {t.command for t in shim.selected_targets()}
         self.assertNotIn("agent", selected)
-        self.assertIn("agent", {t.command for t in shim.selected_targets(["agent"])})
+        with mock.patch.object(shim.shutil, "which", return_value="/usr/bin/agent"):
+            self.assertIn("agent", {t.command for t in shim.selected_targets(["agent"])})
+
+    def test_agent_is_auto_selected_when_binary_is_official_cursor_cli(self):
+        fake = Path(self.tmp_cursor.name) / "agent"
+        fake.write_text("#!/bin/sh\nexport CURSOR_INVOKED_AS=agent\n", encoding="utf-8")
+        with mock.patch.object(shim.shutil, "which",
+                               side_effect=lambda name: str(fake) if name == "agent" else None):
+            self.assertTrue(shim.looks_like_cursor_cli("agent"))
+            self.assertIn("agent", {t.command for t in shim.selected_targets()})
+
+    def test_agent_is_auto_selected_when_binary_is_cursor_mode_model_wrapper(self):
+        fake = Path(self.tmp_cursor.name) / "wrapper-agent"
+        fake.write_text(
+            "#!/bin/sh\n# 由 cursor-mode-model install 生成\n"
+            'exec /opt/bin/cursor-mode-model exec --invoked-as "agent" -- "$@"\n',
+            encoding="utf-8",
+        )
+        with mock.patch.object(shim.shutil, "which",
+                               side_effect=lambda name: str(fake) if name == "agent" else None):
+            self.assertIn("agent", {t.command for t in shim.selected_targets()})
+
+    def test_generic_agent_binary_is_not_auto_selected(self):
+        fake = Path(self.tmp_cursor.name) / "generic-agent"
+        fake.write_text("#!/bin/sh\necho some other agent tool\n", encoding="utf-8")
+        with mock.patch.object(
+            shim.shutil, "which",
+            side_effect=lambda name: str(fake) if name == "agent" else None,
+        ):
+            self.assertFalse(shim.looks_like_cursor_cli("agent"))
+            self.assertNotIn("agent", {t.command for t in shim.selected_targets()})
 
     def test_agent_is_not_reported_as_shimmed_by_cursor_agent_suffix(self):
         """`agent` 是 `cursor-agent` 的后缀，状态判定必须整行匹配而不是子串。"""
@@ -66,11 +103,20 @@ class ShimScriptRenderTests(unittest.TestCase):
     def setUp(self):
         self.targets = tuple(t for t in shim.TARGETS if t.command in {"claude", "codex"})
 
+    def test_cursor_management_commands_are_listed_for_passthrough(self):
+        for command in ("cursor-agent", "agent"):
+            target = next(t for t in shim.TARGETS if t.command == command)
+            self.assertEqual(target.passthrough_words, shim.CURSOR_PASSTHROUGH)
+        for word in ("about", "models", "whoami", "help", "--list-models"):
+            self.assertIn(word, shim.CURSOR_PASSTHROUGH)
+
     def test_posix_script_has_every_passthrough_guard(self):
         script = shim.render_script("bash", self.targets)
-        for guard in ("PICKUP_SHIM_ACTIVE", "PICKUP_RUNTIME", "TMUX", "STY",
+        for guard in ("PICKUP_SHIM_ACTIVE", "PICKUP_RUNTIME", "SC_RUNTIME",
                       "[ -t 0 ]", "command -v pickup"):
             self.assertIn(guard, script, f"缺少放行判据：{guard}")
+        self.assertNotIn("${TMUX:-}", script)
+        self.assertNotIn("${STY:-}", script)
 
     def test_posix_script_routes_to_pickup_with_recursion_guard(self):
         script = shim.render_script("bash", self.targets)
@@ -108,7 +154,7 @@ class ShimScriptSyntaxTests(unittest.TestCase):
     """真机语法校验：生成的脚本必须能被目标 shell 解析。"""
 
     def _write(self, shell: str) -> Path:
-        targets = tuple(t for t in shim.TARGETS if t.default_on)
+        targets = shim.TARGETS
         path = Path(self.tmp.name) / ("pickup-shim.fish" if shell == "fish" else "pickup-shim.sh")
         path.write_text(shim.render_script(shell, targets), encoding="utf-8")
         return path
@@ -146,11 +192,11 @@ class ShimBehaviourTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.bin = root / "bin"
         self.bin.mkdir()
-        for name in ("claude", "pi", "pickup"):
+        for name in ("claude", "pi", "agent", "pickup"):
             fake = self.bin / name
             fake.write_text(f'#!/usr/bin/env bash\necho "{name} $*"\n', encoding="utf-8")
             fake.chmod(0o755)
-        targets = tuple(t for t in shim.TARGETS if t.command in {"claude", "pi"})
+        targets = tuple(t for t in shim.TARGETS if t.command in {"claude", "pi", "agent"})
         self.script = root / "pickup-shim.sh"
         self.script.write_text(shim.render_script("bash", targets), encoding="utf-8")
 
@@ -255,8 +301,32 @@ class ShimBehaviourTests(unittest.TestCase):
         out = self._run("claude", tty=True, env={"PICKUP_SHIM_ACTIVE": "1"})
         self.assertNotIn("pickup claude", out)
 
-    def test_inside_tmux_passes_through(self):
-        out = self._run("claude", tty=True, env={"TMUX": "/tmp/tmux-0/default,1,0"})
+    def test_interactive_prompt_containing_a_subcommand_word_is_still_hosted(self):
+        """`update` 只在第一个位置参数时才算管理子命令，提示词里出现不该放行。"""
+        out = self._run_on_pty("claude please update the docs")
+        self.assertIn("pickup claude", out)
+
+    def test_agent_interactive_command_is_routed_through_pickup(self):
+        out = self._run_on_pty("agent")
+        self.assertIn("pickup cursor", out)
+
+    def test_agent_about_passes_through(self):
+        out = self._run_on_pty("agent about")
+        self.assertIn("agent about", out)
+        self.assertNotIn("pickup cursor", out)
+
+    def test_agent_list_models_flag_passes_through(self):
+        out = self._run_on_pty("agent --list-models")
+        self.assertIn("agent --list-models", out)
+        self.assertNotIn("pickup cursor", out)
+
+    def test_own_tmux_still_hosts_interactive_commands(self):
+        """用户自己的 tmux 不是 pickup 托管层，必须照常拦截。"""
+        out = self._run_on_pty("claude", env={"TMUX": "/tmp/tmux-0/default,1,0"})
+        self.assertIn("pickup claude", out)
+
+    def test_legacy_sc_runtime_guard_passes_through(self):
+        out = self._run_on_pty("claude", env={"SC_RUNTIME": "claude"})
         self.assertNotIn("pickup claude", out)
 
     def test_headless_flag_passes_through(self):
@@ -312,6 +382,25 @@ class ShimInstallTests(unittest.TestCase):
         self.assertIn(shim.BLOCK_END, text)
         self.assertTrue(Path(result["script_path"]).exists())
         self.assertIn("claude", [c["command"] for c in result["commands"] if c["shimmed"]])
+
+    def test_install_auto_includes_cursor_named_agent(self):
+        fake = Path(self.tmp.name) / "agent"
+        fake.write_text("#!/bin/sh\nexport CURSOR_INVOKED_AS=agent\n", encoding="utf-8")
+        self.which.stop()
+        self.which = mock.patch.object(
+            shim.shutil, "which",
+            side_effect=lambda name: (
+                "/usr/bin/claude" if name == "claude"
+                else str(fake) if name == "agent"
+                else None
+            ),
+        )
+        self.which.start()
+        result = shim.install(home=self.home)
+        shimmed = [c["command"] for c in result["commands"] if c["shimmed"]]
+        self.assertIn("agent", shimmed)
+        script = Path(result["script_path"]).read_text(encoding="utf-8")
+        self.assertIn("agent() {", script)
 
     def test_install_is_idempotent(self):
         shim.install(home=self.home)

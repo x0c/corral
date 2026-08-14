@@ -320,11 +320,12 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 
 - **形态是交互式 shell 函数，不是 PATH shim 目录**，理由与全部放行判据写在 `shim.py` 的模块 docstring 里，改之前先读那段。核心一句：拦截只该作用于"用户手敲"，脚本 / CI / 编辑器插件 / 别的 Agent 拉起的子进程一个都不该被托管。
 - **pickup 自己会无头调用 `claude -p` / `codex exec` 生成标题**（`titlegen.py`）。放行判据里"非真实终端"和"参数命中无头/管理类词"两条**都不能删**，删任何一条都会让标题生成被包进 tmux 托管、静默失效并堆积进程。
-- **防递归三重保险**：shell 函数不被子进程继承（bash 不 `export -f`、zsh 不导出）、走 pickup 那一支带 `PICKUP_SHIM_ACTIVE=1`、托管会话里已注入的 `PICKUP_RUNTIME` 与 tmux 的 `TMUX` 同样触发放行。三条互相独立，不要因为"看起来重复"删掉任何一条。
+- **防递归三重保险**：shell 函数不被子进程继承（bash 不 `export -f`、zsh 不导出）、走 pickup 那一支带 `PICKUP_SHIM_ACTIVE=1`、托管会话里已注入的 `PICKUP_RUNTIME`（及旧名 `SC_RUNTIME`）触发放行。三条互相独立，不要因为"看起来重复"删掉任何一条。**不要把用户自己的 `TMUX`/`STY` 当成放行条件**：pickup 的保活用独立 socket（`tmux -L pickup-keepalive`），和用户日常开的复用器不是一层；把「在 tmux 里」一律放行，等于日常在 tmux 里敲 `claude`/`agent` 永远进不了托管。回归：`test_own_tmux_still_hosts_interactive_commands`、`test_legacy_sc_runtime_guard_passes_through`。
 - **失败方向必须是"没托管"而不是"命令坏了"**：找不到 `pickup`、非 TTY、脚本文件缺失（配置里的 `source` 带 `-f` 判断）全部退回 `command <cmd>`。用户的 `claude` 因为装了 pickup 而不可用，是这个功能唯一不可接受的失败。
 - **首次使用必须无感自动启用**：安装脚本完成安装后立即尝试启用；交互式启动 pickup 时也必须幂等补齐，避免用户装完却以为裸 `codex` 已被托管。仅真实交互终端可触发这次补齐；版本查询、Agent 只读接口、管道/脚本调用和 `pickup shim ...` 管理命令绝不隐式写配置。没有可拦截运行时、未知 shell 或配置不可写时静默降级，不得阻断 pickup；用户仍可用 `pickup shim install` 主动修复。写入前备份原文件，配置里只放一行 `source`，函数正文在 `~/.cache/pickup/shim/` 的生成脚本里——升级只需重写脚本，不必反复动用户配置。
 - **状态判定按整行匹配函数定义**（`_shimmed_commands`）：`agent` 是 `cursor-agent` 的后缀，用子串判断会把"只拦了 cursor-agent"误报成"agent 也拦了"。回归：`test_agent_is_not_reported_as_shimmed_by_cursor_agent_suffix`。
-- **`agent` 默认不拦**：Cursor 占了这个极通用的名字，默认拦截会遮蔽用户机器上的其它同名工具（asdf 社区有 shim 误伤 `clear` 的先例），需 `--include agent` 显式开启。
+- **`agent` 认出是 Cursor CLI 才拦**：官方现行主命令就是 `agent`（`cursor-agent` 是兼容名）。名字太通用，`default_on=False` 防止误伤其它同名工具（asdf 社区有 shim 误伤 `clear` 的先例）；但 PATH 上的 `agent` 能从路径或脚本头看出是官方 Cursor 安装或 cursor-mode-model 包装时必须自动选中，否则用户天天敲的入口根本进不了托管。认不出时仍可用 `--include agent` 强制。探测只读文件、不执行该命令。回归：`test_agent_is_auto_selected_when_binary_is_official_cursor_cli`、`test_generic_agent_binary_is_not_auto_selected`。
+- **管理类子命令只认第一个位置参数**：`claude please update the docs` 不得因为提示词里有 `update` 就放行；无头旗标（`-p` / `--print` 等）仍在任意位置命中即放行。Cursor 的 `about` / `models` / `whoami` / `help` / `--list-models` 等管理入口必须在 `CURSOR_PASSTHROUGH` 里，拦了 `agent` 之后这些调用不能被包进托管会话。
 - **`TARGETS` 与默认注册表必须同步**：新增运行时要同时在这里登记可拦截命令名与放行子命令，`tests/test_shim.py::ShimTargetTableTests` 会断言两边不漂移。
 - 验证手法：`tests/test_shim.py` 里的 `ShimBehaviourTests` 用真实 bash + 伪终端（`pty`）跑生成的脚本，逐条验证"该托管的托管了、该放行的放行了"。**管道场景验证不了正向拦截**（`[ -t 1 ]` 不成立会一律放行），正向用例必须走 pty。zsh / fish 的语法与行为在容器里用真实 shell 验证过（本机没装这两个 shell 时对应用例自动跳过）。
 

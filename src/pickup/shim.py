@@ -9,7 +9,9 @@
    经典问题（遮蔽同名系统工具、`which` 自定位拿到 shim、卸载运行时后仍显示"已安装"）。
 2. **防递归三重保险。** pickup 拉起运行时用的是裸命令名走 PATH：① 函数不被子进程
    继承；② 走 pickup 那一支带上 `PICKUP_SHIM_ACTIVE=1`，任何嵌套交互式 shell 见到
-   即放行；③ 托管会话里注入的 `PICKUP_RUNTIME` 和 tmux 的 `TMUX` 同样触发放行。
+   即放行；③ 托管会话里注入的 `PICKUP_RUNTIME`（及旧名 `SC_RUNTIME`）触发放行。
+   **不要把用户自己的 tmux/screen 当成放行条件**：pickup 用独立的保活 socket，
+   和用户自己的复用器不是一层，拦掉等于日常在 tmux 里敲命令永远进不了托管。
 3. **失败一律退回真身。** 找不到 `pickup` 命令、不是真实终端、带了无头/管理类参数，
    全部 `command <cmd>` 直接执行原命令。**用户的 `claude` 因为装了 pickup 而不能用，
    是唯一不可接受的结局**——生成的脚本里任何一处判断出错，后果都必须是"没托管"，
@@ -18,14 +20,17 @@
    `codex exec` / `opencode run` / `kimi -p` / `agent -p`）生成会话
    标题（见 `titlegen.py`）；这类调用一旦被包进 tmux 托管，标题功能会直接失效并堆积
    进程。放行判据同时看"非真实终端"和"参数里出现无头/管理类词"，两条都要留。
-5. **`agent` 默认不拦截。** Cursor CLI 占用了 `agent` 这个极其通用的可执行名（同时也
-   装了含义明确的 `cursor-agent`），拦截它容易遮蔽用户机器上的其它同名工具，因此
-   默认只拦 `cursor-agent`，`agent` 需 `--include agent` 显式开启。
+   管理类**子命令**只认第一个位置参数，避免 `claude please update the docs` 这种
+   提示词被误判成 `update` 子命令；无头**旗标**仍在任意位置命中即放行。
+5. **`agent` 只在认出是 Cursor CLI 时拦截。** 官方现行主命令就是 `agent`
+   （`cursor-agent` 是兼容名）。名字太通用，不能无条件拦截；PATH 上的 `agent`
+   能看出是官方 Cursor 安装或 cursor-mode-model 包装时才默认拦。其它同名工具
+   不拦；认不出时仍可用 `--include agent` 强制开启。
 
 生成物：一个受 pickup 管理的脚本文件（`~/.cache/pickup/shim/`），用户 shell 配置里
 只留一行 `source`。**不在配置里内联函数正文**——后续升级只需重写脚本文件，不必反复
-改用户的 shell 配置；也**绝不静默改配置**，一切写入只发生在用户显式执行
-`pickup shim install` 时。
+改用户的 shell 配置。写入发生在用户显式 `pickup shim install`，以及交互式启动
+pickup 时的幂等补齐（`auto_install`）。
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ from pathlib import Path
 from typing import Any
 
 SHIM_API_VERSION = 1
-SHIM_SCRIPT_VERSION = 1  # 生成脚本内容有语义变化时 +1，status 据此判 outdated
+SHIM_SCRIPT_VERSION = 2  # 生成脚本内容有语义变化时 +1，status 据此判 outdated
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -72,6 +77,16 @@ COMMON_PASSTHROUGH = (
     "--json", "--output-format", "--headless", "--no-interactive",
 )
 
+# Cursor 官方现行主命令是 `agent`；这些是不能进托管会话的管理/无头入口。
+# `resume` 是交互续聊，要托管，不要放进来。
+CURSOR_PASSTHROUGH = (
+    "update", "login", "logout", "status", "whoami", "about", "models",
+    "mcp", "sandbox", "worker", "acp", "ls", "create-chat",
+    "generate-rule", "rule", "help",
+    "install-shell-integration", "uninstall-shell-integration",
+    "--list-models",
+)
+
 # 与 `runtime/registry.py` 的默认注册表对应（tests/test_shim.py 断言两边不漂移）。
 TARGETS: tuple[ShimTarget, ...] = (
     ShimTarget("claude", "claude", True,
@@ -85,12 +100,13 @@ TARGETS: tuple[ShimTarget, ...] = (
     ShimTarget("pi", "pi", True,
                ("install", "remove", "uninstall", "update", "list", "config", "auth",
                 "--export", "--list-models")),
-    ShimTarget("cursor-agent", "cursor", True,
-               ("update", "login", "logout", "status", "ls", "mcp", "create-chat")),
-    # Cursor 把极通用的 `agent` 也占了；默认不拦，需显式 --include agent。
-    ShimTarget("agent", "cursor", False,
-               ("update", "login", "logout", "status", "ls", "mcp", "create-chat")),
+    ShimTarget("cursor-agent", "cursor", True, CURSOR_PASSTHROUGH),
+    # 名字太通用，default_on=False；PATH 上认出是 Cursor CLI 时仍会自动选中。
+    ShimTarget("agent", "cursor", False, CURSOR_PASSTHROUGH),
 )
+
+# PATH / 脚本正文里出现这些，就认定 `agent` 是 Cursor CLI（含官方安装与包装器）。
+_CURSOR_CLI_MARKERS = ("cursor-agent", "cursor-mode-model", "CURSOR_INVOKED_AS")
 
 
 class ShimError(Exception):
@@ -169,8 +185,31 @@ def detect_shell() -> str:
     )
 
 
+def looks_like_cursor_cli(command: str = "agent") -> bool:
+    """PATH 上的该命令是不是 Cursor CLI（官方安装或转调官方 Agent 的包装）。
+
+    只看路径和脚本头，不执行该命令——执行会有副作用，也太慢。认不出就当不是，
+    后果是不拦，符合「失败方向必须是没托管」。
+    """
+    path = shutil.which(command)
+    if not path:
+        return False
+    blob = path
+    try:
+        blob = f"{path}\n{os.path.realpath(path)}"
+    except OSError:
+        pass
+    if any(marker in blob for marker in _CURSOR_CLI_MARKERS):
+        return True
+    try:
+        head = Path(path).read_bytes()[:8192].decode("utf-8", "ignore")
+    except OSError:
+        return False
+    return any(marker in head for marker in _CURSOR_CLI_MARKERS)
+
+
 def selected_targets(include: Iterable[str] = ()) -> tuple[ShimTarget, ...]:
-    """默认目标 + 显式 --include 的目标。"""
+    """默认目标 + 认出是 Cursor 的 `agent` + 显式 --include 的目标。"""
     extra = {name.strip() for name in include if name and name.strip()}
     known = {target.command for target in TARGETS}
     unknown = extra - known
@@ -181,7 +220,14 @@ def selected_targets(include: Iterable[str] = ()) -> tuple[ShimTarget, ...]:
             exit_code=EXIT_USAGE,
             hint=f"可选：{'、'.join(sorted(known))}",
         )
-    return tuple(t for t in TARGETS if t.default_on or t.command in extra)
+    auto_agent = looks_like_cursor_cli("agent")
+    selected = []
+    for target in TARGETS:
+        if target.default_on or target.command in extra:
+            selected.append(target)
+        elif target.command == "agent" and auto_agent:
+            selected.append(target)
+    return tuple(selected)
 
 
 def _installed_targets(targets: Iterable[ShimTarget]) -> tuple[ShimTarget, ...]:
@@ -218,19 +264,29 @@ def _render_posix(targets: Sequence[ShimTarget]) -> str:
         "    shift",
         "    [ -n \"${PICKUP_SHIM_ACTIVE:-}\" ] && return 0   # 已经由 pickup 拉起，防递归",
         "    [ -n \"${PICKUP_RUNTIME:-}\" ] && return 0       # 已在 pickup 托管会话内",
-        "    [ -n \"${TMUX:-}\" ] && return 0                 # 已在 tmux 内，不再套一层",
-        "    [ -n \"${STY:-}\" ] && return 0                  # screen 同理",
+        "    [ -n \"${SC_RUNTIME:-}\" ] && return 0           # 旧变量名，兼容改名前的托管会话",
         "    { [ -t 0 ] && [ -t 1 ]; } || return 0            # 非真实终端：脚本/管道/无头调用",
         "    command -v pickup >/dev/null 2>&1 || return 0    # pickup 不在了，退回真身",
-        "    local arg",
+        "    local arg sub=\"\"",
         "    for arg in \"$@\"; do",
         "        case \"$arg\" in",
         f"            {'|'.join(COMMON_PASSTHROUGH)}) return 0 ;;",
         "        esac",
-        "        case \" $words \" in",
-        "            *\" $arg \"*) return 0 ;;",
+        "        case \"$arg\" in",
+        "            -*)",
+        "                case \" $words \" in",
+        "                    *\" $arg \"*) return 0 ;;",
+        "                esac",
+        "                ;;",
+        "            *)",
+        "                [ -z \"$sub\" ] && sub=\"$arg\"",
+        "                ;;",
         "        esac",
         "    done",
+        "    [ -n \"$sub\" ] || return 1",
+        "    case \" $words \" in",
+        "        *\" $sub \"*) return 0 ;;",
+        "    esac",
         "    return 1",
         "}",
         "",
@@ -267,18 +323,27 @@ def _render_fish(targets: Sequence[ShimTarget]) -> str:
         "        set -l rest $argv[2..-1]",
         "        if set -q PICKUP_SHIM_ACTIVE; return 0; end",
         "        if set -q PICKUP_RUNTIME; return 0; end",
-        "        if set -q TMUX; return 0; end",
-        "        if set -q STY; return 0; end",
+        "        if set -q SC_RUNTIME; return 0; end",
         "        if not isatty stdin; return 0; end",
         "        if not isatty stdout; return 0; end",
         "        if not command -q pickup; return 0; end",
+        "        set -l sub ''",
         "        for arg in $rest",
         f"            if contains -- $arg {' '.join(COMMON_PASSTHROUGH)}",
         "                return 0",
         "            end",
-        "            if contains -- $arg $words",
-        "                return 0",
+        "            if string match -q -- '-*' $arg",
+        "                if contains -- $arg $words",
+        "                    return 0",
+        "                end",
+        "                continue",
         "            end",
+        "            if test -z \"$sub\"",
+        "                set sub $arg",
+        "            end",
+        "        end",
+        "        if test -n \"$sub\"; and contains -- $sub $words",
+        "            return 0",
         "        end",
         "        return 1",
         "    end",
@@ -459,7 +524,7 @@ def _apply(*, shell: str | None, home: str | os.PathLike[str] | None,
             "no_runtime_installed",
             "本机没有检测到任何可拦截的命令行 Agent",
             exit_code=EXIT_NOT_FOUND,
-            hint="先装上 claude / codex / opencode / kimi / cursor-agent 任一后再执行",
+            hint="先装上 claude / codex / opencode / kimi / cursor-agent / agent 任一后再执行",
         )
 
     spath = script_path(shell, home)
@@ -562,7 +627,7 @@ def _parser() -> _ArgumentParser:
     parser.add_argument("--shell", choices=SUPPORTED_SHELLS, default=None,
                         help="目标 shell，默认按 $SHELL 自动探测")
     parser.add_argument("--include", action="append", default=[], metavar="命令",
-                        help="额外拦截默认关闭的命令（目前是 agent），可重复")
+                        help="强制拦截未能自动识别的命令（例如认不出是 Cursor 的 agent），可重复")
     parser.add_argument("--json", action="store_true", dest="json_output", help="输出结构化 JSON")
     parser.add_argument("--dry-run", action="store_true", help="只预演，不写入任何文件")
     return parser
@@ -613,7 +678,7 @@ def _print(payload: dict[str, Any], *, json_output: bool) -> None:
     skipped = [c["command"] for c in data.get("commands", [])
                if c.get("installed") and not c.get("selected")]
     if skipped:
-        print(f"  未拦截（需 --include 显式开启）：{'、'.join(skipped)}")
+        print(f"  未拦截（未识别为对应助手，可用 --include 强制）：{'、'.join(skipped)}")
     if data.get("missing_commands"):
         print(f"  待补拦截（新装的运行时）：{'、'.join(data['missing_commands'])}")
     if data.get("reload_hint"):
@@ -648,4 +713,5 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
         return wrapped.exit_code
 
 
-__all__ = ["cli_main", "install", "render_script", "status", "uninstall", "TARGETS"]
+__all__ = ["cli_main", "install", "looks_like_cursor_cli", "render_script",
+           "status", "uninstall", "TARGETS"]

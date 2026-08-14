@@ -274,7 +274,7 @@ aliases for `pickup cursor` (Cursor's installer ships both `agent` and `cursor-a
 
 ## Command Interception (type the real command, get pickup)
 
-pickup automatically enables interception during installation and whenever it first opens interactively. Typing `claude`, `codex`, `opencode`, `kimi`, `cursor-agent` or `pi` in your
+pickup automatically enables interception during installation and whenever it first opens interactively. Typing `claude`, `codex`, `opencode`, `kimi`, `cursor-agent`, `agent` (when it is Cursor's CLI), or `pi` in your
 terminal is the same as typing `pickup <runtime>`: the new session is hosted, auto-approved, and
 survives disconnects.
 
@@ -282,7 +282,7 @@ survives disconnects.
 pickup shim status                    # what's installed for the current shell
 pickup shim install                   # install (adds one marked block to your shell config)
 pickup shim install --dry-run --json  # preview only, writes nothing
-pickup shim install --include agent   # also intercept the generic name `agent` (off by default)
+pickup shim install --include agent   # force-intercept `agent` if it wasn't recognized as Cursor
 pickup shim uninstall                 # remove only pickup's block, leave everything else intact
 ```
 
@@ -294,12 +294,14 @@ These always run the real command untouched:
 
 - headless/scripted calls (`claude -p "..."`, `codex exec ...`, pipes, CI, editor extensions, agents
   spawning agents);
-- management subcommands (`claude update`, `pi install`, `cursor-agent login`, …);
-- anything already inside tmux / screen / a pickup-hosted session (no double wrapping);
+- management subcommands (`claude update`, `pi install`, `agent login`, `agent about`, …);
+- commands already inside a pickup-hosted session (no double wrapping). Your own tmux/screen sessions
+  are still intercepted;
 - when `pickup` isn't on PATH (e.g. you uninstalled it) — your original command always still works.
 
-`agent` is opt-in: Cursor claimed that very generic name, and intercepting it can shadow unrelated
-tools on your machine, so enable it explicitly with `--include agent`.
+`agent` is intercepted automatically only when pickup recognizes it as Cursor's CLI (the official
+install, or a local wrapper that still launches Cursor). Other tools with that name are left alone;
+use `--include agent` if recognition misses your install.
 
 ## Keep-Alive (survive SSH disconnects)
 
