@@ -217,6 +217,55 @@ class KimiAttentionSignalTests(unittest.TestCase):
             self.assertIsNotNone(evidence.activity_token)
 
 
+class PiAttentionSignalTests(unittest.TestCase):
+    def test_prompt_question_answer_and_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pi.jsonl"
+            prompt = {
+                "type": "message", "id": "u1", "timestamp": "2026-08-14T10:00:00Z",
+                "message": {"role": "user", "content": "请继续"},
+            }
+            question = {
+                "type": "message", "id": "a1", "timestamp": "2026-08-14T10:00:01Z",
+                "message": {
+                    "role": "assistant", "stopReason": "toolUse",
+                    "content": [{"type": "toolCall", "id": "ask-1", "name": "request_user_input"}],
+                },
+            }
+            _write_jsonl(path, [prompt, question])
+            waiting = inspect_session(_session("pi", path))
+            self.assertEqual(waiting.phase, "waiting")
+            self.assertIsNotNone(waiting.question_token)
+
+            answer = {
+                "type": "message", "id": "r1", "timestamp": "2026-08-14T10:00:02Z",
+                "message": {"role": "toolResult", "toolCallId": "ask-1", "content": []},
+            }
+            _write_jsonl(path, [question, answer])
+            self.assertEqual(inspect_session(_session("pi", path)).phase, "working")
+
+            completed = {
+                "type": "message", "id": "a2", "timestamp": "2026-08-14T10:00:03Z",
+                "message": {
+                    "role": "assistant", "stopReason": "stop",
+                    "content": [{"type": "text", "text": "已完成"}],
+                },
+            }
+            _write_jsonl(path, [question, answer, completed])
+            evidence = inspect_session(_session("pi", path))
+            self.assertEqual(evidence.phase, "idle")
+            self.assertIsNotNone(evidence.activity_token)
+
+    def test_non_live_prompt_never_reports_working(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pi.jsonl"
+            _write_jsonl(path, [{
+                "type": "message", "id": "u1", "timestamp": "2026-08-14T10:00:00Z",
+                "message": {"role": "user", "content": "请继续"},
+            }])
+            self.assertEqual(inspect_session(_session("pi", path, live=False)).phase, "idle")
+
+
 class OpenCodeAttentionSignalTests(unittest.TestCase):
     def _database(self, path: Path) -> sqlite3.Connection:
         connection = sqlite3.connect(path)

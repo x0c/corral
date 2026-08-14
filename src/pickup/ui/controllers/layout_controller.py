@@ -14,6 +14,15 @@ from textual import work
 from pickup.ui.session_list import SessionListView
 
 
+def _preserve_missing_group_members(
+    stored, target_keys: list[str], *, include_inactive: bool,
+) -> bool:
+    """浏览既有分组时，暂未扫描到的成员不能被当作用户移出分组。"""
+    if not include_inactive or stored is None:
+        return False
+    return bool(set(stored.session_keys) - set(target_keys))
+
+
 class LayoutControllerMixin:
     """依赖宿主提供：`embed_ok`、`direct`、`store`、`_split_area()`、
     `_is_session_active`、`_can_autofocus`、`_begin_attention_read`、
@@ -49,13 +58,13 @@ class LayoutControllerMixin:
         return migrated
 
     def _sync_split_marks(self) -> None:
-        """把右栏当前分屏组合与激活格投影到组标题和激活子会话底色。
+        """把右栏当前分屏组合投影到侧边栏：整组铺底，激活会话再重一档。
 
         右栏格数、格内绑定的会话、激活格都可能变；这里统一取一次现状交给列表，
         列表内部会跟上次比对，没变就不动 DOM。
 
-        光标停在会话组卡上时：只给组标题铺底，不标任何子会话为「激活」——点组卡
-        是在看整组，不是选中某一个成员。
+        选中会话组时仍然保留激活格：Group 行和全部成员都铺组底色，当前持有输入
+        的那一格对应成员再叠一层更重的激活底色。
         """
         if not self.embed_ok:
             return
@@ -64,10 +73,7 @@ class LayoutControllerMixin:
             session_list = self.query_one(SessionListView)
         except Exception:  # noqa: BLE001 分栏/列表重建中间态查不到，下一轮兜底同步会补上
             return
-        active = area.focus_key
-        if session_list.selected_group() is not None:
-            active = None
-        session_list.set_split_marks(area.ordered_session_keys(), active)
+        session_list.set_split_marks(area.ordered_session_keys(), area.focus_key)
 
     def _apply_layout_change(self, mutate):
         """把一次侧边栏记忆改动交给记忆库，并把返回的最新快照就地采纳。
@@ -223,9 +229,20 @@ class LayoutControllerMixin:
         # 整表写盘，还会在多窗口下把对方刚改过的组合整份断言回来。
         stored = self._split_store.get_group(focus_key)
         target_keys = [pickup.session_key(session) for session, _, _ in entries]
-        composition_unchanged = (
-            stored is not None and list(stored.session_keys) == target_keys
+        preserve_missing_members = _preserve_missing_group_members(
+            stored, target_keys, include_inactive=include_inactive,
         )
+        composition_unchanged = (
+            preserve_missing_members
+            or (stored is not None and list(stored.session_keys) == target_keys)
+        )
+        if preserve_missing_members:
+            from pickup import observe
+
+            observe.event(
+                "split_group_member_missing",
+                missing_count=len(set(stored.session_keys) - set(target_keys)),
+            )
         area.show_hosted_group(
             project, entries, focus_key=focus_key, focus_pane=focus_pane and self._can_autofocus(),
         )

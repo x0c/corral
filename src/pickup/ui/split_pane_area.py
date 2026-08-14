@@ -19,6 +19,23 @@ from pickup.ui.embed_pane import EmbedPane, ModeChanged
 from pickup.ui.runtime_top_bar import RuntimeTopBar
 from pickup.ui.session_hud import SessionHud
 
+_LIST_FOCUS_IDS = frozenset({
+    "session-list", "sidebar-sticky", "sidebar-scroll",
+})
+_LIST_FOCUS_TYPES = frozenset({"SessionListView", "_SidebarList"})
+
+
+def _session_list_has_focus(focused) -> bool:
+    """焦点是否在侧边栏会话列表（含固定头 / 未置顶两段内层 ListView）。"""
+    node = focused
+    while node is not None:
+        if getattr(node, "id", None) in _LIST_FOCUS_IDS:
+            return True
+        if type(node).__name__ in _LIST_FOCUS_TYPES:
+            return True
+        node = getattr(node, "parent", None)
+    return False
+
 
 def projected_embed_sizes(
     row_width: int, row_height: int, count: int,
@@ -1147,9 +1164,8 @@ class SplitPaneArea(Vertical):
     ) -> None:
         """在已有格池上改绑 / 显隐。`sync=True` 表示同步路径（已计入 _mount_pending）。"""
         focused = getattr(self.app, "focused", None)
-        list_had_focus = not focus_pane and focused is not None and (
-            getattr(focused, "id", None) == "session-list"
-            or type(focused).__name__ == "SessionListView"
+        list_had_focus = (
+            not focus_pane and focused is not None and _session_list_has_focus(focused)
         )
         serial = self._focus_intent_serial
         self._mount_pending = max(0, self._mount_pending - 1)
@@ -1195,9 +1211,8 @@ class SplitPaneArea(Vertical):
         # 但 focus_pane 是调用方的明确意图（回车打开 / 新建托管成功），优先级
         # 高于「把焦点还回列表」，否则自动聚焦会被这段逻辑立刻撤销。
         focused = getattr(self.app, "focused", None)
-        list_had_focus = not focus_pane and focused is not None and (
-            getattr(focused, "id", None) == "session-list"
-            or type(focused).__name__ == "SessionListView"
+        list_had_focus = (
+            not focus_pane and focused is not None and _session_list_has_focus(focused)
         )
         serial = self._focus_intent_serial
         self._mount_pending = max(0, self._mount_pending - 1)

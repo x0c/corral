@@ -68,8 +68,28 @@ def is_cursor_agent_cmdline(cmdline: str) -> bool:
     return "cursor-agent/" in normalized and "/index.js" in normalized
 
 
-def _cursor_agent_pids_by_cmdline() -> list[int]:
-    """按 cmdline 扫描 Cursor agent 主进程 pid；失败返回空列表。"""
+def is_pi_cmdline(cmdline: str) -> bool:
+    """判断命令行是否为 Pi coding agent 主进程。
+
+    npm 全局安装的 ``pi`` 是 ``#!/usr/bin/env node`` 的 ``cli.js``，进程 comm 是
+    ``node`` 不是 ``pi``，``pgrep -x pi`` 会漏掉。标题生成用 ``--no-session``，
+    不落盘、不能当作用户会话判活。
+    """
+    text = str(cmdline or "").strip()
+    if not text:
+        return False
+    tokens = text.split()
+    if "--no-session" in tokens:
+        return False
+    argv0 = tokens[0]
+    if os.path.basename(argv0) == "pi":
+        return True
+    normalized = text.replace("\\", "/")
+    return "pi-coding-agent/" in normalized and "/cli.js" in normalized
+
+
+def _pids_matching_cmdline(predicate) -> list[int]:
+    """按 cmdline 谓词扫进程 pid；失败返回空列表。"""
     pids: list[int] = []
     if sys.platform.startswith("linux"):
         try:
@@ -87,7 +107,7 @@ def _cursor_agent_pids_by_cmdline() -> list[int]:
             if not raw:
                 continue
             cmdline = raw.replace(b"\x00", b" ").decode(errors="replace").strip()
-            if is_cursor_agent_cmdline(cmdline):
+            if predicate(cmdline):
                 pids.append(int(name))
         return pids
     try:
@@ -108,13 +128,23 @@ def _cursor_agent_pids_by_cmdline() -> list[int]:
             pid = int(parts[0])
         except ValueError:
             continue
-        if is_cursor_agent_cmdline(parts[1]):
+        if predicate(parts[1]):
             pids.append(pid)
     return pids
 
 
+def _cursor_agent_pids_by_cmdline() -> list[int]:
+    """按 cmdline 扫描 Cursor agent 主进程 pid；失败返回空列表。"""
+    return _pids_matching_cmdline(is_cursor_agent_cmdline)
+
+
+def _pi_pids_by_cmdline() -> list[int]:
+    """按 cmdline 扫描 Pi 主进程 pid；失败返回空列表。"""
+    return _pids_matching_cmdline(is_pi_cmdline)
+
+
 def _pids_for_process_name(process_name: str) -> list[int]:
-    """精确进程名 +（仅 agent）cmdline 兜底，合并去重。"""
+    """精确进程名 +（agent / pi）cmdline 兜底，合并去重。"""
     found: list[int] = []
     seen: set[int] = set()
     try:
@@ -132,10 +162,15 @@ def _pids_for_process_name(process_name: str) -> list[int]:
             seen.add(pid)
             found.append(pid)
     if process_name == "agent":
-        for pid in _cursor_agent_pids_by_cmdline():
-            if pid not in seen:
-                seen.add(pid)
-                found.append(pid)
+        extra = _cursor_agent_pids_by_cmdline()
+    elif process_name == "pi":
+        extra = _pi_pids_by_cmdline()
+    else:
+        extra = []
+    for pid in extra:
+        if pid not in seen:
+            seen.add(pid)
+            found.append(pid)
     return found
 
 
@@ -148,7 +183,8 @@ def live_processes(process_name: str) -> list[tuple[int, str]]:
     命令行解析出会话 ID，则应逐进程精确绑定。
 
     对 ``agent``：除 ``pgrep -x`` 外还会按 cmdline 兜底（Cursor 会把 comm 改成
-    ``MainThread``）。已知局限：同名的其它子命令进程（如 ``<name> serve``）
+    ``MainThread``）。对 ``pi``：npm 包装后 comm 常是 ``node``，同样按 cmdline
+    兜底。已知局限：同名的其它子命令进程（如 ``<name> serve``）
     会被一并计入。任一环节失败都静默降级为空列表，不抛异常。
     """
     found: list[tuple[int, str]] = []

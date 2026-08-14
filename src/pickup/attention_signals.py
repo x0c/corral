@@ -366,6 +366,80 @@ def _inspect_kimi(session: dict) -> AttentionEvidence:
     return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
 
 
+def _inspect_pi(session: dict) -> AttentionEvidence:
+    """从 Pi 已落盘的完整消息与工具调用判断会话关注状态。
+
+    Pi 只在一轮助手输出完成后写入 assistant 消息，因此 ``stop``、``error`` 和
+    ``aborted`` 都是稳定的空闲证据；用户消息、工具调用和工具结果后的下一轮则只在
+    进程仍存活时显示为执行中。自定义扩展若使用统一的结构化提问工具名，同样可得到
+    等待回答提示。
+    """
+    path = str(session.get("path") or "")
+    entries = _read_jsonl_tail(path)
+    if not entries:
+        return _evidence(observed_at=_stable_observed_at(session, path))
+
+    live = session.get("live") is True
+    phase = "unknown"
+    pending: dict[str, str] = {}
+    activity_token = None
+    observed_at = _stable_observed_at(session, path)
+
+    for entry in entries:
+        if entry.get("type") != "message":
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        native = _event_native(entry, "id", "timestamp")
+        timestamp = message.get("timestamp") or entry.get("timestamp")
+
+        if role == "user":
+            phase = "working"
+            observed_at = _advance_observed(observed_at, timestamp)
+            continue
+
+        if role == "toolResult":
+            call_id = str(message.get("toolCallId") or "")
+            if pending.pop(call_id, None) is not None:
+                phase = "working"
+                observed_at = _advance_observed(observed_at, timestamp)
+            continue
+
+        if role != "assistant":
+            continue
+
+        tool_calls = [
+            part for part in _content_parts(entry) if part.get("type") == "toolCall"
+        ]
+        for tool_call in tool_calls:
+            if tool_call.get("name") not in _QUESTION_TOOLS:
+                continue
+            call_id = str(tool_call.get("id") or "")
+            if call_id:
+                pending[call_id] = _token("pi", "question", call_id) or call_id
+
+        stop_reason = str(message.get("stopReason") or "")
+        if tool_calls or stop_reason == "toolUse":
+            phase = "working"
+        elif stop_reason in {"stop", "error", "aborted", "length"}:
+            phase = "idle"
+            activity_token = _token("pi", "assistant", native) or activity_token
+        observed_at = _advance_observed(observed_at, timestamp)
+
+    if pending and live:
+        return _evidence(
+            "waiting",
+            activity_token=activity_token,
+            question_token=next(reversed(pending.values())),
+            observed_at=observed_at,
+        )
+    if phase in {"working", "waiting"} and not live:
+        phase = "idle"
+    return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
+
+
 def _connect_ro(path: str, *, immutable: bool = False) -> sqlite3.Connection | None:
     try:
         suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
@@ -549,6 +623,7 @@ _INSPECTORS = {
     "kimi": _inspect_kimi,
     "opencode": _inspect_opencode,
     "cursor": _inspect_cursor,
+    "pi": _inspect_pi,
 }
 
 

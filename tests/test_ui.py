@@ -70,6 +70,7 @@ from pickup.ui.session_list import (
     NEW_SESSION_ID,
     PIN_SEP_ID,
     TODAY_SEP_ID,
+    NewSessionCard,
     PinSeparatorCard,
     SessionCard,
     SessionGroupCard,
@@ -1020,6 +1021,82 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(area.ordered_session_keys(), [new_key])
 
+    async def test_pi_provisional_refresh_keeps_split_group_without_duplicate(self) -> None:
+        """Pi 历史落盘后占位卡转正：分屏组跟上新键，侧边栏不得在组外再挂一张。"""
+        kname = "pickup-pi-abcd1234"
+        companion_kname = "pickup-claude-companion"
+        companion = {
+            "source": "claude", "id": "companion", "short_id": "companion",
+            "mtime": time.time() - 1, "size_bytes": 1, "size_kb": 1,
+            "native_title": "同伴", "fallback_title": "同伴",
+            "cwd": "/tmp/proj", "live": True, "keepalive_name": companion_kname,
+        }
+        pi_runtime = mock.Mock()
+        pi_runtime.id = "pi"
+        pi_runtime.display_name = "Pi"
+        pi_runtime.is_available.return_value = True
+        pi_runtime.scan_signature.return_value = None
+        pi_runtime.scan_sessions.return_value = []
+        pi_runtime.load_conversation.return_value = []
+        store, _ = _make_store(sessions=[companion], extra_runtimes=(pi_runtime,))
+        provisional = store.register_hosted_session(
+            runtime_id="pi",
+            keepalive_name=kname,
+            title="新Pi会话",
+            cwd="/tmp/proj",
+            ident="abcd1234",
+        )
+        old_key = pickup.session_key(provisional)
+        real_id = "019ffa0b-6679-7e5e-bfd9-1615e07cf643"
+        new_key = f"pi:{real_id}"
+        companion_key = pickup.session_key(companion)
+        real = {
+            "source": "pi", "id": real_id, "short_id": real_id[:12],
+            "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+            "native_title": "真会话", "fallback_title": "真会话",
+            "cwd": "/tmp/proj", "live": False,
+        }
+        app = PickupApp(store, embed_ok=True)
+        real_refresh = store.refresh
+        with mock.patch.object(store, "refresh", return_value=False):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                area = app.screen.query_one(SplitPaneArea)
+                app.screen._apply_layout_change(  # noqa: SLF001
+                    lambda s: s.set_group(
+                        "/tmp/proj", [old_key, companion_key], focus_key=old_key
+                    )
+                )
+                with mock.patch("pickup.embed.is_alive", return_value=True), mock.patch.object(
+                    pickup.keepalive, "annotate"
+                ):
+                    area.show_hosted_group(
+                        "/tmp/proj",
+                        [(provisional, kname, lambda: ""), (companion, companion_kname, lambda: "")],
+                        focus_key=old_key,
+                    )
+                    list_view = app.screen.query_one(SessionListView)
+                    await list_view.rebuild(select_key=old_key)
+                    pi_runtime.scan_sessions.return_value = [real]
+                    real_refresh()
+                    await app.screen._rebuild_list()  # noqa: SLF001
+                    group = app.screen._split_store.get_group(new_key)  # noqa: SLF001
+                    self.assertIsNotNone(group)
+                    self.assertEqual(set(group.session_keys), {new_key, companion_key})
+                    self.assertIsNone(store.find_session(old_key))
+                    grouped = set(group.session_keys)
+                    visible = [
+                        pickup.session_key(session)
+                        for session in list_view.visible_sessions()
+                    ]
+                    self.assertIn(new_key, visible)
+                    self.assertNotIn(old_key, visible)
+                    ungrouped_pi = [
+                        key for key in visible
+                        if key.startswith("pi:") and key not in grouped
+                    ]
+                    self.assertEqual(ungrouped_pi, [])
+
     async def test_resize_full_repaint_is_debounced(self) -> None:
         """连续缩放手势只在停稳后触发一次整屏全量重绘，不能每次尺寸变化都狂刷。"""
         import pickup.ui.app as app_mod
@@ -1608,7 +1685,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             search = app.screen.query_one("#project-search", Input)
             list_view = app.screen.query_one(SessionListView)
-            items = list(list_view.children)
+            items = list(list_view.list_children)
             cards = list(app.screen.query(SessionCard))
 
             # 筛选条用表面层弱化文字，不再白字铺高饱和主色底
@@ -1621,7 +1698,6 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(items[2].region.y - items[1].region.bottom, 0)
             self.assertTrue(cards)
             self.assertTrue(all(card.region.height == 3 for card in cards))
-            from pickup.ui.session_list import NewSessionCard
             new_card = app.screen.query_one(NewSessionCard)
             self.assertEqual(new_card.region.height, 2)
             # 搜索框底边紧贴新建项顶边（搜索的末行间隔已含在 height: 2 内）
@@ -1693,7 +1769,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
-    """右栏分屏时只高亮会话组标题和当前激活的子会话。"""
+    """右栏分屏时整组铺底，当前激活子会话再重一档。"""
 
     @staticmethod
     def _items(app):
@@ -1730,22 +1806,23 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             inactive_row = session_rows[keys[0]]
             self.assertTrue(group_row.has_class("-in-split"))
             self.assertTrue(active_row.has_class("-split-active"))
-            self.assertFalse(inactive_row.has_class("-in-split"))
+            self.assertTrue(inactive_row.has_class("-in-split"))
             self.assertFalse(inactive_row.has_class("-split-active"))
-            # 组标题明显浮出列表底色，激活子会话再重一档
+            # 组标题与未激活成员同档铺底，激活子会话再重一档
             plain_bg = app.screen.query_one(SessionListView).styles.background
             active_bg = active_row.styles.background
             listed_bg = group_row.styles.background
+            inactive_bg = inactive_row.styles.background
             self.assertGreater(
                 self._weight(active_bg, app), self._weight(listed_bg, app)
             )
             self.assertGreater(
                 self._weight(listed_bg, app), self._weight(plain_bg, app)
             )
-            self.assertEqual(inactive_row.styles.background.a, 0)
+            self.assertEqual(inactive_bg, listed_bg)
 
-    async def test_selecting_group_card_clears_member_split_active(self) -> None:
-        """光标停在会话组卡上时只高亮组标题，不得再高亮其中某一个成员。"""
+    async def test_selecting_group_card_highlights_whole_group(self) -> None:
+        """光标停在会话组卡上时整组铺底，激活格对应成员仍格外高光。"""
         sessions = [
             {
                 "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
@@ -1784,17 +1861,20 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertTrue(member0.has_class("-split-active"))
 
-                # 点到 / 选中组卡：组标题保留 -in-split，所有成员都去掉 -split-active
+                # 点到 / 选中组卡：Group 行和全部成员都铺 -in-split，激活格仍格外高光
                 group_row = list_view._group_items()[0][0]
-                list_view.index = list(list_view.children).index(group_row)
+                list_view.index = list(list_view.list_children).index(group_row)
                 await pilot.pause()
                 app.screen._sync_split_marks()  # noqa: SLF001
                 self.assertTrue(group_row.has_class("-in-split"))
-                for item, _card in list_view._session_items():
-                    self.assertFalse(
-                        item.has_class("-split-active"),
-                        "选中组卡时不应高亮任何子会话",
-                    )
+                session_rows = {
+                    pickup.session_key(card.session): item
+                    for item, card in list_view._session_items()
+                }
+                self.assertTrue(session_rows[keys[0]].has_class("-in-split"))
+                self.assertTrue(session_rows[keys[0]].has_class("-split-active"))
+                self.assertTrue(session_rows[keys[1]].has_class("-in-split"))
+                self.assertFalse(session_rows[keys[1]].has_class("-split-active"))
 
     @staticmethod
     def _weight(color, app) -> float:
@@ -1822,10 +1902,10 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             )
             listed_bg = group_row.styles.background
             active_bg = active_row.styles.background
-            list_view.index = list(list_view.children).index(group_row)
+            list_view.index = list(list_view.list_children).index(group_row)
             await pilot.pause()
             listed_cursor_bg = group_row.styles.background
-            list_view.index = list(list_view.children).index(active_row)
+            list_view.index = list(list_view.list_children).index(active_row)
             await pilot.pause()
             active_cursor_bg = active_row.styles.background
 
@@ -1886,11 +1966,11 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
 
     def _assert_dom_matches_rows(self, list_view: SessionListView) -> None:
         rows = list_view._sidebar_rows()
-        new_item = list_view.children[0]
+        new_item = list_view.list_children[0]
         self.assertEqual(new_item.id, NEW_SESSION_ID)
         self.assertFalse(new_item.children[0].has_class("-stripe"))
         for item, row in zip(
-            [child for child in list_view.children if child.id != NEW_SESSION_ID],
+            [child for child in list_view.list_children if child.id != NEW_SESSION_ID],
             rows,
             strict=True,
         ):
@@ -2214,23 +2294,23 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 for item, card in list_view._session_items()
                 if pickup.session_key(card.session) == independent_key
             )
-            list_view.index = list(list_view.children).index(independent_item)
+            list_view.index = list(list_view.list_children).index(independent_item)
             await pilot.press("p")
             await _wait_until(
                 lambda: independent_key in list_view.group_store.pinned_session_keys
             )
-            first_card = list_view.children[1].children[0]
+            first_card = list_view.list_children[1].children[0]
             self.assertIsInstance(first_card, SessionCard)
             self.assertIn("↑", first_card.render().plain.splitlines()[0])
 
             group_item = list_view._group_items()[0][0]
-            list_view.index = list(list_view.children).index(group_item)
+            list_view.index = list(list_view.list_children).index(group_item)
             await pilot.press("p")
             group = list_view.group_store.get_group(keys[0])
             await _wait_until(
                 lambda: group.group_id in list_view.group_store.pinned_group_ids
             )
-            first_card = list_view.children[1].children[0]
+            first_card = list_view.list_children[1].children[0]
             self.assertIsInstance(first_card, SessionGroupCard)
             self.assertIn("↑", first_card.render().plain.splitlines()[0])
 
@@ -2302,6 +2382,59 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 pinned_key,
             )
 
+    async def test_filter_new_and_pinned_stay_fixed_when_unpinned_scrolls(self) -> None:
+        """筛选框、＋新建、置顶块固定不可滚；指针在固定头上滚轮仍带动未置顶区。"""
+        now = time.time()
+        sessions = [
+            _claude_session("pin-me", now - 60, "置顶会话"),
+            *[
+                _claude_session(
+                    f"old-{i}",
+                    now - 3 * pickup.TODAY_SECONDS - i,
+                    f"更早{i}",
+                )
+                for i in range(18)
+            ],
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 24)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            list_view.on_layout_change(
+                lambda s: s.toggle_session_pin("claude:pin-me")
+            )
+            await list_view.rebuild()
+            await pilot.pause()
+            search = app.screen.query_one("#project-search", Input)
+            new_card = app.screen.query_one(NewSessionCard)
+            pinned_card = next(
+                card
+                for card in app.screen.query(SessionCard)
+                if pickup.session_key(card.session) == "claude:pin-me"
+            )
+            scroll = list_view.query_one("#sidebar-scroll")
+            search_y = search.region.y
+            new_y = new_card.region.y
+            pinned_y = pinned_card.region.y
+            self.assertGreater(
+                scroll.max_scroll_y, 0, "未置顶区必须长到能滚，否则测不到固定头"
+            )
+            sticky = list_view.query_one("#sidebar-sticky")
+            wheel = events.MouseScrollDown(
+                None, 1, 1, 0, 0, 0, False, False, False
+            )
+            sticky._on_mouse_scroll_down(wheel)
+            app.screen.on_mouse_scroll_down(
+                events.MouseScrollDown(
+                    search, 0, 0, 0, 0, 0, False, False, False
+                )
+            )
+            await pilot.pause()
+            self.assertEqual(search.region.y, search_y)
+            self.assertEqual(new_card.region.y, new_y)
+            self.assertEqual(pinned_card.region.y, pinned_y)
+            self.assertGreater(scroll.scroll_y, 0)
 
     def test_live_or_recent_mtime_counts_as_today(self) -> None:
         """滚动 24 小时界：live 优先，与时间行 today 档共用 TODAY_SECONDS。"""
@@ -3266,7 +3399,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             list_view = app.screen.query_one(SessionListView)
             self.assertFalse(list_view.ALLOW_SELECT)
             self.assertTrue(
-                all(isinstance(item, NoSelectListItem) for item in list_view.children)
+                all(isinstance(item, NoSelectListItem) for item in list_view.list_children)
             )
             cards = list(app.screen.query(SessionCard))
             clicked = await pilot.click(cards[1], offset=(5, 0))
@@ -6643,10 +6776,10 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
         list_view.focus()
         group_item = next(
             item
-            for item in list_view.children
+            for item in list_view.list_children
             if item.children and isinstance(item.children[0], SessionGroupCard)
         )
-        list_view.index = list(list_view.children).index(group_item)
+        list_view.index = list(list_view.list_children).index(group_item)
         return list_view, keys
 
     async def test_x_on_group_card_deletes_every_member(self) -> None:

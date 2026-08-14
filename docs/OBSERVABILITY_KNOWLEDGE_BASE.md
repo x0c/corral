@@ -84,6 +84,7 @@ flowchart TD
 |---|---|---|
 | `scan_all` | 会话初始加载或后台重扫完成 | `duration_ms`、会话数量等低基数事实 |
 | `list_rebuild` | 界面会话列表重建结束 | 耗时与重建模式 |
+| `split_group_member_missing` | 浏览既有会话组时，后台扫描暂时未发现某个成员 | 缺失数量；不记录会话名称、标题或正文 |
 | `host_session` | 内嵌会话托管成功或失败 | 耗时、运行时、`ok` |
 | `capture_slow` | 单次抓帧达到或超过 100ms | 耗时与低基数状态 |
 | `host_size_drift` | 抓帧线程发现 tmux 真实尺寸落后于格子期望并重发 `resize` | 实际/期望宽高与重试次数；同一目标最多 3 次、间隔约 2s |

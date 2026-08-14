@@ -3177,6 +3177,136 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertIsNotNone(store.find_session("cursor:real-uuid"))
         self.assertNotIn(key, store._provisional)
 
+    def test_pi_unique_newcomer_retires_provisional_instead_of_duplicating(self) -> None:
+        """Pi 落盘 uuid 与占位 ident 不同、又没 pid 可 annotate 时，同 cwd 唯一新卡应退役占位。
+
+        真机：分屏里新建 Pi，过一会儿组外冒出真实卡，组里还留着占位卡；或占位
+        被清掉后真实卡跑到组外。同目录只有一张活着的占位卡时可以安全认领。
+        """
+        pi_runtime = mock.Mock()
+        pi_runtime.id = "pi"
+        pi_runtime.display_name = "Pi"
+        pi_runtime.scan_signature.return_value = None
+        pi_runtime.scan_sessions.return_value = []
+        registry = pickup.RuntimeRegistry((pi_runtime,))
+        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+            store = pickup.SessionStore(limit=20, registry=registry)
+            store.load()
+
+        provisional = store.register_hosted_session(
+            runtime_id="pi",
+            keepalive_name="pickup-pi-abcd1234",
+            title="新Pi会话",
+            cwd="/tmp/proj",
+            ident="abcd1234",
+        )
+        old_key = pickup.session_key(provisional)
+        real = {
+            "source": "pi", "id": "019ffa0b-6679-7e5e-bfd9-1615e07cf643",
+            "short_id": "019ffa0b6679", "mtime": 9.0,
+            "size_bytes": 1, "size_kb": 1, "native_title": "真会话",
+            "fallback_title": "真会话", "cwd": "/tmp/proj", "live": False, "pid": None,
+        }
+        pi_runtime.scan_sessions.return_value = [real]
+        with mock.patch.object(pickup.keepalive, "annotate"), mock.patch.object(
+            pickup.embed, "is_alive", return_value=True
+        ):
+            store.refresh()
+        self.assertIsNone(store.find_session(old_key))
+        claimed = store.find_session("pi:019ffa0b-6679-7e5e-bfd9-1615e07cf643")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.get("keepalive_name"), "pickup-pi-abcd1234")
+        self.assertNotIn(old_key, store._provisional)
+        self.assertEqual(
+            store.hosted.get("pi:019ffa0b-6679-7e5e-bfd9-1615e07cf643"),
+            "pickup-pi-abcd1234",
+        )
+
+    def test_pi_two_newcomers_same_cwd_do_not_cross_claim(self) -> None:
+        """同目录两个新建 Pi 同时落盘时不能靠 cwd 猜，否则分屏两格会串台。"""
+        pi_runtime = mock.Mock()
+        pi_runtime.id = "pi"
+        pi_runtime.display_name = "Pi"
+        pi_runtime.scan_signature.return_value = None
+        pi_runtime.scan_sessions.return_value = []
+        registry = pickup.RuntimeRegistry((pi_runtime,))
+        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+            store = pickup.SessionStore(limit=20, registry=registry)
+            store.load()
+
+        first = store.register_hosted_session(
+            runtime_id="pi",
+            keepalive_name="pickup-pi-aaa11111",
+            title="Pi A",
+            cwd="/tmp/proj",
+            ident="aaa11111",
+        )
+        second = store.register_hosted_session(
+            runtime_id="pi",
+            keepalive_name="pickup-pi-bbb22222",
+            title="Pi B",
+            cwd="/tmp/proj",
+            ident="bbb22222",
+        )
+        real_a = {
+            "source": "pi", "id": "uuid-a", "short_id": "uuid-a", "mtime": 9.0,
+            "size_bytes": 1, "size_kb": 1, "native_title": "A", "fallback_title": "A",
+            "cwd": "/tmp/proj", "live": False,
+        }
+        real_b = {
+            "source": "pi", "id": "uuid-b", "short_id": "uuid-b", "mtime": 8.0,
+            "size_bytes": 1, "size_kb": 1, "native_title": "B", "fallback_title": "B",
+            "cwd": "/tmp/proj", "live": False,
+        }
+        pi_runtime.scan_sessions.return_value = [real_a, real_b]
+        with mock.patch.object(pickup.keepalive, "annotate"), mock.patch.object(
+            pickup.embed, "is_alive", return_value=True
+        ):
+            store.refresh()
+        self.assertIsNotNone(store.find_session(pickup.session_key(first)))
+        self.assertIsNotNone(store.find_session(pickup.session_key(second)))
+        self.assertIsNotNone(store.find_session("pi:uuid-a"))
+        self.assertIsNotNone(store.find_session("pi:uuid-b"))
+        self.assertIsNone(store.find_session("pi:uuid-a").get("keepalive_name"))
+        self.assertIsNone(store.find_session("pi:uuid-b").get("keepalive_name"))
+
+    def test_pi_same_ident_after_session_id_does_not_duplicate(self) -> None:
+        """`--session-id` 让落盘 id 与占位 ident 相同时，只留一张卡。"""
+        pi_runtime = mock.Mock()
+        pi_runtime.id = "pi"
+        pi_runtime.display_name = "Pi"
+        pi_runtime.scan_signature.return_value = None
+        pi_runtime.scan_sessions.return_value = []
+        registry = pickup.RuntimeRegistry((pi_runtime,))
+        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+            store = pickup.SessionStore(limit=20, registry=registry)
+            store.load()
+
+        provisional = store.register_hosted_session(
+            runtime_id="pi",
+            keepalive_name="pickup-pi-abcd1234",
+            title="新Pi会话",
+            cwd="/tmp/proj",
+            ident="abcd1234",
+        )
+        key = pickup.session_key(provisional)
+        real = {
+            "source": "pi", "id": "abcd1234", "short_id": "abcd1234", "mtime": 9.0,
+            "size_bytes": 1, "size_kb": 1, "native_title": "真会话",
+            "fallback_title": "真会话", "cwd": "/tmp/proj", "live": False,
+        }
+        pi_runtime.scan_sessions.return_value = [real]
+        with mock.patch.object(pickup.keepalive, "annotate"), mock.patch.object(
+            pickup.embed, "is_alive", return_value=True
+        ):
+            store.refresh()
+        found = store.find_session(key)
+        self.assertIsNotNone(found)
+        self.assertFalse(found.get("provisional"))
+        self.assertEqual(found.get("keepalive_name"), "pickup-pi-abcd1234")
+        self.assertNotIn(key, store._provisional)
+        self.assertEqual(len([s for s in store.all_sessions() if s.get("source") == "pi"]), 1)
+
     def test_refresh_rebinds_hosted_name_via_embed_is_alive(self) -> None:
         """本进程托管记录在 annotate 未命中时，必须能调用 embed.is_alive 兜底回填。
 
@@ -4381,6 +4511,20 @@ class CursorScanTests(unittest.TestCase):
         self.assertFalse(is_cursor_agent_cmdline("claude --resume x"))
         self.assertFalse(is_cursor_agent_cmdline(""))
 
+    def test_is_pi_cmdline_accepts_node_wrapper_skips_title_generator(self) -> None:
+        from pickup.scan.common import is_pi_cmdline
+
+        self.assertTrue(is_pi_cmdline("pi --approve"))
+        self.assertTrue(
+            is_pi_cmdline(
+                "node /home/x/.npm-global/lib/node_modules/"
+                "@earendil-works/pi-coding-agent/dist/cli.js --approve"
+            )
+        )
+        self.assertFalse(is_pi_cmdline("pi --approve --no-session --no-tools --print hi"))
+        self.assertFalse(is_pi_cmdline("claude --resume x"))
+        self.assertFalse(is_pi_cmdline(""))
+
     def test_live_processes_agent_finds_mainthread_renamed_process(self) -> None:
         """comm 被改成 MainThread 时 pgrep -x agent 为空，仍须按 cmdline 找到 agent。
 
@@ -4445,6 +4589,18 @@ class DeleteSessionScanTests(unittest.TestCase):
             other.write_text("{}\n", encoding="utf-8")
 
             scan_codex.delete_session(str(target))
+
+            self.assertFalse(target.exists())
+            self.assertTrue(other.exists())
+
+    def test_pi_delete_session_removes_only_target_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "2026-01-01T00-00-00-000Z_target.jsonl"
+            other = Path(td) / "2026-01-01T00-00-01-000Z_other.jsonl"
+            target.write_text('{"type":"session"}\n', encoding="utf-8")
+            other.write_text('{"type":"session"}\n', encoding="utf-8")
+
+            scan_pi.delete_session(str(target))
 
             self.assertFalse(target.exists())
             self.assertTrue(other.exists())
@@ -4582,6 +4738,85 @@ class PiScanTests(unittest.TestCase):
             self.assertEqual(sessions[0]["native_title"], "Pi 标题")
             self.assertEqual(sessions[0]["last_agent_msg"], "当前分支")
             self.assertEqual([item.text for item in scan_pi.load_conversation(str(session))], ["首个需求", "当前分支"])
+
+    def test_live_flags_bind_session_flag_and_session_id(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd = str(Path(td) / "proj")
+            Path(cwd).mkdir()
+            resumed_id = "019ffa0b-6679-7e5e-bfd9-1615e07cf643"
+            hosted_id = "abcd1234"
+            resumed = Path(td) / f"2026-08-13T07-34-38-969Z_{resumed_id}.jsonl"
+            hosted = Path(td) / f"2026-08-13T07-35-00-000Z_{hosted_id}.jsonl"
+            _write_jsonl(resumed, [
+                {"type": "session", "id": resumed_id, "timestamp": "2026-08-13T07:34:38Z", "cwd": cwd},
+                {
+                    "type": "message", "id": "u1", "parentId": None,
+                    "timestamp": "2026-08-13T07:34:39Z",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "恢复"}]},
+                },
+            ])
+            _write_jsonl(hosted, [
+                {"type": "session", "id": hosted_id, "timestamp": "2026-08-13T07:35:00Z", "cwd": cwd},
+                {
+                    "type": "message", "id": "u2", "parentId": None,
+                    "timestamp": "2026-08-13T07:35:01Z",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "新建"}]},
+                },
+            ])
+            real_cwd = os.path.realpath(cwd)
+            cmdlines = {
+                11: f"node /opt/pi-coding-agent/dist/cli.js --approve --session {resumed}",
+                22: "pi --approve --session-id abcd1234",
+            }
+
+            def fake_cmdline(pid: int) -> str:
+                return cmdlines[pid]
+
+            with mock.patch.object(scan_pi, "SESSIONS_DIR", td), mock.patch.object(
+                scan_pi, "live_processes", return_value=[(11, real_cwd), (22, real_cwd)]
+            ), mock.patch.object(
+                scan_pi, "process_command_line", side_effect=fake_cmdline
+            ), mock.patch.object(
+                scan_pi, "open_file_paths", return_value={11: [], 22: []}
+            ), mock.patch.object(
+                scan_pi, "process_environ", return_value={}
+            ):
+                sessions = scan_pi.scan_sessions(limit=10)
+            by_id = {item["id"]: item for item in sessions}
+            self.assertTrue(by_id[resumed_id]["live"])
+            self.assertEqual(by_id[resumed_id]["pid"], 11)
+            self.assertTrue(by_id[hosted_id]["live"])
+            self.assertEqual(by_id[hosted_id]["pid"], 22)
+
+    def test_live_flags_do_not_bind_short_env_to_uuid_history(self) -> None:
+        """8 位托管 ident 不得拿去前缀碰 uuidv7 历史，否则同分屏两格会串台。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd = str(Path(td) / "proj")
+            Path(cwd).mkdir()
+            history_id = "019ffa0b-6679-7e5e-bfd9-1615e07cf643"
+            path = Path(td) / f"2026-08-13T07-34-38-969Z_{history_id}.jsonl"
+            _write_jsonl(path, [
+                {"type": "session", "id": history_id, "timestamp": "2026-08-13T07:34:38Z", "cwd": cwd},
+                {
+                    "type": "message", "id": "u1", "parentId": None,
+                    "timestamp": "2026-08-13T07:34:39Z",
+                    "message": {"role": "user", "content": [{"type": "text", "text": "旧会话"}]},
+                },
+            ])
+            with mock.patch.object(scan_pi, "SESSIONS_DIR", td), mock.patch.object(
+                scan_pi, "live_processes", return_value=[(33, os.path.realpath(cwd))]
+            ), mock.patch.object(
+                scan_pi, "process_command_line", return_value="pi --approve"
+            ), mock.patch.object(
+                scan_pi, "open_file_paths", return_value={33: []}
+            ), mock.patch.object(
+                scan_pi, "process_environ",
+                return_value={"PICKUP_SESSION_ID": "abcd1234"},
+            ):
+                sessions = scan_pi.scan_sessions(limit=10)
+            self.assertEqual(len(sessions), 1)
+            self.assertFalse(sessions[0]["live"])
+            self.assertIsNone(sessions[0]["pid"])
 
 
 class StartupLatencyTests(unittest.TestCase):

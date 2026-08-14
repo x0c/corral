@@ -71,6 +71,7 @@ def host_session(
     与 keepalive.wrap_plan 同命名空间、同环境变量注入；区别在不 attach（-d），
     并按面板实际尺寸创建（-x/-y），避免先 80x24 再 resize 的重排闪烁。
     会话名已存在（极端情况下同名残留）时视为复用，直接返回名字。
+    Pi 新建/分叉会在 argv 里钉上 `--session-id`，让落盘 id 与占位卡 ident 一致。
     创建时经 -P 顺带取回 pane_id 记入 _pane_ids——refresh -r 背景色注入需要
     pane_id 寻址，创建时就拿可以省掉一次 display-message 往返。
 
@@ -88,6 +89,10 @@ def host_session(
     查询之间，仍然存在无法从时序上完全消灭的竞态窗口——这是 tmux 控制协议本
     身的限制，不是可以单靠调整 pickup 这边调用顺序解决的。
     """
+    if runtime_id == "pi":
+        from pickup.runtime.pi import bind_hosted_ident
+
+        plan = bind_hosted_ident(plan, ident)
     name = keepalive._session_name(runtime_id, ident)
     argv = [
         *keepalive._BASE_ARGV, "-f", keepalive._ensure_config_file(),

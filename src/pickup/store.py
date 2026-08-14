@@ -382,18 +382,7 @@ class SessionStore:
             if name and name in claimed_keepalive:
                 # 真实会话已挂上同一托管名：占位卡退役，避免双卡。
                 real_session = claimed_keepalive[str(name)]
-                runtime_id = str(provisional.get("source") or "")
-                real_runtime_id = str(real_session.get("source") or "")
-                if runtime_id and runtime_id == real_runtime_id:
-                    attention_migrations.append(
-                        (
-                            runtime_id,
-                            str(provisional.get("id") or ""),
-                            str(real_session.get("id") or ""),
-                        )
-                    )
-                self._provisional.pop(key, None)
-                self.hosted.pop(key, None)
+                self._retire_provisional(key, provisional, real_session, name, attention_migrations)
                 continue
             if not name or not embed.is_alive(str(name)):
                 self._provisional.pop(key, None)
@@ -402,11 +391,84 @@ class SessionStore:
             runtime_id = str(provisional.get("source") or "")
             bucket = self.sessions.setdefault(runtime_id, [])
             if any(session_key(session) == key for session in bucket):
+                # 落盘 id 已与占位 ident 相同（Pi `--session-id`）：占位完成使命。
+                self._provisional.pop(key, None)
+                continue
+            claimed = self._claim_unique_hosted_newcomer(key, provisional)
+            if claimed is not None:
+                self._retire_provisional(key, provisional, claimed, name, attention_migrations)
                 continue
             provisional["keepalive_name"] = name
             provisional["live"] = True
             bucket.insert(0, provisional)
         return attention_migrations
+
+    def _retire_provisional(
+        self,
+        key: str,
+        provisional: dict,
+        real_session: dict,
+        name: str,
+        attention_migrations: list[tuple[str, str, str]],
+    ) -> None:
+        """占位卡被真实会话取代：迁关注态、把托管记录改挂到新键。"""
+        runtime_id = str(provisional.get("source") or "")
+        real_runtime_id = str(real_session.get("source") or "")
+        if runtime_id and runtime_id == real_runtime_id:
+            attention_migrations.append(
+                (
+                    runtime_id,
+                    str(provisional.get("id") or ""),
+                    str(real_session.get("id") or ""),
+                )
+            )
+        real_session["keepalive_name"] = name
+        real_session["live"] = True
+        new_key = session_key(real_session)
+        self.hosted[new_key] = str(name)
+        self._provisional.pop(key, None)
+        if key != new_key:
+            self.hosted.pop(key, None)
+
+    def _claim_unique_hosted_newcomer(
+        self, key: str, provisional: dict,
+    ) -> dict | None:
+        """Pi 等「真实 id 与占位 ident 不同、annotate 又没贴上 keepalive」时的兜底。
+
+        仅当「这个 cwd 里活着的占位卡恰好一张，且本轮新出现、尚未托管的真实会话
+        也恰好一条」才认领。同目录两个新建 Pi 分屏会同时冒出两张新卡，对不上就
+        放弃，避免串台；那种情况靠启动时 `--session-id` 让键根本不变。
+        """
+        runtime_id = str(provisional.get("source") or "")
+        if not runtime_id:
+            return None
+        cwd = _normalize_cwd(provisional.get("cwd"))
+        known = set(self._order)
+        bucket = self.sessions.get(runtime_id) or []
+        newcomers = [
+            session
+            for session in bucket
+            if not session.get("provisional")
+            and session_key(session) != key
+            and session_key(session) not in known
+            and session_key(session) not in self.hosted
+            and not session.get("keepalive_name")
+            and _normalize_cwd(session.get("cwd")) == cwd
+        ]
+        sibling_provisionals = 0
+        for other_key, other in self._provisional.items():
+            if other_key == key:
+                continue
+            if str(other.get("source") or "") != runtime_id:
+                continue
+            if _normalize_cwd(other.get("cwd")) != cwd:
+                continue
+            other_name = self.hosted.get(other_key) or other.get("keepalive_name")
+            if other_name and embed.is_alive(str(other_name)):
+                sibling_provisionals += 1
+        if len(newcomers) == 1 and sibling_provisionals == 0:
+            return newcomers[0]
+        return None
 
     def _rebuild_order_and_titles(self) -> list[dict]:
         """稳定排序与标题状态：调用方必须已持有 `self.lock`。

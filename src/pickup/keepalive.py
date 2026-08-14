@@ -103,6 +103,10 @@ def new_session_ident() -> str:
 
 def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
     """把原始启动计划包进 tmux `new-session -A`：会话不存在则创建，已存在则直接接入。"""
+    if runtime_id == "pi":
+        from pickup.runtime.pi import bind_hosted_ident
+
+        plan = bind_hosted_ident(plan, ident)
     name = _session_name(runtime_id, ident)
     argv = [*_BASE_ARGV, "-f", _ensure_config_file(), "new-session", "-A", "-s", name]
     if plan.cwd:

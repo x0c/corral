@@ -4,7 +4,10 @@
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
 或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
-无末行空行）。置顶块与未置顶块都非空时，中间插一行居中 `Pinned`/`置顶` 的
+无末行空行）。筛选框在列表外固定；`＋ 新建`、置顶块和 Pinned 分隔线在
+`#sidebar-sticky` 里也不随列表滚。未置顶（Today / 更早）在 `#sidebar-scroll`
+里滚。鼠标在固定头（含筛选框）上滚轮仍带动未置顶列表，顶部位置不变。
+置顶块与未置顶块都非空时，中间插一行居中 `Pinned`/`置顶` 的
 `$primary` 蓝横线；未置顶再按滚动 24 小时切 today / older 两桶（桶内不重排），
 两侧都有时再插 `Today`/`今天` 线。分隔高 1、disabled、键盘跳过；禁止 Older/其他
 标签。斑马纹按**块**交替，不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
@@ -29,7 +32,9 @@ from typing import TYPE_CHECKING
 from rich.style import Style
 from rich.text import Text
 from textual import events
+from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import ListItem, ListView
@@ -675,30 +680,36 @@ class PinSeparatorCard(Widget):
         return Text(line)
 
 
-class SessionListView(ListView):
-    """会话列表：虚拟索引 0 固定为新建会话项，之后是稳定顺序的会话卡片。"""
+class _SidebarList(ListView):
+    """侧边栏一段列表：固定头（新建+置顶）或未置顶滚动区。"""
 
-    # 列表本身也不接受拖选：空白处点一下不该进入 Textual 文本选择状态。
     ALLOW_SELECT = False
 
-    # 隐藏滚动条占位，保留键盘/滚轮滚动（scrollbar-size: 0 不关掉 overflow）。
     DEFAULT_CSS = """
-    SessionListView {
+    _SidebarList {
         scrollbar-size-vertical: 0;
         scrollbar-size-horizontal: 0;
+        width: 1fr;
+        height: auto;
+        padding: 0;
+        margin: 0;
+        background: transparent;
     }
-    /* 右栏分屏时只给会话组标题铺一档底色，当前持有输入的子会话再重一档；同组
-       其它子会话不高亮，避免树形结构已经表达过一次关系后又整块重复强调。 */
-    SessionListView > ListItem.-in-split {
+    _SidebarList > ListItem.-group-selected {
+        background: $block-cursor-background;
+    }
+    _SidebarList > ListItem.-in-split {
         background: $sidebar-split-background;
     }
-    SessionListView > ListItem.-split-active {
+    _SidebarList > ListItem.-split-active {
         background: $sidebar-split-active-background;
     }
-    SessionListView:focus > ListItem.-in-split.-highlight {
+    _SidebarList > ListItem.-in-split.-group-selected,
+    _SidebarList:focus > ListItem.-in-split.-highlight {
         background: $sidebar-split-cursor-background;
     }
-    SessionListView:focus > ListItem.-split-active.-highlight {
+    _SidebarList > ListItem.-split-active.-group-selected,
+    _SidebarList:focus > ListItem.-split-active.-highlight {
         background: $sidebar-split-active-cursor-background;
     }
     """
@@ -706,12 +717,132 @@ class SessionListView(ListView):
     BINDINGS = [
         Binding("j", "cursor_down", "Select", show=False),
         Binding("k", "cursor_up", "Select", show=False),
-        # 覆盖 ScrollableContainer 的 up/down=scroll_*：会话列表应移光标，不是滚视口
         Binding("down", "cursor_down", "Select", show=False),
         Binding("up", "cursor_up", "Select", show=False),
         Binding("space", "toggle_multi", t("action.toggle_multi"), show=False),
         Binding("p", "toggle_pin", t("action.toggle_pin"), show=False),
     ]
+
+    def __init__(self, owner: SessionListView, *, sticky: bool, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._owner = owner
+        self._sticky = sticky
+
+    def focus_on_click(self) -> bool:
+        return self._owner.focus_on_click()
+
+    def action_select_cursor(self) -> None:
+        self._owner._selected_by_key = True
+        super().action_select_cursor()
+
+    def action_toggle_multi(self) -> None:
+        self._owner.action_toggle_multi()
+
+    def action_toggle_pin(self) -> None:
+        self._owner.action_toggle_pin()
+
+    def action_cursor_down(self) -> None:
+        self._owner.clear_multi()
+        old = self.index
+        super().action_cursor_down()
+        if self._sticky and self.index == old:
+            self._owner.enter_scroll_first()
+
+    def action_cursor_up(self) -> None:
+        self._owner.clear_multi()
+        old = self.index
+        super().action_cursor_up()
+        if not self._sticky and self.index == old:
+            self._owner.enter_sticky_last()
+
+    def watch_index(self, old_index: int | None, new_index: int | None) -> None:
+        if self._owner._syncing_index:
+            super().watch_index(old_index, new_index)
+            return
+        if (
+            new_index is not None
+            and 0 <= new_index < len(self._nodes)
+            and (
+                self._nodes[new_index].disabled
+                or getattr(self._nodes[new_index], "id", None) in _SEPARATOR_IDS
+            )
+        ):
+            direction = 1
+            if old_index is not None and new_index < old_index:
+                direction = -1
+            target = self._nearest_selectable_index(new_index, direction)
+            if target is not None and target != new_index:
+                self.index = target
+                self._owner.sync_index_from_inner(self)
+                return
+        super().watch_index(old_index, new_index)
+        self._owner.sync_index_from_inner(self)
+
+    def _nearest_selectable_index(
+        self, from_index: int, direction: int
+    ) -> int | None:
+        step = 1 if direction >= 0 else -1
+        index = from_index + step
+        while 0 <= index < len(self._nodes):
+            if not self._nodes[index].disabled:
+                return index
+            index += step
+        index = from_index - step
+        while 0 <= index < len(self._nodes):
+            if not self._nodes[index].disabled:
+                return index
+            index -= step
+        return None
+
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if self._sticky:
+            self._owner.scroll_unpinned(3)
+            event.stop()
+            return
+        super()._on_mouse_scroll_down(event)
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self._sticky:
+            self._owner.scroll_unpinned(-3)
+            event.stop()
+            return
+        super()._on_mouse_scroll_up(event)
+
+
+class SessionListView(Vertical):
+    """会话列表外壳：固定头（新建+置顶）+ 未置顶滚动区。
+
+    对外仍是一个控件：统一 `index` 从「＋ 新建」起算。真正滚动的只有
+    `#sidebar-scroll`。鼠标在固定头上滚轮转发到未置顶区，顶部不动。
+    """
+
+    can_focus = False
+    ALLOW_SELECT = False
+
+    DEFAULT_CSS = """
+    SessionListView {
+        height: 1fr;
+        width: 1fr;
+        layout: vertical;
+        padding: 0;
+        margin: 0;
+        overflow: hidden hidden;
+    }
+    SessionListView > #sidebar-sticky {
+        height: auto;
+        max-height: 70%;
+        overflow: hidden hidden;
+        padding: 0;
+        margin: 0;
+    }
+    SessionListView > #sidebar-scroll {
+        height: 1fr;
+        overflow-x: hidden;
+        overflow-y: auto;
+        padding: 0;
+        margin: 0;
+    }
+    """
 
     def __init__(
         self,
@@ -723,62 +854,262 @@ class SessionListView(ListView):
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        self._index: int | None = None
+        self._index_gen = 0
+        self._syncing_index = False
+        self._sticky_list: _SidebarList | None = None
+        self._scroll_list: _SidebarList | None = None
         self.store = store
-        # 侧边栏搜索查询只认 nav.project_query 这一份，供 visible_sessions /
-        # 页头占位文案 / 新建会话目录解析共用，禁止在本类另开一份状态。
         self.nav = nav
-        # `group_store` 是只读渲染快照，**禁止在本类里直接改它**：多窗口下改内存快照
-        # 等于把别人的改动一起覆盖掉。所有写操作都交给 `on_layout_change`，由主屏送进
-        # 侧边栏记忆库在事务里重放，返回最新快照。
         self.group_store = group_store
         self.on_layout_change = on_layout_change
         self._multi_keys: list[str] = []
-        # 右栏分屏在侧边栏的投影：用于定位当前组标题与当前激活子会话。
         self._split_keys: list[str] = []
         self._split_active_key: str | None = None
-        # 鼠标按下前，右栏哪一格正持有输入（会话键），见 focus_on_click()。
         self.focus_before_click = None
-        # 这次 `Selected` 是回车发出来的还是鼠标点出来的，见 action_select_cursor()。
         self._selected_by_key = False
-        # rebuild() 的并发闸门：见该方法注释，多条 pump 上的调用方必须串行进 DOM。
         self._rebuild_lock = asyncio.Lock()
         self._rebuild_seq = 0
 
-    def focus_on_click(self) -> bool:
-        """记下「这次鼠标按下之前，右栏哪一格正持有输入」（会话键，没有则 None）。
+    def compose(self) -> ComposeResult:
+        self._sticky_list = _SidebarList(self, sticky=True, id="sidebar-sticky")
+        self._scroll_list = _SidebarList(self, sticky=False, id="sidebar-scroll")
+        yield self._sticky_list
+        yield self._scroll_list
 
-        Textual 在 MouseDown 阶段先 `set_focus(列表)` 再把事件发下来，等我们收到
-        点击 / `ListView.Selected` 时焦点已经是列表了，没法再区分「从右栏点回来」
-        和「本来就在列表里点」。这个钩子是唯一还能看到旧焦点的时机——点击当前
-        正持有输入的那张会话卡要能把焦点撤回侧边栏，就靠它。解析成会话键而不是
-        留着控件对象的原因见 `_focused_live_session_key()`。
-        """
+    def _list_items(self) -> list[ListItem]:
+        items: list[ListItem] = []
+        for inner in (self._sticky_list, self._scroll_list):
+            if inner is None:
+                continue
+            items.extend(
+                child for child in inner.children if isinstance(child, ListItem)
+            )
+        return items
+
+    @property
+    def list_children(self) -> list[ListItem]:
+        return self._list_items()
+
+    def _sticky_count(self) -> int:
+        if self._sticky_list is None:
+            return 0
+        return sum(1 for child in self._sticky_list.children if isinstance(child, ListItem))
+
+    def _scroll_count(self) -> int:
+        if self._scroll_list is None:
+            return 0
+        return sum(1 for child in self._scroll_list.children if isinstance(child, ListItem))
+
+    def _inner_for_index(self, index: int | None) -> _SidebarList | None:
+        if self._sticky_list is None:
+            return None
+        sticky_n = self._sticky_count()
+        if index is None or index < sticky_n:
+            return self._sticky_list
+        return self._scroll_list
+
+    def focus_target(self) -> Widget:
+        inner = self._inner_for_index(self._index)
+        if inner is not None:
+            return inner
+        return self._sticky_list or self
+
+    def focus(self, scroll_visible: bool = True) -> None:
+        screen = getattr(self.app, "screen", None)
+        if screen is not None:
+            screen.set_focus(self.focus_target())
+
+    @property
+    def has_focus(self) -> bool:
+        try:
+            return bool(self.has_focus_within)
+        except Exception:
+            return False
+
+    @has_focus.setter
+    def has_focus(self, _value: bool) -> None:
+        return
+
+    @property
+    def index(self) -> int | None:
+        return self._index
+
+    @index.setter
+    def index(self, value: int | None) -> None:
+        self._index_gen += 1
+        self._index = value
+        self._apply_inner_indices(value)
+
+    def _focus_inner(self, inner: _SidebarList) -> None:
+        screen = getattr(self.app, "screen", None)
+        if screen is None or screen is not self.screen:
+            return
+        screen.set_focus(inner)
+
+    def _apply_inner_indices(self, value: int | None) -> None:
+        if self._sticky_list is None or self._scroll_list is None:
+            return
+        sticky_n = self._sticky_count()
+        was_syncing = self._syncing_index
+        self._syncing_index = True
+        try:
+            if value is None:
+                self._sticky_list.index = None
+                self._scroll_list.index = None
+                return
+            if value < sticky_n:
+                self._sticky_list.index = value
+                self._scroll_list.index = None
+                if self.has_focus_within and not self._sticky_list.has_focus:
+                    self._focus_inner(self._sticky_list)
+            else:
+                self._sticky_list.index = None
+                self._scroll_list.index = value - sticky_n
+                if self.has_focus_within and not self._scroll_list.has_focus:
+                    self._focus_inner(self._scroll_list)
+        finally:
+            if not was_syncing:
+                self._syncing_index = False
+
+    def sync_index_from_inner(self, inner: _SidebarList) -> None:
+        if self._syncing_index or inner.index is None:
+            return
+        sticky_n = self._sticky_count()
+        if inner._sticky:
+            self._index = inner.index
+            other = self._scroll_list
+        else:
+            self._index = sticky_n + inner.index
+            other = self._sticky_list
+        if other is not None and other.index is not None:
+            was_syncing = self._syncing_index
+            self._syncing_index = True
+            try:
+                other.index = None
+            finally:
+                if not was_syncing:
+                    self._syncing_index = False
+
+    def enter_scroll_first(self) -> None:
+        scroll = self._scroll_list
+        if scroll is None:
+            return
+        target = scroll._nearest_selectable_index(-1, 1)
+        if target is None:
+            return
+        self._index_gen += 1
+        self._index = self._sticky_count() + target
+        was_syncing = self._syncing_index
+        self._syncing_index = True
+        try:
+            scroll.index = target
+            if self._sticky_list is not None:
+                self._sticky_list.index = None
+        finally:
+            if not was_syncing:
+                self._syncing_index = False
+        if self.has_focus_within:
+            self._focus_inner(scroll)
+
+    def enter_sticky_last(self) -> None:
+        sticky = self._sticky_list
+        if sticky is None:
+            return
+        target = None
+        for i in range(len(sticky._nodes) - 1, -1, -1):
+            if not sticky._nodes[i].disabled:
+                target = i
+                break
+        if target is None:
+            return
+        self._index_gen += 1
+        self._index = target
+        was_syncing = self._syncing_index
+        self._syncing_index = True
+        try:
+            sticky.index = target
+            if self._scroll_list is not None:
+                self._scroll_list.index = None
+        finally:
+            if not was_syncing:
+                self._syncing_index = False
+        if self.has_focus_within:
+            self._focus_inner(sticky)
+
+    def scroll_unpinned(self, delta: int) -> None:
+        scroll = self._scroll_list
+        if scroll is None or delta == 0:
+            return
+        scroll.scroll_relative(y=delta, animate=False)
+
+    @property
+    def highlighted_child(self) -> ListItem | None:
+        items = self._list_items()
+        idx = self._index
+        if idx is None or not (0 <= idx < len(items)):
+            return None
+        return items[idx]
+
+    def _partition_items(
+        self, items: list[ListItem], rows: list[_SidebarRow]
+    ) -> tuple[list[ListItem], list[ListItem]]:
+        pin_at = next(
+            (i for i, row in enumerate(rows) if row.identity == PIN_SEP_ID),
+            None,
+        )
+        if pin_at is not None:
+            cut = pin_at + 2
+            return items[:cut], items[cut:]
+        if any(row.pinned for row in rows if row.kind != "separator"):
+            return items, []
+        return items[:1], items[1:]
+
+    async def _replace_list_items(
+        self, sticky_items: list[ListItem], scroll_items: list[ListItem]
+    ) -> None:
+        if self._sticky_list is None or self._scroll_list is None:
+            return
+        self._syncing_index = True
+        try:
+            await self._sticky_list.clear()
+            await self._scroll_list.clear()
+            if sticky_items:
+                await self._sticky_list.extend(sticky_items)
+            if scroll_items:
+                await self._scroll_list.extend(scroll_items)
+        finally:
+            self._syncing_index = False
+
+    def focus_on_click(self) -> bool:
         self.focus_before_click = _focused_live_session_key(
             getattr(self.app, "focused", None)
         )
-        # 这一下是鼠标按的：把上一次回车可能留下的标记清掉（比如按了回车但列表
-        # 里没有高亮项，`Selected` 根本没发出来，标记会一直挂着）。
         self._selected_by_key = False
         return True
 
     def take_focus_before_click(self):
-        """读取并清空按下前的持有输入会话键，保证一次点击只被判定一次。"""
         before = self.focus_before_click
         self.focus_before_click = None
         return before
 
     def action_select_cursor(self) -> None:
-        """回车打开：标记这次 `Selected` 来自键盘，随后由主屏消费一次。
-
-        鼠标单击和回车走的是同一条 `ListView.Selected`，但两者语义已经分家——
-        已结束的会话单击只看历史，必须显式回车才恢复（机主 2026-08-05 拍板）。
-        `ListView` 没有把来源带进消息里，这里是唯一还分得清的位置。
-        """
         self._selected_by_key = True
-        super().action_select_cursor()
+        inner = self._inner_for_index(self._index)
+        if inner is not None:
+            inner.action_select_cursor()
+
+    def action_cursor_down(self) -> None:
+        inner = self._inner_for_index(self._index)
+        if inner is not None:
+            inner.action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        inner = self._inner_for_index(self._index)
+        if inner is not None:
+            inner.action_cursor_up()
 
     def take_selected_by_key(self) -> bool:
-        """读取并清空「本次 Selected 来自回车」标记，保证一次按键只判定一次。"""
         by_key = self._selected_by_key
         self._selected_by_key = False
         return by_key
@@ -793,7 +1124,7 @@ class SessionListView(ListView):
         样式，也才能和 Textual 内置的选中高亮按 CSS 优先级正常分胜负。
         """
         items = []
-        for item in self.children:
+        for item in self._list_items():
             if item.id == NEW_SESSION_ID:
                 continue
             card = item.children[0] if item.children else None
@@ -808,7 +1139,7 @@ class SessionListView(ListView):
     def _group_items(self) -> list[tuple[ListItem, SessionGroupCard]]:
         """按当前显示顺序返回全部会话组卡。"""
         items = []
-        for item in self.children:
+        for item in self._list_items():
             card = item.children[0] if item.children else None
             if isinstance(card, SessionGroupCard):
                 items.append((item, card))
@@ -819,7 +1150,7 @@ class SessionListView(ListView):
         import pickup
 
         identities: list[str] = []
-        for item in self.children:
+        for item in self._list_items():
             if item.id == NEW_SESSION_ID or not item.children:
                 continue
             card = item.children[0]
@@ -839,7 +1170,7 @@ class SessionListView(ListView):
         display_titles = self.store.snapshot()
         widgets = [
             item.children[0]
-            for item in self.children
+            for item in self._list_items()
             if item.id != NEW_SESSION_ID and item.children
         ]
         for widget, row in zip(widgets, rows, strict=False):
@@ -1049,18 +1380,18 @@ class SessionListView(ListView):
 
     def selected_session(self) -> dict | None:
         idx = self.index
-        if idx is None or idx < 0 or idx >= len(self.children):
+        if idx is None or idx < 0 or idx >= len(self._list_items()):
             return None
-        item = self.children[idx]
+        item = self._list_items()[idx]
         card = item.children[0] if item.children else None
         return card.session if isinstance(card, SessionCard) else None
 
     def selected_group(self) -> SplitGroup | None:
         """返回当前选中的会话组；普通会话或新建项返回 None。"""
         idx = self.index
-        if idx is None or idx < 0 or idx >= len(self.children):
+        if idx is None or idx < 0 or idx >= len(self._list_items()):
             return None
-        item = self.children[idx]
+        item = self._list_items()[idx]
         card = item.children[0] if item.children else None
         return card.group if isinstance(card, SessionGroupCard) else None
 
@@ -1086,7 +1417,7 @@ class SessionListView(ListView):
         self._apply_multi_markers()
 
     def set_split_marks(self, pane_keys: list[str], active_key: str | None) -> None:
-        """把右栏分屏投影到侧边栏：只高亮组标题和当前激活的子会话。
+        """把右栏分屏投影到侧边栏：整组铺底，激活会话再重一档。
 
         只有真正分屏（≥2 格）才标。单格时列表光标本身就指着那一格，再叠一层
         底色只会和光标高亮互相打架，反而看不出焦点在哪。
@@ -1112,22 +1443,21 @@ class SessionListView(ListView):
         active = self._split_active_key
         for item, card in self._group_items():
             group_keys = set(card.group.session_keys)
-            # 右栏分屏成员都属于本组即可标组卡；active 为空（光标停在组卡上）
-            # 时仍要保留组标题底色，只是不标任何子会话。
             is_current_group = bool(keys) and keys.issubset(group_keys)
             item.set_class(is_current_group, "-in-split")
             item.set_class(False, "-split-active")
         for item, card in self._session_items():
             key = pickup.session_key(card.session)
+            in_group = key in keys
             is_active = active is not None and key == active
-            item.set_class(False, "-in-split")
+            item.set_class(in_group, "-in-split")
             item.set_class(is_active, "-split-active")
 
     def _apply_stripes(self, rows: list[_SidebarRow]) -> None:
         """把块级斑马纹贴到卡片上；＋新建与分隔线不参与。幂等。"""
         widgets = [
             item.children[0]
-            for item in self.children
+            for item in self._list_items()
             if item.id != NEW_SESSION_ID and item.children
         ]
         for widget, row in zip(widgets, rows, strict=False):
@@ -1145,7 +1475,7 @@ class SessionListView(ListView):
     def _index_for_session_key(self, session_key: str) -> int | None:
         import pickup
 
-        for i, item in enumerate(self.children):
+        for i, item in enumerate(self._list_items()):
             card = item.children[0] if item.children else None
             if (
                 isinstance(card, SessionCard)
@@ -1215,51 +1545,6 @@ class SessionListView(ListView):
         self.notify(t("pin.enabled" if pinned else "pin.disabled"))
         self.call_next(self.rebuild)
 
-    def action_cursor_down(self) -> None:
-        self.clear_multi()
-        super().action_cursor_down()
-
-    def action_cursor_up(self) -> None:
-        self.clear_multi()
-        super().action_cursor_up()
-
-    def watch_index(self, old_index: int | None, new_index: int | None) -> None:
-        """点到 disabled 分隔行时拨到相邻可选项，避免高亮消失、右栏跟随被清空。"""
-        if (
-            new_index is not None
-            and 0 <= new_index < len(self._nodes)
-            and (
-                self._nodes[new_index].disabled
-                or getattr(self._nodes[new_index], "id", None) in _SEPARATOR_IDS
-            )
-        ):
-            direction = 1
-            if old_index is not None and new_index < old_index:
-                direction = -1
-            target = self._nearest_selectable_index(new_index, direction)
-            if target is not None and target != new_index:
-                self.index = target
-                return
-        super().watch_index(old_index, new_index)
-
-    def _nearest_selectable_index(
-        self, from_index: int, direction: int
-    ) -> int | None:
-        """从 from_index 起按方向找下一个未 disabled 的 ListItem。"""
-        step = 1 if direction >= 0 else -1
-        index = from_index + step
-        while 0 <= index < len(self._nodes):
-            if not self._nodes[index].disabled:
-                return index
-            index += step
-        # 首选方向没有可选项时，反向再找一次（例如点在列表末尾的分隔）。
-        index = from_index - step
-        while 0 <= index < len(self._nodes):
-            if not self._nodes[index].disabled:
-                return index
-            index -= step
-        return None
-
     def on_session_multi_toggle_requested(self, event: SessionMultiToggleRequested) -> None:
         event.stop()
         self._toggle_multi_key(event.session_key)
@@ -1296,7 +1581,7 @@ class SessionListView(ListView):
             if self.index != 0:
                 self.index = 0
             return True
-        for i, item in enumerate(self.children):
+        for i, item in enumerate(self._list_items()):
             card = item.children[0] if item.children else None
             if isinstance(card, SessionCard) and pickup.session_key(card.session) == session_key:
                 target = i
@@ -1307,7 +1592,7 @@ class SessionListView(ListView):
             group = self.group_store.get_group(session_key)
             if group is not None:
                 target_identity = f"{GROUP_ID_PREFIX}{group.group_id}"
-                for i, item in enumerate(self.children):
+                for i, item in enumerate(self._list_items()):
                     card = item.children[0] if item.children else None
                     if (
                         isinstance(card, SessionGroupCard)
@@ -1335,9 +1620,9 @@ class SessionListView(ListView):
         import pickup
 
         idx = self.index
-        if idx is None or idx == 0 or idx >= len(self.children):
+        if idx is None or idx == 0 or idx >= len(self._list_items()):
             return None
-        item = self.children[idx]
+        item = self._list_items()[idx]
         card = item.children[0] if item.children else None
         if isinstance(card, SessionGroupCard):
             return f"{GROUP_ID_PREFIX}{card.group.group_id}"
@@ -1360,9 +1645,11 @@ class SessionListView(ListView):
         0 时纠正，避免抢掉用户在两帧之间已经手动挪走的光标。
         """
         self.index = index
+        gen = self._index_gen
 
         def _reapply() -> None:
-            if index and self.index == 0:
+            self._syncing_index = False
+            if self._index_gen == gen and self._index != index:
                 self.index = index
 
         self.call_after_refresh(_reapply)
@@ -1473,9 +1760,9 @@ class SessionListView(ListView):
 
         # batch_update() 抑制 clear()+extend() 中间那次多余重绘；两步都要 await
         # 完成（DOM 真正更新），批量 API 本身已经把"多次 mount"合成一轮。
+        sticky_items, scroll_items = self._partition_items(items, rows)
         with self.app.batch_update():
-            await self.clear()
-            await self.extend(items)
+            await self._replace_list_items(sticky_items, scroll_items)
 
         new_index = 0
         for i, identity in enumerate(new_identities):
@@ -1491,6 +1778,8 @@ class SessionListView(ListView):
             target_index = 1 if rows else 0
         if target_index is not None:
             self._apply_index_after_rebuild(target_index)
+        else:
+            self.call_after_refresh(lambda: setattr(self, "_syncing_index", False))
         # 全量重建换掉了全部 ListItem，分屏底色标记要重新贴一遍（原地更新那条
         # 路径不动列表项结构，标记还在，不必重贴）。
         self._apply_split_marks()

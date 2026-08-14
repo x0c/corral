@@ -146,6 +146,16 @@ class HostSessionTests(unittest.TestCase):
             self.assertIn(f"-e {env_pair}", joined)
         self.assertEqual(argv[-2:], ["--resume", "abc"])
 
+    def test_pi_new_session_argv_includes_session_id(self):
+        plan = LaunchPlan(argv=("pi", "--approve"), cwd="/tmp/work")
+        with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok) as run, \
+                mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
+                mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
+            embed.host_session(plan, "pi", "abcd1234", 120, 40)
+        argv = run.call_args.args[0]
+        tail = argv[argv.index("--") + 1:]
+        self.assertEqual(tail, ["pi", "--approve", "--session-id", "abcd1234"])
+
     def test_duplicate_session_falls_back_to_reuse(self):
         plan = LaunchPlan(argv=("claude",), cwd=None)
 

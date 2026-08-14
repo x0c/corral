@@ -852,22 +852,32 @@ class MainScreen(
 
     @work(thread=True)
     def _warm_conversation(self, session: dict, gen: int) -> None:
-        """后台填对话缓存；仅当仍是当前选中世代时刷新右栏。"""
+        """后台填对话缓存；只刷新仍在右栏的同一会话。"""
+        import pickup
+
+        key = pickup.session_key(session)
         try:
             self.store.get_conversation(session)
         except Exception:
             return
         if gen != self._preview_gen:
             return
-        self.app.call_from_thread(self._refresh_preview_detail)
+        self.app.call_from_thread(self._refresh_preview_detail, key, gen)
 
-    def _refresh_preview_detail(self) -> None:
+    def _refresh_preview_detail(
+        self, key: str | None = None, gen: int | None = None,
+    ) -> None:
+        """拒绝过期异步结果，避免旧会话的预览刷新当前右栏。"""
+        if gen is not None and gen != self._preview_gen:
+            return
         if not self.embed_ok:
             return
         area = self._split_area()
+        if key is not None and key not in area.ordered_session_keys():
+            return
         if area.any_embed_focused():
             return
-        area.invalidate_all_details()
+        area.invalidate_visible_previews()
 
     # ---- 右上角会话小窗：每个实时托管格各自一份 ----
 
@@ -1081,7 +1091,7 @@ class MainScreen(
         # 表现是点进内嵌会话、键盘却还在侧边栏。同步设置后，谁后请求谁生效。
         # （main_screen.on_mount 里「不要先调 SessionListView.focus()」那条注释
         # 说的是同一个坑，当时是绕开、没有根治。）
-        self.set_focus(self.query_one(SessionListView))
+        self.set_focus(self.query_one(SessionListView).focus_target())
 
     def on_descendant_focus(self, event) -> None:
         self._sync_input_mask()
@@ -1356,6 +1366,30 @@ class MainScreen(
         selected = self.get_selected_text()
         if selected:
             self.app.copy_to_clipboard(selected)
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if self._forward_sticky_sidebar_wheel(event, 3):
+            event.stop()
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self._forward_sticky_sidebar_wheel(event, -3):
+            event.stop()
+
+    def _forward_sticky_sidebar_wheel(self, event, delta: int) -> bool:
+        """筛选框在列表外；指针在固定头上滚轮仍带动未置顶列表，顶部不动。"""
+        node = getattr(event, "control", None) or getattr(event, "widget", None)
+        while node is not None:
+            nid = getattr(node, "id", None)
+            if nid == "sidebar-scroll":
+                return False
+            if nid in ("project-search", "sidebar-sticky"):
+                try:
+                    self.query_one(SessionListView).scroll_unpinned(delta)
+                except Exception:
+                    return False
+                return True
+            node = getattr(node, "parent", None)
+        return False
 
     def on_key(self, event) -> None:
         search = self.query_one("#project-search", Input)

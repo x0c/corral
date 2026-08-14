@@ -10,6 +10,7 @@ from unittest import mock
 from pickup import titles
 from pickup.models import Handoff, LaunchPlan, LaunchRequest, NewSessionRequest, session_key
 from pickup.runtime import BaseRuntime, LaunchError, RuntimeRegistry, default_registry
+from pickup.runtime import pi as runtime_pi
 
 
 def _make_minimal_opencode_db(path: Path, session_id: str, title: str) -> None:
@@ -140,6 +141,15 @@ class RuntimeTests(unittest.TestCase):
                 registry.prepare_copy_request(session, "继续 Pi 会话")
             )
             self.assertEqual(forked.argv, ("pi", "--approve", "--fork", str(history)))
+            stamped = runtime_pi.bind_hosted_ident(forked, "abcd1234")
+            self.assertEqual(
+                stamped.argv,
+                ("pi", "--approve", "--session-id", "abcd1234", "--fork", str(history)),
+            )
+            self.assertEqual(
+                runtime_pi.bind_hosted_ident(resumed, "abcd1234").argv,
+                resumed.argv,
+            )
             handoff = registry.build_launch_plan(
                 LaunchRequest(session, "claude", "交给 Claude", force_new=True)
             )
