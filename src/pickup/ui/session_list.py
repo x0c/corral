@@ -14,7 +14,8 @@
 `＋ 新建` 与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
 起头）。条纹画在 `SessionCard` / `SessionGroupCard` 上，用 `$foreground` 的半透明
 底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类 DEFAULT_CSS 会压过
-ListView 自带的 `.-highlight`，把选中底色吃掉。
+ListView 自带的 `.-highlight`，把选中底色吃掉。光标停在会话组卡上时，组卡和
+全部成员贴 `-group-selected`（整组高光），激活格对应成员再叠 `-split-active`。
 
 业务格式化逻辑（相对时间、宽字符对齐、标题兜底）直接复用 pickup.py 里已测试的
 纯函数，这里只负责「怎么在 Textual 里画卡片、怎么响应选择」。
@@ -940,6 +941,7 @@ class SessionListView(Vertical):
         self._index_gen += 1
         self._index = value
         self._apply_inner_indices(value)
+        self._apply_split_marks()
 
     def _focus_inner(self, inner: _SidebarList) -> None:
         screen = getattr(self.app, "screen", None)
@@ -990,6 +992,7 @@ class SessionListView(Vertical):
             finally:
                 if not was_syncing:
                     self._syncing_index = False
+        self._apply_split_marks()
 
     def enter_scroll_first(self) -> None:
         scroll = self._scroll_list
@@ -1011,6 +1014,7 @@ class SessionListView(Vertical):
                 self._syncing_index = False
         if self.has_focus_within:
             self._focus_inner(scroll)
+        self._apply_split_marks()
 
     def enter_sticky_last(self) -> None:
         sticky = self._sticky_list
@@ -1036,6 +1040,7 @@ class SessionListView(Vertical):
                 self._syncing_index = False
         if self.has_focus_within:
             self._focus_inner(sticky)
+        self._apply_split_marks()
 
     def scroll_unpinned(self, delta: int) -> None:
         scroll = self._scroll_list
@@ -1080,6 +1085,12 @@ class SessionListView(Vertical):
                 await self._scroll_list.extend(scroll_items)
         finally:
             self._syncing_index = False
+
+    async def clear(self) -> None:
+        """清空两段列表，兼容调用方要求在重建前重置侧栏。"""
+        await self._replace_list_items([], [])
+        self._index = None
+        self._selected_by_key = False
 
     def focus_on_click(self) -> bool:
         self.focus_before_click = _focused_live_session_key(
@@ -1420,7 +1431,8 @@ class SessionListView(Vertical):
         """把右栏分屏投影到侧边栏：整组铺底，激活会话再重一档。
 
         只有真正分屏（≥2 格）才标。单格时列表光标本身就指着那一格，再叠一层
-        底色只会和光标高亮互相打架，反而看不出焦点在哪。
+        底色只会和光标高亮互相打架，反而看不出焦点在哪。光标停在组卡上时由
+        `_apply_split_marks` 给整组贴 `-group-selected`，与分屏键是否变化无关。
         """
         keys = [key for key in pane_keys if not key.startswith("__")]
         if len(keys) < 2:
@@ -1441,17 +1453,25 @@ class SessionListView(Vertical):
 
         keys = set(self._split_keys)
         active = self._split_active_key
+        selected = self.selected_group()
+        selected_id = selected.group_id if selected is not None else None
+        selected_members = set(selected.session_keys) if selected is not None else set()
         for item, card in self._group_items():
             group_keys = set(card.group.session_keys)
             is_current_group = bool(keys) and keys.issubset(group_keys)
             item.set_class(is_current_group, "-in-split")
             item.set_class(False, "-split-active")
+            item.set_class(
+                selected_id is not None and card.group.group_id == selected_id,
+                "-group-selected",
+            )
         for item, card in self._session_items():
             key = pickup.session_key(card.session)
             in_group = key in keys
             is_active = active is not None and key == active
             item.set_class(in_group, "-in-split")
             item.set_class(is_active, "-split-active")
+            item.set_class(key in selected_members, "-group-selected")
 
     def _apply_stripes(self, rows: list[_SidebarRow]) -> None:
         """把块级斑马纹贴到卡片上；＋新建与分隔线不参与。幂等。"""

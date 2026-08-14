@@ -1861,20 +1861,38 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertTrue(member0.has_class("-split-active"))
 
-                # 点到 / 选中组卡：Group 行和全部成员都铺 -in-split，激活格仍格外高光
+                # 点到 / 选中组卡：整组（Group 行 + 成员）高光，激活格再重一档
                 group_row = list_view._group_items()[0][0]
                 list_view.index = list(list_view.list_children).index(group_row)
                 await pilot.pause()
                 app.screen._sync_split_marks()  # noqa: SLF001
                 self.assertTrue(group_row.has_class("-in-split"))
+                self.assertTrue(group_row.has_class("-group-selected"))
                 session_rows = {
                     pickup.session_key(card.session): item
                     for item, card in list_view._session_items()
                 }
                 self.assertTrue(session_rows[keys[0]].has_class("-in-split"))
+                self.assertTrue(session_rows[keys[0]].has_class("-group-selected"))
                 self.assertTrue(session_rows[keys[0]].has_class("-split-active"))
                 self.assertTrue(session_rows[keys[1]].has_class("-in-split"))
+                self.assertTrue(session_rows[keys[1]].has_class("-group-selected"))
                 self.assertFalse(session_rows[keys[1]].has_class("-split-active"))
+                group_bg = group_row.styles.background
+                inactive_bg = session_rows[keys[1]].styles.background
+                active_bg = session_rows[keys[0]].styles.background
+                self.assertEqual(inactive_bg, group_bg)
+                self.assertGreater(
+                    self._weight(active_bg, app), self._weight(group_bg, app)
+                )
+
+                # 改选某个成员：整组选中态收回，只剩分屏铺底 + 该行光标
+                list_view.select_session_key(keys[1])
+                await pilot.pause()
+                app.screen._sync_split_marks()  # noqa: SLF001
+                self.assertFalse(group_row.has_class("-group-selected"))
+                self.assertFalse(session_rows[keys[0]].has_class("-group-selected"))
+                self.assertFalse(session_rows[keys[1]].has_class("-group-selected"))
 
     @staticmethod
     def _weight(color, app) -> float:
@@ -1892,6 +1910,8 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             keys = await self._seed_group(list_view)
             list_view.set_split_marks(keys[:2], keys[1])
             list_view.focus()
+            # 先停在「＋ 新建」，避免组选中把成员也抬到光标档，污染四级阶梯的「静止」色。
+            list_view.index = 0
             await pilot.pause()
 
             group_row = list_view._group_items()[0][0]
