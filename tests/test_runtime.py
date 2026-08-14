@@ -13,6 +13,12 @@ from pickup.runtime import BaseRuntime, LaunchError, RuntimeRegistry, default_re
 from pickup.runtime import pi as runtime_pi
 
 
+def _prepare_copy_request(registry: RuntimeRegistry, session, title: str):
+    """CI 没有安装各家 CLI；复制计划测试只关心 fork/clone 路径，不依赖本机二进制。"""
+    with mock.patch.object(BaseRuntime, "is_available", return_value=True):
+        return registry.prepare_copy_request(session, title)
+
+
 def _make_minimal_opencode_db(path: Path, session_id: str, title: str) -> None:
     conn = sqlite3.connect(str(path))
     try:
@@ -138,7 +144,7 @@ class RuntimeTests(unittest.TestCase):
             resumed = registry.build_launch_plan(LaunchRequest(session, "pi", "继续 Pi 会话"))
             self.assertEqual(resumed.argv, ("pi", "--approve", "--session", str(history)))
             forked = registry.build_launch_plan(
-                registry.prepare_copy_request(session, "继续 Pi 会话")
+                _prepare_copy_request(registry, session, "继续 Pi 会话")
             )
             self.assertEqual(forked.argv, ("pi", "--approve", "--fork", str(history)))
             stamped = runtime_pi.bind_hosted_ident(forked, "abcd1234")
@@ -197,7 +203,7 @@ class RuntimeTests(unittest.TestCase):
             session = self._session("claude", str(history), td)
             registry = default_registry()
 
-            request = registry.prepare_copy_request(session, "复杂讨论")
+            request = _prepare_copy_request(registry, session, "复杂讨论")
             self.assertTrue(request.copy_session)
             self.assertEqual(request.session["id"], session["id"])
 
@@ -215,13 +221,13 @@ class RuntimeTests(unittest.TestCase):
             registry = default_registry()
 
             codex = self._session("codex", str(history), td)
-            codex_req = registry.prepare_copy_request(codex, "讨论")
+            codex_req = _prepare_copy_request(registry, codex, "讨论")
             codex_plan = registry.build_launch_plan(codex_req)
             self.assertEqual(codex_plan.argv[:2], ("codex", "fork"))
             self.assertIn("session-123", codex_plan.argv)
 
             opencode = self._session("opencode", str(history), td)
-            oc_req = registry.prepare_copy_request(opencode, "讨论")
+            oc_req = _prepare_copy_request(registry, opencode, "讨论")
             oc_plan = registry.build_launch_plan(oc_req)
             self.assertIn("-s", oc_plan.argv)
             self.assertIn("--fork", oc_plan.argv)
@@ -256,7 +262,7 @@ class RuntimeTests(unittest.TestCase):
             session["id"] = old_id
 
             registry = default_registry()
-            request = registry.prepare_copy_request(session, "原标题")
+            request = _prepare_copy_request(registry, session, "原标题")
             self.assertFalse(request.copy_session)
             self.assertNotEqual(request.session["id"], old_id)
             self.assertTrue(str(request.session.get("native_title") or "").endswith("（副本）"))
@@ -305,7 +311,7 @@ class RuntimeTests(unittest.TestCase):
             session["id"] = old_id
 
             registry = default_registry()
-            request = registry.prepare_copy_request(session, "Kimi 讨论")
+            request = _prepare_copy_request(registry, session, "Kimi 讨论")
             self.assertFalse(request.copy_session)
             self.assertNotEqual(request.session["id"], old_id)
             new_dir = Path(td) / "ws" / request.session["id"]
@@ -317,6 +323,14 @@ class RuntimeTests(unittest.TestCase):
             plan = registry.build_launch_plan(request)
             self.assertIn("-S", plan.argv)
             self.assertIn(request.session["id"], plan.argv)
+
+    def test_prepare_copy_request_rejects_unavailable_runtime(self) -> None:
+        session = self._session("claude", "/tmp/claude.jsonl", "/tmp")
+        registry = default_registry()
+        with mock.patch.object(BaseRuntime, "is_available", return_value=False):
+            with self.assertRaises(LaunchError) as raised:
+                registry.prepare_copy_request(session, "复杂讨论")
+        self.assertIn("未安装", str(raised.exception))
 
     def test_claude_session_can_handoff_to_codex(self) -> None:
         with tempfile.TemporaryDirectory() as td:
