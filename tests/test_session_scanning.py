@@ -2167,6 +2167,66 @@ class ConversationPreviewTests(unittest.TestCase):
             [("user", "用户问题"), ("assistant", "处理中间状态"), ("assistant", "最终答复")],
         )
 
+    def test_codex_conversation_dedupes_response_item_and_event_msg_user(self) -> None:
+        """新版 Codex 同一句真人输入会各写一遍 response_item 和 event_msg。
+
+        预览 / Your prompts 必须只留先到的那条，时间戳也跟它走；助手侧已有
+        相邻正文去重，用户侧漏了就会成对出现。不相邻的同一句仍是两轮。
+        """
+        entries = [
+            {
+                "timestamp": "2026-07-01T10:00:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "用户问题"}],
+                },
+            },
+            {
+                "timestamp": "2026-07-01T10:00:00.100Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "用户问题"},
+            },
+            {
+                "timestamp": "2026-07-01T10:00:03Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "phase": "final_answer", "message": "最终答复"},
+            },
+            {
+                "timestamp": "2026-07-01T10:00:10Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "用户问题"}],
+                },
+            },
+            {
+                "timestamp": "2026-07-01T10:00:10.100Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "用户问题"},
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rollout.jsonl"
+            path.write_text("\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries), encoding="utf-8")
+
+            messages = scan_codex.load_conversation(str(path))
+
+        self.assertEqual(
+            [(message.role, message.text) for message in messages],
+            [("user", "用户问题"), ("assistant", "最终答复"), ("user", "用户问题")],
+        )
+        self.assertEqual(
+            messages[0].timestamp,
+            scan_codex._parse_timestamp("2026-07-01T10:00:00Z"),
+        )
+        self.assertEqual(
+            messages[2].timestamp,
+            scan_codex._parse_timestamp("2026-07-01T10:00:10Z"),
+        )
+
     def test_codex_conversation_ignores_null_message_instead_of_literal_none(self) -> None:
         """payload 里的字段即使有 key，值也可能是 JSON null（如任务无输出就结束的
         task_complete）；`payload.get(key, "")` 只在 key 缺失时才用默认值，key 存在但值为

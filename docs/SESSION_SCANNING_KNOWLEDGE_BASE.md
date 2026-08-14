@@ -105,7 +105,7 @@ sequenceDiagram
 4. 各扫描器返回字段完整的会话列表项，按有效会话时间降序排列。`SessionStore._merge_scanned()` 合并所有来源；已在列表出现过的会话位置稳定，新出现会话才按时间插入顶部。
 5. `keepalive.annotate()` 可在合并后补充托管标记；这不改变扫描器只读本地历史和进程状态的边界。
 6. 刚由 pickup 创建、还没产生第一条用户消息的 Codex 会话，只有在进程仍运行时才保留并显示为「Codex 新会话」；进程已结束的空记录继续过滤，避免旧的无效记录占满列表。
-7. Codex 的用户与助手正文同时兼容旧事件流和新版响应记录；新版首轮会混入运行环境说明，必须跳过这类注入内容，继续读到真实任务文本。否则真实会话会被误判为空会话、标题生成只会得到「新会话」之类无意义输入。
+7. Codex 的用户与助手正文同时兼容旧事件流和新版响应记录；新版首轮会混入运行环境说明，必须跳过这类注入内容，继续读到真实任务文本。否则真实会话会被误判为空会话、标题生成只会得到「新会话」之类无意义输入。同一句真人输入还会各写一遍 `response_item` 和 `event_msg`，`load_conversation` 必须按相邻正文去重，只留先到的那条。
 
 ### 2.2 运行中判定
 
@@ -189,7 +189,7 @@ flowchart TD
 | 修改 Claude 扫描或列表轻量化 | Claude 扫描器 | `scan.claude.scan_sessions()`、`_peek_head_meta()`、`_build_session_info()` | 先 mtime 排序，预探过滤噪音和失效 cwd，再头尾解析 |
 | 修改 Claude 完整预览 | Claude 扫描器 | `scan.claude.load_conversation()` | 只根据文本内容决定是否展示 assistant 消息；保留真人用户消息 |
 | 修改 Codex 扫描或判活 | Codex 扫描器 | `scan.codex.scan_sessions()`、`_live_session_ids()` | 过滤子代理线程；macOS 使用批量 `lsof`，不可逐 pid 调用 |
-| 修改 Codex 完整预览 | Codex 扫描器 | `scan.codex.load_conversation()` | 读取 `event_msg` 的用户、过程叙述和最终答复文本 |
+| 修改 Codex 完整预览 | Codex 扫描器 | `scan.codex.load_conversation()` | 同时读 `event_msg` 与 `response_item`；用户/助手都按相邻正文去重 |
 | 修改 OpenCode 查询或刷新跳过 | OpenCode 扫描器 | `scan.opencode.scan_sessions()`、`scan_signature()` | 历史为 SQLite；签名需同时覆盖 DB/WAL 和进程活性快照 |
 | 修改 OpenCode 完整预览 | OpenCode 扫描器 | `scan.opencode.load_conversation()` | 从 `message` 与 `part` 表合并同一消息的多个 text part |
 | 修改 Kimi 事件过滤或预览 | Kimi 扫描器 | `scan.kimi._iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent |
@@ -265,6 +265,7 @@ flowchart TD
 - **Pi 特例**：Pi 标题生成固定使用 `--no-session --no-tools --print`，不应产生会话；扫描器仍只接受以 session header 起始的文件，忽略 thinking 和工具分片，防止非对话记录混入预览。
 - **AI 易错点**【必须】过滤 OpenConductor 管家临时 cwd：路径任一段以 `oc-manager-` 开头（如 `/tmp/oc-manager-codex/...`）时丢弃（`is_ephemeral_agent_cwd`）。原因：这类目录会删了再建，旧会话因「cwd 不存在」被滤掉后又整批复活；若再被 `SessionStore` 当成 fresh 插最前，侧边栏会被几天前的管家会话刷屏。
 - **AI 易错点**【必须】`SessionStore` 合并 fresh 时：mtime 在约 2 天内才 prepend；更旧的 fresh 追加到 `_order` 末尾（原因：即使漏过滤的目录复活，也不能把冷会话顶到视口）。
+- **AI 易错点**【必须】Codex `load_conversation` 对用户消息也做相邻正文去重：新版同一句会各写一遍 `response_item` 和 `event_msg`，助手侧早已去重，用户侧漏了预览 / Your prompts 会成对出现。只折相邻、留先到的时间戳；不相邻的同一句是两轮。回归：`test_codex_conversation_dedupes_response_item_and_event_msg_user`。
 - **AI 易错点**【必须】Codex 过滤 `thread_source == "subagent"`，OpenCode 过滤 `parent_id IS NOT NULL`，Kimi 忽略非 main agent 的 wire 文件，Cursor 过滤 `meta.json` 的 `isSubagent === true`，Claude 过滤文件头 `type=="agent-name"`、`isSidechain`，以及首条用户输入为 `<teammate-message teammate_id="team-lead">` 的会话。**禁止**用 `teamName` 或任意 `<teammate-message>` 过滤：team lead 会话同样带前者，也会收到成员的后者（原因：这些是助手内部子任务，不是用户发起的顶层会话，列出会造成重复；误杀 team lead 则会使真实会话消失）。Claude Task 子 agent 在 `<sessionId>/subagents/` 子目录，扫描器不递归，天然不列出；Teammates 模式队友是顶层 `.jsonl`，必须显式过滤。
 - **AI 易错点**【性能】Claude、Codex、Kimi、Cursor 先用廉价 `stat` 排候选并凑够有效 `limit` 后停止；不得退回“完整解析全部历史再截断”（原因：首屏会随历史数量线性恶化）。
 - **AI 易错点**【性能】对会话 cwd 的存在性检查按一次扫描记忆化；Codex 在 macOS 对全部 pid 合并一次 `lsof`（原因：大量会话共享 cwd，逐条 `isdir` 或逐 pid `lsof` 会耗尽首屏预算）。

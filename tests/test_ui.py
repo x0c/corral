@@ -7330,6 +7330,23 @@ class SessionHudSummaryTests(unittest.TestCase):
         self.assertFalse(data)
         self.assertEqual(data.count, 0)
 
+    def test_consecutive_duplicate_prompts_collapse(self) -> None:
+        """相邻同一句只留一条；隔了一轮再发同一句是真人重复，要留下。"""
+        from pickup.ui.session_hud import summarize_user_messages
+
+        data = summarize_user_messages([
+            pickup.ConversationMessage("user", "同一句"),
+            pickup.ConversationMessage("user", "同一句\n"),
+            pickup.ConversationMessage("assistant", "回"),
+            pickup.ConversationMessage("user", "下一句"),
+            pickup.ConversationMessage("user", "同一句"),
+        ])
+        self.assertEqual(data.count, 3)
+        self.assertEqual(
+            [body for _stamp, body in data.entries],
+            ["同一句", "下一句", "同一句"],
+        )
+
 
 class SessionHudRenderTests(unittest.TestCase):
     """小窗两种形态的内容：收起态给两头，展开态补上中间并如实说明省略了多少条。"""
@@ -7535,6 +7552,29 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertIn("问题0", prompt_rows[0][1].plain)
         self.assertFalse(has_bg(prompt_rows[0][1]), "最早一条是偶数块，不涂")
         self.assertTrue(has_bg(prompt_rows[1][1]), "第二条提问是奇数块，要涂")
+
+    def test_hud_stripe_stays_in_pane_blue_family(self) -> None:
+        """条纹叠 `$primary`，必须仍是蓝，不能被 `$foreground` 洗成灰。"""
+        from textual.color import Color as TextualColor
+
+        from pickup.ui.session_hud import _hud_stripe_color
+
+        gray = TextualColor.parse("#C9D1D9")
+        for bg_hex, primary_hex in (("#31475E", "#3B7EB8"), ("#D1E7F7", "#2F6F9F")):
+            background = TextualColor.parse(bg_hex)
+            primary = TextualColor.parse(primary_hex)
+            mixed = _hud_stripe_color(background, primary)
+            self.assertGreater(
+                mixed.b, mixed.r,
+                f"{bg_hex}+{primary_hex} → {mixed.hex} 必须偏蓝",
+            )
+            gray_mix = background.blend(gray, 0.16)
+            self.assertGreater(
+                mixed.b - mixed.r,
+                gray_mix.b - gray_mix.r,
+                f"{mixed.hex} 应比叠灰 {gray_mix.hex} 更蓝",
+            )
+            self.assertNotEqual(mixed.hex, gray_mix.hex)
 
 
 class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):

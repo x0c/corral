@@ -56,9 +56,10 @@ _MAX_EXPANDED_HEIGHT = 20
 _SCROLL_STEP = 3
 # 展开态每条提问最多占几行；再长末行加省略号。收起态本来就是一行截断。
 _MAX_PROMPT_LINES = 2
-# 比侧边栏卡片略深一档：小窗底已经是 `$pane-active-background`，再叠 8%
-# 前景几乎看不出；16% 才能在浮层里做出和侧边栏同级的块对比，hover 仍能透出来。
-_STRIPE_BLEND = 0.16
+# 条纹必须跟小窗蓝底同色系：叠 `$primary`，不要叠 `$foreground`（那是灰，
+# 会把激活条的蓝洗成泥灰）。40% 才能在 `$pane-active-background` 上看出
+# 一块更亮/更饱和的蓝；hover 切到 `$primary-muted` 时仍是蓝。
+_STRIPE_BLEND = 0.40
 
 # Codex 把粘贴图片收成一对空标签，后面才是用户打的字；小窗只关心那句人话。
 _IMAGE_WRAP_RE = re.compile(r"<image\b[^>]*>\s*</image>\s*", re.IGNORECASE | re.DOTALL)
@@ -182,6 +183,14 @@ def _one_line(text: str) -> str:
     return ""
 
 
+def _hud_stripe_color(background: TextualColor, accent: TextualColor) -> TextualColor:
+    """把 `$primary` 叠进当前浮层底，得到同色系蓝条纹。
+
+    调用方禁止传入 `$foreground`：那是灰，会把 `$pane-active-background` 洗脏。
+    """
+    return background.blend(accent, _STRIPE_BLEND)
+
+
 def summarize_user_messages(
     messages: list[ConversationMessage], limit: int = MAX_ENTRIES,
 ) -> HudData:
@@ -192,6 +201,10 @@ def summarize_user_messages(
     Codex `<skill>`/`<turn_aborted>`、OpenConductor 角色提示、pickup 自己的
     接力词仍会以 user 身份进 `load_conversation`，必须在这里再滤一次。
 
+    相邻且压成一行后正文相同的提问只留先到的那条：新版 Codex 同一句会各写
+    一遍 `response_item` 和 `event_msg`，扫描层已按原文去重，这里再按展示
+    正文兜一层。不相邻的重复（人过一会又发同一句）照常保留。
+
     超过 `limit` 条时**保留最早那条、砍中间**：最早一条决定"这个会话本来要干嘛"，
     没有它就只剩一串近期动作，看不出来龙去脉；被砍掉的条数原样返回给界面说明。
     """
@@ -199,6 +212,15 @@ def summarize_user_messages(
         m for m in messages
         if m.role == "user" and _one_line(m.text) and not is_injected_user_prompt(m.text)
     ]
+    # Codex 等运行时同一句提问会在对话里连写两遍；小窗按相邻正文折叠，
+    # 人连发两句一模一样的也只留一条——Your prompts 要的是脉络不是回声。
+    collapsed: list[ConversationMessage] = []
+    for message in users:
+        body = _one_line(message.text)
+        if collapsed and _one_line(collapsed[-1].text) == body:
+            continue
+        collapsed.append(message)
+    users = collapsed
     if not users:
         return HudData(0, ())
 
@@ -308,10 +330,10 @@ class SessionHud(Widget):
         return max(_MIN_EXPANDED_HEIGHT, min(_MAX_EXPANDED_HEIGHT, available - 3))
 
     def _stripe_on(self) -> str:
-        """当前浮层底上叠 8% 前景，得到 Rich `on #rrggbb`；算不出就空串。
+        """当前浮层底上叠 `$primary`，得到一块同色系的蓝条纹。
 
-        必须从 `styles.background` 混合，不能写死颜色：hover 时整窗底会切到
-        `$primary-muted`，条纹要跟着变浅/变深，而不是盖住 hover。
+        禁止叠 `$foreground`：那是灰，会把 `$pane-active-background` 的蓝洗脏。
+        必须从 `styles.background` 混合：hover 切到 `$primary-muted` 时条纹仍是蓝。
         """
         try:
             app = self.app
@@ -321,11 +343,11 @@ class SessionHud(Widget):
         if not isinstance(background, TextualColor) or background.ansi is not None:
             return ""
         try:
-            fg_raw = app.get_css_variables().get("foreground") or ""
-            foreground = TextualColor.parse(str(fg_raw))
+            primary_raw = app.get_css_variables().get("primary") or ""
+            primary = TextualColor.parse(str(primary_raw))
         except Exception:
             return ""
-        mixed = background.blend(foreground, _STRIPE_BLEND)
+        mixed = _hud_stripe_color(background, primary)
         hexcol = getattr(mixed, "hex", "") or ""
         return f"on {hexcol}" if hexcol else ""
 

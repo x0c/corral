@@ -225,7 +225,7 @@ wheels = [
 
 [[package]]
 name = "pickup"
-version = "0.24.108"
+version = "0.24.109"
 source = { editable = "." }
 dependencies = [
     { name = "textual" },

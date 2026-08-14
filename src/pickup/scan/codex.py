@@ -486,7 +486,15 @@ def load_conversation(path: str) -> list[ConversationMessage]:
                 assistant_text = _assistant_message_text(entry)
                 payload_type = payload.get("type")
                 if user_text:
-                    messages.append(ConversationMessage("user", user_text, _entry_time(entry)))
+                    # 新版 Codex 同一句真人输入会各写一遍 response_item（role=user）
+                    # 和 event_msg.user_message，预览 / Your prompts 会成对出现。
+                    # 助手侧已经按相邻正文去重；用户侧同样只留先到的那条。
+                    if (
+                        not messages
+                        or messages[-1].role != "user"
+                        or messages[-1].text != user_text
+                    ):
+                        messages.append(ConversationMessage("user", user_text, _entry_time(entry)))
                 elif assistant_text and (
                     not messages
                     or messages[-1].role != "assistant"
