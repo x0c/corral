@@ -176,7 +176,7 @@ class SessionCard(Widget):
         color: $foreground 80%;
         &.-stripe {
             /* 半透明叠在 ListItem 底上，不跟选中/分屏高亮抢 background。 */
-            background: $foreground 4%;
+            background: $foreground 8%;
         }
     }
     /* 第三行时间按新鲜度分档着色：半小时内与标题同亮（=卡片基础色，着重显示），
@@ -429,7 +429,7 @@ class SessionGroupCard(Widget):
         pointer: pointer;
         color: $foreground 88%;
         &.-stripe {
-            background: $foreground 4%;
+            background: $foreground 8%;
         }
     }
     """
