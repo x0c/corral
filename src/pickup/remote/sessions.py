@@ -50,7 +50,6 @@ class _ScreenWatch:
     watchers: int = 0
     cols: int = 0
     rows: int = 0
-    size_checked_at: float = 0.0
 
 
 @dataclass

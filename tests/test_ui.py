@@ -2953,6 +2953,87 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             pane.focus_session("pickup-claude-target", target_size=(101, 28))
         self.assertEqual(observed, [(101, 28)])
 
+    def test_focus_session_without_target_size_clears_stale_override(self) -> None:
+        """切会话未带预测尺寸时，必须丢掉上一格残留的 override。"""
+        pane = EmbedPane()
+        pane.post_message = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        pane._capture_size_override = (24, 28)  # noqa: SLF001
+        with (
+            mock.patch.object(pane, "_pane_size", return_value=(80, 28)),
+            mock.patch("pickup.embed.open_channel", return_value=None),
+            mock.patch("pickup.embed.should_resize_host", return_value=False),
+        ):
+            pane.focus_session("pickup-claude-cleared")
+            self.assertIsNone(pane._capture_size_override)  # noqa: SLF001
+            self.assertEqual(pane._capture_size(), (80, 28))  # noqa: SLF001
+
+    def test_capture_size_prefers_tmux_real_size_over_widget(self) -> None:
+        """稳态抓帧按 tmux 真实列数解析，不能按更宽的格子去补空白。"""
+        pane = EmbedPane()
+        pane._capture_size_override = None  # noqa: SLF001
+        pane._tmux_pane_size = (40, 20)  # noqa: SLF001
+        with mock.patch.object(pane, "_pane_size", return_value=(200, 20)):
+            self.assertEqual(pane._capture_size(), (40, 20))  # noqa: SLF001
+
+    def test_resize_clears_override_even_when_predicted_size_differs(self) -> None:
+        """预测宽与 Textual 实际差 1 列时，Resize 也必须清掉 override。"""
+        pane = EmbedPane()
+        pane.session_name = "pickup-claude-mismatch"
+        pane.dead = False
+        pane._capture_size_override = (25, 18)  # noqa: SLF001
+        pane._host_size = ("pickup-claude-mismatch", 24, 18)  # noqa: SLF001
+        pane._on_resize(events.Resize(Size(24, 18), Size(24, 18)))
+        self.assertIsNone(pane._capture_size_override)  # noqa: SLF001
+
+    def test_projected_embed_sizes_match_textual_floor_accumulate(self) -> None:
+        """四格余数必须按 Textual floor-accumulate 交错分配，不能堆给末格。"""
+        from pickup.ui.split_pane_area import projected_embed_sizes
+
+        sizes = projected_embed_sizes(101, 30, 4)
+        self.assertEqual([w for w, _ in sizes], [24, 25, 24, 25])
+        self.assertEqual({h for _, h in sizes}, {28})
+        self.assertEqual(
+            [w for w, _ in projected_embed_sizes(105, 30, 4)], [25, 26, 25, 26],
+        )
+        self.assertEqual(
+            [w for w, _ in projected_embed_sizes(189, 30, 4)], [46, 47, 46, 47],
+        )
+        # 2 格余 0：均分
+        self.assertEqual([w for w, _ in projected_embed_sizes(81, 24, 2)], [40, 40])
+        # 3 格：宽度之和等于行宽减去两列间距
+        self.assertEqual(sum(w for w, _ in projected_embed_sizes(100, 24, 3)), 98)
+
+    def test_host_size_drift_retries_resize_with_backoff(self) -> None:
+        """tmux 真实尺寸落后于格子时，抓帧线程按间隔重发 resize，同一目标最多 3 次。"""
+        import pickup.ui.embed_pane as embed_pane_mod
+
+        pane = EmbedPane()
+        pane._capture_size_override = None  # noqa: SLF001
+        with (
+            mock.patch.object(pane, "_pane_size", return_value=(80, 24)),
+            mock.patch("pickup.embed.should_resize_host", return_value=True),
+            mock.patch("pickup.embed.resize") as resize,
+            mock.patch("pickup.observe.event") as event,
+        ):
+            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 1)
+            resize.assert_called_with("pickup-claude-heal", 80, 24)
+            event.assert_called()
+            self.assertEqual(event.call_args.args[0], "host_size_drift")
+            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 1, "间隔内不得连发")
+            pane._heal_last_at = 0.0  # noqa: SLF001
+            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            pane._heal_last_at = 0.0  # noqa: SLF001
+            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 3)
+            pane._heal_last_at = 0.0  # noqa: SLF001
+            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 3, "同一目标超过上限即停")
+            pane._heal_host_size_if_needed("pickup-claude-heal", (80, 24))  # noqa: SLF001
+            self.assertEqual(pane._heal_count, 0)  # noqa: SLF001
+        self.assertGreaterEqual(embed_pane_mod._HOST_SIZE_HEAL_MAX, 3)
+
     async def test_browsing_existing_groups_persists_focus_not_composition(self) -> None:
         """浏览已有会话组只 set_focus，不得 set_group（会抬 updated_at 并整表写盘）。"""
         sessions = [

@@ -654,6 +654,7 @@ class EmbedPane(Widget):
         if self._heal_target != expected:
             self._heal_target = expected
             self._heal_count = 0
+            self._heal_last_at = 0.0
         if self._heal_count >= _HOST_SIZE_HEAL_MAX:
             return
         if self._heal_last_at and now - self._heal_last_at < _HOST_SIZE_HEAL_INTERVAL:

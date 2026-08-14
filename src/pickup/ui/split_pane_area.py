@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from fractions import Fraction
 
 from rich.text import Text
 from textual import events
@@ -16,6 +18,32 @@ from pickup.split_layout import MAX_PANES
 from pickup.ui.embed_pane import EmbedPane, ModeChanged
 from pickup.ui.runtime_top_bar import RuntimeTopBar
 from pickup.ui.session_hud import SessionHud
+
+
+def projected_embed_sizes(
+    row_width: int, row_height: int, count: int,
+) -> list[tuple[int, int]]:
+    """按 Textual HorizontalLayout 的 1fr 取整规则，算出每个内嵌画面的内容尺寸。
+
+    `PaneCell` 只有非首格占一列左间距（`margin-left: 1`），剩余列按 `1fr` 从左
+    到右均分。Textual 不是「余数给最后几格」，而是 Fraction 累加后再
+    `floor(next) - floor(x)`；四格且行宽为 4k+1 时实际是 `[n, n+1, n, n+1]`，
+    不是 `[n, n, n+1, n+1]`。顶、底栏各占一行。
+    """
+    if count <= 0:
+        return []
+    gutters = max(0, count - 1)
+    remaining = max(0, int(row_width) - gutters)
+    unit = Fraction(remaining, count)
+    height = max(1, int(row_height) - 2)
+    x = Fraction(0)
+    sizes: list[tuple[int, int]] = []
+    for index in range(count):
+        nxt = x + unit
+        width = max(1, math.floor(nxt) - math.floor(x))
+        sizes.append((width, height))
+        x = nxt + (1 if index < count - 1 else 0)
+    return sizes
 
 
 @dataclass
@@ -612,33 +640,34 @@ class SplitPaneArea(Vertical):
             cell.update_terminal_background(osc_report)
 
     def host_pane_size(self) -> tuple[int, int]:
-        """新建托管会话用的单格尺寸（主线程调用）。"""
+        """新建托管会话用的单格尺寸（主线程调用）。
+
+        按「加上这一格之后」的最终布局取自己这一格（末格）的宽高，让
+        `host_session` 直接按最终尺寸建窗，避免 agent 启动窗口期再挨一次
+        差几列的 resize。
+        """
         from pickup import embed as embed_mod
 
         row = self.query_one("#pane-row", Horizontal)
         count = max(1, len(self._panes) + 1)
-        w = max(1, (row.size.width or 120) // count)
-        h = max(1, row.size.height or 24)
-        return embed_mod.normalize_host_size(w, h - 1)
+        row_w = row.size.width or 120
+        row_h = row.size.height or 24
+        sizes = projected_embed_sizes(row_w, row_h, count)
+        w, h = sizes[-1]
+        return embed_mod.normalize_host_size(w, h)
 
     def _projected_embed_sizes(self, count: int) -> list[tuple[int, int]] | None:
         """计算本次分栏布局最终会给每个实时画面的内容尺寸。
 
-        `PaneCell` 只有非首格占一列左间距，剩余列按 Textual 的 `1fr` 从左到右
-        均分（不能在旧格上读取 `pane.size`，那正是闪跳来源）。顶、底栏各占一行。
+        不能在旧格上读取 `pane.size`，那正是闪跳来源。算法与 Textual
+        HorizontalLayout 对齐，见模块级 `projected_embed_sizes`。
         """
         if count <= 0:
             return []
         row = self.query_one("#pane-row", Horizontal)
         if row.size.width <= 0 or row.size.height <= 0:
             return None
-        usable_width = max(1, row.size.width - (count - 1))
-        base, remainder = divmod(usable_width, count)
-        height = max(1, row.size.height - 2)
-        return [
-            (base + int(index >= count - remainder), height)
-            for index in range(count)
-        ]
+        return projected_embed_sizes(row.size.width, row.size.height, count)
 
     def sync_hud(self, payloads: dict[str, object] | None, *, expanded: bool) -> None:
         """每个右栏格画自己的会话小窗；payloads 里没有的格一律收掉。

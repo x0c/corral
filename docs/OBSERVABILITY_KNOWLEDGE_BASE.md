@@ -86,6 +86,7 @@ flowchart TD
 | `list_rebuild` | 界面会话列表重建结束 | 耗时与重建模式 |
 | `host_session` | 内嵌会话托管成功或失败 | 耗时、运行时、`ok` |
 | `capture_slow` | 单次抓帧达到或超过 100ms | 耗时与低基数状态 |
+| `host_size_drift` | 抓帧线程发现 tmux 真实尺寸落后于格子期望并重发 `resize` | 实际/期望宽高与重试次数；同一目标最多 3 次、间隔约 2s |
 | `screenshot` | 用户按 F12 成功导出截图 | 本地路径和 SVG 格式 |
 | `error` | 抓帧、重扫、截图、TUI/进程未捕获异常等路径 | 位置、异常类型、短消息；完整栈另存 |
 | debug 事件 | 已开启细日志时 | 仅用于补充诊断上下文，不应承载正文 |
@@ -115,7 +116,7 @@ flowchart TD
 | 脱敏与容量边界 | `python3 -m unittest -v test_observe.py` | 敏感字段变为 `<redacted>`，超过 256KB 后可继续写入 |
 | 异常双写 | `python3 -m unittest -v test_observe.py` | `error` 事件无 traceback，异常日志有完整 traceback |
 | 只读诊断 | `python3 -m pickup diagnose` 或已安装命令 `pickup diagnose` | 返回日志/截图目录、存在性、`last_error`、tmux 与配色事实；不启动 TUI |
-| 事件现场读取 | `python3 -m pickup diagnose` 后读取 `data.last_error` 或 `~/.cache/pickup/events.log` | 能看到最近闪退栈，或按 JSON 行查看 `scan_all`、`list_rebuild`、`host_session`、`capture_slow`、`error` 等 |
+| 事件现场读取 | `python3 -m pickup diagnose` 后读取 `data.last_error` 或 `~/.cache/pickup/events.log` | 能看到最近闪退栈，或按 JSON 行查看 `scan_all`、`list_rebuild`、`host_session`、`capture_slow`、`host_size_drift`、`error` 等 |
 | 截图观测 | 在真实 TUI 中按 F12 | 生成 `~/.cache/pickup/screenshots/tui-*.svg`，并只作本地排查使用 |
 | 验收截图消歧 | `python3 docs/screenshots/capture.py` | 生成虚构数据的验收图；不读取真实历史，不替代 F12 现场截图 |
 
