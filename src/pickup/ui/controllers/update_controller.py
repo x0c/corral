@@ -2,9 +2,10 @@
 
 从 `main_screen.MainScreen` 拆出的方法组（架构整改阶段四）。每次打开 pickup
 都后台查一次最新版本；源码/开发安装（无法一键升级）时直接跳过，不弹窗打扰。
-检查/升级全程跑在 worker 线程，任何异常都不能拖垮 UI 或阻塞首屏——updater
-模块本身已把网络/子进程异常全部吞掉。状态（`_update_channel` /
-`_update_latest`）仍挂在 MainScreen 实例上。
+检查跑在 worker 线程，任何异常都不能拖垮 UI 或阻塞首屏。真正升级前必须先退出
+界面：Homebrew / pipx / pip 都可能替换当前进程正在使用的安装目录，旧界面继续渲染
+会在下一次惰性导入时随机缺模块。状态（`_update_channel` / `_update_latest`）仍挂在
+MainScreen 实例上。
 """
 
 from __future__ import annotations
@@ -34,31 +35,13 @@ class UpdateControllerMixin:
             self.app.call_from_thread(lambda: self.query_one(UpdateToast).show_available(latest))
 
     def _on_update_toast_update(self) -> None:
-        toast = self.query_one(UpdateToast)
-        toast.show_updating()
-        self._run_update_worker()
-
-    @work(thread=True, group="update-apply")
-    def _run_update_worker(self) -> None:
-        from pickup import observe
-
-        latest = self._update_latest
-        ok, output = updater.run_update(latest, self._update_channel)
-        observe.event("self_update", ok=ok, latest=latest, channel=self._update_channel)
-        if not ok:
-            observe.debug("self_update_output", output=output)
-        worker = get_current_worker()
-        if worker.is_cancelled:
-            return
-        toast = self.query_one(UpdateToast)
-        if ok:
-            self.app.call_from_thread(lambda: toast.show_done(latest))
-        else:
-            self.app.call_from_thread(lambda: toast.show_failed(output))
+        self.app.exit(
+            result=updater.RestartRequest(self._update_latest, self._update_channel)
+        )
 
     def _on_update_toast_restart(self) -> None:
-        # 交给 cli.main()：用新装好的磁盘代码 re-exec 一个全新 pickup 进程。
-        self.app.exit(result=updater.RestartRequest())
+        # 兼容已进入完成态的浮层；正常路径点击「更新」时已经直接退出界面。
+        self._on_update_toast_update()
 
     def _on_update_toast_retry(self) -> None:
         self._on_update_toast_update()

@@ -542,8 +542,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "更新失败，详见上方输出。",
     },
     "update.cli_updated": {
-        "en": "Updated to v{version}. Restart pickup to use the new version.",
-        "zh": "已更新到 v{version}，重启 pickup 后生效。",
+        "en": "Updated to v{version}. Restarting pickup…",
+        "zh": "已更新到 v{version}，正在重启 pickup…",
     },
 }
 

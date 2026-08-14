@@ -9,7 +9,7 @@ import sys
 import unittest
 from unittest import mock
 
-from pickup import cli
+from pickup import cli, updater
 
 
 class RestartProcessTests(unittest.TestCase):
@@ -29,6 +29,32 @@ class RestartProcessTests(unittest.TestCase):
              mock.patch.object(cli.os, "execv") as execv:
             cli._restart_process()
         execv.assert_called_once_with(sys.executable, [sys.executable, "-m", "pickup"])
+
+
+class FinishSelfUpdateTests(unittest.TestCase):
+    def test_successful_update_restarts_only_after_installation_returns(self) -> None:
+        request = updater.RestartRequest("9.9.9", "brew")
+        order: list[str] = []
+
+        def run_update(latest, channel):
+            self.assertEqual((latest, channel), ("9.9.9", "brew"))
+            order.append("更新")
+            return True, "ok"
+
+        with mock.patch.object(cli.updater, "run_update", side_effect=run_update), \
+             mock.patch.object(cli, "_restart_process", side_effect=lambda: order.append("重启")), \
+             mock.patch.object(cli.observe, "event"):
+            self.assertTrue(cli._finish_self_update(request))
+        self.assertEqual(order, ["更新", "重启"])
+
+    def test_failed_update_does_not_restart(self) -> None:
+        request = updater.RestartRequest("9.9.9", "pip")
+        with mock.patch.object(cli.updater, "run_update", return_value=(False, "失败原因")), \
+             mock.patch.object(cli, "_restart_process") as restart, \
+             mock.patch.object(cli.observe, "event"), \
+             mock.patch.object(cli.observe, "debug"):
+            self.assertFalse(cli._finish_self_update(request))
+        restart.assert_not_called()
 
 
 if __name__ == "__main__":

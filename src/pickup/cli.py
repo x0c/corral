@@ -43,6 +43,26 @@ def _restart_process() -> None:
         return  # execv 正常不会返回；防御性兜底，避免万一继续往下走
     os.execv(sys.executable, [sys.executable, "-m", "pickup", *sys.argv[1:]])
 
+
+def _finish_self_update(request: updater.RestartRequest) -> bool:
+    """界面退出后执行升级；成功时用新安装自动替换当前进程。"""
+    from pickup.i18n import t
+
+    print(t("update.cli_updating", version=request.latest))
+    ok, output = updater.run_update(request.latest, request.channel)
+    observe.event(
+        "self_update", ok=ok, latest=request.latest, channel=request.channel
+    )
+    if output:
+        print(output)
+    if not ok:
+        observe.debug("self_update_output", output=output)
+        print(t("update.cli_failed"), file=sys.stderr)
+        return False
+    print(t("update.cli_updated", version=request.latest))
+    _restart_process()
+    return True
+
 @dataclass(frozen=True)
 class _DirectLaunch:
     """直启子命令（`pickup claude …`）带进 TUI 的待托管启动计划：
@@ -324,7 +344,8 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     chosen = run_app(store, True, _DirectLaunch(plan, runtime_id, ident), theme_mod._OSC_REPORT)
     pkg.embed.close_channel()
     if isinstance(chosen, pkg.updater.RestartRequest):
-        pkg._restart_process()
+        if not pkg._finish_self_update(chosen):
+            pkg.sys.exit(1)
         return
     if chosen is None:
         return
@@ -523,7 +544,8 @@ def main() -> None:
     # 兜底就会把孤儿控制 client 留在保活服务端上。close_channel 无通道时是空操作。
     embed.close_channel()
     if isinstance(chosen, updater.RestartRequest):
-        _restart_process()
+        if not _finish_self_update(chosen):
+            sys.exit(1)
         return
     if chosen is None:
         return

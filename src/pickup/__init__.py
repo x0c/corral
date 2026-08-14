@@ -17,7 +17,7 @@ import sys as sys
 # 回归用例全挂正是这么来的。包顶层是唯一「任何用法都必经」的位置。
 os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
 
-__version__ = "0.24.103"
+__version__ = "0.24.104"
 
 _MODULE_EXPORTS = {
     "embed", "keepalive", "titles", "updater", "split_layout", "observe", "theme", "search",
@@ -27,6 +27,7 @@ _STANDARD_SYMBOL_EXPORTS = {"datetime": ("datetime", "datetime")}
 _SYMBOL_EXPORTS = {
     "_DirectLaunch": ("pickup.cli", "_DirectLaunch"),
     "_dispatch_direct_launch": ("pickup.cli", "_dispatch_direct_launch"),
+    "_finish_self_update": ("pickup.cli", "_finish_self_update"),
     "_launch": ("pickup.cli", "_launch"),
     "_require_tmux": ("pickup.cli", "_require_tmux"),
     "_restart_process": ("pickup.cli", "_restart_process"),

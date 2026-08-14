@@ -36,8 +36,15 @@ Channel = Literal["brew", "pipx", "pip", "dev"]
 
 @dataclass(frozen=True)
 class RestartRequest:
-    """升级成功后用户确认重启：run_app() 用它代替 LaunchRequest/NewSessionRequest/None
-    作为返回值，交给 cli.main() 用新代码 re-exec 一个全新的 pickup 进程。"""
+    """用户确认更新：先让 run_app() 退出，再由 cli.main() 完成升级并重启。
+
+    包管理器会替换甚至删除当前进程正在使用的安装目录；若在 Textual worker 中
+    原地升级，旧界面下一帧再惰性导入模块时就会随机崩溃。因此请求只携带升级所需
+    的稳定值，真正的文件替换必须发生在界面主循环完全退出之后。
+    """
+
+    latest: str
+    channel: Channel
 
 
 def _version_tuple(text: str) -> tuple[int, ...]:

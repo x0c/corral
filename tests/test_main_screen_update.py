@@ -87,52 +87,23 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
                 toast = app.screen.query_one(UpdateToast)
                 self.assertFalse(toast.has_class("-visible"))
 
-    async def test_click_update_runs_worker_and_shows_done(self) -> None:
+    async def test_click_update_exits_before_installation_starts(self) -> None:
         store = _make_store()
         app = PickupApp(store, embed_ok=False)
         with mock.patch.object(updater, "detect_channel", return_value="pip"), \
              mock.patch.object(updater, "is_updatable", return_value=True), \
              mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
              mock.patch.object(updater, "should_prompt", return_value=True), \
-             mock.patch.object(updater, "run_update", return_value=(True, "ok")):
+             mock.patch.object(updater, "run_update") as run_update:
             async with app.run_test(size=(100, 30)) as pilot:
                 toast = app.screen.query_one(UpdateToast)
                 await _wait_until(lambda: toast.has_class("-visible"))
-                await pilot.click("#toast-body")
-                await _wait_until(lambda: toast.query_one("#toast-body").has_class("-done"))
-                body_text = toast.query_one("#toast-body").render().plain
-                self.assertIn("9.9.9", body_text)
-
-    async def test_click_update_failure_shows_failed(self) -> None:
-        store = _make_store()
-        app = PickupApp(store, embed_ok=False)
-        with mock.patch.object(updater, "detect_channel", return_value="pip"), \
-             mock.patch.object(updater, "is_updatable", return_value=True), \
-             mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
-             mock.patch.object(updater, "should_prompt", return_value=True), \
-             mock.patch.object(updater, "run_update", return_value=(False, "boom")):
-            async with app.run_test(size=(100, 30)) as pilot:
-                toast = app.screen.query_one(UpdateToast)
-                await _wait_until(lambda: toast.has_class("-visible"))
-                await pilot.click("#toast-body")
-                await _wait_until(lambda: toast.query_one("#toast-body").has_class("-failed"))
-
-    async def test_click_restart_exits_app_with_restart_request(self) -> None:
-        store = _make_store()
-        app = PickupApp(store, embed_ok=False)
-        with mock.patch.object(updater, "detect_channel", return_value="pip"), \
-             mock.patch.object(updater, "is_updatable", return_value=True), \
-             mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
-             mock.patch.object(updater, "should_prompt", return_value=True), \
-             mock.patch.object(updater, "run_update", return_value=(True, "ok")):
-            async with app.run_test(size=(100, 30)) as pilot:
-                toast = app.screen.query_one(UpdateToast)
-                await _wait_until(lambda: toast.has_class("-visible"))
-                await pilot.click("#toast-body")
-                await _wait_until(lambda: toast.query_one("#toast-body").has_class("-done"))
                 await pilot.click("#toast-body")
                 await _wait_until(lambda: app._exit)
+        run_update.assert_not_called()
         self.assertIsInstance(app.return_value, updater.RestartRequest)
+        self.assertEqual(app.return_value.latest, "9.9.9")
+        self.assertEqual(app.return_value.channel, "pip")
 
     async def test_dismiss_calls_mark_dismissed_and_hides_toast(self) -> None:
         store = _make_store()
