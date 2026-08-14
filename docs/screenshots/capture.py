@@ -123,7 +123,7 @@ def _demo_store():
             "live": True,
             "path": "/tmp/demo-cursor-1",
             "first_user_msg": "帮我加上 cursor-cli 支持",
-            "last_user_msg": "右栏统一完整预览",
+            "last_user_msg": "静态预览也要画 Your prompts",
             "last_agent_msg": "已改选中即预览",
         },
         {
@@ -146,19 +146,33 @@ def _demo_store():
     ]
     conversations = {
         "claude:demo-claude-1": [
-            ConversationMessage("user", "登录偶发失败，帮我定位"),
+            ConversationMessage(
+                "user",
+                "登录偶发失败，帮我定位：并发下 session cookie 被覆盖，"
+                "还要核对过期策略、补一组会在高峰期复现的回归，并把失败日志接到现有告警通道",
+            ),
             ConversationMessage(
                 "assistant",
                 "根因是并发下 session cookie 被覆盖。已加锁并补 flaky 回归。",
             ),
             ConversationMessage("user", "再补一组回归测试"),
             ConversationMessage("assistant", "已加上重试与断言，本地全绿。"),
+            ConversationMessage("user", "失败日志接到现有告警通道"),
+            ConversationMessage("assistant", "已接到 pager，误报阈值跟现网一致。"),
+            ConversationMessage("user", "把这次的根因写进 runbook"),
+            ConversationMessage("assistant", "runbook 补了复现步骤和回滚。"),
         ],
         "cursor:demo-cursor-1": [
-            ConversationMessage("user", "帮我加上 cursor-cli 支持"),
+            ConversationMessage(
+                "user",
+                "帮我加上 cursor-cli 支持：扫描、恢复、接力、直启都要按完整适配器接入，"
+                "还要把标题生成和会话关注状态一起接上，别只做列表扫描那一层",
+            ),
             ConversationMessage("assistant", "已按完整适配器接入扫描/恢复/接力/直启。"),
             ConversationMessage("user", "右栏统一完整预览"),
             ConversationMessage("assistant", "选中即完整对话；进行中仍走内嵌实时窗口。"),
+            ConversationMessage("user", "静态预览也要画 Your prompts"),
+            ConversationMessage("assistant", "每个分屏格各自一份小窗。"),
         ],
         "codex:demo-codex-1": [
             ConversationMessage("user", "接力提示词太散"),

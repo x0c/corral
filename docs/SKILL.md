@@ -188,11 +188,19 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
 
 4. **`messages` 的 user 侧混着系统注入文本，需要自行过滤。** Claude 的 task-notification 类事件
    已在扫描层滤掉，但仍有几类会以"真人消息"的身份混进来（实测 Cursor 侧 206 条用户消息里有 16 条，
-   约 8%）：
+   约 8%）；2026-08 再扫约 2700 条后，还要加上 Codex / OpenConductor 那几类：
    - Cursor 的计划附件指令，特征是含 `Implement the plan as specified, it is attached for your reference`
      / `Do NOT edit the plan file itself`；
    - `Briefly inform the user about the task result…` 这类运行时内部提示；
+   - Codex 的 `Implement the plan.`（整句）、`<skill>…` 全文展开、`<turn_aborted>`、
+     `<subagent_notification>`；
+   - OpenConductor 角色提示（`你是 OpenConductor 的…`、`【权威对话账本`、带 `用户最新补充` 的 `原始任务：`）；
    - **pickup 自己生成的跨运行时接力提示词**，特征是以 `任务：` 开头且含 `你正在接力一个来自 … 的会话`。
+
+   `$doc-update`、`/grilling` 和带 `<image>` 配文的提问是真人输入，不要当注入丢掉。
+
+   TUI 的 Your prompts 小窗已经按同一套特征过滤（`is_injected_user_prompt`）；本接口的
+   `show`/`export` 仍返回原文，调用方写周报时要自己剔除。
 
    **后果**：不过滤会把这些当成真人需求，凭空多出一堆"用户要求"。汇总前按上述特征剔除。
 

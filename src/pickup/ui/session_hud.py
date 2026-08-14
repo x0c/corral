@@ -7,6 +7,10 @@
   被盖住的区域滚轮不会再转发给托管会话、也划不了词。收起态只留这两头，把这两笔
   代价压到最小。
 - **顺序恒为从上到下、由旧到新**，与右栏完整对话一致。条数超上限时砍中间、留两头。
+- **只列真人提问**：`load_conversation` 仍保留完整 user 轮次（导出/预览要看原文），
+  但小窗标题是 Your prompts，必须再滤掉 runtime 注入、接力词、管家角色提示等。
+- **过长提问折叠**：展开态每条最多 `_MAX_PROMPT_LINES` 行，超出末行加 `...`；
+  整窗高度仍靠滚动封顶。条纹按提问块交替，半透明叠在浮层底上，不跟 hover 抢底。
 - **实时托管格与静态对话预览格都画，且每个分屏格各自一份**。长对话里完整预览仍
   要翻很久，小窗用来扫提问脉络；多分屏时每一格画自己的提问摘要。
 - 用 `dock: right` + `width/height: auto` 把浮层贴到右上角：这样浮层的命中区域**只有
@@ -18,12 +22,14 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
 from rich.text import Text
 from textual import events
+from textual.color import Color as TextualColor
 from textual.geometry import Size
 from textual.widget import Widget
 
@@ -34,20 +40,64 @@ from pickup.models import ConversationMessage
 # 展开态最多列几条提问；再多就靠"更早 N 条"一行如实说明，不做静默截断。
 MAX_ENTRIES = 6
 _MIN_WIDTH = 16
-# 内容宽度上限。展开态既然整条换行显示、不再靠横向宽度救截断，就没必要铺那么宽——
-# 浮层越宽盖住的助手画面越多。这只是**上限**：真实宽度仍取 `min(上限, 本格可用宽度 - 4)`，
-# 三分屏那种窄格不受影响；收起态还会再按内容实宽收缩。
+# 内容宽度上限。展开态每条提问会折叠，不必为了读完整句把浮层铺满整格。
+# 这只是**上限**：真实宽度仍取 `min(上限, 本格可用宽度 - 4)`，三分屏那种窄格
+# 不受影响；收起态还会再按内容实宽收缩。
 _MAX_WIDTH = 55
 # 窄到这个宽度以下（三分屏 + 窄终端）直接不画：浮层会把整格盖掉。
 _MIN_PANE_WIDTH = 24
 # 缺时间戳时的占位（Cursor 等历史里没有逐条时间）。必须恰好 5 格，与 `HH:MM` /
 # `MM-DD` 同宽，后面再拼两格间距；只用 ASCII，避免 CJK 双宽把列挤歪。
 _MISSING_TIME = "N/A  "
-# 展开态的高度上下限。提问整条换行显示后行数不可控，必须封顶——浮层再有用也不能
-# 把整格助手画面盖掉；超出部分靠滚动看，不做省略。
+# 展开态的高度上下限。单条提问已折叠，整窗仍要封顶——浮层再有用也不能把整格
+# 助手画面盖掉；超出部分靠滚动看。
 _MIN_EXPANDED_HEIGHT = 6
 _MAX_EXPANDED_HEIGHT = 20
 _SCROLL_STEP = 3
+# 展开态每条提问最多占几行；再长末行加省略号。收起态本来就是一行截断。
+_MAX_PROMPT_LINES = 2
+# 比侧边栏卡片略深一档：小窗底已经是 `$pane-active-background`，再叠 8%
+# 前景几乎看不出；16% 才能在浮层里做出和侧边栏同级的块对比，hover 仍能透出来。
+_STRIPE_BLEND = 0.16
+
+# Codex 把粘贴图片收成一对空标签，后面才是用户打的字；小窗只关心那句人话。
+_IMAGE_WRAP_RE = re.compile(r"<image\b[^>]*>\s*</image>\s*", re.IGNORECASE | re.DOTALL)
+
+# 本机全量历史抽查（Claude/Cursor/Codex/Kimi/OpenCode/Pi，约 2700 条 user）
+# 里会混进 Your prompts 的注入类。只认高置信特征，不碰 `$doc-update`、`/grilling`
+# 这种用户自己敲的技能快捷方式。
+_INJECTED_PREFIXES = (
+    "<turn_aborted>",
+    "<subagent_notification>",
+    "<skill>",
+    "<local-command",
+    "<command-name>",
+    "<command-message>",
+    "<system-reminder>",
+    "<environment_context>",
+    "# AGENTS.md instructions",
+    "你是 OpenConductor 的",
+    "你将看到一批编程助手会话的摘录",
+    "No response requested.",
+    "Reply with exactly:",
+    "【权威对话账本",
+    "先按项目现有规则完成 build/test/lint",
+    "对本仓库当前的 git diff 做一次 code review",
+)
+_INJECTED_SUBSTRINGS = (
+    "Implement the plan as specified, it is attached for your reference",
+    "Do NOT edit the plan file itself",
+    "To-do's from the plan have already been created",
+    "Briefly inform the user about the task result",
+    "你正在接力一个来自",
+    "这是跨运行时接力，不是原生恢复",
+    "【本轮回复契约】",
+)
+_INJECTED_EXACT = {
+    "Implement the plan.",
+    "只回复 OK。",
+    "只回复 RESUMED。",
+}
 
 
 @dataclass(frozen=True)
@@ -91,9 +141,45 @@ def _short_time(timestamp: float, now: float | None = None) -> str:
     return stamp.strftime("%m-%d")
 
 
+def is_injected_user_prompt(text: str) -> bool:
+    """这条 user 轮次是不是 runtime / 管家 / 接力注入，而不是人敲进去的。
+
+    `load_conversation` 必须保留原文（`pickup show`/`export`、右栏预览都还要用）；
+    Your prompts 小窗才在这里二次过滤。特征来自本机全量历史抽查，宁可漏一条
+    注入，也不要把 `$doc-update`、带图提问这种真人输入误杀。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if raw in _INJECTED_EXACT:
+        return True
+    if raw.startswith("任务：") and (
+        "你正在接力一个来自" in raw or "这是跨运行时接力" in raw
+    ):
+        return True
+    if raw.startswith("原始任务：") and (
+        "用户最新补充" in raw or "【本轮回复契约】" in raw
+    ):
+        return True
+    if raw.startswith(_INJECTED_PREFIXES):
+        return True
+    return any(marker in raw for marker in _INJECTED_SUBSTRINGS)
+
+
 def _one_line(text: str) -> str:
-    """把多行提问压成一行：换行/制表一律折成单空格，连续空白合并。"""
-    return " ".join(str(text or "").split())
+    """把多行提问压成一行：换行/制表一律折成单空格，连续空白合并。
+
+    Codex 图片粘贴会在正文前塞一对空的 `<image …></image>`，小窗里只留人话；
+    纯图片没有配文时落成 `[image]`，避免整条被当成空消息丢掉。
+    """
+    raw = str(text or "")
+    stripped = _IMAGE_WRAP_RE.sub("", raw)
+    compact = " ".join(stripped.split())
+    if compact:
+        return compact
+    if _IMAGE_WRAP_RE.search(raw):
+        return "[image]"
+    return ""
 
 
 def summarize_user_messages(
@@ -101,13 +187,18 @@ def summarize_user_messages(
 ) -> HudData:
     """从会话对话里挑出真人提问，按从旧到新整理成小窗摘要。
 
-    只认 `role == "user"`：扫描层已经把 monitor / task-notification 这类系统注入
-    事件挡在外面了，这里不再二次猜测。
+    只认 `role == "user"`，并丢掉 `is_injected_user_prompt` 命中的注入轮次。
+    扫描层已经挡掉 Claude/Kimi 的 `origin.kind` 系统事件；Cursor 计划附件、
+    Codex `<skill>`/`<turn_aborted>`、OpenConductor 角色提示、pickup 自己的
+    接力词仍会以 user 身份进 `load_conversation`，必须在这里再滤一次。
 
     超过 `limit` 条时**保留最早那条、砍中间**：最早一条决定"这个会话本来要干嘛"，
     没有它就只剩一串近期动作，看不出来龙去脉；被砍掉的条数原样返回给界面说明。
     """
-    users = [m for m in messages if m.role == "user" and _one_line(m.text)]
+    users = [
+        m for m in messages
+        if m.role == "user" and _one_line(m.text) and not is_injected_user_prompt(m.text)
+    ]
     if not users:
         return HudData(0, ())
 
@@ -216,6 +307,34 @@ class SessionHud(Widget):
         """展开态的最高行数：不超过本格能给的高度，也不允许无限长到盖满整格。"""
         return max(_MIN_EXPANDED_HEIGHT, min(_MAX_EXPANDED_HEIGHT, available - 3))
 
+    def _stripe_on(self) -> str:
+        """当前浮层底上叠 8% 前景，得到 Rich `on #rrggbb`；算不出就空串。
+
+        必须从 `styles.background` 混合，不能写死颜色：hover 时整窗底会切到
+        `$primary-muted`，条纹要跟着变浅/变深，而不是盖住 hover。
+        """
+        try:
+            app = self.app
+        except Exception:
+            return ""
+        background = self.styles.background
+        if not isinstance(background, TextualColor) or background.ansi is not None:
+            return ""
+        try:
+            fg_raw = app.get_css_variables().get("foreground") or ""
+            foreground = TextualColor.parse(str(fg_raw))
+        except Exception:
+            return ""
+        mixed = background.blend(foreground, _STRIPE_BLEND)
+        hexcol = getattr(mixed, "hex", "") or ""
+        return f"on {hexcol}" if hexcol else ""
+
+    @staticmethod
+    def _paint_stripe(line: Text, stripe_on: str) -> Text:
+        if stripe_on:
+            line.stylize(stripe_on)
+        return line
+
     def _prefixed(self, prefix: str, body: str, width: int) -> Text:
         """收起态用：前缀（最初/最近标签）淡色，正文一行内截断。"""
         line = Text(no_wrap=True)
@@ -224,36 +343,49 @@ class SessionHud(Widget):
         return line
 
     def _entry_lines(self, stamp: str, body: str, width: int) -> list[Text]:
-        """展开态的一条提问：**整条换行显示，不省略**，续行缩进到与首行正文对齐。
+        """展开态的一条提问：最多 `_MAX_PROMPT_LINES` 行，超出末行加 `...`。
 
-        小窗是用来判断"这个会话在干嘛"的，半句话加省略号常常刚好把关键信息切掉；
-        宁可多占几行，也要让提问完整可读。时间列固定 5 格 + 2 格间距，续行前缀
-        用等宽空白顶齐，正文块看起来是规整的一栏。缺时间戳时用 `N/A` 占位，
-        不留空白缩进——否则 Cursor 这类没有逐条时间的会话看起来像列坏了。
+        续行缩进到与首行正文对齐。时间列固定 5 格 + 2 格间距，续行前缀用等宽
+        空白顶齐。缺时间戳时用 `N/A` 占位，不留空白缩进——否则 Cursor 这类没有
+        逐条时间的会话看起来像列坏了。
         """
         cell = stamp if stamp else _MISSING_TIME
         prefix = f"{cell}  "
         indent = " " * _text_width(prefix)
         body_width = max(1, width - _text_width(prefix))
+        wrapped = _wrap_preview_text(body, body_width) or [""]
+        truncated = len(wrapped) > _MAX_PROMPT_LINES
+        if truncated:
+            wrapped = wrapped[:_MAX_PROMPT_LINES]
         out: list[Text] = []
-        for index, part in enumerate(_wrap_preview_text(body, body_width) or [""]):
+        last = len(wrapped) - 1
+        for index, part in enumerate(wrapped):
             line = Text(no_wrap=True)
             line.append(prefix if index == 0 else indent, style="dim")
-            line.append(_fit_cell(part, body_width))
+            line.append(_fit_cell(
+                part if not (truncated and index == last) else f"{part}...",
+                body_width,
+                ellipsis=truncated and index == last,
+            ))
             out.append(line)
         return out
 
-    def _expanded_body(self, width: int) -> list[Text]:
+    def _expanded_body(self, width: int, stripe_on: str = "") -> list[Text]:
         """展开态除页眉/页脚外的全部内容行（未按可见高度裁切）。"""
         out: list[Text] = []
         for index, (stamp, body) in enumerate(self._data.entries):
             if index == 1 and self._data.omitted:
-                # 省略的是中间那段，说明行就画在被省掉的位置上。
+                # 省略的是中间那段，说明行就画在被省掉的位置上。页眉页脚和这行
+                # 都不参与斑马纹，避免把「中间省略 N 条」涂成一块实心。
                 out.append(Text(
                     _fit_cell(_plural("hud.omitted", self._data.omitted), width, ellipsis=True),
                     style="dim", no_wrap=True,
                 ))
-            out.extend(self._entry_lines(stamp, body, width))
+            paint = stripe_on if index % 2 else ""
+            out.extend(
+                self._paint_stripe(line, paint)
+                for line in self._entry_lines(stamp, body, width)
+            )
         return out
 
     def lines(self, width: int, max_height: int | None = None) -> list[Text]:
@@ -270,6 +402,7 @@ class SessionHud(Widget):
         if not data:
             return []
 
+        stripe_on = self._stripe_on()
         if not self._expanded:
             out: list[Text] = [Text(
                 _fit_cell(_plural("hud.count", data.count), width, ellipsis=True),
@@ -279,17 +412,21 @@ class SessionHud(Widget):
                 _text_width(t("hud.label_first")), _text_width(t("hud.label_latest")),
             ) + 2
             oldest, latest = data.oldest, data.latest
+            # 收起态两行提问也按块斑马：最初不涂、最近涂一层，和展开态 index%2 同相。
             if data.count > 1 and oldest is not None:
                 out.append(self._prefixed(
                     _fit_cell(t("hud.label_first"), label_width), oldest[1], width,
                 ))
             if latest is not None:
-                out.append(self._prefixed(
-                    _fit_cell(t("hud.label_latest"), label_width), latest[1], width,
+                out.append(self._paint_stripe(
+                    self._prefixed(
+                        _fit_cell(t("hud.label_latest"), label_width), latest[1], width,
+                    ),
+                    stripe_on if data.count > 1 else "",
                 ))
             return out
 
-        body = self._expanded_body(width)
+        body = self._expanded_body(width, stripe_on)
         capacity = len(body) if max_height is None else max(1, max_height - 2)
         self._max_scroll = max(0, len(body) - capacity)
         if self._stick_bottom:

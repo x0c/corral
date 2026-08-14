@@ -6844,6 +6844,74 @@ class SessionHudSummaryTests(unittest.TestCase):
             out.append(pickup.ConversationMessage("assistant", f"回复{i}"))
         return out
 
+    def test_injected_runtime_prompts_are_dropped(self) -> None:
+        """Your prompts 只列人敲的话；扫描层留下的注入轮次必须在这里丢掉。
+
+        样本取自本机真实历史：Cursor 计划附件、任务收尾提示、pickup 接力词、
+        Codex skill/中断包裹、OpenConductor 角色提示。用户自己敲的 `$doc-update`
+        和带图提问要留下。
+        """
+        from pickup.ui.session_hud import is_injected_user_prompt, summarize_user_messages
+
+        injected = [
+            "Briefly inform the user about the task result"
+            " and perform any follow-up actions (if needed).",
+            "侧边栏块级斑马纹\n\nImplement the plan as specified,"
+            " it is attached for your reference. Do NOT edit the plan file itself.",
+            "任务：Subswap 余量不显示\n\n你正在接力一个来自 Cursor 的会话。"
+            "请新建自己的会话继续工作；这不是对原会话的原生恢复。",
+            "Implement the plan.",
+            "<skill>\n<name>grilling</name>\n<path>/tmp/SKILL.md</path>",
+            "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
+            "<subagent_notification>\n{\"status\":\"done\"}\n</subagent_notification>",
+            "你是 OpenConductor 的管家 Agent，我的私人技术助理。",
+            "【权威对话账本（按发生顺序；这是你与用户真实说过的话）】\n"
+            "- 管家：在，说吧。\n【本轮回复契约】",
+            "原始任务：\n接手验收收尾。\n用户最新补充：\n继续核对缓存。",
+            "先按项目现有规则完成 build/test/lint 和真实路径验证；"
+            "然后读取项目根 AGENTS.md 的发布要求。",
+            "对本仓库当前的 git diff 做一次 code review，不要额外限制范围。",
+            "Reply with exactly: ok",
+            "只回复 OK。",
+            "只回复 RESUMED。",
+        ]
+        for body in injected:
+            self.assertTrue(is_injected_user_prompt(body), body[:60])
+
+        kept = [
+            "登录偶发失败，帮我定位",
+            "$doc-update",
+            "/grilling",
+            "/model sol",
+            "继续",
+            "设计一下这项目的原型 使用 [$ui-prototyper](/tmp/SKILL.md) 生图",
+        ]
+        for body in kept:
+            self.assertFalse(is_injected_user_prompt(body), body[:60])
+
+        mixed = [
+            pickup.ConversationMessage("user", injected[0]),
+            pickup.ConversationMessage("user", "人敲的第一句"),
+            pickup.ConversationMessage("assistant", "回复"),
+            pickup.ConversationMessage("user", injected[2]),
+            pickup.ConversationMessage("user", "人敲的第二句"),
+        ]
+        data = summarize_user_messages(mixed)
+        self.assertEqual(data.count, 2)
+        self.assertEqual([body for _stamp, body in data.entries], ["人敲的第一句", "人敲的第二句"])
+
+    def test_image_wrapper_keeps_the_caption(self) -> None:
+        from pickup.ui.session_hud import summarize_user_messages
+
+        wrapped = (
+            '<image name=[Image #1] path="/tmp/a.png">\n</image>\n'
+            "[Image #1] 展开的时候这条线要连到三角形"
+        )
+        data = summarize_user_messages([pickup.ConversationMessage("user", wrapped)])
+        self.assertEqual(data.count, 1)
+        self.assertIn("展开的时候这条线要连到三角形", data.entries[0][1])
+        self.assertNotIn("<image", data.entries[0][1])
+
     def test_only_user_messages_oldest_first(self) -> None:
         from pickup.ui.session_hud import summarize_user_messages
 
@@ -6963,9 +7031,9 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertIn("问题1", lines[2])
         self.assertIn("问题2", lines[3])
 
-    def test_expanded_wraps_long_prompt_instead_of_eliding_it(self) -> None:
-        """展开态整条换行显示：半句话加省略号常常刚好把关键信息切掉。"""
-        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+    def test_expanded_folds_long_prompt_with_ellipsis(self) -> None:
+        """展开态每条最多两行，超出末行加省略号，不再整条换行铺满浮层。"""
+        from pickup.ui.session_hud import _MAX_PROMPT_LINES, SessionHud, summarize_user_messages
 
         body = "长提问" * 40
         hud = SessionHud()
@@ -6974,12 +7042,27 @@ class SessionHudRenderTests(unittest.TestCase):
             expanded=True,
         )
         lines = hud.lines(30)
-        self.assertNotIn("...", " ".join(line.plain for line in lines))
-        # 正文完整可读：把各行去掉缩进再拼回来，应当还原原文
-        joined = "".join(line.plain[7:].rstrip() for line in lines[1:-1])
-        self.assertEqual(joined, body)
+        body_lines = lines[1:-1]
+        self.assertEqual(len(body_lines), _MAX_PROMPT_LINES)
+        self.assertTrue(body_lines[-1].plain.rstrip().endswith("..."))
+        self.assertIn("长提问", body_lines[0].plain)
+        joined = "".join(line.plain[7:].rstrip() for line in body_lines)
+        self.assertLess(len(joined), len(body))
         for line in lines:
             self.assertLessEqual(pickup._text_width(line.plain), 30)
+
+    def test_short_prompt_does_not_grow_or_ellipsis(self) -> None:
+        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+
+        hud = SessionHud()
+        hud.update_data(
+            summarize_user_messages([pickup.ConversationMessage("user", "短提问")]),
+            expanded=True,
+        )
+        body_lines = hud.lines(40)[1:-1]
+        self.assertEqual(len(body_lines), 1)
+        self.assertIn("短提问", body_lines[0].plain)
+        self.assertNotIn("...", body_lines[0].plain)
 
     def test_expanded_continuation_lines_align_with_the_first_line(self) -> None:
         from pickup.ui.session_hud import SessionHud, summarize_user_messages
@@ -7073,6 +7156,32 @@ class SessionHudRenderTests(unittest.TestCase):
         hud.hide()
         self.assertFalse(hud.data)
         self.assertEqual(hud.lines(40), [])
+
+    def test_expanded_zebra_paints_odd_prompt_blocks(self) -> None:
+        """提问块按奇偶交替涂条纹；页眉、中间省略行、页脚都不涂。"""
+        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+
+        def has_bg(line) -> bool:
+            for span in line.spans:
+                style = span.style
+                if isinstance(style, str) and "on " in style:
+                    return True
+                if getattr(style, "bgcolor", None) is not None:
+                    return True
+            return False
+
+        msgs = [pickup.ConversationMessage("user", f"问题{i}") for i in range(8)]
+        hud = SessionHud()
+        hud.update_data(summarize_user_messages(msgs), expanded=True)
+        body = hud._expanded_body(40, "on #334455")  # noqa: SLF001
+        plains = [line.plain for line in body]
+        omitted_at = next(i for i, text in enumerate(plains) if "in between" in text or "省略" in text)
+        self.assertFalse(has_bg(body[omitted_at]), "中间省略行不得涂条纹")
+        prompt_rows = [(i, line) for i, line in enumerate(body) if i != omitted_at]
+        # entries: 问题0, 问题3..问题7（limit=6 留两头砍中间）→ 奇偶按 entries index
+        self.assertIn("问题0", prompt_rows[0][1].plain)
+        self.assertFalse(has_bg(prompt_rows[0][1]), "最早一条是偶数块，不涂")
+        self.assertTrue(has_bg(prompt_rows[1][1]), "第二条提问是奇数块，要涂")
 
 
 class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
