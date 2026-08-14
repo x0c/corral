@@ -1251,9 +1251,16 @@ class SessionListView(Vertical):
         group_for_key: dict[str, SplitGroup] = {}
 
         if self.group_store is not None:
+            from pickup.models import is_shell_session
+
             for group in self.group_store.ordered_groups():
+                # 终端 pane 会随分屏组合一起持久化成组员，但它不挂任何运行时；
+                # 成员卡渲染要读运行时显示名，这里必须整组过滤掉，否则列表重建
+                # 渲染组卡成员时直接抛「未注册的运行时：shell」。
                 all_members = tuple(
-                    by_key[key] for key in group.session_keys if key in by_key
+                    by_key[key]
+                    for key in group.session_keys
+                    if key in by_key and not is_shell_session(by_key[key])
                 )
                 # 历史记录缺失或会话已被明确删除后，侧边栏不显示空壳组。
                 if len(all_members) < 2:

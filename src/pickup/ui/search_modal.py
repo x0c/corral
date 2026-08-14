@@ -76,12 +76,22 @@ class SearchResultRow(Widget):
 
     def render(self) -> Text:
         import pickup
+        from pickup.models import SHELL_RUNTIME_ID, is_shell_session
 
         match = self.match
         session = match.session
         width = max(10, self.size.width or 60)
-        runtime = self._store.registry.get(str(session.get("source") or ""))
-        runtime_id = getattr(runtime, "id", None) or str(session.get("source") or "")
+        if is_shell_session(session):
+            # 终端 pane 不挂运行时；搜索可能按标题命中它（如搜「终端」），
+            # 这里直接用「终端」标签渲染，不查注册表。
+            runtime_id = SHELL_RUNTIME_ID
+            runtime_name = t("shell.pane_title")
+            runtime_style = "dim"
+        else:
+            runtime = self._store.registry.get(str(session.get("source") or ""))
+            runtime_id = getattr(runtime, "id", None) or str(session.get("source") or "")
+            runtime_name = runtime.display_name
+            runtime_style = pickup.runtime_label_style(runtime_id)
         is_running = bool(session.get("keepalive_name")) or bool(session.get("live"))
 
         project_path = pickup._normalize_cwd(session.get("cwd"))
@@ -100,7 +110,7 @@ class SearchResultRow(Widget):
 
         out.append("\n")
         meta = Text()
-        meta.append(runtime.display_name, style=pickup.runtime_label_style(runtime_id))
+        meta.append(runtime_name, style=runtime_style)
         meta.append(" · ", style="dim")
         meta.append(pickup._format_relative_time(session.get("mtime") or 0), style="dim")
         if match.total_hits:

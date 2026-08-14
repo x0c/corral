@@ -780,9 +780,9 @@ class MainScreen(
 
     def _detail_header(self, session: dict) -> Text:
         import pickup
+        from pickup.models import is_shell_session
 
         title = self.store.get_title(session)
-        runtime = self.store.registry.get(str(session.get("source") or ""))
         status = t(_status_key(session))
         attention = t(_attention_key(session))
         project = str(
@@ -790,7 +790,12 @@ class MainScreen(
         )
         out = Text(title, style="bold")
         out.append("\n")
-        out.append(runtime.display_name, style=pickup.runtime_label_style(runtime.id))
+        if is_shell_session(session):
+            # 终端 pane 不挂任何运行时；详情头直接标「终端」，不查注册表。
+            out.append(t("shell.pane_title"), style="dim")
+        else:
+            runtime = self.store.registry.get(str(session.get("source") or ""))
+            out.append(runtime.display_name, style=pickup.runtime_label_style(runtime.id))
         out.append(f" · {status}", style="dim")
         out.append(f" · {attention}", style="dim")
         out.append("\n" + project, style="dim")
@@ -1598,8 +1603,13 @@ class MainScreen(
         await self._rebuild_list()
 
         def purge() -> list[tuple[str, Exception]]:
+            from pickup.models import is_shell_session
+
             failures: list[tuple[str, Exception]] = []
             for key, session, keepalive_name in members:
+                if is_shell_session(session):
+                    # 终端 pane 没有历史可抹，托管标记与分屏格已在上面的循环里撤掉。
+                    continue
                 runtime = self.store.registry.get(str(session.get("source") or ""))
                 try:
                     # 顺序不能反：进程还活着时先抹历史，运行时可能立刻又写回一份。

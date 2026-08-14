@@ -8121,6 +8121,88 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.argv, ("/bin/zsh",))
         self.assertEqual(plan.cwd, "/tmp/work")
 
+    async def test_shell_member_in_split_group_not_rendered_in_sidebar(self) -> None:
+        """shell pane 进会话组后，侧边栏组卡不得为 shell 成员渲染会话卡。
+
+        组卡成员渲染路径（`_sidebar_rows` 的 all_members → `SessionCard.render_line`
+        会查运行时注册表）此前会为 shell 会话抛 LaunchError，导致后台重建列表时
+        整屏弹错误面板；shell 成员应被过滤，只留 AI 成员。
+        """
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-shell-grp1"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                area = await self._open_shell_pane(pilot, app, keepalive_name="pickup-shell-grp1")
+                shell_key = next(
+                    spec.session_key for spec in area.pane_specs() if spec.is_shell
+                )
+                # 再开一个 AI 会话格，形成右栏双格 → 会话组持久化会把 shell 也存进组
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                await _wait_until(lambda: len(area.pane_specs()) == 2)
+                group = app.screen._split_store.get_group(shell_key)
+                self.assertIsNotNone(group, "shell pane 应被持久化进会话组")
+                self.assertIn(shell_key, group.session_keys)
+
+                # 重建列表走组卡成员渲染路径，不得抛 LaunchError
+                await app.screen._rebuild_list()
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                rendered_keys = {
+                    pickup.session_key(s)
+                    for card in list_view.query(SessionCard)
+                    if (s := card.session) is not None
+                }
+                self.assertTrue(
+                    all(not key.startswith("shell:") for key in rendered_keys),
+                    f"组卡成员不应包含 shell 会话，实际渲染了：{rendered_keys}",
+                )
+
+    async def test_search_renders_shell_hit_without_registry_error(self) -> None:
+        """全文搜索命中 shell 会话（按标题「终端」）时，结果行渲染不得查运行时注册表。
+
+        shell 会话没有正文，只能按标题元数据命中；此前 `SearchResultRow.render`
+        对 shell 会话调 `registry.get("shell")` 直接抛 LaunchError。
+        """
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-shell-srch1"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                await self._open_shell_pane(pilot, app, keepalive_name="pickup-shell-srch1")
+                await pilot.press("ctrl+f")
+                await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))
+                modal = app.screen
+                await _wait_until(lambda: not modal._indexing)
+                from pickup.i18n import t as _t
+
+                modal.query_one("#search-query", TextArea).load_text(
+                    _t("shell.pane_title"),
+                )
+                await pilot.pause()
+                await _wait_until(lambda: modal._debounce_timer is None)
+                await pilot.pause()
+
+                hits = {m.session["id"] for m in modal._matches}
+                shell_hits = {
+                    m.session["id"] for m in modal._matches if m.session.get("source") == "shell"
+                }
+                self.assertTrue(
+                    bool(shell_hits),
+                    f"应命中 shell 会话，实际命中：{hits}",
+                )
+                for row in modal.query(SearchResultRow):
+                    rendered = row.render().plain
+                    self.assertNotIn("LaunchError", rendered)
+                await pilot.press("escape")
+
 
 if __name__ == "__main__":
     unittest.main()

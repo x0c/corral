@@ -14,7 +14,7 @@ from pickup.display import (
     _filter_sessions_by_query,
     _normalize_cwd,
 )
-from pickup.models import ConversationMessage, session_key
+from pickup.models import ConversationMessage, is_shell_session, session_key
 from pickup.projects import project_entries
 from pickup.runtime import RuntimeRegistry, default_registry
 
@@ -884,6 +884,10 @@ class SessionStore:
     def get_conversation(self, session: dict) -> list[ConversationMessage]:
         """按需读取并缓存选中会话的真实聊天记录；历史文件 mtime 变化（有新写入）时自动
         重读，供预览页关闭重开和停留期间的轮询刷新使用。"""
+        if is_shell_session(session):
+            # 终端 pane 没有助手历史，也不属于任何注册的运行时；右栏 HUD / 预览
+            # 会把它们当普通会话轮询，这里直接给空对话，避免一路查到底层运行时。
+            return []
         key = session_key(session)
         path = str(session.get("path") or "")
         version = self._conversation_version(session)
