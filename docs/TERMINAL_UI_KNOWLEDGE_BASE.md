@@ -40,7 +40,7 @@ pickup 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 会话关注状态 | 左栏首行最左用单个圆点提示下一步是否需要用户关注 | 等待回答黄 > 执行中绿 > 未读新结果红 > 无；详情头同步写出状态，不只靠颜色；不等于标题模块或机器接口的业务状态标签 |
 | 内嵌实时终端 | 右栏展示**已托管**会话的实时画面 | 本域只负责挂接 `EmbedPane`；tmux 抓帧与控制通道属于“内嵌实时终端”域 |
 | 运行中(其他窗口) | 在本机跑着、但不在保活 socket 里的会话（用户自己开窗口起的） | 右栏只能给静态对话预览 + 详情头明示原因；拿不到实时画面，**不得弹确认框或另起恢复进程**（2026-08-08 裁定），等待原窗口结束后才可正常恢复，见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md) §1 |
-| Footer 操作 | 页面底部可发现的快捷操作提示 | Textual `Footer`（`PickupFooter`）从 `MainScreen.BINDINGS` 读取文案；右端常驻 `vX.Y.Z`，紧挨 `^p palette` 左侧 |
+| Footer 操作 | 页面底部可发现的快捷操作提示 | Textual `Footer`（`PickupFooter`）从 `MainScreen.BINDINGS` 读取文案；右端常驻 `vX.Y.Z`。框架自带的命令面板已关闭，`Ctrl+P` 改作全局置顶 |
 
 终端界面默认英文，中文系统语言自动切换中文；`PICKUP_LANG` 可覆盖语言选择。机器可读的 `pickup list` 等接口不进入本域翻译体系，不能因改界面文案而改变其英文数据契约。
 
@@ -183,11 +183,11 @@ stateDiagram-v2
 
 ### 侧边栏会话组与置顶
 
-- 两到四个会话以分屏打开后立即形成会话组；组名在创建时从水果表随机生成，例如 `Group Apple`、`Group Pineapple`，之后保持不变。未置顶区的组与独立会话顺序跟 `SessionStore` 稳定顺序走——进入 pickup 后已有项位置固定，不会因成员 mtime 更新而上下飘；**新出现**的会话仍由 store 插到最前（可把更旧的组顶下去）。只有按 `p` 置顶的组/会话才固定在最上。
+- 两到四个会话以分屏打开后立即形成会话组；组名在创建时从水果表随机生成，例如 `Group Apple`、`Group Pineapple`，之后保持不变。未置顶区的组与独立会话顺序跟 `SessionStore` 稳定顺序走——进入 pickup 后已有项位置固定，不会因成员 mtime 更新而上下飘；**新出现**的会话仍由 store 插到最前（可把更旧的组顶下去）。只有置顶的组/会话才固定在最上（侧栏选中时按 `p`，任意焦点按 `Ctrl+P`，与全文搜索同级的全局键）。
 - 组卡固定三行（与会话卡同高）：第一行只有 `▼/▶ + 可选置顶标记 + 组名`，**没有关注圆点**；第二行是项目与成员数（与第一行 `Group …` **同列左对齐**，不靠右），其中**项目名与组名同为粗体**，成员数保持弱化；**展开时，第二、三行最左画连续树干，使其从三角正下方接到成员的 `├─`/`└─` 分叉**，不能在组卡与首个成员之间断开。收起时没有成员，组卡不得画树干，第三行改为组内关注状态汇总：按「等待回答黄 → 执行中绿 → 新结果红」固定顺序显示彩色圆点、短标签与数量；若全组都已读则显示已读会话数。汇总只做信息展示，点击语义和成员自身状态不变。
 - 展开后成员以贴侧栏左缘的半角框线 `├─ `/`└─ `（续行同列 `│  `，总宽 3 列、无前导空格）连接，并从顶层列表摘除，禁止同一会话同时出现两份。必须整套半角框线——混用全角 `｜`/`－` 会和 `├` 错列，三行卡片之间竖线断开。树线用 `$foreground 80%`（与卡片基础色同亮），**不用**终端 `dim`。组内子项首行只显示「可选圆点 + 标题」，**不再重复项目名**（项目已写在组卡第二行）。组卡上按 `Space` 或点击三角可收起/展开；搜索组名时即使原先收起，也临时展示全部成员。
 - 分屏高亮落在**当前会话组整组**（Group 行 + 全部成员）上，当前激活的子会话再重一档。**光标停在组卡上时，组卡和全部成员一起进入选中高光**（`-group-selected`），激活格对应成员再叠一层更重的 `-split-active`。光标落到单个成员上时收回整组选中态，只保留分屏铺底和该行光标。
-- `p` 切换置顶：独立会话可单独置顶，会话组只能整体置顶，组内单个成员不能脱离组单独置顶。置顶块排在普通会话组之前，多个置顶项按最近置顶时间排序；组卡与子项始终是不可拆散的一块。**筛选框、＋新建、置顶块和 Pinned 线固定不滚**（`#project-search` 在列表外，其余在 `#sidebar-sticky`）；只有未置顶 Today / older 在 `#sidebar-scroll` 里滚。**指针在固定头（含筛选框）上滚轮仍带动未置顶列表，顶部位置不变。** **置顶块与未置顶块都非空时**，中间插入一行 `$primary` 冷蓝横线（`PinSeparatorCard`，高 1、居中标签 `Pinned`/`置顶`、`disabled`，键盘 ↑↓ 跳过；无置顶或筛完只剩置顶时不画）。未置顶区只切 **today / older 两桶**（滚动 24 小时，与时间行 `today` 档同一条界）：按 store 稳定顺序扫一遍，桶内相对顺序不变，再拼成 `today + [Today 线] + older`；Today 线仅当两侧都有可见项时出现。会话组不可拆——任一成员 `live` 或 mtime 落在 24h 内，整组进 today。分隔线是区尾（标签标明上面这一段），**禁止 Older/其他** 标签，避免把下方会话说成次要。
+- `p` / `Ctrl+P` 切换置顶：独立会话可单独置顶，会话组只能整体置顶；光标或焦点落在组内成员上时改为整组置顶，不能把单个成员拆出去单独钉。`Ctrl+P` 是壳层全局键（与 `Ctrl+F` 同级）：侧边栏、静态预览和右栏实时格都生效，运行中的助手不得截走。置顶块排在普通会话组之前，多个置顶项按最近置顶时间排序；组卡与子项始终是不可拆散的一块。**筛选框、＋新建、置顶块和 Pinned 线固定不滚**（`#project-search` 在列表外，其余在 `#sidebar-sticky`）；只有未置顶 Today / older 在 `#sidebar-scroll` 里滚。**指针在固定头（含筛选框）上滚轮仍带动未置顶列表，顶部位置不变。** **置顶块与未置顶块都非空时**，中间插入一行 `$primary` 冷蓝横线（`PinSeparatorCard`，高 1、居中标签 `Pinned`/`置顶`、`disabled`，键盘 ↑↓ 跳过；无置顶或筛完只剩置顶时不画）。未置顶区只切 **today / older 两桶**（滚动 24 小时，与时间行 `today` 档同一条界）：按 store 稳定顺序扫一遍，桶内相对顺序不变，再拼成 `today + [Today 线] + older`；Today 线仅当两侧都有可见项时出现。会话组不可拆——任一成员 `live` 或 mtime 落在 24h 内，整组进 today。分隔线是区尾（标签标明上面这一段），**禁止 Older/其他** 标签，避免把下方会话说成次要。
 - 侧边栏斑马纹按**块**交替，不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块，块内同色。`＋ 新建` 与分隔线不参与、不计入相位；分隔线之后相位重置，其后一区从无条纹起头。条纹画在 `SessionCard` / `SessionGroupCard` 上（`$foreground 8%` 半透明），叠在列表底 / 选中 / 分屏底色之上。
 - 会话结束不会自动退出组；启动恢复只重新打开仍在运行的成员。关闭某一分屏格或永久删除成员会把它移出组，剩余不足两个成员时解散组；解散不删除任何会话。
 - **后台扫描暂时没发现某个组成员时，浏览该组只能更新当前焦点，绝不能把当次可见成员当作新的组成员清单写回记忆。** 否则一次短暂读取不到历史就会把成员永久移到组外；待成员重新被扫描到后仍应回到原组。显式关闭分屏格或删除成员才允许改变组成员清单；发生保护时记录不含会话内容的 `split_group_member_missing` 事件。
@@ -211,7 +211,8 @@ stateDiagram-v2
 | `x` 删除整个会话组 | 侧边栏选中会话组卡 | 同上，但确认文案写组名 + 成员数（含运行中成员时换成"先结束再删"那版），确认后把全部成员一起摘卡并逐条抹磁盘 | 整组消失、组自动解散；个别成员删除失败时只把那一条捞回列表并提示，其余照删 |
 | Ctrl/Cmd+点击或 Space | 侧边栏会话卡（非「＋ 新建」） | toggle 多选集（`▸` 标记；最多 4 项）；右栏暂不跟随 | 多选 ≥2 时 Enter 开分屏；Esc 先清多选；↑↓/普通点击清空 |
 | Space | 侧边栏会话组卡 | 切换展开 / 收起 | 只改变树形展示，不改变右栏布局 |
-| `p` | 独立会话卡或会话组卡 | 切换持久置顶 | 组内单个成员不允许单独置顶 |
+| `p` | 独立会话卡或会话组卡 | 切换持久置顶 | 组内成员改为整组置顶 |
+| `Ctrl+P` | 任意主界面焦点（含右栏实时格） | 置顶当前窗口或其所在会话组 | 与 `Ctrl+F` 同级的全局键；框架命令面板已关闭，不再占用此键 |
 | 再次点击当前持有输入的会话卡 | 右栏那一格正持有输入 | 焦点撤回侧边栏，不重新打开会话 | 与 `Ctrl+\` 等价；再点一次又进去，鼠标开关对称 |
 | 点击右栏 | 右栏已有预览或托管画面 | 键盘焦点转移到右栏 | 此后按键进入内嵌会话；`Ctrl+\` 回列表 |
 | 点弹窗外的空白 | 任意弹窗打开中 | 与 Esc 等价的取消：确认框算「不确认」，选择类弹窗算「没选」 | 弹窗关闭，主界面选中态、筛选词一概不动 |
@@ -237,7 +238,7 @@ stateDiagram-v2
 | 应用外壳与语言初始化 | `ui/app.py` | `run_app()`、`PickupApp.on_mount()` | 初始化多语言，按外层背景选择浅/深主题，再推入主屏 |
 | 运行中深浅色跟随 | `ui/terminal_theme.py`、`ui/app.py` | `TerminalThemeParser`、`PickupApp.on_terminal_background_report()` | 解析终端主动通知或定期 OSC 11 查询应答；同步壳层、现有面板与后续托管会话 |
 | 鼠标指针形状 | `ui/pointer_shape.py`、`ui/app.py`、`ui/terminal_theme.py` | `sequence()`、`PickupApp._set_pointer_shape()`、驱动 start/stop 钩子 | OSC 22；tmux 下带 DCS 穿透并开关 pane 级 `allow-passthrough`；可点区域手型、内嵌终端 I 型；回归 `PointerShapeSequenceTests` / `PointerShapeUiTests` |
-| 主屏布局与 Footer | `ui/main_screen.py`、`ui/footer.py` | `MainScreen.compose()`、`PickupFooter`、`_main_bindings()` | 左栏搜索和列表、右栏、Footer 的唯一组合处；底栏右端在 `^p palette` 左侧常驻 `vX.Y.Z` |
+| 主屏布局与 Footer | `ui/main_screen.py`、`ui/footer.py` | `MainScreen.compose()`、`PickupFooter`、`_main_bindings()` | 左栏搜索和列表、右栏、Footer 的唯一组合处；底栏右端常驻 `vX.Y.Z`；`ENABLE_COMMAND_PALETTE = False`，`Ctrl+P` 走置顶 |
 | 首屏异步加载与后台刷新 | `ui/main_screen.py` | `_await_initial_load()`、`_background_refresh_worker()`、`_poll_cache()` | 等首次扫描、按退避间隔重扫、轮询标题缓存 |
 | 选中会话后决定右栏 | `ui/main_screen.py` | `_follow_current_selection()`、`_render_detail()`、`_warm_conversation()` | 非进行中显示完整对话；托管会话挂到右栏实时画面；「运行中(其他窗口)」也只有完整对话，详情头额外写明拿不到实时画面的原因（`_status_key()` / `is_external_running()`）；后台补全内容只能刷新仍在右栏的同一会话，旧结果不得覆盖后来选中的会话 |
 | 侧边栏筛选项目 | `ui/main_screen.py`、`ui/nav.py`、`ui/app.py`、`display.py`、`ui/session_list.py` | `on_input_changed()`、`NavState.project_query`、`_update_header()`、`#project-search.-active`、`_filter_sessions_by_query()`、`_sidebar_rows()` | 查询只有一份状态；按组名、项目名、路径、标题进行大小写无关模糊匹配；命中组名时展示整组；关键字非空时筛选框贴 `-active`（`$warning` 字 + `$primary-muted` 底），失焦也保持高亮 |
@@ -292,12 +293,12 @@ stateDiagram-v2
 | Textual 后台 worker | Cursor 观察器自检 | 主屏挂载后的后台安装 | 幂等补齐用户级观察条目；任何失败都不得延迟首屏或阻断 Cursor/TUI |
 | Textual 定时器 | 终端背景复查 | `PickupApp._query_runtime_theme()`，2 秒 | iTerm2 等无主动通知的终端运行中换色时，无阻塞查询 OSC 11；支持 DEC 2031 的终端也可主动通知 |
 | 按键绑定 | 主操作 | `MainScreen.BINDINGS`、`_main_bindings()` | `a` 高级操作、`q` 结束、`x` 删除、`Esc` 退出、`Ctrl+\` 回列表、`Ctrl+Shift+B` 显隐侧栏、`Ctrl+G` 展开/收起会话小窗（不上 Footer）、F12 截图；新建不走底栏快捷键 |
-| 快捷键随焦点裁剪 | Footer 与按键派发 | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 实时格持有输入时列表侧动作既不显示也不派发，翻页键透传给助手；`toggle_sidebar` / `focus_list` 属壳层键，右栏持焦时仍可用 |
+| 快捷键随焦点裁剪 | Footer 与按键派发 | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 实时格持有输入时列表侧动作既不显示也不派发，翻页键透传给助手；`toggle_sidebar` / `focus_list` 属壳层键，`Ctrl+F` / `Ctrl+P` 是高优先级全局键，右栏持焦时仍可用 |
 | 侧栏显隐 | 壳层 | `MainScreen.action_toggle_sidebar()`、`ui_prefs.py`、`RuntimeTopBar` 左侧 `#sidebar-toggle` | `Ctrl+Shift+B` 与顶栏 ◀/▶；`embed_ok=False` 时禁用；偏好 `~/.cache/pickup/ui-prefs.json`；藏起时若焦点在左栏须先挪走 |
 | 自动聚焦与输入蒙版 | 右栏 | `MainScreen._can_autofocus()`、`SplitPaneArea._request_pane_focus()` / `_settle_focus_intent()` / `focus_session_key(only_live=True)`、`sync_input_mask()` | 明确意图（回车 / 单击会话卡 / 托管成功）才交焦点，且意图跨异步 remount 存活；焦点在侧边栏时活着的实时格压暗 |
 | 点击会话卡的开关语义 | 侧边栏 → 右栏 | `SessionListView.focus_on_click()` / `take_focus_before_click()`、`MainScreen._click_returns_focus_to_list()` | 点当前持有输入的那张卡=撤回焦点；判定只能用按下前焦点 |
 | 分屏焦点同步 | 右栏 → 侧边栏 | `PaneCell._notify_pane_focused`、`MainScreen._on_pane_focused`、`SessionListView.select_session_key` | 聚焦某一分屏时侧边栏高亮切到对应会话；不得因此 remount 右栏 |
-| 按键路由 | 搜索与焦点 | `MainScreen.on_key()`、`on_input_submitted()` | `/` 聚焦筛选项目；`Ctrl+F` 打开全文搜索弹窗（右栏实时格持焦时让位给助手）；Down/Enter 回列表；Esc 先清空查询再退出 |
+| 按键路由 | 搜索、置顶与焦点 | `MainScreen.on_key()`、`on_input_submitted()`、`action_toggle_pin()` | `/` 聚焦筛选项目；`Ctrl+F` 打开全文搜索弹窗、`Ctrl+P` 置顶当前窗口或会话组（右栏实时格持焦时仍归 pickup，不得让给助手）；Down/Enter 回列表；Esc 先清空查询再退出 |
 | 选择事件 | 会话操作 | `MainScreen.on_list_view_selected()` | 回车针对新建项 / 会话组 / 当前会话分流；组成员只在还活着时走「展示组合」，已结束的照常重启 |
 | 已结束会话重启 | 右栏 → 启动 | `EmbedPane._is_restart_target()`、`PaneCell._restart_self()`、`MainScreen._restart_session_from_pane()` | 静态预览格与「会话已结束」格上的回车 = 重启；与侧边栏回车共用 `_open_or_exit()`；**顶栏/底栏 chrome 常驻 Enter 重启提示**（详情头同款文案会随钉底滚动滚出视野，`_PaneHeader`/`_PaneFooter` 不滚；占位格与托管中不显示） |
 | 模态流程 | 高级操作 / 新建 / 确认 | `ui/modals.py` | 接力运行时选择（`RuntimePickerModal`）、新建会话双栏选择（`NewSessionModal`）和结束确认；未安装运行时不可确认 |
@@ -337,7 +338,7 @@ stateDiagram-v2
 - **AI 易错点**【"回车打开谁"必须取自高亮控件本身】`_selected_key()` 从 `ListView.highlighted_child` 里那个 `SearchResultRow` 拿会话键，**不要**改成「用 `ListView.index` 去索引 `self._matches`」。后者是两份可能不同步的数据：`ListView.clear()` 是投递 Prune 消息异步移除的，重建期间 DOM 里可能还留着上一批结果而 `_matches` 已经换新，同一个下标就指向两个不同会话，用户看到高亮在 A、回车却打开 B。结果列表重建同样要 `await clear()` / `await extend()` 并用 `_results_lock` + 序号让位串行（原因同 `SessionListView.rebuild()`：请求来自 Screen 泵的防抖定时器和 App 泵的建索引完成回调两条路）。回归：`test_highlighted_row_always_matches_what_enter_would_open`、`test_concurrent_rebuilds_do_not_stack_duplicate_rows`。
 - **AI 易错点**【命中行只对要展示的那几条提取】`ConversationIndex.search()` 先用 blob 判定命中并排序，再只对前 `top` 条调 `_collect_lines`。对全部命中会话都提取命中行会把界面线程卡住（461 个会话搜单字母 305 ms → 只算前 60 条后 35 ms）。`SearchOutcome.total` 保留命中总数，状态行必须如实说明还有多少条没显示。
 - **AI 易错点**【全文搜索查询框是两行 TextArea，不是 Input】`#search-query` 用 `height: 2` 的软换行 `TextArea`（`compact`、无行号），长查询能看见第二行。Enter / ↑↓ / PageUp / PageDown / Esc 必须挂 `priority=True` 的 Binding：否则 TextArea 会先吃掉 Enter（插入换行）和方向键（在框内移光标），破坏「输入框持焦、方向键挪结果、回车打开」的约定。边框仍要 `TextArea` 与 `TextArea:focus` 两处都清掉。回归：`FullTextSearchModalTests`。
-- **AI 易错点**【Ctrl+F 是主界面全局搜索】Ctrl+F 必须以高优先级在主界面的任何焦点位置打开全文搜索：侧边栏、静态预览和右栏实时会话都一样，运行中的助手不得截走这个键。临时弹窗不继承主界面绑定，继续保留各自输入和确认语义。右栏持焦时其余按键的转发规则是**黑名单**（只拦壳层键，其余放行），不要为覆盖助手输入而改成「只转发 Ctrl+字母」白名单，也不要动 `Ctrl+C`、方向键、翻页等其余转发；`Ctrl+/`≡`Ctrl+_` 这类漏网键见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md)。回归：`test_ctrl_f_opens_search_when_a_live_pane_has_focus`、`TranslateTextualKeyTests`。
+- **AI 易错点**【Ctrl+F / Ctrl+P 是主界面全局键】Ctrl+F 打开全文搜索、Ctrl+P 置顶当前窗口或其所在会话组，都必须以高优先级在主界面的任何焦点位置生效：侧边栏、静态预览和右栏实时会话都一样，运行中的助手不得截走这两个键。Textual 默认的命令面板占用 Ctrl+P 且会在底栏画出 `^p palette`，必须在应用上关掉（`ENABLE_COMMAND_PALETTE = False`），不要只藏 Footer 指示。临时弹窗不继承主界面绑定，继续保留各自输入和确认语义。右栏持焦时其余按键的转发规则是**黑名单**（只拦壳层键，其余放行），不要为覆盖助手输入而改成「只转发 Ctrl+字母」白名单，也不要动 `Ctrl+C`、方向键、翻页等其余转发；`Ctrl+/`≡`Ctrl+_` 这类漏网键见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md)。回归：`test_ctrl_f_opens_search_when_a_live_pane_has_focus`、`test_live_pane_forwards_enter_but_ctrl_p_pins`、`TranslateTextualKeyTests`。
 - **AI 易错点**【右栏刷新线程边界】Textual 后台 worker 不得直接读写 Widget/DOM；扫描、读取对话和托管启动等阻塞工作在后台进行，结果通过 `call_from_thread()` 回到主线程。退出时 worker 必须可取消，不能用不可打断的无限等待或长 `sleep`。
 - **AI 易错点**【列表刷新策略】会话键的成员与顺序不变时，`SessionListView.rebuild()` 必须原地替换卡片数据，只刷新有变化的卡片；仅新增、删除或重排才清空重建。后台重扫、标题轮询和交互动作可能在同一帧要求重建，并发执行 `clear()` / `extend()` 会重复挂载固定 ID 的「新建会话」条目，Textual 直接抛 `DuplicateIds` 打崩整个 TUI。**串行闸门必须在 `SessionListView.rebuild()` 内部（`_rebuild_lock`），不能只放在主屏**：调用方分布在两条互不相让的消息泵上——后台重扫经 `app.call_from_thread(_rebuild_list)` 跑在 App 泵，搜索框输入经 `on_input_changed` 直接调 `rebuild()` 跑在 Screen 泵，`MainScreen._rebuild_lock` 只挡得住同泵重入。真机崩溃（2026-07-26）：连续退格清空搜索词，命中数 50→57→71 连做全量重建（单次已到 2s 量级），与后台重扫交错必崩。同一把锁顺带做请求合并——排队期间来了更新的请求且本次不带 `select_key` 时直接让位，避免每个中间筛选态都全量重建一遍。标题生成中不在侧边栏画任何加载动画，标题只在缓存轮询命中变化时原地刷新。回归：`test_list_rebuild_serialized_across_message_pumps`、`test_screen_serializes_concurrent_list_rebuilds`。
 - **AI 易错点**【推导原选中条目必须以 DOM 为准】后台重扫是先 `store.refresh()` 再触发 `rebuild()`，这一刻 store 已经变了但 DOM 还是旧的。`rebuild()` 必须用 `_displayed_selected_identity()` 从当前 `ListItem` 子控件读取会话键或组身份，不能用新的扁平会话数组去索引 `self.index`；会话组卡和子项插入后，下标更不再等于 `visible_sessions()` 下标。真实复现过：后台刷出新会话后高亮串到相邻会话。用户交互期的 `selected_session()` / `selected_group()` 同样直接读取高亮 DOM 控件。
@@ -370,7 +371,7 @@ stateDiagram-v2
 - **AI 易错点**【运行中主题不是启动主题的重复判断】启动前探测只决定首帧；日落、系统设置或终端 profile 在进程运行中换色时，必须由 `terminal_theme.py` 继续接收 DEC 2031 通知或每 2 秒查询 OSC 11。应答要在 Textual 输入解析入口提取成专用消息，禁止另起线程直接读 tty（会与框架抢键盘输入），也禁止把 OSC 尾巴当普通按键放进搜索框。背景变化后要同时更新 `PickupApp.theme`、`MainScreen` 保存的报告、现有 `EmbedPane` 底色和后续 `host_session` 使用的报告；只换壳层会让右栏继续留在旧底色。
 - **AI 易错点**【主题控制消息会被任意拆包】终端的 `DEC 2031` 回复可能在 `ESC`、`ESC[` 或任意后续字符处切成多次读取；解析器必须保留所有可能的消息前缀，等下一段拼完整后再交给主题处理。禁止把不完整前缀先交给通用按键解析器——后半段会被当作普通输入转发进当前托管助手，Cursor 会直接显示控制字符并可能触发整屏重绘。回归测试必须覆盖整条深浅主题回复的每一个拆分点。
 - **AI 易错点**【鼠标指针形状走 OSC 22，不是 CSS 自己画出来的】终端窗口的指针由模拟器渲染；TUI 只能发 `\x1b]22;{shape}\x07`。Textual 的 CSS `pointer:` 只决定「发哪个名字」，**裸序列在 tmux 里到不了外层终端**，必须走 `ui/pointer_shape.sequence()`（追加 `\x1bPtmux;` DCS，ESC 双写）并在进应用模式时对本 pane `tmux set -p allow-passthrough on`。禁止再直接 `driver.write("\x1b]22;…")` 绕过这层。退出必须发空形状名复位，否则手型会粘在 shell 上。真 xterm 只在 `XTERM_VERSION` 存在时改用 X11 名，不要无条件把 `pointer` 写成 `hand2`——kitty / Ghostty 不认。iTerm2 3.5 / Terminal.app 不支持 OSC 22 是已知限制，不是漏发。回归：`PointerShapeSequenceTests`、`PointerShapeUiTests`。
-- 【隐性依赖】`Footer` 展示的是 `MainScreen.BINDINGS` 的本地化 description。验证时中文环境必须看到 `a 高级操作`，英文环境必须看到 `a Advanced`；不要再手绘底部帮助行。版本号走 `PickupFooter`（`ui/footer.py`），固定在右端命令面板键左侧，文案取 `pickup.__version__`，不要另起浮层或顶栏徽章。
+- 【隐性依赖】`Footer` 展示的是 `MainScreen.BINDINGS` 的本地化 description。验证时中文环境必须看到 `a 高级操作`，英文环境必须看到 `a Advanced`；不要再手绘底部帮助行。版本号走 `PickupFooter`（`ui/footer.py`），固定在右端，文案取 `pickup.__version__`，不要另起浮层或顶栏徽章。不要恢复 Textual 命令面板或底栏 `^p palette`。
 - 【隐性依赖】真实终端冒烟必须跑「`pickup` 入口实际加载的包」：`python3 -m pickup`、或对 **pipx / site-packages 同一解释器** 覆盖安装后再敲 `pickup`。系统 `python3 -c "import pickup"` 与 `pickup` CLI 可能不是同一份代码（2026-07-21：源码已钉底、pipx 旧包仍顶对齐）。布局、配色、预览滚动改动后也必须重启已打开的 TUI。命令见 `AGENTS.md`「本机入口」。
 - 【隐性依赖】截图验收分两类：`docs/screenshots/capture.py` 使用虚构数据，适合提交和回归；F12 截图反映真实 TUI，可能含私密对话，只能本地诊断。夹具图灰阶的常见根因是环境 `NO_COLOR=1`（Textual Monochrome），不是 cairosvg；`capture.py` 会在创建 App 前清除 `NO_COLOR` 并去掉 Rich 假窗口铬。仍可用真机或 `SessionCard.render_line` segment 交叉确认配色。
 - 【消歧】侧边栏关注圆点表示「此刻最需要用户知道的状态」，与标题模块状态标签、机器接口英文 `status` 以及单纯进程判活都不是同一套语义，不能互相替换。标题始终使用基础样式；「托管中」和「在别的窗口跑」的区别仍由右栏详情头说明。

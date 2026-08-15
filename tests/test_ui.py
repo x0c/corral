@@ -2335,6 +2335,40 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(first_card, SessionGroupCard)
             self.assertIn("↑", first_card.render().plain.splitlines()[0])
 
+    async def test_p_on_group_member_pins_whole_group(self) -> None:
+        """组内成员按 p 不再拒绝，改为整组置顶（与手机端、Ctrl+P 一致）。"""
+        store, app = await self._grouped_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = [
+                pickup.session_key(session)
+                for session in store.all_sessions()[:2]
+            ]
+            list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
+            await list_view.rebuild()
+            list_view.focus()
+            self.assertTrue(list_view.select_session_key(keys[0]))
+            await pilot.press("p")
+            group = list_view.group_store.get_group(keys[0])
+            await _wait_until(
+                lambda: group.group_id in list_view.group_store.pinned_group_ids
+            )
+            self.assertNotIn(keys[0], list_view.group_store.pinned_session_keys)
+
+    async def test_ctrl_p_pins_selected_session_from_sidebar(self) -> None:
+        store, app = await self._grouped_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            independent_key = pickup.session_key(store.all_sessions()[0])
+            list_view.focus()
+            self.assertTrue(list_view.select_session_key(independent_key))
+            await pilot.press("ctrl+p")
+            await _wait_until(
+                lambda: independent_key in list_view.group_store.pinned_session_keys
+            )
+
     async def test_pin_separator_between_pinned_and_unpinned(self) -> None:
         """置顶与未置顶都非空时画蓝色横线分隔；仅一侧时不画。"""
         store, app = await self._grouped_app()
@@ -4546,6 +4580,9 @@ class FooterActionGatingTests(unittest.TestCase):
         self.assertTrue(screen.check_action("focus_list", ()))
         # 壳层显隐侧栏：与 Ctrl+\ 同级，右栏持焦时仍可用
         self.assertTrue(screen.check_action("toggle_sidebar", ()))
+        # Ctrl+P 全局置顶：与 Ctrl+F 同级，右栏持焦时仍可用
+        self.assertTrue(screen.check_action("toggle_pin", ()))
+        self.assertTrue(screen.check_action("search_content", ()))
 
     def test_list_actions_available_when_sidebar_focused(self) -> None:
         screen = self._screen(live=False)
@@ -4555,6 +4592,7 @@ class FooterActionGatingTests(unittest.TestCase):
         # 焦点已经在列表时不必展示"回列表"
         self.assertFalse(screen.check_action("focus_list", ()))
         self.assertTrue(screen.check_action("toggle_sidebar", ()))
+        self.assertTrue(screen.check_action("toggle_pin", ()))
 
     def test_toggle_sidebar_disabled_without_embed(self) -> None:
         from pickup.ui.main_screen import MainScreen
@@ -4565,13 +4603,14 @@ class FooterActionGatingTests(unittest.TestCase):
 
 
 class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
-    """底栏右端常驻版本号，紧挨 `^p palette` 左侧。"""
+    """底栏右端常驻版本号；不再展示框架自带的 `^p palette`。"""
 
-    async def test_footer_shows_version_left_of_command_palette(self) -> None:
+    async def test_footer_shows_version_without_command_palette(self) -> None:
         from pickup.ui.footer import PickupFooter
 
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
+        self.assertFalse(app.ENABLE_COMMAND_PALETTE)
         async with app.run_test(size=(100, 30)):
             footer = app.screen.query_one(Footer)
             self.assertIsInstance(footer, PickupFooter)
@@ -4580,10 +4619,10 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(str(version.content), f"v{pickup.__version__}")
             right = footer.query_one("#footer-right")
             kids = list(right.children)
-            self.assertEqual(kids[0].id, "footer-version")
-            self.assertTrue(any("-command-palette" in c.classes for c in kids[1:]))
-            self.assertLess(version.region.x, kids[1].region.x)
-            self.assertLessEqual(version.region.x + version.region.width, kids[1].region.x)
+            self.assertEqual([child.id for child in kids], ["footer-version"])
+            self.assertFalse(
+                any("-command-palette" in child.classes for child in footer.query("*"))
+            )
 
 
 class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
@@ -5966,6 +6005,65 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                     await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))
                     self.assertFalse(send_key.called)
                     await pilot.press("escape")
+
+    async def test_live_pane_forwards_enter_but_ctrl_p_pins(self) -> None:
+        """回车照常发给助手，但 Ctrl+P 必须由 pickup 置顶当前这一格。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+                pane._grid = [[]]  # noqa: SLF001 — 首帧已到达，不再是回退态
+                area = app.screen.query_one(SplitPaneArea)
+                key = area.focus_key
+                self.assertTrue(key)
+                list_view = app.screen.query_one(SessionListView)
+                with mock.patch("pickup.embed.send_key") as send_key:
+                    await pilot.press("ctrl+p")
+                    await _wait_until(
+                        lambda: key in list_view.group_store.pinned_session_keys
+                    )
+                    self.assertFalse(send_key.called)
+
+    async def test_ctrl_p_on_live_group_member_pins_whole_group(self) -> None:
+        """右栏某一格持焦时 Ctrl+P 置顶的是整组，不是把这一格拆出去单独钉。"""
+        store, registry = _make_store()
+        registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
+        app = PickupApp(store, embed_ok=True)
+        with (
+            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
+                list_view.on_layout_change(
+                    lambda s: s.set_group("/tmp", keys, focus_key=keys[0])
+                )
+                await list_view.rebuild()
+                self.assertTrue(list_view.select_session_key(keys[0]))
+                await pilot.press("enter")
+                await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
+                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_until(lambda: pane.has_focus)
+                pane._grid = [[]]  # noqa: SLF001
+                group = list_view.group_store.get_group(keys[0])
+                with mock.patch("pickup.embed.send_key") as send_key:
+                    await pilot.press("ctrl+p")
+                    await _wait_until(
+                        lambda: group.group_id in list_view.group_store.pinned_group_ids
+                    )
+                    self.assertFalse(send_key.called)
+                    self.assertNotIn(keys[0], list_view.group_store.pinned_session_keys)
 
     async def test_clicking_ended_session_only_previews_enter_restarts(self) -> None:
         """进程早就没了的会话：单击只摆历史，回车才恢复（机主 2026-08-05 拍板）。"""
@@ -7385,6 +7483,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(screen.check_action("search_content", ()))
             with mock.patch.object(type(screen), "_live_embed_focused", return_value=True):
                 self.assertTrue(screen.check_action("search_content", ()))
+                self.assertTrue(screen.check_action("toggle_pin", ()))
 
             await pilot.press("ctrl+f")
             await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))

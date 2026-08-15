@@ -120,6 +120,9 @@ class PickupApp(App):
     """pickup 的主应用；具体界面全部在 MainScreen 里，这里只挂屏幕。"""
 
     TITLE = "pickup"
+    # 关掉 Textual 自带的 Ctrl+P 命令面板：底部会画出 `^p palette`，而且占掉
+    # 这个键。pickup 用 Ctrl+P 做全局置顶（与 Ctrl+F 全文搜索同级）。
+    ENABLE_COMMAND_PALETTE = False
     # 不整体关闭 Textual 内置的鼠标拖拽文本选择：EmbedPane 需要它来实现"划词
     # 选中托管会话画面里的文字，抬起后自动 OSC 52 复制"。真机实测过的崩溃出在
     # 会被后台重扫动态增删的列表项上（选择过程中控件被移除，container 变 None

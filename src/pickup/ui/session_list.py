@@ -1540,35 +1540,50 @@ class SessionListView(Vertical):
         self._toggle_multi_key(pickup.session_key(session))
 
     def action_toggle_pin(self) -> None:
-        """用 p 切换独立会话或整个会话组的置顶状态。
+        """用 p / Ctrl+P 切换独立会话或整个会话组的置顶状态。
 
         翻转结果以记忆库里的最新状态为准（返回的快照），不看本地那份可能已被别的
-        窗口改过的旧快照。
+        窗口改过的旧快照。光标在组内成员上时改为整组置顶，与手机端一致。
         """
-        if self.group_store is None or self.on_layout_change is None:
-            return
         group = self.selected_group()
         if group is not None:
-            group_id = group.group_id
-            snapshot = self.on_layout_change(
-                lambda store: store.toggle_group_pin(group_id)
-            )
-            pinned = group_id in snapshot.pinned_group_ids
-        else:
-            session = self.selected_session()
-            if session is None:
-                return
-            import pickup
+            self._toggle_group_pin(group.group_id)
+            return
+        session = self.selected_session()
+        if session is None:
+            return
+        import pickup
 
-            key = pickup.session_key(session)
-            if self.group_store.get_group(key) is not None:
-                self.notify(t("pin.group_member_hint"))
-                self.app.bell()
-                return
-            snapshot = self.on_layout_change(
-                lambda store: store.toggle_session_pin(key)
-            )
-            pinned = key in snapshot.pinned_session_keys
+        self.toggle_pin_key(pickup.session_key(session))
+
+    def toggle_pin_key(self, key: str) -> None:
+        """按会话键置顶：独立会话单独置顶，组成员改为整组置顶。"""
+        if self.group_store is None or self.on_layout_change is None:
+            return
+        if not key or key.startswith("__"):
+            return
+        from pickup.models import SHELL_RUNTIME_ID
+
+        group = self.group_store.get_group(key)
+        if group is not None:
+            self._toggle_group_pin(group.group_id)
+            return
+        if key.startswith(f"{SHELL_RUNTIME_ID}:"):
+            return
+        snapshot = self.on_layout_change(
+            lambda store: store.toggle_session_pin(key)
+        )
+        self._notify_pin(key in snapshot.pinned_session_keys)
+
+    def _toggle_group_pin(self, group_id: str) -> None:
+        if self.group_store is None or self.on_layout_change is None:
+            return
+        snapshot = self.on_layout_change(
+            lambda store: store.toggle_group_pin(group_id)
+        )
+        self._notify_pin(group_id in snapshot.pinned_group_ids)
+
+    def _notify_pin(self, pinned: bool) -> None:
         self.notify(t("pin.enabled" if pinned else "pin.disabled"))
         self.call_next(self.rebuild)
 

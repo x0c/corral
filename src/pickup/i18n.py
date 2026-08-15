@@ -295,8 +295,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "切换多选",
     },
     "action.toggle_pin": {
-        "en": "Pin / unpin",
-        "zh": "置顶 / 取消置顶",
+        "en": "Pin",
+        "zh": "置顶",
     },
     "group.session_count": {
         "en": "{count} sessions",

@@ -145,11 +145,11 @@ such as `Group Apple` or `Group Pineapple`. The group takes three rows, while it
 as an indented tree instead of being duplicated in the top-level timeline. Child rows omit the project name
 prefix — that already lives on the group card. Unpinned groups follow the same stable store order as
 independent sessions — once the list is shown they stay put even when a member’s mtime updates; only
-genuinely new sessions are prepended at the top, and only items pinned with `p` stay pinned above that.
+genuinely new sessions are prepended at the top, and only items pinned with `p` or `Ctrl+P` stay pinned above that.
 The group title has no attention
 dot — dots remain on the individual sessions. Only the active group title and the currently focused child are
-highlighted. Press `Space` on a group to collapse it. Press `p` to pin/unpin an independent session or an
-entire group; sessions inside a group are pinned only with their group.
+highlighted. Press `Space` on a group to collapse it. Press `p` or `Ctrl+P` to pin/unpin an independent session or an
+entire group; a member inside a group pins the whole group. `Ctrl+P` also works while a live pane has input.
 
 The small dot at the very start of row one is intentionally simple:
 
@@ -361,12 +361,13 @@ agent workflows.
 | `Up` / `Down` / `j` / `k` | Move selection |
 | `/` | Focus the sidebar filter box (case-insensitive fuzzy match on group name, project name, path and session title) |
 | `Ctrl+F` | Full-text search across session conversations; results show the matching lines, newest session first. `Enter` opens the selected session in the sidebar |
+| `Ctrl+P` | Pin / unpin the current window or its split group (works even while a live pane has input; Textual's command palette is disabled) |
 | `Enter` | Resume selected session with the native runtime (reattach if it's already running in the background); on the pinned first row `+ New session` (Chinese: `＋ 新建会话`), start the new-session flow instead. For a session whose process is gone this is the **only** way to restart it — clicking its card only shows the transcript. Also works with focus in the right-hand pane whenever that pane holds a conversation preview or a `Session ended` screen |
 | `a` | Open advanced handoff actions |
 | `q` | End a backgrounded / in-progress (keep-alive) session; press `q` again in the confirm dialog |
 | `x` | Permanently delete the selected local session (or every session in the selected group); press `x` again in the confirm dialog |
 | `c` | Close the focused right-side pane without ending its hosted session |
-| `p` | Pin / unpin the selected independent session or the selected session group |
+| `p` | Pin / unpin the selected independent session or the selected session group (a member inside a group pins the whole group) |
 | `Ctrl+Shift+B` | Show / hide the sidebar (also the ◀/▶ control on the runtime top bar) |
 | `Ctrl+G` | Expand / collapse the session card floating in the top-right corner of a live pane (clicking it does the same) |
 | `Home` / `End` / `PgUp` / `PgDn` | Scroll the right-pane conversation preview (also mouse wheel over the pane) |

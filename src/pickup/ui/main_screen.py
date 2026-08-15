@@ -122,6 +122,7 @@ def _drop_layout_sessions(store, keys: list[str]) -> None:
 # 动作名 → 文案 key；实例化时只改 description，不能整表替换（会丢掉 ListView/Screen 继承绑键）
 _ACTION_I18N = {
     "search_content": "action.search",
+    "toggle_pin": "action.toggle_pin",
     "handoff": "action.advanced",
     "kill_keepalive": "action.kill_session",
     "delete_session": "action.delete_session",
@@ -162,9 +163,10 @@ _LIST_ONLY_ACTIONS = frozenset(
 def _main_bindings() -> list[Binding]:
     """按当前语言生成底部快捷键说明。"""
     return [
-        # Ctrl+F 是全局全文搜索入口。priority 让它先于当前聚焦控件处理，运行中
-        # 助手不能再截走这个键；临时弹窗不继承主屏绑定，仍保持自己的输入语义。
+        # Ctrl+F / Ctrl+P 是壳层全局键。priority 让它们先于当前聚焦控件处理，
+        # 运行中助手不能再截走；临时弹窗不继承主屏绑定，仍保持自己的输入语义。
         Binding("ctrl+f", "search_content", t("action.search"), priority=True),
+        Binding("ctrl+p", "toggle_pin", t("action.toggle_pin"), priority=True),
         Binding("a", "handoff", t("action.advanced")),
         Binding("q", "kill_keepalive", t("action.kill_session")),
         Binding("x", "delete_session", t("action.delete_session")),
@@ -1313,6 +1315,19 @@ class MainScreen(
         )
         if key:
             await self._reveal_session(key)
+
+    def action_toggle_pin(self) -> None:
+        """Ctrl+P 全局置顶：右栏持焦时钉当前这一格（或其会话组），否则钉侧栏选中项。"""
+        list_view = self.query_one(SessionListView)
+        if self._any_embed_focused():
+            try:
+                key = self._split_area().focus_key
+            except Exception:
+                key = None
+            if key:
+                list_view.toggle_pin_key(key)
+                return
+        list_view.action_toggle_pin()
 
     async def _reveal_session(self, key: str) -> None:
         """把搜索结果选中的会话定位到侧边栏。
