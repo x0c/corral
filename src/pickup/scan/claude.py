@@ -237,20 +237,43 @@ def _choose_claude_fallback_title(candidates: list[tuple[str, str | None]]) -> s
     return "(仅本地命令)"
 
 
+_TEAM_LEAD_DISPATCH_PREFIX = '<teammate-message teammate_id="team-lead"'
+_SESSION_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)+$")
+
+
+def _is_claude_session_slug(title: str | None) -> bool:
+    """Claude 2.1+ 给顶层会话写的 kebab-case 显示名，不是给人看的标题。"""
+    return bool(title and _SESSION_SLUG_RE.fullmatch(title.strip()))
+
+
+def _prefer_claude_native_title(current: str | None, incoming: str | None) -> str | None:
+    """后写入的会话 slug 不得盖掉已经拿到的可读标题。"""
+    if not incoming or incoming == "?":
+        return current
+    if current and _is_claude_session_slug(incoming) and not _is_claude_session_slug(current):
+        return current
+    return incoming
+
+
 def _is_internal_claude_session(entries: list[dict]) -> bool:
-    """Teammates/subagent 会话：非用户直接发起的顶层 Claude 会话。"""
-    first_user_text = None
+    """Teammates/subagent 会话：非用户直接发起的顶层 Claude 会话。
+
+    只看会话开头的身份，见到首条非 meta 用户消息就停。Claude 2.1+ 会给
+    顶层会话自己写入 ``type: agent-name``（会话显示名），出现在首条真人
+    消息之后；若扫完整头部任意一处命中就当内部会话，正在用的真会话会
+    从列表消失。Teammates 文件的 ``agent-name`` / ``isSidechain`` 出现在
+    首条用户消息之前。
+    """
     for entry in entries:
         if entry.get("isSidechain"):
             return True
         if entry.get("type") == "agent-name" and entry.get("agentName"):
             return True
-        if entry.get("type") == "user" and first_user_text is None:
-            first_user_text = _extract_text(entry.get("message", {}).get("content", ""))
-    return bool(
-        first_user_text
-        and first_user_text.startswith('<teammate-message teammate_id="team-lead"')
-    )
+        if entry.get("type") != "user" or entry.get("isMeta"):
+            continue
+        text = _extract_text(entry.get("message", {}).get("content", ""))
+        return bool(text and text.startswith(_TEAM_LEAD_DISPATCH_PREFIX))
+    return False
 
 
 def _build_session_info(fpath: str, proj: str) -> dict | None:
@@ -270,9 +293,7 @@ def _build_session_info(fpath: str, proj: str) -> dict | None:
         if cwd is None and e.get("cwd"):
             cwd = e.get("cwd")
         if e.get("type") == "ai-title":
-            t = e.get("aiTitle")
-            if t and t != "?":
-                ai_title = t
+            ai_title = _prefer_claude_native_title(ai_title, e.get("aiTitle"))
         if e.get("type") == "user" and first_user_msg is None:
             text = _extract_text(e.get("message", {}).get("content", ""))
             if text:
@@ -293,9 +314,7 @@ def _build_session_info(fpath: str, proj: str) -> dict | None:
             event_time = entry_time
         t = e.get("type")
         if t == "ai-title":
-            title = e.get("aiTitle")
-            if title and title != "?":
-                ai_title = title  # 尾部出现的标题更新，覆盖头部
+            ai_title = _prefer_claude_native_title(ai_title, e.get("aiTitle"))
         elif t == "last-prompt" and e.get("lastPrompt"):
             last_prompt = e.get("lastPrompt")
             title_candidates.append(("last_prompt", last_prompt))

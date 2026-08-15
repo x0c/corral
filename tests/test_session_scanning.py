@@ -629,6 +629,42 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
         finally:
             scan_claude.PROJECTS_DIR = old_projects_dir
 
+    def test_scan_keeps_parent_session_after_claude_writes_agent_name(self) -> None:
+        """Claude 2.1+ 会在顶层会话写出自己的显示名，不能因此把真会话滤掉。"""
+        old_projects_dir = scan_claude.PROJECTS_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                scan_claude.PROJECTS_DIR = td
+                project = Path(td) / "proj"
+                project.mkdir()
+                cwd = str(project / "workspace")
+                Path(cwd).mkdir()
+                _write_jsonl(
+                    project / "named-parent.jsonl",
+                    [
+                        {"type": "mode", "mode": "normal"},
+                        {"type": "permission-mode", "permissionMode": "bypassPermissions"},
+                        {"type": "user", "message": {"content": "修一下账户余量显示"}, "cwd": cwd},
+                        {"type": "assistant", "message": {"content": [{"type": "text", "text": "开始查"}]}},
+                        {"type": "ai-title", "aiTitle": "调查账户余量未显示"},
+                        {"type": "ai-title", "aiTitle": "cursor-account-disappearing-fix"},
+                        {"type": "agent-name", "agentName": "cursor-account-disappearing-fix"},
+                    ],
+                )
+                _write_jsonl(
+                    project / "teammate-session.jsonl",
+                    [
+                        {"type": "ai-title", "aiTitle": "reviewer"},
+                        {"type": "agent-name", "agentName": "reviewer"},
+                        {"type": "user", "message": {"content": "请审查这段代码"}, "cwd": cwd},
+                    ],
+                )
+                sessions = scan_claude.scan_sessions(limit=10)
+                self.assertEqual([s["id"] for s in sessions], ["named-parent"])
+                self.assertEqual(sessions[0]["native_title"], "调查账户余量未显示")
+        finally:
+            scan_claude.PROJECTS_DIR = old_projects_dir
+
     def test_low_value_cached_title_is_ignored(self) -> None:
         session = {
             "source": "codex",
