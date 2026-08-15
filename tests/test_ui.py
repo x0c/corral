@@ -5731,10 +5731,60 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
                 "claude:directtest01",
                 [pickup.session_key(session) for session in store.all_sessions()],
             )
+            list_view = app.screen.query_one(SessionListView)
+            await _wait_until(
+                lambda: list_view.selected_session() is not None
+                and pickup.session_key(list_view.selected_session()) == "claude:directtest01"
+            )
+            self.assertFalse(list_view.is_new_session_selected())
+            self.assertTrue(pane.has_focus)
 
             await pilot.press(*"x")
             await _wait_for_pane_text(pane, "x")
             self.assertIn("x", pane.render().plain.split("DIRECT-HELLO")[-1])
+
+    async def test_direct_launch_focuses_pane_even_when_list_already_has_focus(self) -> None:
+        """真机直启：搜索框不可聚焦时默认焦点在侧边栏，托管成功仍须把输入交给新会话。"""
+        store, _ = _make_store()
+        release = threading.Event()
+        real_host = pickup.embed.host_session
+
+        def delayed_host(*args, **kwargs):
+            if not release.wait(timeout=5.0):
+                raise TimeoutError("测试未能及时释放 delayed_host")
+            return real_host(*args, **kwargs)
+
+        plan = LaunchPlan(("bash", "-c", "printf 'DIRECT-LIST\\n'; cat"), None)
+        direct = pickup._DirectLaunch(plan, "claude", "directlist01")
+        app = PickupApp(store, embed_ok=True, direct=direct)
+        with mock.patch("pickup.embed.host_session", side_effect=delayed_host):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.05)
+                app.screen._focus_list()
+                await pilot.pause()
+                list_view = app.screen.query_one(SessionListView)
+                self.assertTrue(
+                    list_view.has_focus,
+                    "托管完成前侧边栏持有焦点，复现真实终端直启的默认落点",
+                )
+                release.set()
+                area = app.screen.query_one(SplitPaneArea)
+                await _wait_until(
+                    lambda: any(cell.embed_pane() is not None for cell in area.cells()),
+                )
+                pane = _primary_embed_pane(app.screen)
+                await _wait_for_session_name(pane)
+                self._hosted_names.append(pane.session_name)
+                await _wait_for_pane_text(pane, "DIRECT-LIST")
+                await _wait_until(lambda: pane.has_focus)
+                await _wait_until(
+                    lambda: list_view.selected_session() is not None
+                    and pickup.session_key(list_view.selected_session())
+                    == "claude:directlist01"
+                )
+                self.assertFalse(list_view.is_new_session_selected())
+                await pilot.press(*"y")
+                await _wait_for_pane_text(pane, "y")
 
     async def test_direct_launch_disables_search_focus_until_hosted(self) -> None:
         """直启挂载期间搜索框不可聚焦，避免迟到 OSC 应答灌进筛选框滤空列表。"""

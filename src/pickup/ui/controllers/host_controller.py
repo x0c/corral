@@ -340,7 +340,6 @@ class HostControllerMixin:
 
     def _on_direct_hosted(self, name: str) -> None:
         self._host_pending = max(0, self._host_pending - 1)
-        self._restore_direct_search_focus()
         area = self._split_area()
         direct = self.direct
         runtime = self.store.registry.get(direct.runtime_id)
@@ -355,19 +354,18 @@ class HostControllerMixin:
         from pickup import _normalize_cwd, session_key
 
         key = session_key(session)
+        # 直启挂载期间搜索框是关掉的，用户不可能正在里面打字；先按自动聚焦
+        # 条件把意图交给右栏，再恢复搜索框可聚焦。挂载是异步的，禁止在
+        # pane 尚未创建时 set_focus 失败就放弃——真机默认焦点在侧边栏，
+        # 不带 focus_pane 的挂载收尾会把焦点还回去（pickup cursor 真机复现）。
+        autofocus = self._can_autofocus()
         area.show_hosted_group(
             _normalize_cwd(cwd),
             [(session, name, None)],
             focus_key=key,
+            focus_pane=autofocus,
         )
         self._persist_split_composition()
+        self._begin_attention_read(key)
         self.call_next(self._rebuild_list, key)
-        cells = area.cells()
-        if cells:
-            pane = cells[0].embed_pane()
-            if pane is None:
-                # 竞态窗口：worker 回调到达时 pane 尚未创建（或已被卸载）。
-                # 下一轮 rebuild 会按托管身份把画面挂回来，这里直接放弃聚焦。
-                return
-            pane.focus_session(name)
-            self.set_focus(pane)
+        self._restore_direct_search_focus()
