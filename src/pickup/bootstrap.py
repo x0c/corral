@@ -7,7 +7,7 @@ import sys
 
 from pickup import __version__
 
-_AGENT_ROOTS = {"list", "search", "show", "context", "plan", "describe", "diagnose"}
+_AGENT_ROOTS = {"list", "search", "show", "export", "share", "context", "plan", "describe", "diagnose"}
 
 
 def _fast_version() -> None:

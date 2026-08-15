@@ -293,6 +293,84 @@ class AgentApiTests(unittest.TestCase):
             agent_api._parse_time_bound("not-a-time", is_until=False)
         self.assertEqual(cm.exception.exit_code, agent_api.EXIT_USAGE)
 
+    # ---- share ----
+
+    def test_cmd_share_emits_events_and_keeps_show_text_only(self) -> None:
+        history = Path(self._tmpdir.name) / "claude.jsonl"
+        history.write_text(
+            json.dumps({
+                "type": "user", "origin": {"kind": "human"},
+                "message": {"role": "user", "content": [{"type": "text", "text": "改文件"}]},
+            }, ensure_ascii=False)
+            + "\n"
+            + json.dumps({
+                "type": "assistant",
+                "message": {"content": [
+                    {"type": "thinking", "thinking": "用 Write"},
+                    {"type": "text", "text": "开始改"},
+                    {"type": "tool_use", "id": "w1", "name": "Write", "input": {"file_path": "/tmp/a.py"}},
+                ]},
+            }, ensure_ascii=False)
+            + "\n"
+            + json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "w1", "content": "ok"},
+                ]},
+            }, ensure_ascii=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        session = _session(str(history), source="claude", id="share-1", short_id="share-1")
+        runtime = FakeRuntime([session], {session["id"]: [
+            ConversationMessage("user", "改文件"),
+            ConversationMessage("assistant", "开始改"),
+        ]})
+        runtime.id = "claude"
+        runtime.display_name = "Claude Code"
+        registry = RuntimeRegistry((runtime,))
+
+        share = agent_api.cmd_share(
+            argparse_namespace(session="share-1", limit=200, out=None, compact=False),
+            registry,
+        )
+        data = share["data"]
+        self.assertEqual(data["schema"], "pickup.share/v1")
+        self.assertEqual([e["type"] for e in data["events"]], [
+            "user_message", "thinking", "assistant_message", "tool_call", "tool_result",
+        ])
+        self.assertEqual(data["counts"]["tool_call"], 1)
+        self.assertEqual(data["event_count"], 5)
+
+        shown = agent_api.cmd_show(
+            argparse_namespace(session="share-1", messages=None, full=True, limit=200),
+            registry,
+        )
+        roles = [m["role"] for m in shown["data"]["messages"]]
+        self.assertEqual(roles, ["user", "assistant"])
+        self.assertNotIn("tool_call", json.dumps(shown["data"]["messages"]))
+
+    def test_cmd_share_out_omits_events_from_stdout(self) -> None:
+        session = _session(self.history_path, source="fake")
+        runtime = FakeRuntime([session], {session["id"]: self.messages})
+        registry = RuntimeRegistry((runtime,))
+        out_path = str(Path(self._tmpdir.name) / "share.json")
+        result = agent_api.cmd_share(
+            argparse_namespace(session=session["short_id"], limit=200, out=out_path, compact=False),
+            registry,
+        )
+        self.assertTrue(result["data"]["events_omitted"])
+        self.assertNotIn("events", result["data"])
+        with open(out_path, encoding="utf-8") as fp:
+            envelope = json.load(fp)
+        self.assertEqual(envelope["data"]["schema"], "pickup.share/v1")
+        self.assertIn("events", envelope["data"])
+
+    def test_describe_includes_share(self) -> None:
+        result = agent_api.cmd_describe(argparse_namespace(target="share"), self.registry)
+        self.assertEqual(result["data"]["name"], "share")
+        self.assertIn("events", result["data"]["fields"])
+
     # ---- context ----
 
     def test_cmd_context_returns_handoff_and_resume_command(self) -> None:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """pickup 的机器可读数据接口：面向大模型 Agent 的只读命令集合。
 
-pickup 只负责把本地会话数据结构化地交出来（列表 / 搜索 / 详情 / 接续上下文），
+pickup 只负责把本地会话数据结构化地交出来（列表 / 搜索 / 详情 / 接续上下文 / 分享 transcript），
 不负责决定"拿到数据之后做什么"——不新增自动拉起、后台执行等副作用命令。
 所有命令输出统一 JSON envelope：{ok, data, error, meta}。
 
@@ -23,6 +23,7 @@ from pickup.cache import get_cache, scan_period
 from pickup.models import format_message_time, session_key
 from pickup.runtime import LaunchError, default_registry
 from pickup.runtime.base import usable_cwd
+from pickup.transcript import SCHEMA_ID, count_events, load_events
 
 AGENT_API_VERSION = 1
 
@@ -39,7 +40,7 @@ STATUS_LABELS = {
     titles.STATUS_NONE: "unknown",
 }
 
-_RESOLVE_SCAN_LIMIT = 200  # show/context 按标识定位会话时的扫描深度，独立于 list/search 的展示条数
+_RESOLVE_SCAN_LIMIT = 200  # show/share/context 按标识定位会话时的扫描深度，独立于 list/search 的展示条数
 
 # --compact 模式下 list 的精简默认字段集（省 token）；需要更多字段用 --fields 显式指定
 # live/keepalive/last_user/last_agent 默认就带上：管家 Agent 一眼看懂"这条会话在跑没跑、
@@ -578,6 +579,50 @@ def cmd_export(args, registry) -> dict:
     })
 
 
+def cmd_share(args, registry) -> dict:
+    """导出单条会话的统一 transcript（含 thinking / 工具调用），供其他 Agent 做元认知。
+
+    只读：不改 ``show`` / ``export`` 的纯文本契约；解析失败时 events 为空列表而不是报错。
+    """
+    session = resolve_ref(registry, args.session, args.limit)
+    cache = titles.load_cache()
+    runtime = registry.get(str(session.get("source") or ""))
+    compact = getattr(args, "compact", False)
+    out = getattr(args, "out", None)
+    events = load_events(session)
+    payload = session_payload(session, cache, runtime)
+    payload["schema"] = SCHEMA_ID
+    payload["runtime_name"] = getattr(runtime, "display_name", "") or ""
+    payload["events"] = events
+    payload["event_count"] = len(events)
+    payload["counts"] = count_events(events)
+
+    if not out:
+        return _ok(payload)
+
+    envelope = _ok(payload)
+    output_path = os.path.abspath(out)
+    parent = os.path.dirname(output_path) or "."
+    if not os.path.isdir(parent):
+        raise ApiError("usage_error", f"输出目录不存在：{parent}", EXIT_USAGE)
+    if os.path.isdir(output_path):
+        raise ApiError("usage_error", f"输出路径是目录：{output_path}", EXIT_USAGE)
+    with open(output_path, "w", encoding="utf-8") as fp:
+        json.dump(envelope, fp, ensure_ascii=False, separators=(",", ":") if compact else None,
+                  indent=None if compact else 2)
+        fp.write("\n")
+    summary = session_payload(session, cache, runtime, DEFAULT_LIST_FIELDS if compact else None)
+    summary.update({
+        "schema": SCHEMA_ID,
+        "output_path": output_path,
+        "output_bytes": os.path.getsize(output_path),
+        "event_count": len(events),
+        "counts": count_events(events),
+        "events_omitted": True,
+    })
+    return _ok(summary)
+
+
 def cmd_context(args, registry) -> dict:
     session = resolve_ref(registry, args.session, args.limit)
     cache = titles.load_cache()
@@ -823,6 +868,26 @@ COMMANDS = [
         },
     },
     {
+        "name": "share",
+        "help": "导出单条会话的统一 transcript（含 thinking 与工具调用），供其他 Agent 做元认知；不改 show/export 的纯文本契约",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+        "args": [
+            {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
+            {"flags": ["--out"], "kwargs": {"help": "把完整 transcript 写入指定 JSON 文件，stdout 只返回文件引用摘要"}},
+            {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON"}},
+            {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "定位会话时的扫描深度"}},
+        ],
+        "fields": {
+            "schema": "固定为 pickup.share/v1，调用方据此识别事件流版本",
+            "...": "与 list 命令的会话元数据字段相同（runtime / id / title / cwd / history_path 等）",
+            "runtime_name": "运行时显示名（如 Claude Code）",
+            "events": "按原始历史顺序的统一事件数组，type 为 user_message / assistant_message / thinking / tool_call / tool_result；tool_call 含 id/name/kind/input，tool_result 含 call_id/status/output，均不截断",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            "event_count": "events 条数",
+            "counts": "按 type 分组的事件计数",
+            "output_path": "--out 模式下写入的 JSON 文件绝对路径",
+            "events_omitted": "--out 模式下 stdout 摘要不含 events 正文，为 true",
+        },
+    },
+    {
         "name": "context",
         "help": "生成接续该会话所需的完整上下文数据包（不执行任何操作）",
         "args": [
@@ -903,6 +968,7 @@ HANDLERS = {
     "search": cmd_search,
     "show": cmd_show,
     "export": cmd_export,
+    "share": cmd_share,
     "context": cmd_context,
     "plan continue": cmd_plan_continue,
     "describe": cmd_describe,

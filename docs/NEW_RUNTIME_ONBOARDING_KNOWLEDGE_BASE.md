@@ -87,7 +87,7 @@ sequenceDiagram
 按以下检查清单完成新助手接入；任何一项缺失都会导致「能扫到但不能使用」或「界面能选到但启动失败」的半接入状态。
 
 1. **确认真实数据与命令能力**：在本机实际创建、续接并结束至少一个新助手会话；记录历史目录或数据库、会话 ID、工作目录、用户/助手正文、时间、原生恢复命令、空白新建命令，以及可安全使用的自动批准参数。不要只依据官网文档推断参数。
-2. **实现扫描与预览**：新增 `scan/<助手>.py`，把私有历史转换成完整 `SessionInfo`；列表扫描保持轻量，完整对话在 `load_conversation` 按需读取。过滤内部子任务、空会话、系统注入和标题生成留下的噪音会话。
+2. **实现扫描与预览**：新增 `scan/<助手>.py`，把私有历史转换成完整 `SessionInfo`；列表扫描保持轻量，完整对话在 `load_conversation` 按需读取。过滤内部子任务、空会话、系统注入和标题生成留下的噪音会话。`load_conversation` 仍只出纯文本。`pickup share` 另走 `transcript.py` 的 `_parse_<id>`，必须按该助手真实落盘格式抽出 thinking / tool_call / tool_result，否则 share 对该助手返回空 events。
 3. **实现助手运行时**：新增 `runtime/<助手>.py` 的 `BaseRuntime` 子类，声明稳定的 id、显示名、可执行命令、历史阅读提示和唯一一处的 `auto_approve_args`；实现扫描、预览、原生恢复、跨助手目标新建、空白新建。仅在确实支持且已验证时实现带指令的原生续接。
    同时实现 `delete_session(session)`（终端界面 `x` 删除会话用；`BaseRuntime` 默认实现是直接报错，不覆写就等于该助手不支持删除）：删除是彻底抹掉、不可恢复，必须先确认新助手的历史存储形态再决定实现方式——单文件（如 Claude/Codex 的 JSONL）直接 `os.unlink`；每会话一个目录（如 Kimi/Cursor）要整目录 `shutil.rmtree`，只删 `path` 指向的那一个文件会留下同目录的其他元数据文件；**所有会话共享同一份存储时（如 OpenCode 的单个 SQLite 库）绝对不能删文件本身**，必须开一个可写连接、按会话 ID 精确删除对应的行（含外键关联表，按依赖顺序删除、一次事务提交），否则会连带清空其他会话的历史。详见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md` 和各 `scan/<助手>.py` 里 `delete_session()` 的实现与测试。
 4. **注册一次**：在 `runtime/registry.py` 导入并加入 `default_registry()`。注册表顺序就是默认显示/选择顺序之一；id 必须唯一，且扫描结果的 `source` 必须与其一致。
@@ -113,6 +113,7 @@ sequenceDiagram
 | `scan/kimi.py` | Kimi `state.json` / `wire.jsonl` 扫描 | Kimi 扫描器 |
 | `scan/cursor.py` | Cursor CLI 目录、JSON 与 SQLite 扫描 | Cursor 扫描器 |
 | `scan/pi.py` | Pi JSONL 扫描、活动分支回溯与对话预览 | Pi 扫描器 |
+| `transcript.py` | `pickup share` 统一事件流（thinking / 工具调用） | `load_events`、`_parse_<id>` |
 | `models.py` | 统一会话、接力和启动计划数据模型 | `SessionInfo`、`Handoff`、`LaunchPlan` |
 | `theme.py` | 运行时配色唯一来源 | `RUNTIME_LABEL_STYLES`、`runtime_label_style` |
 | `cli.py`、`bootstrap.py` | 启动入口与直启分发 | `main()`、`_dispatch_direct_launch()` |
@@ -125,6 +126,7 @@ sequenceDiagram
 | 定义新助手最小能力 | `runtime/base.py` | `BaseRuntime` | 必须实现扫描、预览、原生恢复、跨助手目标新建、空白新建 |
 | 新助手扫描历史 | `scan/<助手>.py` | `scan_sessions(limit)` | 返回按时间倒序的统一会话；单条异常不应使其他助手不可用 |
 | 新助手读取完整预览 | `scan/<助手>.py` | `load_conversation(...)` | 只保留真人用户与助手可读文本，按时间正序返回 |
+| 新助手的 share transcript | `transcript.py` | `_parse_<id>(session)` | 不走 `load_conversation`；按文件序发出 user/assistant/thinking/tool_call/tool_result；Cursor 的 tool-result blob 可能比对应 tool-call 更早出现在 rowid 序里，必须先攒再配对 |
 | 同助手恢复 | `runtime/<助手>.py` | `build_resume_plan(session)` | 使用新助手已验证的原生命令和会话 ID |
 | 新助手接手其他助手 | `runtime/<助手>.py` | `build_new_plan(handoff)` | 新建目标会话，把统一接力提示词作为首条任务，不伪造恢复 |
 | 新助手空白开局 | `runtime/<助手>.py` | `build_new_session_plan(cwd)` | 不带任何历史或接力提示词，只在有效工作目录启动 |

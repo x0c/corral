@@ -376,7 +376,7 @@ def main() -> None:
     # 尽早挂崩溃钩子：TUI 闪退后 stderr 常被清掉，必须先落盘才能事后 diagnose。
     observe.install_crash_hooks()
 
-    # list/search/show/context/plan/describe 是面向 Agent 的机器可读子命令，整体转发给
+    # list/search/show/export/share/context/plan/describe 是面向 Agent 的机器可读子命令，整体转发给
     # agent_api，不与下面的 TUI/--json 旧参数共用同一个 parser。
     if len(sys.argv) > 1 and sys.argv[1] in agent_api.COMMAND_ROOT_NAMES:
         sys.exit(agent_api.dispatch(sys.argv[1:]))

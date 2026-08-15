@@ -1,6 +1,6 @@
 ---
 name: pickup
-description: Query local Claude Code, Codex CLI, OpenCode, and Kimi Code CLI session history through the `pickup` CLI — list recent sessions, search by topic, read a session's conversation, or build a handoff context package to continue interrupted work. Read-only, no side effects.
+description: Query local Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi session history through the `pickup` CLI — list recent sessions, search by topic, read a session's conversation, export a shareable transcript with tool calls and thinking, or build a handoff context package to continue interrupted work. Read-only, no side effects.
 ---
 
 # pickup：本地编程会话数据接口
@@ -36,6 +36,7 @@ SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的
 | `pickup list [--runtime R] [--limit N] [--top N] [--compact] [--status S] [--cwd 子串] [--live] [--fields a,b]` | 结构化列出会话 |
 | `pickup search <关键词...> [--deep] [--runtime R] [--limit N] [--top N] [--compact] [--live] [--fields a,b]` | 按主题找会话 |
 | `pickup show <会话> [--messages N \| --full] [--compact] [--out 路径] [--fields a,b]` | 会话详情 + 对话内容 |
+| `pickup share <会话> [--out 路径] [--compact]` | 导出含 thinking / 工具调用的统一 transcript，给其他 Agent 做元认知 |
 | `pickup export [--since T] [--until T] [--runtime R] [--status S] [--cwd 子串] [--limit N] [--out 路径] [--compact]` | 导出某时间范围内所有会话的完整对话，合并为一个 JSON |
 | `pickup context <会话>` | 生成接续该会话所需的上下文数据包 |
 | `pickup plan continue <会话> --instruction <文本>` | 生成带新指令的非交互式原生续接计划；只返回数据，不执行 |
@@ -59,7 +60,8 @@ pickup search 天气 app                    # 快速搜标题/首尾消息/工�
 pickup search 天气 app --top 3 --compact  # 只取最相关的 3 条，减少 token
 pickup search 天气 app --deep             # 快速搜没结果时，搜全部对话内容（较慢）
 pickup show <候选会话的 short_id>          # 确认是不是要找的那次会话
-pickup show <候选会话> --full --out /tmp/pickup-session.json  # 完整大结果落盘，stdout 只返回引用
+pickup share <候选会话> --out /tmp/pickup-share.json  # 含工具调用与 thinking 的统一 transcript
+pickup show <候选会话> --full --out /tmp/pickup-session.json  # 纯文本对话（不含工具调用）
 pickup context <会话>                     # 拿到 history_path / suggested_prompt / resume_command
 pickup plan continue <会话> --instruction "继续完成剩余工作并汇报结果" # 只生成外部执行器可运行的计划
 ```
@@ -159,6 +161,10 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
   相对量 `7d`/`24h`/`30m`（距今）或 Unix 时间戳；只给日期时 `--until` 自动补到当天 23:59:59。范围内会话
   多时合并结果可达数 MB，**强烈建议加 `--out <path>`**——stdout 只回文件路径、字节数、会话数与消息总数，
   完整内容写在文件里。时间过滤按会话的 `mtime`（最后更新时间）判定。
+- `pickup share` 是给其他 Agent 做元认知 / 迭代用的统一 transcript：`data.schema` 为 `pickup.share/v1`，
+  `data.events[]` 按原始历史顺序包含 `user_message` / `assistant_message` / `thinking` / `tool_call` /
+  `tool_result`（工具参数与结果不截断）。**不要用 `show`/`export` 的 `messages` 充当这一用途**——那两条
+  命令仍然只出纯文本。大结果同样优先 `--out`。
 
 ## 拿会话数据做总结 / 周报时的边界（必读）
 
@@ -166,14 +172,16 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
 用 `show` / `export` 的结果做周报、日报、工作总结前必须先按这些边界校正，否则结论会失真。
 括号内是本机真实数据实测值（2026-08-01），供判断量级用。
 
-1. **对话里不含助手实际执行的动作。** `messages` 只有真人消息和助手的**文本回复**；助手改了哪些
-   文件、跑了哪些命令、提交了什么代码，连同这些操作的结果**全部不在导出里**——所有运行时一致
+1. **`show` / `export` 的对话里不含助手实际执行的动作。** 这两条命令的 `messages` 只有真人消息和助手的**文本回复**；助手改了哪些
+   文件、跑了哪些命令、提交了什么代码，连同这些操作的结果**全部不在 `show`/`export` 里**——所有运行时一致
    （各扫描器的 `load_conversation` 只提取文本，不提取工具调用）。实测一条 17.7 MB 的 Claude 会话，
-   导出后只剩约 19.6 万字符纯文本，被丢弃的 1683 次工具调用里含 361 次文件修改、73 次新建文件、
+   导出后只剩约 19.6 万字符纯文本，被丢弃的 1683 次工具调用里含 361 次改文件、73 次新建文件、
    837 次命令执行（其中 46 条是完整的 git 提交 / 打标签 / 推送，提交说明本身就是最好的成果素材）。
-   **后果**：导出里"索引已落地""改完了"这类话只是**口述**，无法据此核实真的改了、改了哪些文件。
-   **怎么办**：需要证据时，用 `history_path` 自己去读原始历史文件（`context` 的
+   **后果**：只看 `show`/`export` 时，"索引已落地""改完了"这类话只是**口述**，无法据此核实真的改了、改了哪些文件。
+   **怎么办**：需要工具调用、thinking 或改码证据时，用 `pickup share <会话>`（统一事件流，含 `tool_call` /
+   `tool_result` / `thinking`）；或用 `history_path` 自己去读原始历史文件（`context` 的
    `history_reading_hint` 说明该运行时的格式），或按下面第 5 条走 git 侧自查。
+   `show`/`export` 的纯文本契约本身不会改。
 
 2. **`title` 只能当索引，不能当工作内容。** 标题要么是运行时自己写的原生标题，要么是从首条用户
    消息首行兜底而来，所以经常是"好的 做流程设计计划""那还需要改动吗"这种没有信息量的句子。

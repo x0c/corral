@@ -195,6 +195,7 @@ flowchart TD
 | 修改 Kimi 事件过滤或预览 | Kimi 扫描器 | `scan.kimi._iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent |
 | 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；对话缓存签名含 `store.db-wal`；同 cwd 多 `agent` 必须按打开的 store.db / 完整 PICKUP_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底 |
 | 修改 Pi 扫描或预览 | Pi 扫描器 | `scan.pi.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | JSONL 首行必须是 session；从最新叶子沿 `parentId` 回溯；判活只认 `--session` / `--session-id` / 打开的 jsonl / 精确 `PICKUP_SESSION_ID`，禁止 cwd 猜测；`live_processes("pi")` 需 cmdline 兜底（comm 常是 `node`） |
+| 修改统一 transcript / `pickup share` | `transcript.py` | `load_events()`、`_parse_*` | 不改 `load_conversation` 的纯文本契约；按各助手原始落盘抽出 thinking 与工具调用。Cursor `store.db` 里 tool-result 的 rowid 可以早于对应 tool-call，必须按 `toolCallId` 攒着、见到 call 再按 call→result 发出 |
 | 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`is_cursor_agent_cmdline()`、`is_pi_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`）；`pi` 同样要 cmdline 兜底（comm 常是 `node`） |
 | 修改跨运行时并发或扫描复用 | 注册表 | `runtime.registry.RuntimeRegistry.scan_all()` | 各运行时并发、异常隔离、结果副本隔离、签名命中跳过 |
 | 修改异步首屏、列表合并或预览缓存 | 会话存储 | `pickup.SessionStore.load()`、`refresh()`、`get_conversation()` | `store.load` 在后台线程，预览缓存按 mtime 失效 |
@@ -246,6 +247,7 @@ flowchart TD
 - **AI 易错点**【禁止】用 Claude 的 `stop_reason` 判断 assistant 文本是否应展示 → 必须只要存在非空 text 分片就保留（原因：thinking、文本与工具调用是独立顶层记录，却可能共享 `tool_use` 的 stop reason）。
 - **AI 易错点**【禁止】把原始 `type: "user"` 一律视为真人输入 → 必须检查 `origin.kind`；Claude 只接受缺失或 `human`，Kimi 只接受缺失或 `user`（原因：Monitor、task-notification 等系统注入会伪装在用户轮次中）。
 - **AI 易错点**【禁止】让完整对话出现 system、think、工具定义、工具结果或空文本 → 对话预览只保留真实用户消息和助手最终可读答复（原因：右栏是用户对话预览，不是原始事件调试器）。
+- **AI 易错点**【禁止】把 `pickup share` 接到 `load_conversation`，或按 Cursor `store.db` 的 rowid 假定 tool-call 一定早于 tool-result → share 走 `transcript.py`，tool-result 可能先落盘，必须按 `toolCallId` 配对后再按 call→result 发出（原因：本机真实历史里 result 的 rowid 可以更小）。
 - **AI 易错点**【禁止】以 `dict.get(key, 默认值)` 单独防范历史字段缺失 → 嵌套 JSON 取值统一使用 `value or 默认值` 并先验类型（原因：key 存在但值可能是 JSON `null`；否则会崩溃或把 `None` 显示成字面量 `"None"`）。
 - **AI 易错点**【禁止】将对话预览按会话键永久缓存 → 必须将历史入口 mtime 与缓存中的 mtime 比较，变化时重新调用 `load_conversation`（原因：会话可在 pickup 打开期间继续写入）。
 - **AI 易错点**【消歧】主界面的“运行中” vs `titles.status_tag` / 机器接口英文状态：前者只表示关联进程当前是否活着（`live`），后两者描述最后一轮对话的完成、待回复或中断语义；两者不能相互推导或互相替换。
