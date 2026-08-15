@@ -22,6 +22,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from pickup.i18n import t
 from pickup.split_layout import layout_cache_dir
 
 _DEFAULT_RELAY_URL = "wss://pickup-relay.caozc.top"
@@ -449,17 +450,14 @@ def rotate_host_token(state: RemoteState) -> RemoteState:
 def validate_relay_url(url: str, *, allow_insecure: bool = False) -> str:
     cleaned = str(url or "").strip().rstrip("/")
     if not cleaned:
-        raise ValueError("中继地址不能为空")
+        raise ValueError(t("remote.err.relay_url_empty"))
     if cleaned.startswith("wss://"):
         return cleaned
     if cleaned.startswith("ws://"):
         if allow_insecure:
             return cleaned
-        raise ValueError(
-            "中继地址必须使用加密的 wss://。"
-            "若你明确知道风险仍要用明文，请加 --insecure-relay"
-        )
-    raise ValueError("中继地址必须以 wss:// 开头")
+        raise ValueError(t("remote.err.relay_url_insecure"))
+    raise ValueError(t("remote.err.relay_url_scheme"))
 
 
 def write_pairing(code: str, ttl: float, *, mode: str = "full") -> None:

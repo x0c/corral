@@ -91,6 +91,7 @@ _INJECTED_SUBSTRINGS = (
     "To-do's from the plan have already been created",
     "Briefly inform the user about the task result",
     "你正在接力一个来自",
+    "You are picking up a session from",
     "这是跨运行时接力，不是原生恢复",
     "【本轮回复契约】",
 )

@@ -466,6 +466,8 @@ def clone_session(session: SessionInfo) -> SessionInfo:
     import time
     import uuid
 
+    from pickup.i18n import t
+
     path = str(session.get("path") or "")
     if not path:
         raise ValueError("原会话未记录历史路径，无法复制")
@@ -490,8 +492,9 @@ def clone_session(session: SessionInfo) -> SessionInfo:
             meta = {}
     now_ms = int(time.time() * 1000)
     title = str(meta.get("title") or session.get("native_title") or session.get("fallback_title") or "")
+    suffix = t("session.title.copy_suffix")
     if title and not title.endswith("（副本）") and not title.endswith(" (copy)"):
-        meta["title"] = f"{title}（副本）"
+        meta["title"] = f"{title}{suffix}"
     meta["updatedAtMs"] = now_ms
     if "createdAtMs" not in meta:
         meta["createdAtMs"] = now_ms

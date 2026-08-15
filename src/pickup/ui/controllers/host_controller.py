@@ -170,9 +170,9 @@ class HostControllerMixin:
                     str(request.session.get("source") or "")
                 ).display_name
                 if request.copy_session:
-                    title = request.title or f"复制自 {source_name}"
+                    title = request.title or t("session.title.copy", name=source_name)
                 else:
-                    title = request.title or f"接力自 {source_name}"
+                    title = request.title or t("session.title.handoff", name=source_name)
                 current = self.store.register_hosted_session(
                     runtime_id=request.target_runtime_id,
                     keepalive_name=name,
@@ -188,7 +188,7 @@ class HostControllerMixin:
             current = self.store.register_hosted_session(
                 runtime_id=request.target_runtime_id,
                 keepalive_name=name,
-                title=f"新{runtime.display_name}会话",
+                title=t("session.title.new", name=runtime.display_name),
                 cwd=request.cwd,
             )
             select_key = pickup.session_key(current)
@@ -347,7 +347,7 @@ class HostControllerMixin:
         session = self.store.register_hosted_session(
             runtime_id=direct.runtime_id,
             keepalive_name=name,
-            title=f"新{runtime.display_name}会话",
+            title=t("session.title.new", name=runtime.display_name),
             cwd=cwd,
             ident=direct.ident,
         )

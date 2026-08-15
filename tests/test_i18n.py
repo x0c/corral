@@ -72,6 +72,37 @@ class I18nCatalogTests(unittest.TestCase):
                 self.assertTrue(catalog["en"].strip())
                 self.assertTrue(catalog["zh"].strip())
 
+    def test_corrected_catalog_entries(self) -> None:
+        i18n.set_lang("en")
+        self.assertEqual(t("modal.column_runtime"), "Assistant")
+        self.assertEqual(t("modal.handoff_title"), "Advanced: choose handoff assistant")
+        self.assertEqual(t("detail.new_session_hint"), "New session: pick a project and assistant")
+        self.assertEqual(t("detail.preview_end"), "──── END ────")
+        self.assertEqual(t("pane.focus_hint"), "Ctrl+\\ back to list")
+        self.assertEqual(t("pane.restart_focus_hint"), "Enter restart · Ctrl+\\ back to list")
+        i18n.set_lang("zh")
+        self.assertEqual(t("modal.column_runtime"), "助手")
+        self.assertEqual(t("modal.handoff_title"), "高级操作：选择接力助手")
+        self.assertEqual(t("detail.new_session_hint"), "新建会话：选择项目与助手")
+        self.assertEqual(t("status.running_hosted"), "运行中（托管）")
+        self.assertEqual(t("status.running_external"), "运行中（其他窗口）")
+        self.assertEqual(t("detail.preview_end"), "──── 结束 ────")
+        self.assertEqual(t("action.focus_list"), "返回列表")
+        self.assertEqual(t("pane.focus_hint"), "Ctrl+\\ 返回列表")
+        self.assertEqual(t("pane.restart_focus_hint"), "Enter 重启 · Ctrl+\\ 返回列表")
+
+    def test_new_catalog_entries(self) -> None:
+        i18n.set_lang("en")
+        self.assertEqual(t("session.title.new", name="Claude"), "New Claude session")
+        self.assertEqual(t("error.launch_failed", error="boom"), "Launch failed: boom")
+        self.assertEqual(t("remote.err.session_gone"), "This session is no longer in the list")
+        self.assertEqual(t("shim.status.installed"), "Installed")
+        i18n.set_lang("zh")
+        self.assertEqual(t("session.title.new", name="Claude"), "新Claude会话")
+        self.assertEqual(t("error.launch_failed", error="boom"), "启动失败：boom")
+        self.assertEqual(t("remote.err.session_gone"), "这条会话已经不在列表里了")
+        self.assertEqual(t("shim.status.installed"), "已安装")
+
 
 if __name__ == "__main__":
     unittest.main()

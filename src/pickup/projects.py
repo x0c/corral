@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import TextIO
 
 from pickup.display import _disambiguate_labels, _fuzzy_match, _normalize_cwd
+from pickup.i18n import t
 from pickup.scan.common import is_ephemeral_agent_cwd
 
 DEFAULT_SCAN_DEPTH = 4
@@ -315,7 +316,7 @@ def resolve_query(
     """解析项目查询为唯一 cwd。0 命中 / 非交互多命中抛 ProjectResolveError。"""
     matches = match_projects(query, projects)
     if not matches:
-        raise ProjectResolveError(f"未找到匹配项目：{query}")
+        raise ProjectResolveError(t("project.not_found", query=query))
     if len(matches) == 1:
         return matches[0].path
 
@@ -330,27 +331,26 @@ def resolve_query(
     )
     if not interactive:
         raise ProjectResolveError(
-            f"多个项目匹配「{query}」（共 {len(matches)} 个）；"
-            f"请在交互终端中选择，或换更精确的名字：\n{listing}"
+            t("project.ambiguous", query=query, count=len(matches), listing=listing)
         )
 
-    out.write(f"多个项目匹配「{query}」，请选择：\n{listing}\n")
+    out.write(t("project.ambiguous_prompt", query=query, listing=listing))
     out.flush()
 
     while True:
-        out.write("请输入序号：")
+        out.write(t("project.enter_number"))
         out.flush()
         line = in_stream.readline()
         if not line:
-            raise ProjectResolveError("未选择项目")
+            raise ProjectResolveError(t("project.not_selected"))
         text = line.strip()
         if not text.isdigit():
-            out.write("请输入有效数字序号。\n")
+            out.write(t("project.invalid_number"))
             continue
         choice = int(text)
         if 1 <= choice <= len(matches):
             return matches[choice - 1].path
-        out.write(f"请输入 1–{len(matches)} 之间的序号。\n")
+        out.write(t("project.number_out_of_range", max=len(matches)))
 
 
 def session_cwds_from_sessions(sessions_by_source: dict[str, list[dict]]) -> list[str]:

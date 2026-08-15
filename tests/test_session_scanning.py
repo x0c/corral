@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from pickup import i18n
+from pickup.i18n import t
 
 i18n.set_lang("en")
 
@@ -2989,14 +2990,14 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertIn("urlopen error", body)
 
     def test_preview_ends_with_END_marker_and_blank_guard_lines(self) -> None:
-        """预览尾部三行：空行 → 居中 ── END ── → 空行。"""
+        """预览尾部三行：空行 → 居中结尾标记 → 空行。"""
         messages = [
             pickup.ConversationMessage("user", "最后一条"),
         ]
         lines = self._preview_text(messages, "Codex", 40)
-        self.assertTrue("END" in lines[-2], "倒数第二行应为 END 标记行")
+        self.assertIn(t("detail.preview_end"), lines[-2])
         self.assertEqual(lines[-1], "", "最后一行应为空行")
-        self.assertEqual(lines[-3], "", "END 上一行应为空行")
+        self.assertEqual(lines[-3], "", "结尾标记上一行应为空行")
 
     def test_all_sessions_keep_stable_order_and_prepend_new_on_refresh(self) -> None:
         """列表展示出来后已有会话位置固定：内容更新（mtime 变新）不再跳到顶上；
@@ -3692,10 +3693,12 @@ class HandoffDigestTests(unittest.TestCase):
         handoff = self._export(messages)
 
         lines = handoff.conversation_digest.splitlines()
-        self.assertEqual(lines[0], "【原始需求】最初的需求说明")
-        self.assertEqual(lines[1], "【最近对话】")
+        self.assertEqual(lines[0], t("handoff.digest.first_need") + "最初的需求说明")
+        self.assertEqual(lines[1], t("handoff.digest.recent"))
         self.assertEqual(len(lines), 2 + 8)  # 最近 8 条
-        self.assertTrue(lines[2].startswith(("用户: ", "助手: ")))
+        self.assertTrue(
+            lines[2].startswith((f"{t('handoff.role.user')}: ", f"{t('handoff.role.assistant')}: "))
+        )
         self.assertNotIn("你:", handoff.conversation_digest)
         self.assertTrue(lines[-1].endswith("…"))  # 超长消息被截断
 
@@ -3705,9 +3708,14 @@ class HandoffDigestTests(unittest.TestCase):
             ConversationMessage("assistant", "答复"),
         ]
         handoff = self._export(messages)
-        self.assertNotIn("【原始需求】", handoff.conversation_digest)
+        self.assertNotIn(t("handoff.digest.first_need"), handoff.conversation_digest)
         self.assertEqual(
-            handoff.conversation_digest, "【最近对话】\n用户: 问题\n助手: 答复"
+            handoff.conversation_digest,
+            (
+                f"{t('handoff.digest.recent')}\n"
+                f"{t('handoff.role.user')}: 问题\n"
+                f"{t('handoff.role.assistant')}: 答复"
+            ),
         )
 
     def test_digest_falls_back_to_scan_fields_when_conversation_unavailable(self) -> None:
@@ -3720,16 +3728,21 @@ class HandoffDigestTests(unittest.TestCase):
         )
         self.assertEqual(
             handoff.conversation_digest,
-            "【原始需求】最初需求\n【最近对话】\n用户: 最后追问\n助手: 最后答复",
+            (
+                f"{t('handoff.digest.first_need')}最初需求\n"
+                f"{t('handoff.digest.recent')}\n"
+                f"{t('handoff.role.user')}: 最后追问\n"
+                f"{t('handoff.role.assistant')}: 最后答复"
+            ),
         )
 
     def test_prompt_without_digest_or_status_matches_legacy_shape(self) -> None:
         handoff = self._export([], status_tag="")
         self.assertEqual(handoff.conversation_digest, "")
         prompt = handoff.render_prompt()
-        self.assertNotIn("对话摘录", prompt)
+        self.assertNotIn(t("handoff.digest_intro", digest="").rstrip(), prompt)
         self.assertNotIn("会话状态", prompt)
-        self.assertIn("请先读取上述会话历史", prompt)
+        self.assertIn(t("handoff.read_without_digest"), prompt)
 
     def test_prompt_with_digest_omits_status_and_keeps_authority_note(self) -> None:
         messages = [
@@ -3739,10 +3752,9 @@ class HandoffDigestTests(unittest.TestCase):
         prompt = self._export(messages).render_prompt()
         # 接力目的就是接着往下干，绝不能把源会话状态（尤其"已完成"）注入提示词误导接手方。
         self.assertNotIn("会话状态", prompt)
-        self.assertIn("以下是从原会话自动提取的对话摘录", prompt)
-        self.assertIn("摘录与文件不一致时以文件为准", prompt)
-        self.assertIn("请以上述摘录为线索读取原会话历史", prompt)
-        self.assertIn("用户: 问题", prompt)
+        self.assertIn(t("handoff.digest_intro", digest="").rstrip(), prompt)
+        self.assertIn(t("handoff.read_with_digest"), prompt)
+        self.assertIn(f"{t('handoff.role.user')}: 问题", prompt)
 
     def test_build_new_plan_prompt_carries_digest_for_both_runtimes(self) -> None:
         handoff = Handoff(

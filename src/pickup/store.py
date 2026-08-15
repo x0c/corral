@@ -694,6 +694,7 @@ class SessionStore:
 
         返回写入列表的会话 dict；调用方应用其会话键选中左栏并挂右栏画面。
         """
+        from pickup.i18n import t
         from pickup.models import format_message_time
         from pickup.scan.common import shorten_cwd
 
@@ -714,7 +715,7 @@ class SessionStore:
             "size_bytes": 0,
             "size_kb": 0,
             "native_title": None,
-            "fallback_title": title or f"新{runtime_id}会话",
+            "fallback_title": title or t("session.title.new", name=runtime_id),
             "status_tag": titles.STATUS_PENDING,
             "live": True,
             "pid": None,

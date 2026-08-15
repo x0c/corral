@@ -336,6 +336,8 @@ def clone_session(session: SessionInfo) -> SessionInfo:
     import uuid
     from datetime import datetime, timezone
 
+    from pickup.i18n import t
+
     path = str(session.get("path") or "")
     if not path:
         raise ValueError("原会话未记录历史路径，无法复制")
@@ -363,8 +365,9 @@ def clone_session(session: SessionInfo) -> SessionInfo:
     except json.JSONDecodeError:
         state = _load_state(dst_dir)
     title = str(state.get("title") or session.get("native_title") or session.get("fallback_title") or "")
+    suffix = t("session.title.copy_suffix")
     if title and not title.endswith("（副本）") and not title.endswith(" (copy)"):
-        state["title"] = f"{title}（副本）"
+        state["title"] = f"{title}{suffix}"
     state["updatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         with open(state_path, "w", encoding="utf-8") as f:

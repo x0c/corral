@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import io
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
+from pickup.i18n import t
 from pickup.remote import cli as remote_cli
 from pickup.remote import config as remote_config
 
@@ -44,7 +46,18 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
                 code = remote_cli._cmd_status(args)
         self.assertEqual(code, 0)
         text = buf.getvalue()
-        self.assertIn("中继：在线", text)
+        since = t(
+            "remote.status.relay_since",
+            time=time.strftime("%H:%M:%S", time.localtime(1_700_000_100.0)),
+        )
+        self.assertIn(
+            t(
+                "remote.status.relay_online",
+                label="wss://pickup-relay.caozc.top",
+                since=since,
+            ),
+            text,
+        )
         self.assertIn("pickup-relay.caozc.top", text)
 
     def test_status_json_includes_relay_online_fields(self) -> None:

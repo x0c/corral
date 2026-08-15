@@ -6,6 +6,7 @@ import os
 import shutil
 from abc import ABC, abstractmethod
 
+from pickup.i18n import t
 from pickup.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
 
 
@@ -79,7 +80,7 @@ class BaseRuntime(ABC):
         保留默认实现，避免既有第三方适配器因新增可选能力无法实例化；调用方会把
         此异常转为结构化的“不支持续接计划”结果。
         """
-        raise LaunchError(f"运行时 {self.id} 尚未支持携带新指令的续接计划")
+        raise LaunchError(t("launch.no_continue", id=self.id))
 
     @abstractmethod
     def build_new_plan(self, handoff: Handoff) -> LaunchPlan:
@@ -103,7 +104,7 @@ class BaseRuntime(ABC):
 
         仅在没有官方分叉计划时作为回退。默认不支持。
         """
-        raise LaunchError(f"运行时 {self.id} 尚未支持复制会话")
+        raise LaunchError(t("launch.no_copy", id=self.id))
 
     def compose_passthrough_argv(self, user_args: tuple[str, ...]) -> tuple[str, ...]:
         """直启透传（`pickup <运行时> [参数…]`）的完整 argv。
@@ -122,16 +123,16 @@ class BaseRuntime(ABC):
         既有第三方适配器因新增可选能力无法实例化。默认直接报错，调用方（TUI）
         据此提示"该运行时尚未支持删除"。
         """
-        raise LaunchError(f"运行时 {self.id} 尚未支持删除会话")
+        raise LaunchError(t("launch.no_delete", id=self.id))
 
     def export_handoff(self, session: SessionInfo, title: str) -> Handoff:
         """把运行时私有会话导出为统一接力信息。"""
         raw_history_path = str(session.get("path") or "")
         if not raw_history_path:
-            raise LaunchError("原会话未记录历史文件路径")
+            raise LaunchError(t("launch.no_history_path"))
         history_path = os.path.abspath(raw_history_path)
         if not os.path.isfile(history_path):
-            raise LaunchError(f"原会话历史文件不存在：{history_path}")
+            raise LaunchError(t("launch.history_missing", path=history_path))
         return Handoff(
             source_runtime_id=self.id,
             source_runtime_name=self.display_name,
@@ -161,10 +162,10 @@ class BaseRuntime(ABC):
             recent = messages[-_DIGEST_RECENT_COUNT:]
             first_user = next((m for m in messages if m.role == "user"), None)
             if first_user is not None and first_user not in recent:
-                lines.append("【原始需求】" + _clip(first_user.text, _DIGEST_FIRST_LEN))
-            lines.append("【最近对话】")
+                lines.append(t("handoff.digest.first_need") + _clip(first_user.text, _DIGEST_FIRST_LEN))
+            lines.append(t("handoff.digest.recent"))
             for message in recent:
-                role = "用户" if message.role == "user" else "助手"
+                role = t("handoff.role.user") if message.role == "user" else t("handoff.role.assistant")
                 lines.append(f"{role}: {_clip(message.text, _DIGEST_MSG_LEN)}")
             return "\n".join(lines)
 
@@ -173,13 +174,13 @@ class BaseRuntime(ABC):
         last_user = _clip(session.get("last_user_msg"), _DIGEST_MSG_LEN)
         last_agent = _clip(session.get("last_agent_msg"), _DIGEST_MSG_LEN)
         if first:
-            lines.append("【原始需求】" + first)
+            lines.append(t("handoff.digest.first_need") + first)
         recent_lines = []
         if last_user and last_user != first:
-            recent_lines.append(f"用户: {last_user}")
+            recent_lines.append(f"{t('handoff.role.user')}: {last_user}")
         if last_agent:
-            recent_lines.append(f"助手: {last_agent}")
+            recent_lines.append(f"{t('handoff.role.assistant')}: {last_agent}")
         if recent_lines:
-            lines.append("【最近对话】")
+            lines.append(t("handoff.digest.recent"))
             lines.extend(recent_lines)
         return "\n".join(lines)

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 # 这里不再重复设置：本模块的 `from pickup import ...` 一定先执行包初始化。
 from pickup import agent_api, cursor_observer, embed, keepalive, observe, titles, updater
 from pickup import theme as theme_mod
+from pickup.i18n import t
 from pickup.models import LaunchPlan, LaunchRequest, NewSessionRequest
 from pickup.runtime import LaunchError, RuntimeRegistry, default_registry, execute_launch
 from pickup.store import SessionStore
@@ -220,20 +221,17 @@ def _require_tmux() -> None:
     import pickup as pkg
 
     if pkg.shutil.which("tmux") is None:
-        print(
-            "pickup 需要 tmux 才能运行，请先安装"
-            "（macOS: brew install tmux；Debian/Ubuntu: sudo apt install tmux）。",
-            file=pkg.sys.stderr,
-        )
+        print(t("error.tmux_missing"), file=pkg.sys.stderr)
         pkg.sys.exit(1)
     version = pkg.embed._tmux_version()
     if version is not None and version < pkg.embed.MIN_TMUX_VERSION:
         need_major, need_minor = pkg.embed.MIN_TMUX_VERSION
         print(
-            f"pickup 需要 tmux {need_major}.{need_minor} 及以上版本"
-            f"（当前检测到 {version[0]}.{version[1]}）：会话托管依赖 "
-            "new-session -e 环境变量注入等 3.2+ 才有的特性，低于此版本会在创建"
-            "托管会话时失败。请升级 tmux 后重试。",
+            t(
+                "error.tmux_old",
+                need=f"{need_major}.{need_minor}",
+                current=f"{version[0]}.{version[1]}",
+            ),
             file=pkg.sys.stderr,
         )
         pkg.sys.exit(1)
@@ -320,7 +318,7 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
             print(str(exc), file=pkg.sys.stderr)
             pkg.sys.exit(1)
         except pkg.LaunchError as exc:
-            print(f"启动失败：{exc}", file=pkg.sys.stderr)
+            print(t("error.launch_failed", error=exc), file=pkg.sys.stderr)
             pkg.sys.exit(1)
     else:
         plan = registry.build_passthrough_plan(runtime_id, user_args)
@@ -333,7 +331,7 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
         try:
             pkg.execute_launch(plan)
         except pkg.LaunchError as exc:
-            print(f"启动失败：{exc}", file=pkg.sys.stderr)
+            print(t("error.launch_failed", error=exc), file=pkg.sys.stderr)
             pkg.sys.exit(1)
         return
 
@@ -352,7 +350,7 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     try:
         pkg._launch(chosen, store.registry, pkg.keepalive.enabled(no_keepalive))
     except pkg.LaunchError as exc:
-        print(f"启动失败：{exc}", file=pkg.sys.stderr)
+        print(t("error.launch_failed", error=exc), file=pkg.sys.stderr)
         pkg.sys.exit(1)
 
 
@@ -399,49 +397,25 @@ def main() -> None:
         return
 
     parser = argparse.ArgumentParser(
-        description=(
-            "pickup：终端会话接力工具。\n"
-            "列出 Claude Code / Codex / OpenCode / Kimi Code / Cursor 最近的会话，选择后原生恢复或跨运行时接力。\n"
-            "默认启动交互式 TUI（Textual），需要真实终端；非真实终端自动退化为 JSON。\n"
-            "大模型 Agent 结构化查询请用 list/search/show/context/describe 子命令。"
-        ),
+        description=t("cli.help.description"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "示例：\n"
-            "  pickup                 # 启动 TUI，交互式选择并接管终端\n"
-            "  pickup --json          # 输出 JSON 会话列表后退出，不启动 TUI（旧格式）\n"
-            "  pickup --json --limit 5  # JSON 模式，每个运行时最多 5 条\n"
-            "  pickup describe        # 查看 list/search/show/context 等子命令的用法\n"
-            "  pickup shim status     # 查看/安装命令拦截：敲 claude/codex 等原命令自动走 pickup\n"
-            "\n"
-            "JSON 输出字段说明：\n"
-            "  runtime        运行时标识（claude / codex / opencode / kimi / cursor）\n"
-            "  id             会话 ID\n"
-            "  title          会话标题（本地临时兜底，不调用 AI）\n"
-            "  cwd            原会话工作目录\n"
-            "  time           最后更新时间（人类可读）\n"
-            "  mtime          最后更新时间（Unix 时间戳）\n"
-            "  size_kb        历史文件大小（KB）\n"
-            "  status         会话状态（已完成 / 待回复 / 已中断）\n"
-            "  resume_command 恢复该会话的完整 shell 命令（可直接执行）\n"
-            "  history_path   历史文件路径（Claude/Codex/Kimi 为 JSONL；OpenCode 为 SQLite 数据库）\n"
-        ),
+        epilog=t("cli.help.epilog"),
     )
-    parser.add_argument("--limit", type=int, default=50, help="每个来源最多列出多少条")
+    parser.add_argument("--limit", type=int, default=50, help=t("cli.help.limit"))
     parser.add_argument("--json", action="store_true", dest="json_mode",
-                        help="以 JSON 格式输出会话列表后退出，不启动 TUI")
+                        help=t("cli.help.json"))
     parser.add_argument("--no-input", action="store_true", dest="no_input",
-                        help="禁用交互并输出 JSON 会话列表，适合脚本和 Agent 调用")
+                        help=t("cli.help.no_input"))
     parser.add_argument("--no-keepalive", action="store_true", dest="no_keepalive",
-                        help="本次启动不把会话包进后台保活（tmux），SSH 断开会话会跟着中断")
+                        help=t("cli.help.no_keepalive"))
     parser.add_argument("--no-color", action="store_true", dest="no_color",
-                        help="关闭彩色输出，也可设置 NO_COLOR 环境变量")
+                        help=t("cli.help.no_color"))
     parser.add_argument("-d", "--debug", "--verbose", action="store_true", dest="debug",
-                        help="启用详细诊断日志，也可设置 PICKUP_DEBUG=1")
+                        help=t("cli.help.debug"))
     parser.add_argument("-q", "--quiet", action="store_true", dest="quiet",
-                        help="隐藏非必要的启动提示和诊断输出")
+                        help=t("cli.help.quiet"))
     parser.add_argument("--version", "-V", "-v", action="store_true", dest="show_version",
-                        help="显示版本、安装路径与渠道后退出")
+                        help=t("cli.help.version"))
     parser.add_argument("--generate-titles", action="store_true", dest="generate_titles",
                         help=argparse.SUPPRESS)  # 内部用途：TUI 拉起的后台标题生成进程
     args = parser.parse_args()
@@ -553,7 +527,7 @@ def main() -> None:
     try:
         _launch(chosen, store.registry, keepalive_on)
     except LaunchError as exc:
-        print(f"启动失败：{exc}", file=sys.stderr)
+        print(t("error.launch_failed", error=exc), file=sys.stderr)
         sys.exit(1)
 
 

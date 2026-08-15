@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
 from pickup.cache import scan_period
+from pickup.i18n import t
 from pickup.models import LaunchPlan, LaunchRequest, NewSessionRequest, SessionInfo
 from pickup.runtime.base import BaseRuntime, LaunchError
 from pickup.runtime.claude import ClaudeRuntime
@@ -48,7 +49,7 @@ class RuntimeRegistry:
         try:
             return self._runtimes[runtime_id]
         except KeyError as exc:
-            raise LaunchError(f"未注册的运行时：{runtime_id}") from exc
+            raise LaunchError(t("launch.unregistered", id=runtime_id)) from exc
 
     @property
     def launch_tokens(self) -> tuple[str, ...]:
@@ -141,12 +142,10 @@ class RuntimeRegistry:
         # 复制会话：同助手官方分叉（磁盘克隆路径在 prepare_copy_request 里已换成新会话 + 原生恢复）。
         if request.copy_session:
             if source.id != target.id:
-                raise LaunchError("复制会话只能在同一助手内进行")
+                raise LaunchError(t("launch.copy_same_assistant"))
             fork_plan = source.build_fork_plan(request.session)
             if fork_plan is None:
-                raise LaunchError(
-                    f"运行时 {source.id} 未提供分叉计划；请先经 prepare_copy_request 完成磁盘克隆"
-                )
+                raise LaunchError(t("launch.copy_no_fork", id=source.id))
             return fork_plan
         # 同助手且未强制新建 → 原生恢复；跨助手或 force_new → 导出接力后新建。
         if source.id == target.id and not request.force_new:
@@ -159,13 +158,14 @@ class RuntimeRegistry:
         source_id = str(session.get("source") or "")
         source = self.get(source_id)
         if not source.is_available():
-            raise LaunchError(f"{source.display_name} 未安装，无法复制会话")
+            raise LaunchError(t("launch.copy_not_installed", name=source.display_name))
         if source.build_fork_plan(session) is not None:
             return LaunchRequest(
                 session, source.id, title, copy_session=True,
             )
         cloned = source.clone_session(session)
-        copy_title = title if title.endswith("（副本）") or title.endswith(" (copy)") else f"{title}（副本）"
+        suffix = t("session.title.copy_suffix")
+        copy_title = title if title.endswith("（副本）") or title.endswith(" (copy)") else f"{title}{suffix}"
         return LaunchRequest(cloned, source.id, copy_title)
 
     def build_new_session_plan(self, request: NewSessionRequest) -> LaunchPlan:
@@ -192,10 +192,10 @@ def execute_launch(plan: LaunchPlan) -> None:
     """校验启动计划并让目标运行时接管当前终端。"""
     executable = plan.argv[0]
     if shutil.which(executable) is None:
-        raise LaunchError(f"未找到 {executable} 命令，请先安装对应运行时")
+        raise LaunchError(t("launch.executable_missing", executable=executable))
     if plan.cwd:
         os.chdir(plan.cwd)
     try:
         os.execvp(executable, list(plan.argv))
     except OSError as exc:
-        raise LaunchError(f"无法启动 {executable}：{exc}") from exc
+        raise LaunchError(t("launch.cannot_start", executable=executable, error=exc)) from exc

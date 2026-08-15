@@ -12,6 +12,7 @@ import signal
 import time
 
 from pickup import observe
+from pickup.i18n import t
 from pickup.remote import config as remote_config
 from pickup.remote.push import PushNotifier
 from pickup.remote.service import RemoteService
@@ -53,7 +54,7 @@ class RemoteDaemon:
         if self.local is not None:
             tasks.append(asyncio.create_task(self.local.run(stop)))
         if not tasks:
-            raise RuntimeError("中继和局域网直连都被关掉了，服务没有任何入口")
+            raise RuntimeError(t("remote.err.no_entry"))
         tasks.append(asyncio.create_task(self._reconcile_loop(stop)))
         try:
             await stop.wait()

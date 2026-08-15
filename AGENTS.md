@@ -10,7 +10,7 @@
 
 > 以下文档在涉及对应领域的开发、评审或排查时先读取。领域知识库与验证细则见组件内说明。
 
-- [cli/AGENTS.md](cli/AGENTS.md)：改、评审或发布 pickup CLI 工具前必读（含领域知识库、截图验收，以及**排查「GitHub 持续发单测失败邮件 / 流水线作业排队十几小时 / macOS 作业挂死」**的入口）。**用 pickup 导出的会话数据写周报 / 日报 / 工作总结，或排查「导出内容不够写总结」时，从这里进 `cli/docs/SKILL.md` 的「拿会话数据做总结 / 周报时的边界」节。** Remote：`ssh://git@10.10.10.2:2222/Max/pickup.git`
+- [cli/AGENTS.md](cli/AGENTS.md)：改、评审或发布 pickup CLI 工具前必读（含领域知识库、截图验收，以及**排查「GitHub 持续发单测失败邮件 / 流水线作业排队十几小时 / macOS 作业挂死」「敲原命令没进托管」「本机与开发机版本对不上」**的入口）。**用 pickup 导出的会话数据写周报 / 日报 / 工作总结，或排查「导出内容不够写总结」时，从这里进 `cli/docs/SKILL.md` 的「拿会话数据做总结 / 周报时的边界」节。** Remote：`ssh://git@10.10.10.2:2222/Max/pickup.git`
 - [ios/AGENTS.md](ios/AGENTS.md)：改、评审、构建或真机验收手机客户端前必读（含签名推送、钥匙串共享、禁止 resize、模拟器/真机脚本）。界面视觉与两端状态色见 [ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md](ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md)。
 - [cli/docs/REMOTE_KNOWLEDGE_BASE.md](cli/docs/REMOTE_KNOWLEDGE_BASE.md)：改、评审或排查手机 ↔ 开发机远程接力协议、配对、推送密文、画面差分、**换网连不上 / 中继开关与默认地址、任意网络可达策略**前必读。个人中继部署拓扑见 agentsync 基础设施知识库 `pickup-relay.caozc.top` 节。
 

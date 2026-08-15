@@ -11,6 +11,7 @@ from unittest import mock
 
 import pickup
 from pickup import projects
+from pickup.i18n import t
 from pickup.models import LaunchPlan
 
 
@@ -158,7 +159,7 @@ class MatchResolveTests(unittest.TestCase):
         items = self._projects("/Codes/pickup")
         with self.assertRaises(projects.ProjectResolveError) as ctx:
             projects.resolve_query("nope", items)
-        self.assertIn("未找到", str(ctx.exception))
+        self.assertEqual(str(ctx.exception), t("project.not_found", query="nope"))
 
     def test_multiple_matches_interactive_pick(self) -> None:
         items = self._projects("/a/cli", "/b/cli")
@@ -168,13 +169,27 @@ class MatchResolveTests(unittest.TestCase):
             "cli", items, stdin=stdin, stdout=stdout, interactive=True,
         )
         self.assertEqual(cwd, "/b/cli")
-        self.assertIn("多个项目匹配", stdout.getvalue())
+        listing = "\n".join(
+            f"  {index}. {project.label}  ({project.path})"
+            for index, project in enumerate(projects.match_projects("cli", items), start=1)
+        )
+        self.assertIn(
+            t("project.ambiguous_prompt", query="cli", listing=listing),
+            stdout.getvalue(),
+        )
 
     def test_multiple_matches_noninteractive_raises(self) -> None:
         items = self._projects("/a/cli", "/b/cli")
+        listing = "\n".join(
+            f"  {index}. {project.label}  ({project.path})"
+            for index, project in enumerate(projects.match_projects("cli", items), start=1)
+        )
         with self.assertRaises(projects.ProjectResolveError) as ctx:
             projects.resolve_query("cli", items, interactive=False)
-        self.assertIn("多个项目", str(ctx.exception))
+        self.assertEqual(
+            str(ctx.exception),
+            t("project.ambiguous", query="cli", count=2, listing=listing),
+        )
 
 
 class ProjectEntriesTests(unittest.TestCase):

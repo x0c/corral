@@ -46,6 +46,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pickup.i18n import join_names, t
+
 SHIM_API_VERSION = 1
 SHIM_SCRIPT_VERSION = 2  # 生成脚本内容有语义变化时 +1，status 据此判 outdated
 
@@ -124,7 +126,7 @@ class ShimError(Exception):
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise ShimError("usage_error", message, exit_code=EXIT_USAGE,
-                        hint="运行 pickup shim --help 查看用法")
+                        hint=t("shim.err.usage_hint"))
 
 
 # ---------------------------------------------------------------- 路径与探测
@@ -167,8 +169,12 @@ def rc_path(shell: str, home: str | os.PathLike[str] | None = None) -> Path:
         xdg_config = os.environ.get("XDG_CONFIG_HOME")
         root = Path(xdg_config).expanduser() if xdg_config else base / ".config"
         return root / "fish" / "config.fish"
-    raise ShimError("unsupported_shell", f"不支持的 shell：{shell}", exit_code=EXIT_USAGE,
-                    hint=f"支持：{'/'.join(SUPPORTED_SHELLS)}")
+    raise ShimError(
+        "unsupported_shell",
+        t("shim.err.unsupported_shell", shell=shell),
+        exit_code=EXIT_USAGE,
+        hint=t("shim.err.unsupported_shell_hint", shells="/".join(SUPPORTED_SHELLS)),
+    )
 
 
 def detect_shell() -> str:
@@ -179,9 +185,9 @@ def detect_shell() -> str:
         return name
     raise ShimError(
         "shell_not_detected",
-        f"无法从当前环境判断 shell（SHELL={raw!r}）",
+        t("shim.err.shell_not_detected", shell=repr(raw)),
         exit_code=EXIT_USAGE,
-        hint=f"用 --shell 显式指定：{'/'.join(SUPPORTED_SHELLS)}",
+        hint=t("shim.err.shell_not_detected_hint", shells="/".join(SUPPORTED_SHELLS)),
     )
 
 
@@ -216,9 +222,9 @@ def selected_targets(include: Iterable[str] = ()) -> tuple[ShimTarget, ...]:
     if unknown:
         raise ShimError(
             "unknown_command",
-            f"不认识的命令：{'、'.join(sorted(unknown))}",
+            t("shim.err.unknown_command", commands=join_names(sorted(unknown))),
             exit_code=EXIT_USAGE,
-            hint=f"可选：{'、'.join(sorted(known))}",
+            hint=t("shim.err.unknown_command_hint", commands=join_names(sorted(known))),
         )
     auto_agent = looks_like_cursor_cli("agent")
     selected = []
@@ -236,7 +242,7 @@ def _installed_targets(targets: Iterable[ShimTarget]) -> tuple[ShimTarget, ...]:
     给没装的命令定义函数会把"command not found"变成一句 pickup 的报错，反而更难懂；
     新装了运行时的用户重跑一次 install 即可，`status` 会主动报出这种漂移。
     """
-    return tuple(t for t in targets if shutil.which(t.command))
+    return tuple(target for target in targets if shutil.which(target.command))
 
 
 # ---------------------------------------------------------------- 脚本生成
@@ -388,10 +394,10 @@ def _read_text(path: Path) -> str | None:
     except FileNotFoundError:
         return None
     except PermissionError as exc:
-        raise ShimError("permission_denied", f"没有权限读取 {path}",
+        raise ShimError("permission_denied", t("shim.err.permission_read", path=path),
                         exit_code=EXIT_PERMISSION) from exc
     except OSError as exc:
-        raise ShimError("read_failed", f"读取 {path} 失败：{exc}") from exc
+        raise ShimError("read_failed", t("shim.err.read_failed", path=path, error=exc)) from exc
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -522,9 +528,9 @@ def _apply(*, shell: str | None, home: str | os.PathLike[str] | None,
     if not remove and not targets:
         raise ShimError(
             "no_runtime_installed",
-            "本机没有检测到任何可拦截的命令行 Agent",
+            t("shim.err.no_runtime"),
             exit_code=EXIT_NOT_FOUND,
-            hint="先装上 claude / codex / opencode / kimi / cursor-agent / agent 任一后再执行",
+            hint=t("shim.err.no_runtime_hint"),
         )
 
     spath = script_path(shell, home)
@@ -569,10 +575,10 @@ def _apply(*, shell: str | None, home: str | os.PathLike[str] | None,
             if rc_changed:
                 _atomic_write(rpath, desired_rc)
         except PermissionError as exc:
-            raise ShimError("permission_denied", f"没有权限修改 {rpath}，原文件未被覆盖",
+            raise ShimError("permission_denied", t("shim.err.permission_write", path=rpath),
                             exit_code=EXIT_PERMISSION) from exc
         except OSError as exc:
-            raise ShimError("write_failed", f"写入失败：{exc}") from exc
+            raise ShimError("write_failed", t("shim.err.write_failed", error=exc)) from exc
 
     result = status(shell, home, include) if not dry_run else {
         "status": state, "shell": shell, "rc_path": str(rpath),
@@ -591,9 +597,7 @@ def _apply(*, shell: str | None, home: str | os.PathLike[str] | None,
 
 
 def _reload_hint(shell: str, rpath: Path) -> str:
-    if shell == "fish":
-        return f"新开一个终端窗口即可生效（或执行：source {rpath}）"
-    return f"新开一个终端窗口即可生效（或执行：source {rpath}）"
+    return t("shim.reload_hint", path=rpath)
 
 
 def install(shell: str | None = None, home: str | os.PathLike[str] | None = None,
@@ -622,14 +626,15 @@ def uninstall(shell: str | None = None, home: str | os.PathLike[str] | None = No
 
 def _parser() -> _ArgumentParser:
     parser = _ArgumentParser(prog="pickup shim", add_help=True,
-                             description="把手敲的 claude/codex/… 自动改走 pickup 托管启动")
+                             description=t("shim.cli.description"))
     parser.add_argument("action", choices=("status", "install", "uninstall"))
     parser.add_argument("--shell", choices=SUPPORTED_SHELLS, default=None,
-                        help="目标 shell，默认按 $SHELL 自动探测")
-    parser.add_argument("--include", action="append", default=[], metavar="命令",
-                        help="强制拦截未能自动识别的命令（例如认不出是 Cursor 的 agent），可重复")
-    parser.add_argument("--json", action="store_true", dest="json_output", help="输出结构化 JSON")
-    parser.add_argument("--dry-run", action="store_true", help="只预演，不写入任何文件")
+                        help=t("shim.cli.help.shell"))
+    parser.add_argument("--include", action="append", default=[], metavar="CMD",
+                        help=t("shim.cli.help.include"))
+    parser.add_argument("--json", action="store_true", dest="json_output",
+                        help=t("shim.cli.help.json"))
+    parser.add_argument("--dry-run", action="store_true", help=t("shim.cli.help.dry_run"))
     return parser
 
 
@@ -644,17 +649,14 @@ def _error(exc: ShimError, *, dry_run: bool) -> dict[str, Any]:
             "meta": {"version": SHIM_API_VERSION, "dry_run": dry_run}}
 
 
-_STATUS_LABELS = {
-    "installed": "已安装",
-    "updated": "已更新",
-    "unchanged": "无需变更",
-    "uninstalled": "已卸载",
-    "not_installed": "未安装",
-    "outdated": "需要更新（重新执行 pickup shim install）",
-    "would_install": "将安装",
-    "would_update": "将更新",
-    "would_uninstall": "将卸载",
-}
+_STATUS_CODES = frozenset({
+    "installed", "updated", "unchanged", "uninstalled", "not_installed",
+    "outdated", "would_install", "would_update", "would_uninstall",
+})
+
+
+def _status_label(code: str) -> str:
+    return t(f"shim.status.{code}") if code in _STATUS_CODES else code
 
 
 def _print(payload: dict[str, Any], *, json_output: bool) -> None:
@@ -663,24 +665,25 @@ def _print(payload: dict[str, Any], *, json_output: bool) -> None:
         return
     if not payload["ok"]:
         error = payload["error"]
-        print(f"命令拦截：{error['message']}", file=sys.stderr)
+        print(t("shim.print.error", message=error["message"]), file=sys.stderr)
         if error.get("hint"):
-            print(f"  提示：{error['hint']}", file=sys.stderr)
+            print(t("shim.print.hint", hint=error["hint"]), file=sys.stderr)
         return
     data = payload["data"]
-    print(f"命令拦截：{_STATUS_LABELS.get(data.get('status'), data.get('status'))}"
-          f"（{data.get('shell')}）")
-    print(f"  配置文件：{data.get('rc_path')}")
-    print(f"  生成脚本：{data.get('script_path')}")
+    print(t("shim.print.status",
+            status=_status_label(str(data.get("status") or "")),
+            shell=data.get("shell")))
+    print(t("shim.print.rc", path=data.get("rc_path")))
+    print(t("shim.print.script", path=data.get("script_path")))
     shimmed = [c["command"] for c in data.get("commands", []) if c.get("shimmed")]
     if shimmed:
-        print(f"  已拦截：{'、'.join(shimmed)}")
+        print(t("shim.print.shimmed", commands=join_names(shimmed)))
     skipped = [c["command"] for c in data.get("commands", [])
                if c.get("installed") and not c.get("selected")]
     if skipped:
-        print(f"  未拦截（未识别为对应助手，可用 --include 强制）：{'、'.join(skipped)}")
+        print(t("shim.print.skipped", commands=join_names(skipped)))
     if data.get("missing_commands"):
-        print(f"  待补拦截（新装的运行时）：{'、'.join(data['missing_commands'])}")
+        print(t("shim.print.missing", commands=join_names(list(data["missing_commands"]))))
     if data.get("reload_hint"):
         print(f"  {data['reload_hint']}")
 
@@ -694,7 +697,7 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
     try:
         args = _parser().parse_args(args_list)
         if args.action == "status" and args.dry_run:
-            raise ShimError("usage_error", "status 是只读操作，不能使用 --dry-run",
+            raise ShimError("usage_error", t("shim.err.status_dry_run"),
                             exit_code=EXIT_USAGE)
         if args.action == "status":
             data = status(args.shell, include=args.include)
@@ -708,7 +711,7 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
         _print(_error(exc, dry_run=dry_run), json_output=json_output)
         return exc.exit_code
     except Exception as exc:  # 兜底：绝不把裸异常栈丢给用户
-        wrapped = ShimError("shim_failed", f"命令拦截执行失败：{exc}")
+        wrapped = ShimError("shim_failed", t("shim.err.failed", error=exc))
         _print(_error(wrapped, dry_run=dry_run), json_output=json_output)
         return wrapped.exit_code
 

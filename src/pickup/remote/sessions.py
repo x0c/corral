@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 
 from pickup import embed, keepalive, titles
+from pickup.i18n import t
 from pickup.models import LaunchRequest, NewSessionRequest, session_key
 from pickup.remote import richmsg
 from pickup.remote.screen import ScreenEncoder
@@ -34,7 +35,7 @@ _ATTENTION_LABELS = {"none": "none", "unread": "unread", "working": "working", "
 
 
 class ActionError(RuntimeError):
-    """动作无法执行；message 直接给用户看，必须是中文人话。"""
+    """动作无法执行；给用户看的 message 必须走 i18n.t()，随开发机界面语言。"""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -224,7 +225,7 @@ class SessionHub:
     def require_session(self, key: str) -> dict:
         session = self.store.find_session(key)
         if session is None:
-            raise ActionError("not_found", "这条会话已经不在列表里了")
+            raise ActionError("not_found", t("remote.err.session_gone"))
         return session
 
     def session_detail(self, key: str) -> dict:
@@ -279,7 +280,7 @@ class SessionHub:
         try:
             return self.registry.get(str(session.get("source") or ""))
         except Exception as exc:
-            raise ActionError("unavailable", "这条会话对应的助手当前不可用") from exc
+            raise ActionError("unavailable", t("remote.err.assistant_unavailable")) from exc
 
     @staticmethod
     def _resumable(runtime, session: dict) -> bool:
@@ -337,7 +338,7 @@ class SessionHub:
         """订阅终端画面。返回首帧（整屏）；会话没有托管在 tmux 里则返回 None。"""
         session = self.require_session(key)
         if not session.get("keepalive_name"):
-            raise ActionError("unavailable", "这条会话没有在后台运行，看不到实时画面")
+            raise ActionError("unavailable", t("remote.err.no_live_screen"))
         with self._lock:
             watch = self._screens.get(key)
             if watch is None:
@@ -366,7 +367,7 @@ class SessionHub:
         with self._lock:
             watch = self._screens.get(key)
             if watch is None or watch.watchers <= 0:
-                raise ActionError("usage_error", "还没有在看这条会话的画面")
+                raise ActionError("usage_error", t("remote.err.not_watching_screen"))
             watch.encoder.reset()
         return self._capture_frame(watch)
 
@@ -374,7 +375,7 @@ class SessionHub:
         with self._lock:
             watch = self._screens.get(key)
             if watch is None:
-                raise ActionError("usage_error", "还没有在看这条会话的画面")
+                raise ActionError("usage_error", t("remote.err.not_watching_screen"))
             watch.scroll_offset = max(0, int(offset))
             watch.encoder.reset()
         return self._capture_frame(watch)
@@ -383,7 +384,7 @@ class SessionHub:
         session = self.require_session(key)
         name = str(session.get("keepalive_name") or "")
         if not name:
-            raise ActionError("unavailable", "这条会话没有在后台运行")
+            raise ActionError("unavailable", t("remote.err.session_not_running"))
         return name
 
     def _capture_frame(self, watch: _ScreenWatch) -> dict | None:
@@ -441,17 +442,17 @@ class SessionHub:
         name = self._keepalive_name(key)
         cleaned = [str(k) for k in keys if str(k).strip()]
         if not cleaned:
-            raise ActionError("usage_error", "没有要发送的按键")
+            raise ActionError("usage_error", t("remote.err.no_keys"))
         embed.send_key(name, *cleaned)
 
     def send_image(self, key: str, image_bytes: bytes) -> str:
         """把图片落到会话工作目录并把路径交给助手，复用桌面端已有的落盘+粘贴路径协议。"""
         if not image_bytes:
-            raise ActionError("usage_error", "没有图片数据")
+            raise ActionError("usage_error", t("remote.err.no_image"))
         name = self._keepalive_name(key)
         path = embed.save_image_and_paste_path(name, image_bytes)
         if not path:
-            raise ActionError("unavailable", "图片没能保存到开发机上")
+            raise ActionError("unavailable", t("remote.err.image_save_failed"))
         return path
 
     # -- 会话动作 ---------------------------------------------------------
@@ -478,7 +479,7 @@ class SessionHub:
         session = self.require_session(key)
         name = str(session.get("keepalive_name") or "")
         if not name:
-            raise ActionError("unavailable", "这条会话没有在后台运行")
+            raise ActionError("unavailable", t("remote.err.session_not_running"))
         keepalive.kill(name)
         self.store.mark_hosted(key, None)
 
@@ -490,7 +491,7 @@ class SessionHub:
             runtime.delete_session(session)
         except Exception as exc:
             self.store.abort_delete(key)
-            raise ActionError("unavailable", f"删除失败：{exc}") from exc
+            raise ActionError("unavailable", t("remote.err.delete_failed", error=exc)) from exc
         # 删除成功后同步清掉侧栏置顶/分组记忆，避免剩余成员仍挂着「幽灵组」
         try:
             self.layout_db.remove_session(key)
@@ -503,7 +504,7 @@ class SessionHub:
         try:
             name = embed.host_session(plan, runtime_id, ident, width, height)
         except embed.EmbedError as exc:
-            raise ActionError("unavailable", f"启动失败：{exc}") from exc
+            raise ActionError("unavailable", t("remote.err.launch_failed", error=exc)) from exc
         session = self.store.register_hosted_session(
             runtime_id=runtime_id,
             keepalive_name=name,
@@ -518,18 +519,18 @@ class SessionHub:
     ) -> dict:
         runtime_id = str(runtime_id or "").strip()
         if not runtime_id:
-            raise ActionError("usage_error", "请选择助手")
+            raise ActionError("usage_error", t("remote.err.pick_assistant"))
         if cwd is not None:
             cwd = str(cwd).strip() or None
         if cwd:
             self._assert_cwd_allowed(cwd, whitelist or [])
         if not embed.available():
-            raise ActionError("unavailable", "开发机上没有装 tmux，无法从手机启动会话")
+            raise ActionError("unavailable", t("remote.err.tmux_missing_start"))
         try:
             runtime = self.registry.get(runtime_id)
             plan = runtime.build_new_session_plan(cwd)
         except (KeyError, LaunchError) as exc:
-            raise ActionError("usage_error", f"无法启动：{exc}") from exc
+            raise ActionError("usage_error", t("remote.err.cannot_start", error=exc)) from exc
         request = NewSessionRequest(target_runtime_id=runtime_id, cwd=cwd or "")
         title = f"{runtime.display_name} · 新会话"
         del request  # 结构体只用于表达意图，实际启动只需要计划本身
@@ -543,7 +544,7 @@ class SessionHub:
         try:
             target = str(Path(cwd).expanduser().resolve())
         except OSError as exc:
-            raise ActionError("usage_error", "项目路径无效") from exc
+            raise ActionError("usage_error", t("remote.err.invalid_project_path")) from exc
         allowed: set[str] = set()
         for entry in self.projects():
             for key in ("path", "cwd"):
@@ -570,13 +571,13 @@ class SessionHub:
                 continue
         raise ActionError(
             "usage_error",
-            "只能在已知项目或已配置的目录里新建会话",
+            t("remote.err.project_not_allowed"),
         )
 
     def resume_session(self, key: str) -> dict:
         """原生恢复：用助手自己的恢复命令重开这条会话，历史完整延续。"""
         if not embed.available():
-            raise ActionError("unavailable", "开发机上没有装 tmux，无法从手机恢复会话")
+            raise ActionError("unavailable", t("remote.err.tmux_missing_resume"))
         session = self.require_session(key)
         if session.get("keepalive_name"):
             return self.session_payload(session, self._layout())
@@ -584,13 +585,13 @@ class SessionHub:
         try:
             plan = runtime.build_resume_plan(session)
         except LaunchError as exc:
-            raise ActionError("unavailable", f"这条会话无法原生恢复：{exc}") from exc
+            raise ActionError("unavailable", t("remote.err.cannot_native_resume", error=exc)) from exc
         ident = keepalive.new_session_ident()
         width, height = embed.normalize_host_size(_HOST_WIDTH, _HOST_HEIGHT)
         try:
             name = embed.host_session(plan, runtime.id, ident, width, height)
         except embed.EmbedError as exc:
-            raise ActionError("unavailable", f"恢复失败：{exc}") from exc
+            raise ActionError("unavailable", t("remote.err.resume_failed", error=exc)) from exc
         self.store.mark_hosted(key, name)
         refreshed = self.store.find_session(key) or session
         return self.session_payload(refreshed, self._layout())
@@ -598,20 +599,20 @@ class SessionHub:
     def handoff_session(self, key: str, target_runtime_id: str) -> dict:
         """跨助手接力：把原会话导出成提示词，在目标助手里新开一局。"""
         if not embed.available():
-            raise ActionError("unavailable", "开发机上没有装 tmux，无法从手机接力")
+            raise ActionError("unavailable", t("remote.err.tmux_missing_handoff"))
         session = self.require_session(key)
         source = self._runtime_of(session)
         try:
             target = self.registry.get(target_runtime_id)
         except KeyError as exc:
-            raise ActionError("usage_error", "选中的助手不存在") from exc
+            raise ActionError("usage_error", t("remote.err.assistant_missing")) from exc
         title = self.store.get_title(session)
         request = LaunchRequest(session=session, target_runtime_id=target_runtime_id, title=title)
         try:
             handoff = source.export_handoff(request.session, request.title)
             plan = target.build_new_plan(handoff)
         except LaunchError as exc:
-            raise ActionError("unavailable", f"接力失败：{exc}") from exc
+            raise ActionError("unavailable", t("remote.err.handoff_failed", error=exc)) from exc
         return self._host(plan, target_runtime_id, f"接力 · {title}", session.get("cwd"))
 
     # -- 关注状态变化 -----------------------------------------------------

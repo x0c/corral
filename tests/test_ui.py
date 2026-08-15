@@ -25,6 +25,7 @@ import unittest
 from unittest import mock
 
 from pickup import i18n
+from pickup.i18n import t
 
 # 界面测试固定英文，避免 CI/本机 LANG=zh* 时断言漂移
 i18n.set_lang("en")
@@ -5725,7 +5726,7 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(provisional["provisional"])
             self.assertTrue(provisional["live"])
             self.assertEqual(provisional["keepalive_name"], pane.session_name)
-            self.assertEqual(provisional["fallback_title"], "新Claude会话")
+            self.assertEqual(provisional["fallback_title"], t("session.title.new", name="Claude"))
             self.assertEqual(provisional["cwd"], os.getcwd())
             self.assertIn(
                 "claude:directtest01",

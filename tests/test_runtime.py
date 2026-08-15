@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from pickup import titles
+from pickup.i18n import t
 from pickup.models import Handoff, LaunchPlan, LaunchRequest, NewSessionRequest, session_key
 from pickup.runtime import BaseRuntime, LaunchError, RuntimeRegistry, default_registry
 from pickup.runtime import pi as runtime_pi
@@ -192,7 +193,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(plan.argv[0], "claude")
             self.assertNotIn("--resume", plan.argv)
             self.assertIn(str(history), plan.argv[-1])
-            self.assertIn("不是对原会话的原生恢复", plan.argv[-1])
+            self.assertIn(t("handoff.intro", name="Claude"), plan.argv[-1])
             self.assertEqual(plan.cwd, td)
 
     def test_copy_session_claude_uses_native_fork(self) -> None:
@@ -212,7 +213,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("--resume", plan.argv)
             self.assertIn("--fork-session", plan.argv)
             self.assertIn("session-123", plan.argv)
-            self.assertNotIn("不是对原会话的原生恢复", " ".join(plan.argv))
+            self.assertNotIn(t("handoff.intro", name="Claude"), " ".join(plan.argv))
 
     def test_copy_session_codex_and_opencode_use_native_fork(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -265,7 +266,11 @@ class RuntimeTests(unittest.TestCase):
             request = _prepare_copy_request(registry, session, "原标题")
             self.assertFalse(request.copy_session)
             self.assertNotEqual(request.session["id"], old_id)
-            self.assertTrue(str(request.session.get("native_title") or "").endswith("（副本）"))
+            self.assertTrue(
+                str(request.session.get("native_title") or "").endswith(
+                    ("（副本）", " (copy)", t("session.title.copy_suffix").strip())
+                )
+            )
             new_dir = Path(td) / request.session["id"]
             self.assertTrue((new_dir / "store.db").is_file())
             self.assertTrue((chat_dir / "store.db").is_file(), "原会话不得被改动")
@@ -330,7 +335,10 @@ class RuntimeTests(unittest.TestCase):
         with mock.patch.object(BaseRuntime, "is_available", return_value=False):
             with self.assertRaises(LaunchError) as raised:
                 registry.prepare_copy_request(session, "复杂讨论")
-        self.assertIn("未安装", str(raised.exception))
+        self.assertEqual(
+            str(raised.exception),
+            t("launch.copy_not_installed", name="Claude"),
+        )
 
     def test_claude_session_can_handoff_to_codex(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -367,11 +375,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_cross_runtime_requires_history_file(self) -> None:
         session = self._session("claude", "/tmp/missing-session-history.jsonl", os.getcwd())
+        missing = os.path.abspath("/tmp/missing-session-history.jsonl")
 
-        with self.assertRaisesRegex(LaunchError, "历史文件不存在"):
+        with self.assertRaises(LaunchError) as raised:
             default_registry().build_launch_plan(
                 LaunchRequest(session, "codex", "修复会话接力")
             )
+        self.assertEqual(str(raised.exception), t("launch.history_missing", path=missing))
 
     def test_opencode_resume_plan(self) -> None:
         registry = default_registry()
@@ -436,11 +446,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_opencode_handoff_requires_db_file(self) -> None:
         session = self._session("opencode", "/tmp/missing-opencode.db", os.getcwd())
+        missing = os.path.abspath("/tmp/missing-opencode.db")
 
-        with self.assertRaisesRegex(LaunchError, "历史文件不存在"):
+        with self.assertRaises(LaunchError) as raised:
             default_registry().build_launch_plan(
                 LaunchRequest(session, "claude", "修复会话接力")
             )
+        self.assertEqual(str(raised.exception), t("launch.history_missing", path=missing))
 
     def test_kimi_resume_plan(self) -> None:
         registry = default_registry()

@@ -13,6 +13,7 @@ import base64
 import json
 import urllib.parse
 
+from pickup.i18n import t
 from pickup.remote.config import RemoteState
 
 
@@ -69,9 +70,4 @@ def render_qr(text: str) -> str | None:
 
 def render_fallback(text: str, code: str) -> str:
     """没有二维码库时的替代方案：手机端也支持手动输入配对码。"""
-    return (
-        "（开发机上没有装二维码组件，改用手动配对）\n"
-        f"配对链接：{text}\n"
-        f"配对码：{code}\n"
-        "在手机上选「手动输入」，填入上面的配对码即可。"
-    )
+    return t("remote.pair.fallback", url=text, code=code)

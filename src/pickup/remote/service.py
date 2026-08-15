@@ -22,6 +22,7 @@ import threading
 import time
 
 from pickup import __version__, observe
+from pickup.i18n import t
 from pickup.remote import config as remote_config
 from pickup.remote import crypto, protocol, ratelimit
 from pickup.remote.sessions import ActionError, SessionHub
@@ -304,11 +305,11 @@ class RemoteService:
             connection.send(protocol.error(req_id, exc.code, exc.message))
             return
         except NotImplementedError:
-            connection.send(protocol.error(req_id, protocol.E_USAGE, f"不支持的操作：{method}"))
+            connection.send(protocol.error(req_id, protocol.E_USAGE, t("remote.err.unsupported_method", method=method)))
             return
         except Exception as exc:
             observe.event("remote_method_failed", method=method, error=str(exc))
-            connection.send(protocol.error(req_id, protocol.E_INTERNAL, "开发机上出了点问题，请稍后再试"))
+            connection.send(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
             return
         connection.send(protocol.response(req_id, data))
 
@@ -316,7 +317,7 @@ class RemoteService:
         # 每次请求都以磁盘为准：解绑立刻生效
         if connection.paired and not self.is_known_device(connection.device_public_key):
             self._kick(connection)
-            raise ActionError(protocol.E_UNAUTHORIZED, "这台设备已被解除配对")
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_unpaired"))
         if connection.paired:
             connection.access = self.device_access(connection.device_public_key)
 
@@ -325,13 +326,13 @@ class RemoteService:
         if method == protocol.M_HELLO:
             return self._hello(connection, params)
         if not connection.paired:
-            raise ActionError(protocol.E_UNAUTHORIZED, "这台设备还没有和开发机配对")
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_not_paired"))
         if connection.access == "readonly" and method not in _READONLY_METHODS:
-            raise ActionError(protocol.E_UNAUTHORIZED, "这台设备是只读配对，不能执行此操作")
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.readonly"))
         if method in _CONFIRM_METHODS and not bool(params.get("confirm")):
             raise ActionError(
                 protocol.E_USAGE,
-                "这个操作会改动开发机上的会话，请在手机上确认后再试",
+                t("remote.err.need_confirm"),
             )
         handler = _HANDLERS.get(method)
         if handler is None:
@@ -346,10 +347,10 @@ class RemoteService:
         pairing = remote_config.read_pairing()
         if pairing is None:
             self._note_pair_failure(key)
-            raise ActionError(protocol.E_UNAUTHORIZED, "配对码已经失效，请在开发机上重新生成")
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.pairing_expired"))
         if not crypto.codes_equal(str(params.get("code") or ""), pairing[0]):
             self._note_pair_failure(key)
-            raise ActionError(protocol.E_UNAUTHORIZED, "配对码不对")
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.pairing_wrong"))
         # 必须在 clear 之前读模式，否则窗口文件没了就永远当成 full
         pairing_mode = remote_config.read_pairing_mode()
         remote_config.clear_pairing()  # 一次性凭据，用掉立刻作废
@@ -389,7 +390,7 @@ class RemoteService:
         if not ratelimit.PAIR_ATTEMPTS.allow_request(key) or not ratelimit.PAIR_ATTEMPTS_HOURLY.allow_request(
             key
         ):
-            raise ActionError(protocol.E_RATE_LIMITED, "配对尝试太频繁，请稍后再试")
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.pairing_rate_limited"))
 
     def _hello(self, connection: Connection, params: dict):
         connection.device_name = remote_config.sanitize_display_name(
@@ -472,53 +473,56 @@ class RemoteService:
 
     def _input_text(self, connection: Connection, params: dict):
         if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
-            raise ActionError(protocol.E_RATE_LIMITED, "发送太频繁，请稍后再试")
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
         text = str(params.get("text") or "")
         submit = bool(params.get("submit", True))
         if not text and not submit:
-            raise ActionError(protocol.E_USAGE, "没有要发送的内容")
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
         self.hub.send_text(_key(params), text, submit)
         return {"ok": True}
 
     def _input_keys(self, connection: Connection, params: dict):
         if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
-            raise ActionError(protocol.E_RATE_LIMITED, "发送太频繁，请稍后再试")
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
         keys = params.get("keys")
         if not isinstance(keys, list):
-            raise ActionError(protocol.E_USAGE, "没有要发送的按键")
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_keys"))
         cleaned = []
         for raw in keys:
             key = str(raw).strip()
             if not key:
                 continue
             if not _TMUX_KEY_RE.match(key):
-                raise ActionError(protocol.E_USAGE, f"不支持的按键：{key[:32]}")
+                raise ActionError(
+                    protocol.E_USAGE,
+                    t("remote.err.unsupported_key").format(key=key[:32]),
+                )
             cleaned.append(key)
         if not cleaned:
-            raise ActionError(protocol.E_USAGE, "没有要发送的按键")
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_keys"))
         self.hub.send_keys(_key(params), cleaned)
         return {"ok": True}
 
     def _input_image(self, connection: Connection, params: dict):
         if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
-            raise ActionError(protocol.E_RATE_LIMITED, "发送太频繁，请稍后再试")
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
         import base64
         import binascii
 
         encoded = str(params.get("data") or "").strip()
         if not encoded:
-            raise ActionError(protocol.E_USAGE, "没有图片数据")
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_image"))
         try:
             raw = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError) as exc:
-            raise ActionError(protocol.E_USAGE, "图片数据不完整") from exc
+            raise ActionError(protocol.E_USAGE, t("remote.err.image_incomplete")) from exc
         if not raw:
-            raise ActionError(protocol.E_USAGE, "没有图片数据")
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_image"))
         return {"path": self.hub.send_image(_key(params), raw)}
 
     def _screen_resize(self, connection: Connection, params: dict):
         # 手机与桌面共享同一保活窗格：即使误发也不改桌面窗口尺寸。
-        raise ActionError(protocol.E_USAGE, "手机端不允许调整终端窗口大小")
+        raise ActionError(protocol.E_USAGE, t("remote.err.resize_forbidden"))
 
     def _session_mark_read(self, connection: Connection, params: dict):
         return {"attention": self.hub.mark_read(_key(params))}
@@ -536,23 +540,23 @@ class RemoteService:
 
     def _session_new(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
-            raise ActionError(protocol.E_RATE_LIMITED, "新建会话太频繁，请稍后再试")
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.new_session_rate_limited"))
         runtime = str(params.get("runtime") or "").strip()
         if not runtime:
-            raise ActionError(protocol.E_USAGE, "请选择助手")
+            raise ActionError(protocol.E_USAGE, t("remote.err.pick_assistant"))
         cwd = params.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
-            raise ActionError(protocol.E_USAGE, "项目路径格式不对")
+            raise ActionError(protocol.E_USAGE, t("remote.err.bad_project_path"))
         return {"session": self.hub.new_session(runtime, cwd, whitelist=self.state.cwd_whitelist)}
 
     def _session_resume(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
-            raise ActionError(protocol.E_RATE_LIMITED, "操作太频繁，请稍后再试")
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
         return {"session": self.hub.resume_session(_key(params))}
 
     def _session_handoff(self, connection: Connection, params: dict):
         if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
-            raise ActionError(protocol.E_RATE_LIMITED, "操作太频繁，请稍后再试")
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
         return {"session": self.hub.handoff_session(_key(params), str(params.get("runtime") or ""))}
 
     def _projects_list(self, connection: Connection, params: dict):
@@ -566,13 +570,13 @@ class RemoteService:
 
     def _push_register(self, connection: Connection, params: dict):
         if not ratelimit.PUSH_REGISTER.allow_request(connection.device_public_key):
-            raise ActionError(protocol.E_RATE_LIMITED, "推送登记太频繁，请稍后再试")
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.push_rate_limited"))
         token = str(params.get("token") or "").strip()
         if token and not _PUSH_TOKEN_RE.match(token):
-            raise ActionError(protocol.E_USAGE, "推送令牌格式不对")
+            raise ActionError(protocol.E_USAGE, t("remote.err.bad_push_token"))
         env = str(params.get("env") or "").strip().lower()
         if env and env not in ("sandbox", "production"):
-            raise ActionError(protocol.E_USAGE, "推送环境只能是 sandbox 或 production")
+            raise ActionError(protocol.E_USAGE, t("remote.err.bad_push_env"))
         device = remote_config.touch_device(
             self.state,
             connection.device_public_key,
@@ -581,14 +585,14 @@ class RemoteService:
         )
         self._sync_state_mtime()
         if device is None:
-            raise ActionError(protocol.E_UNAUTHORIZED, "这台设备还没有和开发机配对")
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_not_paired"))
         return {"ok": True}
 
 
 def _key(params: dict) -> str:
     key = str(params.get("key") or "").strip()
     if not key:
-        raise ActionError(protocol.E_USAGE, "缺少会话标识")
+        raise ActionError(protocol.E_USAGE, t("remote.err.missing_session_key"))
     return key
 
 
@@ -600,7 +604,7 @@ def _int_param(params: dict, name: str, default: int, *, max_value: int = 10_000
     try:
         value = int(raw)
     except (TypeError, ValueError) as exc:
-        raise ActionError(protocol.E_USAGE, f"参数 {name} 必须是整数") from exc
+        raise ActionError(protocol.E_USAGE, t("remote.err.param_not_int", name=name)) from exc
     if value < 0:
         return 0
     return min(value, max_value)
