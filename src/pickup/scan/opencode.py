@@ -95,9 +95,24 @@ ORDER BY m.time_created ASC, m.id ASC, p.id ASC
 """
 
 
-def _session_id_from_cmdline(cmdline: str) -> str | None:
-    """从 ``-s`` / ``--session`` 取出会话 ID；没有精确 ID 时返回 None。"""
+def _cmdline_parts_before_prompt(cmdline: str) -> list[str]:
+    """``--prompt`` 之后整段都是提问；空格拼接后值边界已丢失，不能再当 argv。"""
     parts = str(cmdline or "").split()
+    cut: list[str] = []
+    for token in parts:
+        if token == "--prompt" or token.startswith("--prompt="):
+            break
+        cut.append(token)
+    return cut
+
+
+def _session_id_from_cmdline(cmdline: str) -> str | None:
+    """从 ``-s`` / ``--session`` 取出会话 ID；没有精确 ID 时返回 None。
+
+    只看 ``--prompt`` 之前的旗标。接力说明里常出现原会话的 ``-s ses_…`` 字样，
+    若整行扫描会把新建的 TUI 错绑到被接力的那条历史上。
+    """
+    parts = _cmdline_parts_before_prompt(cmdline)
     for index, part in enumerate(parts):
         if part.startswith("--session="):
             value = part.split("=", 1)[1].strip()
@@ -111,18 +126,26 @@ def _session_id_from_cmdline(cmdline: str) -> str | None:
 
 
 def _is_continue_cmdline(cmdline: str) -> bool:
-    parts = set(str(cmdline or "").split())
+    parts = set(_cmdline_parts_before_prompt(cmdline))
     return bool(parts.intersection({"-c", "--continue"}))
 
 
 def is_opencode_tui_cmdline(cmdline: str) -> bool:
-    """交互 TUI 才算会话进程；``run`` / ``serve`` / ``session`` 等子命令排除。"""
+    """交互 TUI 才算会话进程；``run`` / ``serve`` / ``session`` 等子命令排除。
+
+    ``--prompt`` 后面整段都是初始提问。跨助手接力会塞进很长的说明，里面常有
+    ``session`` / ``agent`` / ``run`` 等词；进程命令行又是空格拼接的，不能再拿
+    提示词当 argv 去撞子命令表，否则接力过来、仍在跑的会话会被标成已结束，
+    右栏变成历史消息预览。
+    """
     parts = str(cmdline or "").split()
     if not parts:
         return False
     index = 1
     while index < len(parts):
         token = parts[index]
+        if token == "--prompt" or token.startswith("--prompt="):
+            return True
         if token in _NON_TUI_SUBCOMMANDS:
             return False
         if token in _VALUE_FLAGS:
@@ -131,8 +154,8 @@ def is_opencode_tui_cmdline(cmdline: str) -> bool:
         if token.startswith("-"):
             index += 1
             continue
-        # 位置参数是项目路径，仍是 TUI。
-        index += 1
+        # 位置参数是项目路径或提示词残片，不再往后扫子命令。
+        return True
     return True
 
 
@@ -295,7 +318,7 @@ def _db_paths() -> list[str]:
     return [p for p in (os.path.join(d, DB_FILENAME) for d in dirs) if os.path.isfile(p)]
 
 
-def _connect_ro(db_path: str) -> sqlite3.Connection | None:
+def connect_ro(db_path: str) -> sqlite3.Connection | None:
     """只读打开；WAL 库在极端情况下（需要恢复且无活跃写者）可能拒绝只读打开，静默降级。"""
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.5)
@@ -303,6 +326,9 @@ def _connect_ro(db_path: str) -> sqlite3.Connection | None:
         return conn
     except sqlite3.Error:
         return None
+
+
+_connect_ro = connect_ro  # 旧私有名兼容：模块内部与测试仍引用
 
 
 def _status_tag(last_msg_data: str | None) -> str:

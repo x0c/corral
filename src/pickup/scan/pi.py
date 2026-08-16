@@ -14,6 +14,7 @@ from pickup.scan.common import (
     parse_timestamp,
     process_command_line,
     process_environ,
+    process_start_time,
 )
 
 PI_HOME = os.path.expanduser("~/.pi/agent")
@@ -24,8 +25,24 @@ _SESSION_BASENAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 会话头时间戳在进程启动后一两秒才写入；只允许「创建时间 ≥ 启动时间 - 这个余量」。
+_CREATE_AFTER_START_SLACK = 2.0
+_NON_TUI_SUBCOMMANDS = frozenset(
+    ("install", "remove", "uninstall", "update", "list", "config", "auth")
+)
+_NON_TUI_FLAGS = frozenset({
+    "-p", "--print", "--export", "--list-models", "--help", "-h", "--version", "-v",
+})
+_VALUE_FLAGS = frozenset(
+    {
+        "--session", "--session-id", "--fork", "--session-dir",
+        "--provider", "--model", "--api-key", "--system-prompt",
+        "--append-system-prompt", "--name", "-n", "--mode", "--models",
+    }
+)
 
-def _text(content: object) -> str:
+
+def message_text(content: object) -> str:
     """只取 Pi message content 中可展示的 text 分片，忽略 thinking 和工具调用。"""
     if isinstance(content, str):
         return content.strip()
@@ -41,7 +58,7 @@ def _text(content: object) -> str:
     return "\n\n".join(parts)
 
 
-def _read_entries(path: str) -> list[dict]:
+def read_entries(path: str) -> list[dict]:
     entries: list[dict] = []
     try:
         with open(path, encoding="utf-8", errors="replace") as file:
@@ -57,7 +74,7 @@ def _read_entries(path: str) -> list[dict]:
     return entries
 
 
-def _active_messages(entries: list[dict]) -> list[dict]:
+def active_messages(entries: list[dict]) -> list[dict]:
     """从当前叶子沿 parentId 回溯，避免预览已分叉出去的旧分支。"""
     by_id = {str(item["id"]): item for item in entries if isinstance(item.get("id"), str)}
     parents = {str(item["parentId"]) for item in entries if isinstance(item.get("parentId"), str)}
@@ -74,7 +91,13 @@ def _active_messages(entries: list[dict]) -> list[dict]:
     return [item for item in path if item.get("type") == "message" and isinstance(item.get("message"), dict)]
 
 
-def _build_session_info(path: str) -> SessionInfo | None:
+# 以下旧私有名保留别名：transcript 等核心层已改用公共名，模块内部仍引用。
+_text = message_text
+_read_entries = read_entries
+_active_messages = active_messages
+
+
+def _build_session_info(path: str) -> tuple[SessionInfo, float] | None:
     entries = _read_entries(path)
     if not entries or entries[0].get("type") != "session":
         return None
@@ -119,13 +142,15 @@ def _build_session_info(path: str) -> SessionInfo | None:
         if last_role == "assistant"
         else titles.STATUS_NONE
     )
-    return make_session_info(
+    created = parse_timestamp(header.get("timestamp")) or 0.0
+    info = make_session_info(
         source="pi", id=session_id, short_id=session_id[:12], cwd=cwd, mtime=mtime,
         time_source=time_source, event_time=event_time, file_mtime=stat.st_mtime,
         size_bytes=stat.st_size, native_title=native_title,
         fallback_title=(native_title or first_user)[:60], status_tag=status, path=path,
         first_user_msg=first_user, last_user_msg=last_user, last_agent_msg=last_agent,
     )
+    return info, created
 
 
 def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:
@@ -142,14 +167,20 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
             except OSError:
                 continue
     results: list[SessionInfo] = []
+    created_ts: dict[str, float] = {}
     for _mtime, path in sorted(candidates, reverse=True):
-        info = _build_session_info(path)
-        if info is None or (cwd_filter and not info["cwd"].startswith(cwd_filter)):
+        built = _build_session_info(path)
+        if built is None:
             continue
+        info, created = built
+        if cwd_filter and not info["cwd"].startswith(cwd_filter):
+            continue
+        if created > 0:
+            created_ts[str(info["id"])] = created
         results.append(info)
         if len(results) >= limit:
             break
-    _apply_live_flags(results)
+    _apply_live_flags(results, created_ts)
     return results
 
 
@@ -178,9 +209,45 @@ def delete_session(path: str) -> None:
         pass
 
 
+def _cmdline_parts_before_prompt(cmdline: str) -> list[str]:
+    """第一个非旗标词起是提问；其后不能再当 argv 去取 ``--session`` / ``-c``。
+
+    npm 包装后常见 ``node …/cli.js --approve --session <path>``：脚本路径是位置
+    参数，但不是提问，必须跳过，否则恢复旗标会被裁掉。
+    """
+    parts = str(cmdline or "").split()
+    if not parts:
+        return []
+    kept = [parts[0]]
+    index = 1
+    argv0 = os.path.basename(parts[0])
+    if argv0 in {"node", "nodejs", "bun"} and index < len(parts) and not parts[index].startswith("-"):
+        kept.append(parts[index])
+        index += 1
+    while index < len(parts):
+        token = parts[index]
+        if token.startswith("--system-prompt=") or token.startswith("--append-system-prompt="):
+            kept.append(token)
+            break
+        if token in _VALUE_FLAGS:
+            kept.append(token)
+            if index + 1 < len(parts):
+                kept.append(parts[index + 1])
+                index += 2
+            else:
+                index += 1
+            continue
+        if token.startswith("-"):
+            kept.append(token)
+            index += 1
+            continue
+        break
+    return kept
+
+
 def _flag_value(cmdline: str, names: tuple[str, ...]) -> str | None:
     """取命令行里 ``--session <值>`` 这类「旗标 + 下一个非旗标参数」。"""
-    parts = str(cmdline or "").split()
+    parts = _cmdline_parts_before_prompt(cmdline)
     wanted = set(names)
     for index, part in enumerate(parts):
         if part not in wanted or index + 1 >= len(parts):
@@ -198,6 +265,40 @@ def _session_id_from_path(path: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _is_continue_cmdline(cmdline: str) -> bool:
+    return bool(set(_cmdline_parts_before_prompt(cmdline)).intersection({"-c", "--continue"}))
+
+
+def is_pi_tui_cmdline(cmdline: str) -> bool:
+    """交互 TUI 才算会话进程；``-p`` 打印模式与 ``auth`` / ``install`` 等子命令排除。
+
+    跨助手接力把说明写在位置参数里，正文常有 ``list`` / ``install`` 等词；进程
+    命令行是空格拼接的，第一个非旗标词若不是子命令，后面整段都是提示词，
+    不能再拿去撞子命令表。
+    """
+    parts = str(cmdline or "").split()
+    if not parts:
+        return False
+    index = 1
+    while index < len(parts):
+        token = parts[index]
+        if token in _NON_TUI_FLAGS or token.startswith("--print="):
+            return False
+        if token.startswith("--system-prompt=") or token.startswith("--append-system-prompt="):
+            return True
+        if token in _NON_TUI_SUBCOMMANDS:
+            return False
+        if token in _VALUE_FLAGS:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        # 位置参数是初始提问，不再往后扫子命令。
+        return True
+    return True
+
+
 def _mark_live(session: dict, pid: int) -> bool:
     if session.get("live"):
         return False
@@ -206,14 +307,20 @@ def _mark_live(session: dict, pid: int) -> bool:
     return True
 
 
-def _apply_live_flags(sessions: list[dict]) -> None:
+def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> None:
     """给 Pi 会话列表就地标注 live/pid。
 
-    绑定只认正向证据，禁止按 cwd/mtime 猜测（同目录两个新建 Pi 分屏会串台）：
+    裸 ``pi`` 不长期持有 jsonl、命令行也不带会话参数，旧实现四条正向路径
+    全部落空，侧边栏就把仍在跑的会话当成已结束历史。同目录又常会同时跑
+    多个 TUI，禁止再按「cwd → 最新一条」猜测。
+
+    绑定优先级（正向证据优先，禁止「同目录只留最新一条」）：
     1. ``--session <path|id>``（原生恢复）；
     2. ``--session-id <id>``（托管新建/分叉钉死的占位 ident）；
     3. 进程正打开的 ``*.jsonl``；
-    4. 环境变量 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID`` **精确**等于会话 id。
+    4. 环境变量 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID`` **精确**等于会话 id；
+    5. ``-c`` / ``--continue`` → 该 cwd 尚未标记的最新一条；
+    6. 其余 TUI：同一 cwd 里，按「进程启动 ≤ 会话创建」一对一认领。
     """
     if not sessions:
         return
@@ -230,9 +337,18 @@ def _apply_live_flags(sessions: list[dict]) -> None:
             by_path[os.path.realpath(path)] = session
         except OSError:
             by_path[path] = session
-    pids = [pid for pid, _cwd in processes]
-    open_paths = open_file_paths(pids)
     cmdlines = {pid: process_command_line(pid) for pid, _cwd in processes}
+    tui_procs: list[tuple[int, str]] = []
+    for pid, cwd in processes:
+        cmdline = cmdlines.get(pid) or ""
+        if not is_pi_tui_cmdline(cmdline):
+            continue
+        tui_procs.append((pid, cwd))
+    if not tui_procs:
+        return
+    open_paths = open_file_paths([pid for pid, _cwd in tui_procs])
+
+    bound_pids: set[int] = set()
 
     def bind_by_id_or_path(pid: int, value: str) -> bool:
         text = str(value or "").strip()
@@ -255,22 +371,98 @@ def _apply_live_flags(sessions: list[dict]) -> None:
             return _mark_live(matches[0], pid)
         return False
 
-    for pid, _cwd in processes:
+    def bind_exact(pid: int) -> None:
         cmdline = cmdlines.get(pid) or ""
         session_arg = _flag_value(cmdline, ("--session",))
-        if session_arg and bind_by_id_or_path(pid, session_arg):
-            continue
+        if session_arg:
+            bind_by_id_or_path(pid, session_arg)
+            bound_pids.add(pid)
+            return
         session_id_arg = _flag_value(cmdline, ("--session-id",))
-        if session_id_arg and session_id_arg in by_id and _mark_live(by_id[session_id_arg], pid):
-            continue
-        bound = False
+        if session_id_arg:
+            if session_id_arg in by_id:
+                _mark_live(by_id[session_id_arg], pid)
+            bound_pids.add(pid)
+            return
         for path in open_paths.get(pid) or []:
             if bind_by_id_or_path(pid, path):
-                bound = True
-                break
-        if bound:
-            continue
+                bound_pids.add(pid)
+                return
         env = process_environ(pid)
         ident = env.get("PICKUP_SESSION_ID") or env.get("SC_SESSION_ID") or ""
         if ident in by_id:
             _mark_live(by_id[ident], pid)
+            bound_pids.add(pid)
+            return
+        if ident:
+            # 托管占位 ident 尚未落盘、或不在本轮扫描窗口：不要回落到 cwd 配对。
+            bound_pids.add(pid)
+
+    for pid, _cwd in tui_procs:
+        bind_exact(pid)
+
+    remaining = [(pid, cwd) for pid, cwd in tui_procs if pid not in bound_pids]
+    if not remaining:
+        return
+
+    continue_by_cwd: dict[str, list[int]] = {}
+    unmatched: list[tuple[int, str, float]] = []
+    for pid, cwd in remaining:
+        cmdline = cmdlines.get(pid) or ""
+        if _is_continue_cmdline(cmdline):
+            continue_by_cwd.setdefault(cwd, []).append(pid)
+            continue
+        started = process_start_time(pid)
+        if started is None:
+            continue
+        unmatched.append((pid, cwd, started))
+
+    unbound_by_cwd: dict[str, list[dict]] = {}
+    for session in sessions:
+        if session.get("live"):
+            continue
+        cwd = session.get("cwd") or ""
+        if not cwd:
+            continue
+        try:
+            real = os.path.realpath(cwd)
+        except OSError:
+            real = cwd
+        unbound_by_cwd.setdefault(real, []).append(session)
+
+    for cwd, pids in continue_by_cwd.items():
+        candidates = unbound_by_cwd.get(cwd) or []
+        candidates.sort(key=lambda item: item.get("mtime") or 0, reverse=True)
+        for pid, session in zip(pids, candidates, strict=False):
+            if _mark_live(session, pid):
+                bound_pids.add(pid)
+
+    unbound_by_cwd = {
+        cwd: [item for item in items if not item.get("live")]
+        for cwd, items in unbound_by_cwd.items()
+    }
+    procs_by_cwd: dict[str, list[tuple[int, float]]] = {}
+    for pid, cwd, started in unmatched:
+        if pid in bound_pids:
+            continue
+        procs_by_cwd.setdefault(cwd, []).append((pid, started))
+
+    for cwd, items in unbound_by_cwd.items():
+        procs = procs_by_cwd.get(cwd) or []
+        if not procs:
+            continue
+        used: set[int] = set()
+        items.sort(key=lambda item: created_ts.get(str(item.get("id") or ""), 0.0))
+        for session in items:
+            created = created_ts.get(str(session.get("id") or ""), 0.0)
+            if created <= 0:
+                continue
+            eligible = [
+                (pid, started) for pid, started in procs
+                if pid not in used and started <= created + _CREATE_AFTER_START_SLACK
+            ]
+            if not eligible:
+                continue
+            pid, _started = max(eligible, key=lambda item: item[1])
+            if _mark_live(session, pid):
+                used.add(pid)

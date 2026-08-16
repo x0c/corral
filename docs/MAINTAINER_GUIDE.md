@@ -82,7 +82,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - Pi 的可展示正文只取 user/assistant 的 text 分片；thinking 与工具分片一律不进入标题摘录、状态判定和对话预览。最后可展示角色是 user 时为待回复，是 assistant 时为已完成；没有真实 user 文本的记录不进列表。
 - Pi 同运行时恢复用 `pi --approve --session <历史文件>`，复制会话用 `pi --approve --fork <历史文件>`；跨助手接力和空白新建同样带 `--approve`。接力只能读取原始 JSONL，不得修改原会话或把其内容重写成新文件。
 - **托管新建/分叉必须钉 `--session-id <ident>`**（`embed.host_session` / `keepalive.wrap_plan` 经 `bind_hosted_ident` 注入；与 `--session` 互斥，可与 `--fork` 并用）。Pi 默认写 uuidv7，占位卡却用 8 位 ident：历史一落盘，会话键从 `pi:<ident>` 变成 `pi:<uuid>`，分屏组还记着旧键，真实卡出现在组外（组里跑丢 / 组外重复）。原生恢复已有 `--session`，不要再加 `--session-id`。
-- 判活（`scan.pi._apply_live_flags`）只认 `--session` / `--session-id` / 打开的 jsonl / 精确等于会话 id 的 `PICKUP_SESSION_ID`。禁止按 cwd 把空壳进程绑到同目录历史。npm 包装后进程 comm 是 `node`，`pgrep -x pi` 不够，必须 cmdline 兜底。标题生成带 `--no-session`，不得当作用户会话判活。
+- 判活（`scan.pi._apply_live_flags`）正向证据优先：`--session` / `--session-id` / 打开的 jsonl / 精确等于会话 id 的 `PICKUP_SESSION_ID`；未命中时 `-c`/`--continue` 回落到该目录未标记的最新一条，其余交互 TUI 按「进程启动 ≤ 会话创建」一对一认领。禁止再按「同 cwd 只留最新一条」猜测。裸 `pi` 不长期持有 jsonl、命令行也不带会话参数，旧实现会把仍在跑的会话标成已结束。`-p` 打印模式与 `auth`/`install` 等子命令不算 TUI。npm 包装后进程 comm 是 `node`，`pgrep -x pi` 不够，必须 cmdline 兜底。标题生成带 `--no-session`，不得当作用户会话判活。回归：`PiScanTests.test_live_flags_*`。
 - 已经跑着、没钉 `--session-id` 的旧占位卡：仅当该 cwd 里活着的占位卡与本轮新出现的真实卡都恰好一条时，`SessionStore` 才把 keepalive 迁过去（`_claim_unique_hosted_newcomer`）。同目录两个新建 Pi 对不上就放弃，避免串台。
 - Pi 是默认命令托管目标：交互式裸 `pi` 进入 pickup 托管；`install`、`remove`、`uninstall`、`update`、`list`、`config`、`auth`、`--export`、`--list-models` 必须直通真实 Pi。已有 pickup 托管标识时也必须放行，防止嵌套托管递归。
 

@@ -1986,11 +1986,91 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
         self.assertTrue(scan_opencode.is_opencode_tui_cmdline("opencode --auto"))
         self.assertTrue(scan_opencode.is_opencode_tui_cmdline("opencode --auto -s ses_x"))
         self.assertTrue(scan_opencode.is_opencode_tui_cmdline("opencode /tmp/proj"))
+        self.assertTrue(scan_opencode.is_opencode_tui_cmdline(
+            "opencode --auto --prompt Task: picking up a session from Pi. "
+            "Start a new session and run the agent export"
+        ))
+        self.assertTrue(scan_opencode.is_opencode_tui_cmdline(
+            "opencode --prompt=You are picking up a session from Pi"
+        ))
         self.assertFalse(scan_opencode.is_opencode_tui_cmdline("opencode run --auto hello"))
         self.assertFalse(scan_opencode.is_opencode_tui_cmdline("opencode serve"))
         self.assertFalse(scan_opencode.is_opencode_tui_cmdline("opencode session list"))
+        self.assertFalse(scan_opencode.is_opencode_tui_cmdline(
+            "opencode run --prompt picking up a session"
+        ))
+        self.assertEqual(
+            scan_opencode._session_id_from_cmdline("opencode --auto -s ses_real --prompt hello"),
+            "ses_real",
+        )
+        self.assertIsNone(scan_opencode._session_id_from_cmdline(
+            "opencode --auto --prompt Task: resume with -s ses_old from Pi"
+        ))
+        self.assertFalse(scan_opencode._is_continue_cmdline(
+            "opencode --auto --prompt please -c continue the work"
+        ))
+        self.assertTrue(scan_opencode._is_continue_cmdline("opencode --auto -c"))
 
-    def test_scan_filters_self_generated_title_sessions(self) -> None:
+    def test_live_flags_bind_handoff_prompt_containing_subcommand_words(self) -> None:
+        """接力 ``--prompt`` 正文里的 session/agent 不得把仍在跑的 TUI 判成非交互。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            db_path = Path(td) / "opencode.db"
+            _make_opencode_db(
+                db_path,
+                sessions=[{
+                    "id": "ses_handoff", "directory": cwd, "title": "接力会话",
+                    "time_created": 1_700_000_100_000, "time_updated": 1_700_000_100_000,
+                }],
+            )
+            sessions = self._scan_with_live(
+                db_path,
+                processes=[(42, cwd)],
+                cmdlines={42: (
+                    "opencode --auto --prompt Task: 审查今日代码变动并优化 "
+                    "You are picking up a session from Pi. Start a new session "
+                    "and continue the work; this is not a native resume."
+                )},
+                starts={42: 1_700_000_090.0},
+            )
+            self.assertTrue(sessions[0]["live"])
+            self.assertEqual(sessions[0]["pid"], 42)
+
+    def test_live_flags_ignore_session_flag_inside_handoff_prompt(self) -> None:
+        """``--prompt`` 正文里的 ``-s ses_旧`` 不得把新建 TUI 错绑到被接力的历史上。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            db_path = Path(td) / "opencode.db"
+            _make_opencode_db(
+                db_path,
+                sessions=[
+                    {
+                        "id": "ses_old", "directory": cwd, "title": "被接力的原会话",
+                        "time_created": 1_700_000_050_000, "time_updated": 1_700_000_050_000,
+                    },
+                    {
+                        "id": "ses_new", "directory": cwd, "title": "接力新建",
+                        "time_created": 1_700_000_100_000, "time_updated": 1_700_000_100_000,
+                    },
+                ],
+            )
+            sessions = self._scan_with_live(
+                db_path,
+                processes=[(42, cwd)],
+                cmdlines={42: (
+                    "opencode --auto --prompt Task: picking up a session. "
+                    "Original command was opencode --auto -s ses_old"
+                )},
+                starts={42: 1_700_000_090.0},
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertTrue(by_id["ses_new"]["live"])
+            self.assertEqual(by_id["ses_new"]["pid"], 42)
+            self.assertFalse(by_id["ses_old"]["live"])
         """标题生成落盘时即使 OpenCode 额外包一层引号，也必须过滤。"""
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "opencode.db"
@@ -5287,6 +5367,202 @@ class PiScanTests(unittest.TestCase):
             self.assertEqual(len(sessions), 1)
             self.assertFalse(sessions[0]["live"])
             self.assertIsNone(sessions[0]["pid"])
+
+    def _scan_with_live(
+        self,
+        sessions_dir: str,
+        *,
+        processes: list[tuple[int, str]],
+        cmdlines: dict[int, str] | None = None,
+        environ: dict[int, dict[str, str]] | None = None,
+        starts: dict[int, float | None] | None = None,
+        open_paths: dict[int, list[str]] | None = None,
+        limit: int = 10,
+    ) -> list:
+        cmdlines = cmdlines or {}
+        environ = environ or {}
+        starts = starts or {}
+        open_paths = open_paths or {}
+        with mock.patch.object(scan_pi, "SESSIONS_DIR", sessions_dir), mock.patch.object(
+            scan_pi, "live_processes", return_value=processes
+        ), mock.patch.object(
+            scan_pi, "process_command_line",
+            side_effect=lambda pid: cmdlines.get(pid, "pi --approve"),
+        ), mock.patch.object(
+            scan_pi, "process_environ",
+            side_effect=lambda pid: environ.get(pid, {}),
+        ), mock.patch.object(
+            scan_pi, "process_start_time",
+            side_effect=lambda pid: starts.get(pid),
+        ), mock.patch.object(
+            scan_pi, "open_file_paths",
+            return_value=open_paths,
+        ):
+            return scan_pi.scan_sessions(limit=limit)
+
+    def _write_pi_session(
+        self, directory: Path, session_id: str, cwd: str, created: str, text: str,
+    ) -> Path:
+        stamp = created.replace(":", "-").replace(".", "-")
+        path = directory / f"{stamp}_{session_id}.jsonl"
+        _write_jsonl(path, [
+            {"type": "session", "id": session_id, "timestamp": created, "cwd": cwd},
+            {
+                "type": "message", "id": f"{session_id}-u1", "parentId": session_id,
+                "timestamp": created,
+                "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+            },
+        ])
+        return path
+
+    def test_live_flags_same_cwd_two_tuis_bind_each_created_session(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            first_created = "2023-11-14T22:15:00.000Z"
+            second_created = "2023-11-14T22:16:40.000Z"
+            self._write_pi_session(sessions_dir, "pi-first", cwd, first_created, "先开")
+            self._write_pi_session(sessions_dir, "pi-second", cwd, second_created, "后开")
+            first_ts = datetime(2023, 11, 14, 22, 15, tzinfo=timezone.utc).timestamp()
+            second_ts = datetime(2023, 11, 14, 22, 16, 40, tzinfo=timezone.utc).timestamp()
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(11, cwd), (22, cwd)],
+                cmdlines={11: "pi --approve", 22: "pi --approve"},
+                starts={11: first_ts - 10, 22: second_ts - 10},
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertTrue(by_id["pi-first"]["live"])
+            self.assertEqual(by_id["pi-first"]["pid"], 11)
+            self.assertTrue(by_id["pi-second"]["live"])
+            self.assertEqual(by_id["pi-second"]["pid"], 22)
+
+    def test_live_flags_do_not_bind_new_tui_to_older_cwd_history(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            created = "2023-11-14T22:13:20.000Z"
+            self._write_pi_session(sessions_dir, "pi-old", cwd, created, "旧问题")
+            created_ts = datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc).timestamp()
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(99, cwd)],
+                cmdlines={99: "pi --approve"},
+                starts={99: created_ts + 400},
+            )
+            self.assertFalse(sessions[0]["live"])
+
+    def test_live_flags_continue_binds_newest_unmarked_in_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            older = self._write_pi_session(
+                sessions_dir, "pi-older", cwd, "2023-11-14T22:00:00.000Z", "更早",
+            )
+            newer = self._write_pi_session(
+                sessions_dir, "pi-newer", cwd, "2023-11-14T22:10:00.000Z", "更新",
+            )
+            os.utime(older, (1_700_000_000, 1_700_000_000))
+            os.utime(newer, (1_700_000_600, 1_700_000_600))
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(44, cwd)],
+                cmdlines={44: "pi --approve -c"},
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertTrue(by_id["pi-newer"]["live"])
+            self.assertEqual(by_id["pi-newer"]["pid"], 44)
+            self.assertFalse(by_id["pi-older"]["live"])
+
+    def test_live_flags_skip_print_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            created = "2023-11-14T22:15:00.000Z"
+            self._write_pi_session(sessions_dir, "pi-print", cwd, created, "请生成标题")
+            created_ts = datetime(2023, 11, 14, 22, 15, tzinfo=timezone.utc).timestamp()
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(55, cwd)],
+                cmdlines={55: "pi --print 请生成标题"},
+                starts={55: created_ts - 10},
+            )
+            self.assertFalse(sessions[0]["live"])
+
+    def test_live_flags_bind_handoff_prompt_containing_subcommand_words(self) -> None:
+        """接力位置参数里的 list/install 不得把仍在跑的 TUI 判成非交互。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            created = "2023-11-14T22:15:00.000Z"
+            self._write_pi_session(sessions_dir, "pi-handoff", cwd, created, "接力任务")
+            created_ts = datetime(2023, 11, 14, 22, 15, tzinfo=timezone.utc).timestamp()
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(42, cwd)],
+                cmdlines={42: (
+                    "pi --approve Task: picking up a session. Please list files "
+                    "and update the install config"
+                )},
+                starts={42: created_ts - 10},
+            )
+            self.assertTrue(sessions[0]["live"])
+            self.assertEqual(sessions[0]["pid"], 42)
+
+    def test_live_flags_ignore_session_flag_inside_handoff_prompt(self) -> None:
+        """位置参数里的 ``--session`` 不得把新建 TUI 错绑到被接力的历史上。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            created_old = "2023-11-14T22:00:00.000Z"
+            created_new = "2023-11-14T22:15:00.000Z"
+            self._write_pi_session(sessions_dir, "pi-old", cwd, created_old, "原会话")
+            self._write_pi_session(sessions_dir, "pi-new", cwd, created_new, "接力新建")
+            created_ts = datetime(2023, 11, 14, 22, 15, tzinfo=timezone.utc).timestamp()
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(42, cwd)],
+                cmdlines={42: (
+                    "pi --approve Task: picking up a session. "
+                    "Resume with --session /tmp/pi-old.jsonl"
+                )},
+                starts={42: created_ts - 10},
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertTrue(by_id["pi-new"]["live"])
+            self.assertEqual(by_id["pi-new"]["pid"], 42)
+            self.assertFalse(by_id["pi-old"]["live"])
+        self.assertTrue(scan_pi.is_pi_tui_cmdline("pi --approve"))
+        self.assertTrue(scan_pi.is_pi_tui_cmdline("pi --approve --session /tmp/a.jsonl"))
+        self.assertTrue(scan_pi.is_pi_tui_cmdline("node /opt/pi-coding-agent/dist/cli.js --approve"))
+        self.assertTrue(scan_pi.is_pi_tui_cmdline("pi -c"))
+        self.assertTrue(scan_pi.is_pi_tui_cmdline(
+            "pi --approve Task: picking up a session. Please list files and "
+            "update the install config"
+        ))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi --print hello"))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi -p hello"))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi auth login"))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi --list-models"))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi install"))
 
 
 class StartupLatencyTests(unittest.TestCase):
