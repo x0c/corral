@@ -53,6 +53,9 @@ The tool reads these files to build a recent-session list, extract a compact pre
   read and still uploads nothing, but it does mean the derived-performance database above fills up
   with conversation text sooner and more broadly than before. The search index itself lives only in
   memory and is never written to disk. `PICKUP_CACHE=0` still disables the on-disk part.
+- Share transcripts exported from the TUI Advanced menu under `~/.cache/pickup/share/` (the same
+  `pickup.share/v1` JSON as `pickup share`, including conversation text, thinking, and tool I/O).
+  The directory follows `PICKUP_CACHE_DIR` / XDG like other cache files. Nothing in it is uploaded.
 
 It does not write attention state into Claude Code, Codex CLI, OpenCode, Kimi Code CLI, or Cursor
 conversation history. The Cursor write described above changes only the user-level hook configuration.

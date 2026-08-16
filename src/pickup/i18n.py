@@ -413,6 +413,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Read {source} history, then start a new session",
         "zh": "读取 {source} 历史后新建会话",
     },
+    "modal.export_session": {
+        "en": "Export session",
+        "zh": "导出会话",
+    },
+    "modal.export_session_action": {
+        "en": "Write share transcript, copy file path",
+        "zh": "导出含工具与思考的 transcript，并复制路径",
+    },
+    "modal.export_session_copied": {
+        "en": "Copied path: {path}",
+        "zh": "已复制路径：{path}",
+    },
+    "modal.export_session_failed": {
+        "en": "Could not export session: {error}",
+        "zh": "无法导出会话：{error}",
+    },
     "modal.copy_session": {
         "en": "Copy session",
         "zh": "复制会话",

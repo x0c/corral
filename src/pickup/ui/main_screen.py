@@ -41,6 +41,7 @@ from pickup.ui.dragon_easter_egg import DragonOverlay
 from pickup.ui.footer import PickupFooter
 from pickup.ui.modals import (
     COPY_SESSION_CHOICE,
+    EXPORT_SESSION_CHOICE,
     ConfirmModal,
     choose_target_runtime,
     new_session_flow,
@@ -1560,6 +1561,19 @@ class MainScreen(
             return
         import pickup
 
+        if target == EXPORT_SESSION_CHOICE:
+            from pickup.agent_api import ApiError, export_share_to_cache
+
+            try:
+                path = export_share_to_cache(session, self.store.registry)
+            except Exception as exc:
+                error = exc.message if isinstance(exc, ApiError) else str(exc)
+                self.notify(t("modal.export_session_failed", error=error))
+                self.app.bell()
+                return
+            self.app.copy_to_clipboard(path)
+            self.notify(t("modal.export_session_copied", path=path))
+            return
         if target == COPY_SESSION_CHOICE:
             try:
                 request = self.store.registry.prepare_copy_request(

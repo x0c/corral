@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from pickup import keepalive, titles
-from pickup.cache import get_cache, scan_period
+from pickup.cache import cache_dir, get_cache, scan_period
 from pickup.models import format_message_time, session_key
 from pickup.runtime import LaunchError, default_registry
 from pickup.runtime.base import usable_cwd
@@ -135,9 +135,9 @@ def _resume_command(runtime, session: dict) -> str | None:
     """生成同运行时原生恢复命令；失败时只标记不可恢复，不影响列表输出。"""
     try:
         plan = runtime.build_resume_plan(session)
+        return _format_resume_command(plan.argv)
     except Exception:
         return None
-    return _format_resume_command(plan.argv)
 
 
 def _load_conversation(runtime, session: dict):
@@ -579,16 +579,22 @@ def cmd_export(args, registry) -> dict:
     })
 
 
-def cmd_share(args, registry) -> dict:
-    """导出单条会话的统一 transcript（含 thinking / 工具调用），供其他 Agent 做元认知。
+def share_cache_path(session: dict) -> str:
+    """TUI「导出会话」落盘路径：``<cache>/share/<runtime>_<id>-<stamp>.json``。"""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    raw = session_key(session)
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw).strip("._") or "session"
+    directory = cache_dir() / "share"
+    os.makedirs(directory, exist_ok=True)
+    path = directory / f"{safe}-{stamp}.json"
+    if path.exists():
+        path = directory / f"{safe}-{stamp}-{os.getpid()}.json"
+    return str(path)
 
-    只读：不改 ``show`` / ``export`` 的纯文本契约；解析失败时 events 为空列表而不是报错。
-    """
-    session = resolve_ref(registry, args.session, args.limit)
+
+def build_share_payload(session: dict, registry) -> dict:
     cache = titles.load_cache()
     runtime = registry.get(str(session.get("source") or ""))
-    compact = getattr(args, "compact", False)
-    out = getattr(args, "out", None)
     events = load_events(session)
     payload = session_payload(session, cache, runtime)
     payload["schema"] = SCHEMA_ID
@@ -596,28 +602,61 @@ def cmd_share(args, registry) -> dict:
     payload["events"] = events
     payload["event_count"] = len(events)
     payload["counts"] = count_events(events)
+    return payload
 
-    if not out:
-        return _ok(payload)
 
-    envelope = _ok(payload)
-    output_path = os.path.abspath(out)
+def write_share_envelope(payload: dict, out_path: str, *, compact: bool = False) -> str:
+    """把 share envelope 写到 ``out_path``，返回绝对路径。"""
+    output_path = os.path.abspath(out_path)
     parent = os.path.dirname(output_path) or "."
     if not os.path.isdir(parent):
         raise ApiError("usage_error", f"输出目录不存在：{parent}", EXIT_USAGE)
     if os.path.isdir(output_path):
         raise ApiError("usage_error", f"输出路径是目录：{output_path}", EXIT_USAGE)
     with open(output_path, "w", encoding="utf-8") as fp:
-        json.dump(envelope, fp, ensure_ascii=False, separators=(",", ":") if compact else None,
-                  indent=None if compact else 2)
+        json.dump(
+            _ok(payload),
+            fp,
+            ensure_ascii=False,
+            separators=(",", ":") if compact else None,
+            indent=None if compact else 2,
+        )
         fp.write("\n")
+    return output_path
+
+
+def export_share_to_cache(session: dict, registry, *, compact: bool = True) -> str:
+    """写出 share transcript 到缓存目录，返回绝对路径（TUI 导出会话用）。"""
+    return write_share_envelope(
+        build_share_payload(session, registry),
+        share_cache_path(session),
+        compact=compact,
+    )
+
+
+def cmd_share(args, registry) -> dict:
+    """导出单条会话的统一 transcript（含 thinking / 工具调用），供其他 Agent 做元认知。
+
+    只读：不改 ``show`` / ``export`` 的纯文本契约；解析失败时 events 为空列表而不是报错。
+    """
+    session = resolve_ref(registry, args.session, args.limit)
+    compact = getattr(args, "compact", False)
+    out = getattr(args, "out", None)
+    payload = build_share_payload(session, registry)
+
+    if not out:
+        return _ok(payload)
+
+    output_path = write_share_envelope(payload, out, compact=compact)
+    cache = titles.load_cache()
+    runtime = registry.get(str(session.get("source") or ""))
     summary = session_payload(session, cache, runtime, DEFAULT_LIST_FIELDS if compact else None)
     summary.update({
         "schema": SCHEMA_ID,
         "output_path": output_path,
         "output_bytes": os.path.getsize(output_path),
-        "event_count": len(events),
-        "counts": count_events(events),
+        "event_count": payload["event_count"],
+        "counts": payload["counts"],
         "events_omitted": True,
     })
     return _ok(summary)

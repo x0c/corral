@@ -388,7 +388,7 @@ reach the agent. Mouse wheel over either pane works regardless of which side has
 
 Press `Enter` on a session for native resume (same assistant, full original context).
 
-Advanced action (`a`) always starts a **new** session that reads the source history—whether you pick another assistant or the same one (useful when the original session is stuck or buggy). The new session opens beside the source in a split view. The prompt includes:
+Advanced action (`a`) first item **exports** the same share transcript as `pickup share` and copies the file path; second item **copies** the session beside the original; picking an assistant always starts a **new** session that reads the source history—whether you pick another assistant or the same one (useful when the original session is stuck or buggy). Copy and handoff open beside the source in a split view. The prompt includes:
 
 - source runtime name;
 - original session title;

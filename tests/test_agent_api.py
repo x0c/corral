@@ -366,6 +366,19 @@ class AgentApiTests(unittest.TestCase):
         self.assertEqual(envelope["data"]["schema"], "pickup.share/v1")
         self.assertIn("events", envelope["data"])
 
+    def test_export_share_to_cache_writes_envelope(self) -> None:
+        cache = Path(self._tmpdir.name) / "pickup-cache"
+        cache.mkdir()
+        with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": str(cache)}):
+            path = agent_api.export_share_to_cache(self.session, self.registry)
+        self.assertTrue(os.path.commonpath([path, str(cache)]) == str(cache))
+        self.assertTrue(path.endswith(".json"))
+        with open(path, encoding="utf-8") as fp:
+            envelope = json.load(fp)
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(envelope["data"]["schema"], "pickup.share/v1")
+        self.assertIn("events", envelope["data"])
+
     def test_describe_includes_share(self) -> None:
         result = agent_api.cmd_describe(argparse_namespace(target="share"), self.registry)
         self.assertEqual(result["data"]["name"], "share")

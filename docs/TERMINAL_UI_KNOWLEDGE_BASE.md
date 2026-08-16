@@ -35,7 +35,7 @@ pickup 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 会话小窗 | 右栏格右上角的悬浮摘要：默认展开列出提问，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；实时托管格与静态预览格各自一份；不是弹窗、不抢焦点 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或右栏顶栏点助手加格；无底栏 `n` 快捷键 |
 | 活动会话看板 | 侧栏固定入口，自动铺当前需要盯的托管会话（等回话 / 干活 / 未读），格子里可直接打字 | `activity_board.py` + 侧栏冻项；跨项目；不写水果组；超额手动翻页；点具体会话即离开；别的窗口自开会话不进格 |
-| 高级操作 | 对当前会话选择目标助手并读历史后新建（含同助手另起）；原生恢复走回车 | `a` → `choose_target_runtime()` |
+| 高级操作 | 导出会话 / 复制会话 / 对当前会话读历史后新建（含同助手另起）；原生恢复走回车 | `a` → `choose_target_runtime()` |
 | 删除会话 | 彻底抹掉选中会话的本地历史，不可恢复；运行中/托管会话先结束再删 | `x` → `ConfirmModal(confirm_key="x")` → `action_delete_session()`；光标停在会话组卡上时删的是**整组全部成员** |
 | 对话预览 | 右栏展示非进行中会话的完整对话 | 不是旧的“最近提问 / 最近回复”摘要，也不是 Space 全屏页 |
 | 会话关注状态 | 左栏首行最左用单个圆点提示下一步是否需要用户关注 | 等待回答黄 > 执行中绿 > 未读新结果红 > 无；详情头同步写出状态，不只靠颜色；不等于标题模块或机器接口的业务状态标签 |
@@ -206,7 +206,7 @@ stateDiagram-v2
 | “＋ 新建会话” | 用户需选择项目或运行时 | 先选项目，再选运行时 | 创建空白会话 |
 | 右栏顶栏点助手 | 当前项目目录已知且未满四格 | `_on_runtime_pick` 在当前项目下加一格托管 | 新格进入分屏组合 |
 | 右栏顶栏点「终端」 | 当前项目目录已知且未满四格 | `_on_shell_pick` → `_embed_open_shell` 加一格交互式 shell | 不进侧栏列表；关格或 shell 退出即结束 tmux 会话 |
-| `a` 高级操作 | 当前选中已有会话 | 弹窗第一项「复制会话」（同助手完整克隆历史，旁挂分屏）；其后为各运行时「读历史后新建」（`force_new`，同助手另起用于原会话卡住） | **默认在被接力/被复制会话旁加一格分屏**（源会话留在右栏，目标新会话并排；满格时提示）；原生恢复留给侧边栏回车 |
+| `a` 高级操作 | 当前选中已有会话 | 弹窗第一项「导出会话」（写 `pickup.share/v1` 到缓存目录并把绝对路径复制到剪贴板，不启动）；第二项「复制会话」（同助手完整克隆历史，旁挂分屏）；其后为各运行时「读历史后新建」（`force_new`，同助手另起用于原会话卡住） | 导出不启动会话；复制/接力**默认在被接力/被复制会话旁加一格分屏**（源会话留在右栏，目标新会话并排；满格时提示）；原生恢复留给侧边栏回车 |
 | `q` 结束会话 | 当前会话是运行中(托管) | 确认弹窗确认后结束托管并立即标记为已结束 | 不等待下次扫描才更新状态 |
 | `x` 删除会话 | 侧边栏选中任意会话 | 确认弹窗（确认键为 `x`）确认的瞬间摘卡；结束托管进程与 `delete_session()` 抹磁盘全部在后台线程完成（先结束进程再抹历史） | 卡片在确认那一帧就消失，不等磁盘；失败（如磁盘/数据库异常）则提示失败原因并把卡片恢复回列表 |
 | `x` 删除整个会话组 | 侧边栏选中会话组卡 | 同上，但确认文案写组名 + 成员数（含运行中成员时换成"先结束再删"那版），确认后把全部成员一起摘卡并逐条抹磁盘 | 整组消失、组自动解散；个别成员删除失败时只把那一条捞回列表并提示，其余照删 |
@@ -252,7 +252,7 @@ stateDiagram-v2
 | 分屏组合在侧边栏的投影 | `ui/session_list.py`、`ui/main_screen.py` | `SessionListView.set_split_marks()`、`MainScreen._sync_split_marks()` | ≥2 格才标：当前组卡和全部成员贴 `-in-split`；激活格对应成员再贴 `-split-active`；光标停在组卡上时整组再贴 `-group-selected`（成员与组卡同档高光），激活格仍格外高光；光标叠加态仍用 `_SIDEBAR_SPLIT_LADDER` 的四级阶梯；单格与 `__hint__` 不标，全量重建后重新贴标；回归 `SidebarSplitHighlightTests` |
 | 状态详情与已读确认 | `ui/main_screen.py`、`ui/controllers/attention_reader.py`、`store.py` | 详情头状态、可见即已读、`SessionStore.mark_session_read()` | 详情头同时给出文字状态；红点在右侧内容成功可见后立即清除（分屏下所有可见格一起），切换、失败或失焦取消 |
 | 新建会话 | `ui/main_screen.py`、`ui/modals.py` | `new_session_flow()`、`NewSessionModal`、`_on_runtime_pick()` | 侧边栏「＋ 新建」弹**一个**双栏弹窗：左栏项目（更宽，项目名 + 路径；顶栏本地筛选框，`/` 聚焦，按名/路径 `_fuzzy_match`，查询**不写回** `NavState.project_query`，但可带入侧边栏当前筛选作初值）、右栏运行时；←→ 换栏（筛选框持焦时无效）、左栏回车换到右栏、右栏回车确认。右栏顶栏点助手在当前项目加格。底栏不再绑 `n` |
-| 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py` | `action_handoff()`、`choose_target_runtime()`、`ConfirmModal` | 高级操作动态读取注册运行时；结束操作先确认 |
+| 高级操作与结束确认 | `ui/main_screen.py`、`ui/modals.py`、`agent_api.py` | `action_handoff()`、`choose_target_runtime()`、`export_share_to_cache()`、`ConfirmModal` | 弹窗第一项导出会话（写 share JSON 并复制路径）；其后复制会话与动态注册运行时；结束操作先确认 |
 | 删除会话（不可恢复） | `ui/main_screen.py`、`ui/modals.py`、`store.py`、`runtime/base.py` | `action_delete_session()`、`_delete_session_group()`、`ConfirmModal(confirm_key="x")`、`SessionStore.remove_session()`、`BaseRuntime.delete_session()` | 选中的是会话组卡时走 `_delete_session_group()`（整组删，逐条容错）；`ConfirmModal` 的确认键已参数化（结束会话仍是 `q`，删除会话是 `x`）；实际删除逻辑收敛在各运行时适配器，见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`/`docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md` 各存储形态的删除方式 |
 | 右栏静态预览和实时画面挂接 | `ui/embed_pane.py` | `show_detail()`、`focus_session()`、`scroll_detail()` | 本域仅管理呈现切换、焦点与详情滚动；不描述 tmux 实现 |
 | 会话小窗（右上角浮层） | `ui/session_hud.py`、`ui/split_pane_area.py`、`ui/main_screen.py` | `SessionHud`、`summarize_user_messages()`、`is_injected_user_prompt()`、`PaneCell.update_hud()`、`SplitPaneArea.sync_hud()`、`MainScreen._sync_hud()` / `_hud_live_targets()` / `action_toggle_hud()` | 默认展开；真人提问斑马纹 + 过长两行折叠；实时托管格与静态预览格各自一份；浮层只负责画，数据与展开状态统一由主屏喂；`PaneCell` 的 `layers: default hud` + `dock: right` 决定它贴在标题栏下一行、命中区只有胶囊本身 |

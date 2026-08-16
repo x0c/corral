@@ -147,7 +147,7 @@ env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py
 涉及界面时还要运行一次真实终端冒烟。标题后台生成会调用本机 agent CLI、消耗对应账号额度；只验证界面时，在临时目录把 `claude`、`codex` 指向本机 `true`，放到 `PATH` 最前面，再启动 `python3 -m pickup --limit 5`（或已安装的 `pickup --limit 5`），确认：
 
 - 底部 Textual `Footer` 显示 `a Advanced`（中文环境下为 `a 高级操作`；`ui/main_screen.py` 的 `MainScreen.BINDINGS`，不再是 curses 手绘的底部帮助行）。
-- 高级操作弹窗（`ui/modals.py` 的 `choose_target_runtime`）动态列出注册表中的运行时。
+- 高级操作弹窗（`ui/modals.py` 的 `choose_target_runtime`）第一项是导出会话、第二项是复制会话，其后动态列出注册表中的运行时。
 - 默认选中第一个已安装的其他运行时。
 - `Esc` 先关闭弹窗，再退出主界面。
 - 选中已结束会话时右栏是完整对话预览（消息之间是角色色的分隔横线；`● 你` / `◆ 运行时` 抬头独占一行并带时间；正文按 Markdown 排版、顶格另起一行且不着色），不再出现「最近提问 / 最近回复」摘要块。

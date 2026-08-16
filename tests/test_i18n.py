@@ -94,11 +94,13 @@ class I18nCatalogTests(unittest.TestCase):
     def test_new_catalog_entries(self) -> None:
         i18n.set_lang("en")
         self.assertEqual(t("session.title.new", name="Claude"), "New Claude session")
+        self.assertEqual(t("modal.export_session"), "Export session")
         self.assertEqual(t("error.launch_failed", error="boom"), "Launch failed: boom")
         self.assertEqual(t("remote.err.session_gone"), "This session is no longer in the list")
         self.assertEqual(t("shim.status.installed"), "Installed")
         i18n.set_lang("zh")
         self.assertEqual(t("session.title.new", name="Claude"), "新Claude会话")
+        self.assertEqual(t("modal.export_session"), "导出会话")
         self.assertEqual(t("error.launch_failed", error="boom"), "启动失败：boom")
         self.assertEqual(t("remote.err.session_gone"), "这条会话已经不在列表里了")
         self.assertEqual(t("shim.status.installed"), "已安装")

@@ -53,6 +53,8 @@ from pickup.models import LaunchPlan
 from pickup.ui.app import PickupApp
 from pickup.ui.embed_pane import EmbedPane
 from pickup.ui.modals import (
+    COPY_SESSION_CHOICE,
+    EXPORT_SESSION_CHOICE,
     ConfirmModal,
     NewSessionModal,
     RuntimeChoice,
@@ -4712,7 +4714,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("a")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
-                # 默认高亮在接力项；上移到第一项「复制会话」
+                # 默认高亮在接力项；上移一次落到「复制会话」（它上面是导出会话）
                 await pilot.press("up")
                 await pilot.press("enter")
                 await _wait_until(lambda: host_mock.call_count == 1)
@@ -4739,6 +4741,32 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 ]
                 self.assertEqual(len(hosted), 1)
                 self.assertNotEqual(pickup.session_key(hosted[0]), source_key)
+
+    async def test_export_session_advanced_action_copies_share_path(self) -> None:
+        """高级操作选「导出会话」：写出 share JSON，绝对路径进剪贴板，不启动会话。"""
+        import json
+
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            await pilot.press("a")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, RuntimePickerModal)
+            self.assertEqual(app.screen._choices[0].id, EXPORT_SESSION_CHOICE)
+            self.assertEqual(app.screen._choices[1].id, COPY_SESSION_CHOICE)
+            app.screen.query_one(ListView).index = 0
+            await pilot.press("enter")
+            await _wait_until(lambda: bool(app._clipboard))
+            path = app._clipboard
+            self.assertTrue(path.endswith(".json"))
+            self.assertIn(f"{os.sep}share{os.sep}", path)
+            self.assertTrue(os.path.isfile(path), path)
+            with open(path, encoding="utf-8") as fp:
+                envelope = json.load(fp)
+            self.assertEqual(envelope["data"]["schema"], "pickup.share/v1")
+            self.assertIn("events", envelope["data"])
+            self.assertEqual(type(app.screen).__name__, "MainScreen")
 
 
 class PaneCellHeaderSyncTests(unittest.TestCase):

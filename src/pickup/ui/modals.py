@@ -518,14 +518,32 @@ class ConfirmModal(OutsideClickDismiss, ModalScreen[bool]):
 # 业务流程封装：project/runtime 选择 + 新建会话组合流程
 # ---------------------------------------------------------------------------
 
-# 高级操作里「复制会话」选项的哨兵 id（不是真实运行时）。
+# 高级操作里非运行时选项的哨兵 id。
+EXPORT_SESSION_CHOICE = "__export_session__"
 COPY_SESSION_CHOICE = "__copy_session__"
+_ADVANCED_SENTINELS = frozenset({EXPORT_SESSION_CHOICE, COPY_SESSION_CHOICE})
+
+
+def _handoff_default_index(choices: list[RuntimeChoice], source: str) -> int:
+    """默认高亮第一个已安装的其他助手；没有则回来源助手；都没有才 0。"""
+    other = next(
+        (
+            i for i, choice in enumerate(choices)
+            if choice.id not in _ADVANCED_SENTINELS and choice.id != source and choice.available
+        ),
+        None,
+    )
+    if other is not None:
+        return other
+    same = next((i for i, choice in enumerate(choices) if choice.id == source), None)
+    return 0 if same is None else same
 
 
 async def choose_target_runtime(app, store, source: str) -> str | None:
-    """高级操作：复制会话，或选择接力目标运行时。
+    """高级操作：导出会话、复制会话，或选择接力目标运行时。
 
-    列表第一项是「复制会话」（同助手完整克隆）；其后每一个助手（含来源自身）
+    列表第一项是「导出会话」（写 share transcript 并把路径复制到剪贴板，不启动）；
+    第二项是「复制会话」（同助手完整克隆）；其后每一个助手（含来源自身）
     都是「读取源历史后新建会话」——同助手另起用于原会话卡住 / 出 bug 时；真正的
     原生恢复走侧边栏回车，不走本入口。
     """
@@ -534,29 +552,25 @@ async def choose_target_runtime(app, store, source: str) -> str | None:
     source_name = source_runtime.display_name
     choices = [
         RuntimeChoice(
+            EXPORT_SESSION_CHOICE,
+            t("modal.export_session"),
+            t("modal.export_session_action"),
+            True,
+        ),
+        RuntimeChoice(
             COPY_SESSION_CHOICE,
             t("modal.copy_session"),
             t("modal.copy_session_action"),
             source_runtime.is_available(),
-        )
+        ),
     ]
     for runtime in runtimes:
         action = t("modal.read_history_new", source=source_name)
         choices.append(RuntimeChoice(runtime.id, runtime.display_name, action, runtime.is_available()))
-    # 默认仍落在第一个已安装的「其他助手」接力项（复制占 index 0，故 +1）。
-    default_index = next(
-        (
-            i + 1
-            for i, runtime in enumerate(runtimes)
-            if runtime.id != source and runtime.is_available()
-        ),
-        next(
-            (i + 1 for i, runtime in enumerate(runtimes) if runtime.id == source),
-            0,
-        ),
-    )
     return await app.push_screen_wait(
-        RuntimePickerModal(t("modal.handoff_title"), choices, default_index)
+        RuntimePickerModal(
+            t("modal.handoff_title"), choices, _handoff_default_index(choices, source),
+        )
     )
 
 

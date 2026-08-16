@@ -166,7 +166,10 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
 - `pickup share` 是给其他 Agent 做元认知 / 迭代用的统一 transcript：`data.schema` 为 `pickup.share/v1`，
   `data.events[]` 按原始历史顺序包含 `user_message` / `assistant_message` / `thinking` / `tool_call` /
   `tool_result`（工具参数与结果不截断）。**不要用 `show`/`export` 的 `messages` 充当这一用途**——那两条
-  命令仍然只出纯文本。大结果同样优先 `--out`。
+  命令仍然只出纯文本。大结果同样优先 `--out`。`tool_result.status` 在 Claude 认 `is_error`、OpenCode 认
+  `state.status`、Pi 认 `isError`；Kimi 目前只按 output 正文启发式，`isError=true` 仍可能是 `ok`。
+  TUI 高级操作「导出会话」写出同一份 envelope 到 `~/.cache/pickup/share/`（尊重 `PICKUP_CACHE_DIR`），
+  并把绝对路径复制到剪贴板。
 
 ## 拿会话数据做总结 / 周报时的边界（必读）
 
