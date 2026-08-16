@@ -38,10 +38,25 @@ def _env(*names: str) -> str:
     return ""
 
 
-def _run(argv: list[str], input_text: str | None, timeout: int) -> str | None:
+def _run(
+    argv: list[str],
+    input_text: str | None,
+    timeout: int,
+    *,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> str | None:
     """执行一次 CLI 调用并返回 stdout;非零退出、超时或无法启动一律返回 None。"""
     try:
-        proc = subprocess.run(argv, input=input_text, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            argv,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=cwd,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:
@@ -113,19 +128,48 @@ class CodexTitleGenerator(TitleGenerator):
                 pass
 
 
+def _opencode_user_data_dir() -> str:
+    """解析用户真实的 OpenCode 数据目录（登录凭证所在处），不读扫描器。"""
+    data_dir = os.environ.get("OPENCODE_DATA_DIR", "").strip()
+    if data_dir:
+        return data_dir.split(",")[0].strip()
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = xdg if xdg else os.path.expanduser("~/.local/share")
+    return os.path.join(base, "opencode")
+
+
+def _seed_isolated_opencode_dir(dest: str) -> None:
+    """把登录凭证拷进隔离目录，避免改数据目录后标题生成找不到账号。"""
+    src = _opencode_user_data_dir()
+    for name in ("auth.json", "mcp-auth.json"):
+        origin = os.path.join(src, name)
+        if os.path.isfile(origin):
+            try:
+                shutil.copy2(origin, os.path.join(dest, name))
+            except OSError:
+                pass
+
+
 class OpenCodeTitleGenerator(TitleGenerator):
     id = "opencode"
     executable = "opencode"
 
     def generate(self, prompt: str, timeout: int) -> str | None:
         # `opencode run` 无头执行一次；--auto 跳过权限问询。
-        # 每次调用会真实落一条会话，扫描侧必须用 titles.PROMPT_MARKER 过滤。
-        argv = ["opencode", "run", "--auto"]
-        model = self._model()
-        if model:
-            argv += ["-m", model]
-        argv.append(prompt)
-        return _run(argv, None, timeout)
+        # 官方没有 --ephemeral：默认会写入用户的 opencode.db，一次性任务
+        # 会变成侧边栏新卡（还常套用被总结那条的标题），滤掉后又消失，
+        # 表现为列表自己乱跳。每次调用改到临时数据目录 + `--dir`，
+        # 登录凭证从用户目录拷过来。
+        with tempfile.TemporaryDirectory(prefix="pickup-title-opencode-") as tmp:
+            _seed_isolated_opencode_dir(tmp)
+            env = os.environ.copy()
+            env["OPENCODE_DATA_DIR"] = tmp
+            argv = ["opencode", "run", "--auto", "--dir", tmp]
+            model = self._model()
+            if model:
+                argv += ["-m", model]
+            argv.append(prompt)
+            return _run(argv, None, timeout, env=env, cwd=tmp)
 
 
 class KimiTitleGenerator(TitleGenerator):

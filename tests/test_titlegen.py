@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -127,13 +128,20 @@ class OpenCodeGeneratorTests(unittest.TestCase):
         def fake_run(argv, **kwargs):
             calls["argv"] = list(argv)
             calls["input"] = kwargs.get("input")
+            calls["cwd"] = kwargs.get("cwd")
+            calls["env"] = kwargs.get("env")
             return _FakeProc(stdout='{"claude:s1": "标题"}')
 
         with mock.patch.object(titlegen.subprocess, "run", side_effect=fake_run), \
                 mock.patch.dict(os.environ, _NO_ENV):
             out = titlegen.OpenCodeTitleGenerator().generate("prompt 内容", timeout=5)
 
-        self.assertEqual(calls["argv"], ["opencode", "run", "--auto", "prompt 内容"])
+        self.assertEqual(calls["argv"][:4], ["opencode", "run", "--auto", "--dir"])
+        self.assertEqual(calls["argv"][-1], "prompt 内容")
+        self.assertEqual(calls["argv"][4], calls["cwd"])
+        self.assertIsNotNone(calls["cwd"])
+        self.assertTrue(str(calls["cwd"]).startswith(tempfile.gettempdir()))
+        self.assertEqual(calls["env"]["OPENCODE_DATA_DIR"], calls["cwd"])
         self.assertIsNone(calls["input"])
         self.assertEqual(out, '{"claude:s1": "标题"}')
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 
 
@@ -185,7 +186,8 @@ def live_processes(process_name: str) -> list[tuple[int, str]]:
     对 ``agent``：除 ``pgrep -x`` 外还会按 cmdline 兜底（Cursor 会把 comm 改成
     ``MainThread``）。对 ``pi``：npm 包装后 comm 常是 ``node``，同样按 cmdline
     兜底。已知局限：同名的其它子命令进程（如 ``<name> serve``）
-    会被一并计入。任一环节失败都静默降级为空列表，不抛异常。
+    会被一并计入，调用方（OpenCode）必须自己排除非 TUI。任一环节失败都静默
+    降级为空列表，不抛异常。
     """
     found: list[tuple[int, str]] = []
     for pid in _pids_for_process_name(process_name):
@@ -214,11 +216,55 @@ def live_processes(process_name: str) -> list[tuple[int, str]]:
     return found
 
 
+def _etime_seconds(text: str) -> float | None:
+    """把 ``ps -o etime=`` 的 ``[[dd-]hh:]mm:ss`` 转成已运行秒数。"""
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    days = 0
+    if "-" in raw:
+        day_part, raw = raw.split("-", 1)
+        try:
+            days = int(day_part)
+        except ValueError:
+            return None
+    try:
+        nums = [int(part) for part in raw.split(":")]
+    except ValueError:
+        return None
+    if len(nums) == 2:
+        hours, minutes, seconds = 0, nums[0], nums[1]
+    elif len(nums) == 3:
+        hours, minutes, seconds = nums
+    else:
+        return None
+    return float(days * 86400 + hours * 3600 + minutes * 60 + seconds)
+
+
+def process_start_time(pid: int) -> float | None:
+    """进程启动的 unix 时间戳；失败返回 None。
+
+    macOS 的 ``ps`` 没有 ``etimes``，统一解析 ``etime``（两端都有）。
+    """
+    try:
+        out = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "etime="],
+            stderr=subprocess.DEVNULL,
+        ).decode(errors="replace")
+    except (OSError, subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    elapsed = _etime_seconds(out)
+    if elapsed is None:
+        return None
+    return time.time() - elapsed
+
+
 def live_pids_by_process_name(process_name: str) -> dict[str, int]:
     """返回「工作目录 -> pid」映射，供没有 pid 注册表、也不能靠 lsof 定位单个
-    历史文件的运行时（OpenCode、Kimi Code）复用同一套判活思路：找到存活的
+    历史文件、且同目录只标最新一条的运行时（目前是 Kimi Code）复用：找到存活的
     同名进程，读取其当前工作目录，与会话记录的工作目录字段匹配。
 
+    OpenCode 已改走 `live_processes` 精确绑定，不要再把这条折叠映射套回去。
     同一 cwd 有多个同名进程时只保留其中一个（遍历顺序下的最后一个）。调用方
     需要自行只把该目录最新一条会话标记存活。需要保留全部进程时改用
     `live_processes`。任一环节失败都静默降级为空集，不抛异常。

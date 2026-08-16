@@ -1547,6 +1547,35 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             data["synthetic"] = True
         return {"id": part_id, "message_id": message_id, "session_id": session_id, "time_created": t, "data": data}
 
+    def _scan_with_live(
+        self,
+        db_path,
+        *,
+        processes: list[tuple[int, str]],
+        cmdlines: dict[int, str] | None = None,
+        environ: dict[int, dict[str, str]] | None = None,
+        starts: dict[int, float | None] | None = None,
+        limit: int = 10,
+    ) -> list:
+        cmdlines = cmdlines or {}
+        environ = environ or {}
+        starts = starts or {}
+        with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
+             mock.patch.object(scan_opencode, "live_processes", return_value=processes), \
+             mock.patch.object(
+                 scan_opencode, "process_command_line",
+                 side_effect=lambda pid: cmdlines.get(pid, "opencode --auto"),
+             ), \
+             mock.patch.object(
+                 scan_opencode, "process_environ",
+                 side_effect=lambda pid: environ.get(pid, {}),
+             ), \
+             mock.patch.object(
+                 scan_opencode, "process_start_time",
+                 side_effect=lambda pid: starts.get(pid),
+             ):
+            return scan_opencode.scan_sessions(limit=limit)
+
     def test_field_mapping_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "opencode.db"
@@ -1569,7 +1598,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             )
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 sessions = scan_opencode.scan_sessions(limit=10)
 
             self.assertEqual(len(sessions), 1)
@@ -1603,7 +1632,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             )
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 sessions = scan_opencode.scan_sessions(limit=10)
 
             self.assertEqual([s["id"] for s in sessions], ["ses_root"])
@@ -1622,7 +1651,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             )
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 sessions = scan_opencode.scan_sessions(limit=10)
 
             self.assertEqual([s["id"] for s in sessions], ["ses_live"])
@@ -1641,7 +1670,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             )
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 sessions = scan_opencode.scan_sessions(limit=10)
 
             self.assertEqual([s["id"] for s in sessions], ["ses_titled_only"])
@@ -1675,7 +1704,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             )
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 sessions = scan_opencode.scan_sessions(limit=10)
 
             by_id = {s["id"]: s["status_tag"] for s in sessions}
@@ -1701,7 +1730,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             )
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 sessions = scan_opencode.scan_sessions(limit=10)
 
             self.assertEqual(sessions[0]["native_title"], "中文标题：修复终端乱码问题")
@@ -1717,16 +1746,16 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             db_path.touch()
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name",
-                                   return_value={"/tmp/b": 22, "/tmp/a": 11}):
+                 mock.patch.object(scan_opencode, "live_processes",
+                                   return_value=[(22, "/tmp/b"), (11, "/tmp/a")]):
                 first = scan_opencode.scan_signature()
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name",
-                                   return_value={"/tmp/a": 11, "/tmp/b": 22}):
+                 mock.patch.object(scan_opencode, "live_processes",
+                                   return_value=[(11, "/tmp/a"), (22, "/tmp/b")]):
                 reordered = scan_opencode.scan_signature()
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name",
-                                   return_value={"/tmp/a": 11}):
+                 mock.patch.object(scan_opencode, "live_processes",
+                                   return_value=[(11, "/tmp/a")]):
                 changed = scan_opencode.scan_signature()
 
         self.assertEqual(first, reordered)
@@ -1735,7 +1764,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
     def test_scan_sessions_raises_when_all_existing_db_connections_fail(self) -> None:
         with mock.patch.object(scan_opencode, "_db_paths", return_value=["a.db", "b.db"]), \
              mock.patch.object(scan_opencode, "_connect_ro", return_value=None), \
-             mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+             mock.patch.object(scan_opencode, "live_processes", return_value=[]):
             with self.assertRaisesRegex(RuntimeError, "所有 OpenCode 会话数据库均读取失败"):
                 scan_opencode.scan_sessions(limit=10)
 
@@ -1754,7 +1783,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
 
             with mock.patch.object(
                 scan_opencode, "_db_paths", return_value=[str(broken_path), str(healthy_path)]
-            ), mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+            ), mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 sessions = scan_opencode.scan_sessions(limit=10)
 
         self.assertEqual([session["id"] for session in sessions], ["ses_healthy"])
@@ -1765,7 +1794,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             db_path.write_text("不是一个真正的 sqlite 文件", encoding="utf-8")
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 with self.assertRaisesRegex(RuntimeError, "所有 OpenCode 会话数据库均读取失败"):
                     scan_opencode.scan_sessions(limit=10)
 
@@ -1776,7 +1805,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             conn.close()  # 建一个空库，session/message/part 表都不存在
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 with self.assertRaisesRegex(RuntimeError, "所有 OpenCode 会话数据库均读取失败"):
                     scan_opencode.scan_sessions(limit=10)
 
@@ -1793,42 +1822,173 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             )
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 sessions = scan_opencode.scan_sessions(limit=3)
 
             self.assertEqual([s["id"] for s in sessions], ["ses_4", "ses_3", "ses_2"])
 
-    def test_live_backfill_only_marks_newest_session_in_same_cwd(self) -> None:
+    def test_live_flags_bind_session_flag_even_if_not_newest(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cwd_dir = Path(td) / "workdir"
             cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
             db_path = Path(td) / "opencode.db"
             _make_opencode_db(
                 db_path,
                 sessions=[
-                    {"id": "ses_old", "directory": str(cwd_dir), "title": "旧会话",
-                     "time_created": 0, "time_updated": 100_000},
-                    {"id": "ses_new", "directory": str(cwd_dir), "title": "新会话",
-                     "time_created": 0, "time_updated": 200_000},
+                    {"id": "ses_old", "directory": cwd, "title": "旧会话",
+                     "time_created": 100_000, "time_updated": 100_000},
+                    {"id": "ses_new", "directory": cwd, "title": "新会话",
+                     "time_created": 200_000, "time_updated": 200_000},
                 ],
             )
-
-            with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(
-                     scan_opencode, "live_pids_by_process_name",
-                     return_value={os.path.realpath(str(cwd_dir)): 4242},
-                 ):
-                sessions = scan_opencode.scan_sessions(limit=10)
-
+            sessions = self._scan_with_live(
+                db_path,
+                processes=[(4242, cwd)],
+                cmdlines={4242: "opencode --auto -s ses_old"},
+            )
             by_id = {s["id"]: s for s in sessions}
-            self.assertTrue(by_id["ses_new"]["live"])
-            self.assertEqual(by_id["ses_new"]["pid"], 4242)
-            self.assertFalse(by_id["ses_old"]["live"])
-            self.assertIsNone(by_id["ses_old"]["pid"])
+            self.assertTrue(by_id["ses_old"]["live"])
+            self.assertEqual(by_id["ses_old"]["pid"], 4242)
+            self.assertFalse(by_id["ses_new"]["live"])
 
-    def test_live_pids_by_cwd_degrades_when_pgrep_unavailable(self) -> None:
+    def test_live_flags_bind_full_pickup_session_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            db_path = Path(td) / "opencode.db"
+            session_id = "ses_ff7288ed5ffeOZOJxBKicWOzYk"
+            _make_opencode_db(
+                db_path,
+                sessions=[
+                    {"id": session_id, "directory": cwd, "title": "恢复会话",
+                     "time_created": 100_000, "time_updated": 100_000},
+                    {"id": "ses_newer", "directory": cwd, "title": "更新的会话",
+                     "time_created": 200_000, "time_updated": 200_000},
+                ],
+            )
+            sessions = self._scan_with_live(
+                db_path,
+                processes=[(77, cwd)],
+                cmdlines={77: "opencode --auto"},
+                environ={77: {"PICKUP_SESSION_ID": session_id}},
+            )
+            by_id = {s["id"]: s for s in sessions}
+            self.assertTrue(by_id[session_id]["live"])
+            self.assertEqual(by_id[session_id]["pid"], 77)
+            self.assertFalse(by_id["ses_newer"]["live"])
+
+    def test_live_flags_do_not_bind_short_placeholder_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            db_path = Path(td) / "opencode.db"
+            _make_opencode_db(
+                db_path,
+                sessions=[{
+                    "id": "ses_ff7288ed5ffeOZOJxBKicWOzYk", "directory": cwd, "title": "旧历史",
+                    "time_created": 100_000, "time_updated": 100_000,
+                }],
+            )
+            sessions = self._scan_with_live(
+                db_path,
+                processes=[(88, cwd)],
+                cmdlines={88: "opencode --auto"},
+                environ={88: {"PICKUP_SESSION_ID": "745659f2"}},
+            )
+            self.assertFalse(sessions[0]["live"])
+
+    def test_live_flags_same_cwd_two_tuis_bind_each_created_session(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            db_path = Path(td) / "opencode.db"
+            _make_opencode_db(
+                db_path,
+                sessions=[
+                    {"id": "ses_first", "directory": cwd, "title": "先开的",
+                     "time_created": 1_700_000_100_000, "time_updated": 1_700_000_100_000},
+                    {"id": "ses_second", "directory": cwd, "title": "后开的",
+                     "time_created": 1_700_000_200_000, "time_updated": 1_700_000_200_000},
+                ],
+            )
+            sessions = self._scan_with_live(
+                db_path,
+                processes=[(11, cwd), (22, cwd)],
+                cmdlines={11: "opencode --auto", 22: "opencode --auto"},
+                starts={11: 1_700_000_090.0, 22: 1_700_000_190.0},
+            )
+            by_id = {s["id"]: s for s in sessions}
+            self.assertTrue(by_id["ses_first"]["live"])
+            self.assertEqual(by_id["ses_first"]["pid"], 11)
+            self.assertTrue(by_id["ses_second"]["live"])
+            self.assertEqual(by_id["ses_second"]["pid"], 22)
+
+    def test_live_flags_do_not_bind_new_tui_to_older_cwd_history(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            db_path = Path(td) / "opencode.db"
+            _make_opencode_db(
+                db_path,
+                sessions=[{
+                    "id": "ses_old", "directory": cwd, "title": "更早的历史",
+                    "time_created": 1_700_000_000_000, "time_updated": 1_700_000_500_000,
+                }],
+            )
+            sessions = self._scan_with_live(
+                db_path,
+                processes=[(99, cwd)],
+                cmdlines={99: "opencode --auto"},
+                starts={99: 1_700_000_400.0},
+            )
+            self.assertFalse(sessions[0]["live"])
+
+    def test_live_flags_skip_run_subcommand(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            db_path = Path(td) / "opencode.db"
+            _make_opencode_db(
+                db_path,
+                sessions=[{
+                    "id": "ses_run", "directory": cwd, "title": "标题生成",
+                    "time_created": 1_700_000_100_000, "time_updated": 1_700_000_100_000,
+                }],
+            )
+            sessions = self._scan_with_live(
+                db_path,
+                processes=[(55, cwd)],
+                cmdlines={55: "opencode run --auto -s ses_run 请生成标题"},
+                starts={55: 1_700_000_090.0},
+            )
+            self.assertFalse(sessions[0]["live"])
+
+    def test_live_processes_degrades_when_pgrep_unavailable(self) -> None:
         with mock.patch("pickup.scan.common.subprocess.check_output", side_effect=FileNotFoundError()):
-            self.assertEqual(scan_opencode.live_pids_by_process_name("opencode"), {})
+            self.assertEqual(scan_opencode.live_processes("opencode"), [])
+
+    def test_etime_seconds_parses_ps_formats(self) -> None:
+        from pickup.scan.common import _etime_seconds
+
+        self.assertEqual(_etime_seconds("14:36"), 14 * 60 + 36)
+        self.assertEqual(_etime_seconds("01:14:36"), 3600 + 14 * 60 + 36)
+        self.assertEqual(_etime_seconds("1-01:14:36"), 86400 + 3600 + 14 * 60 + 36)
+        self.assertIsNone(_etime_seconds(""))
+        self.assertIsNone(_etime_seconds("nope"))
+
+    def test_is_opencode_tui_cmdline(self) -> None:
+        self.assertTrue(scan_opencode.is_opencode_tui_cmdline("opencode --auto"))
+        self.assertTrue(scan_opencode.is_opencode_tui_cmdline("opencode --auto -s ses_x"))
+        self.assertTrue(scan_opencode.is_opencode_tui_cmdline("opencode /tmp/proj"))
+        self.assertFalse(scan_opencode.is_opencode_tui_cmdline("opencode run --auto hello"))
+        self.assertFalse(scan_opencode.is_opencode_tui_cmdline("opencode serve"))
+        self.assertFalse(scan_opencode.is_opencode_tui_cmdline("opencode session list"))
 
     def test_scan_filters_self_generated_title_sessions(self) -> None:
         """标题生成落盘时即使 OpenCode 额外包一层引号，也必须过滤。"""
@@ -1856,11 +2016,78 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             )
 
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 sessions = scan_opencode.scan_sessions(limit=10)
 
         self.assertEqual([s["id"] for s in sessions], ["ses_real"])
         self.assertEqual(sessions[0]["first_user_msg"], "真实的用户问题")
+
+    def test_scan_filters_title_sessions_even_when_only_native_title_has_marker(self) -> None:
+        """OpenCode 有时把标题生成 JSON 写进原生标题，首条用户消息未必带标记。"""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "opencode.db"
+            _make_opencode_db(
+                db_path,
+                sessions=[
+                    {"id": "ses_real", "directory": td, "title": "真实会话",
+                     "time_created": 0, "time_updated": 200_000},
+                    {"id": "ses_noise", "directory": td,
+                     "title": f"{titles.PROMPT_MARKER}（JSON 数组…）",
+                     "time_created": 0, "time_updated": 300_000},
+                ],
+                messages=[
+                    {"id": "m_real", "session_id": "ses_real", "time_created": 100_000,
+                     "data": {"role": "user", "time": {"created": 100_000}}},
+                    {"id": "m_noise", "session_id": "ses_noise", "time_created": 200_000,
+                     "data": {"role": "user", "time": {"created": 200_000}}},
+                ],
+                parts=[
+                    self._text_part("p_real", "m_real", "ses_real", "真实的用户问题", 100_000),
+                    self._text_part("p_noise", "m_noise", "ses_noise", "看起来像普通提问", 200_000),
+                ],
+            )
+
+            with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
+                sessions = scan_opencode.scan_sessions(limit=10)
+
+        self.assertEqual([s["id"] for s in sessions], ["ses_real"])
+
+    def test_scan_overfetches_so_title_noise_does_not_hide_real_sessions(self) -> None:
+        """比展示条数更新的标题生成噪音不得把更早的真实会话挤出列表。"""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "opencode.db"
+            noise_msg = f'"{titles.PROMPT_MARKER}（JSON 数组…）"'
+            sessions = [
+                {"id": "ses_real", "directory": td, "title": "真实会话",
+                 "time_created": 0, "time_updated": 1_000},
+            ]
+            messages = [
+                {"id": "m_real", "session_id": "ses_real", "time_created": 1_000,
+                 "data": {"role": "user", "time": {"created": 1_000}}},
+            ]
+            parts = [self._text_part("p_real", "m_real", "ses_real", "真实的用户问题", 1_000)]
+            for i in range(12):
+                sid = f"ses_noise_{i}"
+                mid = f"m_noise_{i}"
+                pid = f"p_noise_{i}"
+                ts = 10_000 + i
+                sessions.append(
+                    {"id": sid, "directory": td, "title": f"噪音{i}",
+                     "time_created": 0, "time_updated": ts},
+                )
+                messages.append(
+                    {"id": mid, "session_id": sid, "time_created": ts,
+                     "data": {"role": "user", "time": {"created": ts}}},
+                )
+                parts.append(self._text_part(pid, mid, sid, noise_msg, ts))
+            _make_opencode_db(db_path, sessions=sessions, messages=messages, parts=parts)
+
+            with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
+                found = scan_opencode.scan_sessions(limit=1)
+
+        self.assertEqual([s["id"] for s in found], ["ses_real"])
 
     def test_load_conversation_merges_parts_filters_roles_and_avoids_none_literal(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -4746,7 +4973,7 @@ class DeleteSessionScanTests(unittest.TestCase):
 
             # 其他会话仍能正常扫描出来，证明库本身没有被破坏。
             with mock.patch.object(scan_opencode, "_db_paths", return_value=[str(db_path)]), \
-                 mock.patch.object(scan_opencode, "live_pids_by_process_name", return_value={}):
+                 mock.patch.object(scan_opencode, "live_processes", return_value=[]):
                 remaining = scan_opencode.scan_sessions(limit=10)
             self.assertEqual([s["id"] for s in remaining], ["ses_other"])
 

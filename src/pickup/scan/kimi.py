@@ -289,7 +289,12 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         # 标题生成用 `kimi -p` 会落盘会话；用固定前缀拦掉自产噪音。
         first_user = str(info.get("first_user_msg") or "")
         fallback = str(info.get("fallback_title") or "")
-        if titles.is_title_generation_prompt(first_user) or titles.is_title_generation_prompt(fallback):
+        native = str(info.get("native_title") or "")
+        if (
+            titles.is_title_generation_prompt(first_user)
+            or titles.is_title_generation_prompt(fallback)
+            or titles.is_title_generation_prompt(native)
+        ):
             continue
         if is_ephemeral_agent_cwd(info["cwd"]):
             continue  # OpenConductor 管家临时 cwd，目录复活会刷屏
