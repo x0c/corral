@@ -17,7 +17,7 @@ import time
 import unittest
 import unittest.mock as mock
 
-from pickup import embed
+from pickup import embed, liveness
 from pickup.models import LaunchPlan
 
 
@@ -194,11 +194,11 @@ class SessionIoTests(unittest.TestCase):
             self.assertIsNone(embed.capture("sc-claude-1"))
 
     def test_is_alive(self):
-        with mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
-                mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok):
+        with mock.patch.object(liveness.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(liveness.subprocess, "run", side_effect=_run_completed_ok):
             self.assertTrue(embed.is_alive("sc-claude-1"))
-        with mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
-                mock.patch.object(embed.subprocess, "run",
+        with mock.patch.object(liveness.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(liveness.subprocess, "run",
                                   side_effect=subprocess.CalledProcessError(1, [])):
             self.assertFalse(embed.is_alive("sc-claude-1"))
 
@@ -211,21 +211,21 @@ class SessionIoTests(unittest.TestCase):
         embed._alive_marks.clear()
         with mock.patch.object(embed.subprocess, "check_output", return_value=b"frame"):
             embed.capture("pickup-claude-cache")
-        with mock.patch.object(embed.subprocess, "run",
+        with mock.patch.object(liveness.subprocess, "run",
                                side_effect=AssertionError("命中缓存时不该再 fork")):
             self.assertTrue(embed.is_alive("pickup-claude-cache", max_age=3.0))
 
     def test_stale_alive_evidence_falls_back_to_real_check(self):
         embed._alive_marks["pickup-claude-old"] = time.monotonic() - 30
-        with mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
-                mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok):
+        with mock.patch.object(liveness.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(liveness.subprocess, "run", side_effect=_run_completed_ok):
             self.assertTrue(embed.is_alive("pickup-claude-old", max_age=3.0))
 
     def test_death_check_never_uses_cache(self):
         """判定「会话是否已结束」必须真问一次，缓存不能给死会话续命。"""
         embed._alive_marks["pickup-claude-dead"] = time.monotonic()
-        with mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
-                mock.patch.object(embed.subprocess, "run",
+        with mock.patch.object(liveness.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(liveness.subprocess, "run",
                                   side_effect=subprocess.CalledProcessError(1, [])):
             self.assertFalse(embed.is_alive("pickup-claude-dead"))
         self.assertNotIn("pickup-claude-dead", embed._alive_marks)

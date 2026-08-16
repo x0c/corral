@@ -3,8 +3,9 @@
 与 keepalive.py 平级的运行时无关层：keepalive 管「把启动计划包进 tmux 以便
 SSH 断线保活」，本模块管「不 attach——用 capture-pane 拿画面、send-keys 送按键」，
 让右栏展示会话现场，会话在后台 tmux 里持续运行，随时经列表切换。与保活共用
-`tmux -L pickup-keepalive` socket 和 pickup-* 命名空间：keepalive.annotate()
-状态标注、reap_idle() 空闲回收对内嵌会话全部照旧生效。键盘焦点由界面层管理
+`tmux -L pickup-keepalive` socket 和 pickup-* 命名空间：liveness.annotate()
+状态标注、reap_idle() 空闲回收对内嵌会话全部照旧生效（`keepalive.annotate`
+仍是兼容别名）。键盘焦点由界面层管理
 （默认侧边栏，点右栏才交互）；本模块不感知焦点。
 适配器不感知本模块；主要调用方是 `ui.embed_pane.EmbedPane`。
 
@@ -34,7 +35,7 @@ from rich.cells import cell_len as _rich_cell_len
 from rich.color import Color
 from rich.style import Style
 
-from pickup import keepalive
+from pickup import keepalive, liveness
 from pickup.models import LaunchPlan
 from pickup.native import parse_ansi_rows as _native_parse_ansi_rows
 
@@ -42,6 +43,12 @@ _CREATE_TIMEOUT = 5.0
 _CALL_TIMEOUT = 1.5
 
 _PASTE_BUFFER = "pickup-embed"
+
+# 兼容别名：判活本体已迁到 liveness，身份与原函数相同。
+is_alive = liveness.is_alive
+note_alive = liveness.note_alive
+forget_alive = liveness.forget_alive
+_alive_marks = liveness._alive_marks
 
 
 class EmbedError(Exception):
@@ -134,54 +141,6 @@ def host_session(
 # 会话名 → pane_id（host_session 创建时经 new-session -P 取回）；同名复用等
 # 未登记路径由 ControlChannel._query_pane_id 外部查询兜底
 _pane_ids: dict[str, str] = {}
-
-
-# 会话名 → 最近一次「确认它还活着」的单调时钟读数。抓帧、状态查询、开通道
-# 成功本身就是存活证据，记下来给界面层复用：切换会话时的活跃判定不必再 fork
-# 一次 `has-session`（实测每次约 5ms，分屏几格就乘几，全压在 Textual 主线程上）。
-_alive_marks: dict[str, float] = {}
-_alive_lock = threading.Lock()
-
-
-def note_alive(name: str) -> None:
-    """登记一次「刚刚确认它活着」。只有真正拿到 tmux 正常响应时才调用。"""
-    if not name:
-        return
-    with _alive_lock:
-        _alive_marks[name] = time.monotonic()
-
-
-def forget_alive(name: str) -> None:
-    """确认会话已不存在时清除存活证据，避免缓存把死会话续命。"""
-    with _alive_lock:
-        _alive_marks.pop(name, None)
-
-
-def is_alive(name: str, *, max_age: float | None = None) -> bool:
-    """托管会话是否还活着（pane 里的进程退出后 tmux 会话随之消失）。
-
-    `max_age` 给出可接受的证据陈旧上限（秒）：这段时间内有过成功抓帧 / 状态查询
-    就直接返回 True，不再 fork。判定「会话是否已结束」这类必须拿准的场景一律
-    不要传 `max_age`——缓存只能加速「确认活着」，不能替代宣告死亡。
-    """
-    if max_age is not None and name:
-        with _alive_lock:
-            marked = _alive_marks.get(name)
-        if marked is not None and (time.monotonic() - marked) <= max_age:
-            return True
-    if shutil.which("tmux") is None:
-        return False
-    try:
-        subprocess.run(
-            [*keepalive._BASE_ARGV, "has-session", "-t", name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=_CALL_TIMEOUT, check=True,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        forget_alive(name)
-        return False
-    note_alive(name)
-    return True
 
 
 def capture(name: str, scroll_offset: int = 0, pane_height: int = 0) -> str | None:

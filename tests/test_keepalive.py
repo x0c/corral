@@ -139,8 +139,8 @@ class AnnotateTests(unittest.TestCase):
         list_sessions_out = "pickup-claude-abcd1234|100\n"
         ps_out = "  PID  PPID\n  100     1\n  101   100\n  102   101\n  999     1\n"
 
-        with mock.patch("pickup.keepalive.shutil.which", return_value="/usr/bin/tmux"), \
-             mock.patch("pickup.keepalive.subprocess.check_output",
+        with mock.patch("pickup.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("pickup.liveness.subprocess.check_output",
                          side_effect=_fake_check_output(list_sessions_out, ps_out)):
             keepalive.annotate(sessions)
 
@@ -153,8 +153,8 @@ class AnnotateTests(unittest.TestCase):
         list_sessions_out = "sc-claude-abcd1234|100\n"
         ps_out = "  PID  PPID\n  100     1\n  101   100\n"
 
-        with mock.patch("pickup.keepalive.shutil.which", return_value="/usr/bin/tmux"), \
-             mock.patch("pickup.keepalive.subprocess.check_output",
+        with mock.patch("pickup.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("pickup.liveness.subprocess.check_output",
                          side_effect=_fake_check_output(list_sessions_out, ps_out)):
             keepalive.annotate(sessions)
 
@@ -163,8 +163,8 @@ class AnnotateTests(unittest.TestCase):
     def test_no_tmux_server_running_is_a_noop(self) -> None:
         sessions = [{"id": "s1", "pid": 100}]
 
-        with mock.patch("pickup.keepalive.shutil.which", return_value="/usr/bin/tmux"), \
-             mock.patch("pickup.keepalive.subprocess.check_output",
+        with mock.patch("pickup.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("pickup.liveness.subprocess.check_output",
                          side_effect=subprocess.CalledProcessError(1, "tmux")):
             keepalive.annotate(sessions)
 
@@ -173,8 +173,8 @@ class AnnotateTests(unittest.TestCase):
     def test_sessions_without_pid_are_skipped(self) -> None:
         sessions = [{"id": "s1", "pid": None}, {"id": "s2"}]
 
-        with mock.patch("pickup.keepalive.shutil.which", return_value="/usr/bin/tmux"), \
-             mock.patch("pickup.keepalive.subprocess.check_output") as mocked:
+        with mock.patch("pickup.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("pickup.liveness.subprocess.check_output") as mocked:
             keepalive.annotate(sessions)
 
         mocked.assert_not_called()
@@ -187,8 +187,8 @@ class ReapIdleTests(unittest.TestCase):
         now = 100000.0  # 前两个空闲 99000 秒 ≈ 27.5 小时，超过默认 6 小时阈值
 
         with mock.patch.dict("os.environ", {}, clear=True), \
-             mock.patch("pickup.keepalive.shutil.which", return_value="/usr/bin/tmux"), \
-             mock.patch("pickup.keepalive.subprocess.check_output", return_value=rows.encode()), \
+             mock.patch("pickup.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("pickup.liveness.subprocess.check_output", return_value=rows.encode()), \
              mock.patch("pickup.keepalive.kill", return_value=True) as mocked_kill:
             reaped = keepalive.reap_idle(now=now)
 
@@ -216,8 +216,8 @@ class ReapIdleTests(unittest.TestCase):
         now = 1000.0 + 3600.0  # 恰好空闲 1 小时
 
         with mock.patch.dict("os.environ", {"PICKUP_KEEPALIVE_IDLE_HOURS": "0.5"}, clear=True), \
-             mock.patch("pickup.keepalive.shutil.which", return_value="/usr/bin/tmux"), \
-             mock.patch("pickup.keepalive.subprocess.check_output", return_value=rows.encode()), \
+             mock.patch("pickup.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("pickup.liveness.subprocess.check_output", return_value=rows.encode()), \
              mock.patch("pickup.keepalive.kill", return_value=True) as mocked_kill:
             reaped = keepalive.reap_idle(now=now)
 

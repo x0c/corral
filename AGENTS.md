@@ -28,7 +28,7 @@
 
 | 领域 | 入口锚点 |
 |------|---------|
-| 终端界面 | cli/src/pickup/ui/ · cli/src/pickup/activity_board.py · cli/src/pickup/cli.py · cli/src/pickup/display.py · cli/src/pickup/theme.py · cli/src/pickup/store.py · cli/src/pickup/i18n.py · cli/src/pickup/split_layout.py · cli/src/pickup/ui_prefs.py |
+| 终端界面 | cli/src/pickup/ui/ · cli/src/pickup/activity_board.py · cli/src/pickup/cli.py · cli/src/pickup/display.py · cli/src/pickup/textutil.py · cli/src/pickup/theme.py · cli/src/pickup/store.py · cli/src/pickup/i18n.py · cli/src/pickup/split_layout.py · cli/src/pickup/ui_prefs.py |
 | 会话关注状态 | cli/src/pickup/attention.py · cli/src/pickup/attention_signals.py · cli/src/pickup/cursor_observer.py · cli/src/pickup/store.py · cli/src/pickup/ui/ |
 | 会话全文搜索 | cli/src/pickup/search.py · cli/src/pickup/ui/search_modal.py |
 | 内嵌实时终端 | cli/src/pickup/embed.py · cli/src/pickup/ui/embed_pane.py |

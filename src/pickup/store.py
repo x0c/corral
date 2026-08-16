@@ -6,16 +6,15 @@ import os
 import threading
 import time
 
-from pickup import embed, keepalive, titles
+from pickup import liveness, titles
 from pickup.attention import AttentionEvidence, AttentionState, AttentionStore
 from pickup.attention_signals import inspect_session
 from pickup.cache import get_cache
 from pickup.display import (
     _filter_sessions_by_query,
-    _normalize_cwd,
 )
 from pickup.models import ConversationMessage, is_shell_session, session_key
-from pickup.projects import project_entries
+from pickup.projects import normalize_cwd, project_entries
 from pickup.runtime import RuntimeRegistry, default_registry
 
 # 新扫到的会话：mtime 在此窗口内才插到列表最前；更旧的（常为临时 cwd 复活）
@@ -320,7 +319,7 @@ class SessionStore:
         """
         # 每个适配器负责按时间倒序返回，无需在界面层二次排序
         scanned = self._drop_tombstoned_sessions(scanned)
-        keepalive.annotate([session for bucket in scanned.values() for session in bucket])
+        liveness.annotate([session for bucket in scanned.values() for session in bucket])
 
         with self.lock:
             attention_migrations = self._reconcile_provisional_sessions(scanned)
@@ -384,7 +383,7 @@ class SessionStore:
                 real_session = claimed_keepalive[str(name)]
                 self._retire_provisional(key, provisional, real_session, name, attention_migrations)
                 continue
-            if not name or not embed.is_alive(str(name)):
+            if not name or not liveness.is_alive(str(name)):
                 self._provisional.pop(key, None)
                 self.hosted.pop(key, None)
                 continue
@@ -442,7 +441,7 @@ class SessionStore:
         runtime_id = str(provisional.get("source") or "")
         if not runtime_id:
             return None
-        cwd = _normalize_cwd(provisional.get("cwd"))
+        cwd = normalize_cwd(provisional.get("cwd"))
         known = set(self._order)
         bucket = self.sessions.get(runtime_id) or []
         newcomers = [
@@ -453,7 +452,7 @@ class SessionStore:
             and session_key(session) not in known
             and session_key(session) not in self.hosted
             and not session.get("keepalive_name")
-            and _normalize_cwd(session.get("cwd")) == cwd
+            and normalize_cwd(session.get("cwd")) == cwd
         ]
         sibling_provisionals = 0
         for other_key, other in self._provisional.items():
@@ -461,10 +460,10 @@ class SessionStore:
                 continue
             if str(other.get("source") or "") != runtime_id:
                 continue
-            if _normalize_cwd(other.get("cwd")) != cwd:
+            if normalize_cwd(other.get("cwd")) != cwd:
                 continue
             other_name = self.hosted.get(other_key) or other.get("keepalive_name")
-            if other_name and embed.is_alive(str(other_name)):
+            if other_name and liveness.is_alive(str(other_name)):
                 sibling_provisionals += 1
         if len(newcomers) == 1 and sibling_provisionals == 0:
             return newcomers[0]
@@ -521,7 +520,7 @@ class SessionStore:
             if "keepalive_name" not in session:
                 hosted_name = self.hosted.get(key)
                 if hosted_name:
-                    if embed.is_alive(hosted_name):
+                    if liveness.is_alive(hosted_name):
                         session["keepalive_name"] = hosted_name
                     else:
                         self.hosted.pop(key, None)
@@ -946,11 +945,11 @@ def _new_session_cwd(store: SessionStore, nav, session: dict | None) -> str | No
     if query:
         titles_map = getattr(store, "display_titles", None) or {}
         visible = _filter_sessions_by_query(store.all_sessions(), query, titles=titles_map)
-        keys = {_normalize_cwd(s.get("cwd")) for s in visible}
+        keys = {normalize_cwd(s.get("cwd")) for s in visible}
         keys.discard("")
         if len(keys) == 1:
             return next(iter(keys))
     if session is not None:
-        cwd_key = _normalize_cwd(session.get("cwd"))
+        cwd_key = normalize_cwd(session.get("cwd"))
         return cwd_key or None
     return None

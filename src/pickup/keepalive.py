@@ -5,11 +5,8 @@
 tmux。使用独立 socket（`-L pickup-keepalive`）和专属配置，与用户自己的 tmux
 会话/配置完全隔离，不互相污染。
 
-匹配保活会话到已扫描出的 `SessionInfo` 时，不能只靠 tmux 会话名：
-`claude --resume` 之类的原生恢复可能在内部 fork/重新注册进程，pane 里的顶层
-pid 未必等于运行时自己记录的"活跃 pid"（如 `~/.claude/sessions/{pid}.json`）。
-因此用一次 `ps -eo pid,ppid` 建出整机父子关系表，逐个候选 pid 向上追祖先链，
-只要能追到某个 tmux pane 的顶层 pid，就判定命中——对是否发生过 fork 免疫。
+扫描后按 pid 祖先链贴 `keepalive_name` 已迁到 `liveness.annotate`；本模块仍导出
+`annotate` 兼容别名。启动包装（wrap / attach / kill / reap_idle）仍在这里。
 """
 
 from __future__ import annotations
@@ -28,9 +25,10 @@ SESSION_PREFIX = "pickup-"
 LEGACY_SESSION_PREFIX = "sc-"  # 项目改名 sessionContinue → pickup 前的旧会话名前缀
 _DEFAULT_IDLE_HOURS = 6.0
 _SUBPROCESS_TIMEOUT = 1.5
-_MAX_ANCESTOR_DEPTH = 20
+SUBPROCESS_TIMEOUT = _SUBPROCESS_TIMEOUT
 
 _BASE_ARGV = ("tmux", "-L", SOCKET_NAME)
+BASE_ARGV = _BASE_ARGV
 
 # tmux -f 配置内容内联在代码里，而不是仓库里独立的 .conf 文件：安装产物只包含
 # 明确纳入包的数据，独立配置不能依赖源码目录相对路径（曾用独立配置实测过，安装后
@@ -74,9 +72,15 @@ def _ensure_config_file() -> str:
     return path
 
 
+ensure_config_file = _ensure_config_file
+
+
 def _env_disabled(*names: str) -> bool:
     """任一环境变量被置 0 即视为禁用；新名 PICKUP_* 与旧名 SC_* 都认。"""
     return any((os.environ.get(name) or "").strip() == "0" for name in names)
+
+
+env_disabled = _env_disabled
 
 
 def enabled(disabled_flag: bool = False) -> bool:
@@ -94,6 +98,9 @@ def enabled(disabled_flag: bool = False) -> bool:
 
 def _session_name(runtime_id: str, ident: str) -> str:
     return f"{SESSION_PREFIX}{runtime_id}-{ident[:8]}"
+
+
+session_name = _session_name
 
 
 def new_session_ident() -> str:
@@ -131,84 +138,6 @@ def attach_plan(session: dict) -> LaunchPlan | None:
     return LaunchPlan(argv=(*_BASE_ARGV, "attach-session", "-t", name), cwd=None)
 
 
-def _list_tmux_sessions(fields: str) -> list[list[str]]:
-    """列出保活 socket 上的所有会话；socket 尚不存在（还没人保活过）时静默返回空列表。"""
-    if shutil.which("tmux") is None:
-        return []
-    try:
-        out = subprocess.check_output(
-            [*_BASE_ARGV, "list-sessions", "-F", fields],
-            stderr=subprocess.DEVNULL,
-            timeout=_SUBPROCESS_TIMEOUT,
-        ).decode()
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return []
-    rows = []
-    for line in out.splitlines():
-        parts = line.split("|")
-        if not parts or not parts[0].startswith((SESSION_PREFIX, LEGACY_SESSION_PREFIX)):
-            continue
-        rows.append(parts)
-    return rows
-
-
-def _build_ppid_map() -> dict[int, int]:
-    """一次 `ps -eo pid,ppid` 拿到整机父子关系，供祖先链匹配复用；跨 macOS/Linux 通用。"""
-    try:
-        out = subprocess.check_output(
-            ["ps", "-eo", "pid,ppid"], stderr=subprocess.DEVNULL, timeout=_SUBPROCESS_TIMEOUT
-        ).decode()
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return {}
-    mapping: dict[int, int] = {}
-    for line in out.splitlines()[1:]:  # 跳过表头
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        try:
-            mapping[int(parts[0])] = int(parts[1])
-        except ValueError:
-            continue
-    return mapping
-
-
-def _is_descendant(pid: int, ancestor_pid: int, ppid_map: dict[int, int]) -> bool:
-    current = pid
-    for _ in range(_MAX_ANCESTOR_DEPTH):
-        if current == ancestor_pid:
-            return True
-        parent = ppid_map.get(current)
-        if parent is None or parent <= 1:
-            return False
-        current = parent
-    return False
-
-
-def annotate(sessions) -> None:
-    """给命中保活的会话就地加上 `keepalive_name` 字段；不生成新列表，不改变顺序。"""
-    candidates = {s.get("pid"): s for s in sessions if s.get("pid")}
-    if not candidates:
-        return  # 没有任何会话带存活 pid，不值得为此打一次 tmux/ps 子进程
-
-    tmux_sessions = _list_tmux_sessions("#{session_name}|#{pane_pid}")
-    if not tmux_sessions:
-        return
-
-    ppid_map = _build_ppid_map()
-    for row in tmux_sessions:
-        if len(row) < 2:
-            continue
-        name, pane_pid_text = row[0], row[1]
-        try:
-            pane_pid = int(pane_pid_text)
-        except ValueError:
-            continue
-        for pid, session in candidates.items():
-            if _is_descendant(pid, pane_pid, ppid_map):
-                session["keepalive_name"] = name
-                break
-
-
 def _idle_threshold_hours() -> float:
     raw = os.environ.get("PICKUP_KEEPALIVE_IDLE_HOURS") or os.environ.get("SC_KEEPALIVE_IDLE_HOURS")
     if raw is None:
@@ -242,7 +171,9 @@ def reap_idle(now: float | None = None) -> list[str]:
     threshold_hours = _idle_threshold_hours()
     if threshold_hours <= 0:
         return []
-    rows = _list_tmux_sessions("#{session_name}|#{session_activity}")
+    from pickup import liveness
+
+    rows = liveness._list_tmux_sessions("#{session_name}|#{session_activity}")
     if not rows:
         return []
     if now is None:
@@ -259,3 +190,15 @@ def reap_idle(now: float | None = None) -> list[str]:
         if now - activity > threshold_hours * 3600 and kill(name):
             reaped.append(name)
     return reaped
+
+
+def __getattr__(name: str):
+    """`annotate` 已迁到 liveness；按需导入以保持 `keepalive.annotate is liveness.annotate`。"""
+    if name == "annotate":
+        from pickup import liveness
+
+        value = liveness.annotate
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+

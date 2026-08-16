@@ -959,9 +959,38 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            with mock.patch("pickup.embed.is_alive", return_value=False):
+            with mock.patch("pickup.liveness.is_alive", return_value=False):
                 self.assertTrue(app.screen._is_session_active(key))  # noqa: SLF001
                 self.assertTrue(app.screen._session_is_active(sessions[0]))  # noqa: SLF001
+            with mock.patch(
+                "pickup.liveness.is_alive",
+                side_effect=AssertionError("hosted 命中时不得 fork has-session"),
+            ):
+                self.assertTrue(app.screen._session_is_active(sessions[0]))  # noqa: SLF001
+                self.assertTrue(app.screen._is_session_active(key))  # noqa: SLF001
+
+    async def test_live_session_is_active_without_tmux_fork(self) -> None:
+        """扫描器已报 live 时，开屏/跟随判活不得再问 tmux。"""
+        sessions = [
+            {
+                "source": "claude", "id": "s0", "short_id": "s0",
+                "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "会话0",
+                "cwd": "/tmp", "live": True,
+                "keepalive_name": "pickup-claude-s0",
+            }
+        ]
+        store, _ = _make_store(sessions=sessions)
+        key = pickup.session_key(sessions[0])
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            with mock.patch(
+                "pickup.liveness.is_alive",
+                side_effect=AssertionError("live 命中时不得 fork has-session"),
+            ):
+                self.assertTrue(app.screen._session_is_active(sessions[0]))  # noqa: SLF001
+                self.assertTrue(app.screen._is_session_active(key))  # noqa: SLF001
 
     async def test_reconcile_split_keys_after_provisional_becomes_real(self) -> None:
         """占位卡转正后，分屏和侧边栏选择都必须迁移到真实会话。"""
@@ -1002,7 +1031,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                         "/tmp", [old_key, companion_key], focus_key=old_key
                     )
                 )
-                with mock.patch("pickup.embed.is_alive", return_value=True):
+                with mock.patch("pickup.liveness.is_alive", return_value=True):
                     area.show_hosted_group(
                         "/tmp",
                         [(provisional, kname, lambda: "")],
@@ -1073,8 +1102,8 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                         "/tmp/proj", [old_key, companion_key], focus_key=old_key
                     )
                 )
-                with mock.patch("pickup.embed.is_alive", return_value=True), mock.patch.object(
-                    pickup.keepalive, "annotate"
+                with mock.patch("pickup.liveness.is_alive", return_value=True), mock.patch.object(
+                    pickup.liveness, "annotate"
                 ):
                     area.show_hosted_group(
                         "/tmp/proj",
@@ -1841,7 +1870,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
         ]
         store, _ = _make_store(sessions=sessions)
         app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.is_alive", return_value=True):
+        with mock.patch("pickup.liveness.is_alive", return_value=True):
             async with app.run_test(size=(160, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
@@ -3462,6 +3491,63 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIsNone(screen._follow_timer, "收敛后不应留下待触发的定时器")
 
+    async def test_single_highlight_follows_immediately_not_debounced(self) -> None:
+        """单次方向键必须马上跟随，不能改成「按一下也等窗口」的纯 debounce。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            screen = app.screen
+            list_view = screen.query_one(SessionListView)
+            list_view.focus()
+            await pilot.pause()
+
+            runs: list[int] = []
+            original = screen._follow_current_selection
+
+            def counted():
+                runs.append(list_view.index or 0)
+                return original()
+
+            screen._follow_current_selection = counted
+            list_view.action_cursor_down()
+            await pilot.pause()
+
+            self.assertEqual(len(runs), 1, f"单步跟随被推迟了：{runs}")
+            self.assertIsNone(screen._follow_timer, "单步不应再挂待触发的节流定时器")
+
+    async def test_startup_does_not_load_all_conversations_on_ui_thread(self) -> None:
+        """开屏出卡片时，主线程不得把全部会话的对话同步解析一遍。"""
+        sessions = [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": time.time() - i, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp", "live": False,
+            }
+            for i in range(8)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        loaded: list[tuple[str, str]] = []
+        original = store.get_conversation
+
+        def wrapped(session, *args, **kwargs):
+            key = pickup.session_key(session)
+            loaded.append((threading.current_thread().name, key))
+            return original(session, *args, **kwargs)
+
+        store.get_conversation = wrapped  # type: ignore[method-assign]
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.25)
+            cards = app.screen.query_one(SessionListView)._session_cards()
+            self.assertGreaterEqual(len(cards), 8)
+            keys = {key for _, key in loaded}
+            self.assertLessEqual(
+                len(keys), 2,
+                f"开屏把过多会话的对话读进了缓存：{loaded}",
+            )
+
     async def test_enter_without_embed_exits_with_launch_request(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
@@ -3621,7 +3707,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=candidates,
             ),
             mock.patch("pickup.embed.host_session", return_value="pickup-shell-from-board"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             app = PickupApp(store, embed_ok=True)
             async with app.run_test(size=(120, 30)) as pilot:
@@ -3717,7 +3803,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             session["live"] = True
             session["keepalive_name"] = f"pickup-{session['id']}"
         app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.is_alive", return_value=True):
+        with mock.patch("pickup.liveness.is_alive", return_value=True):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
@@ -3910,7 +3996,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         registry = pickup.RuntimeRegistry((runtime,))
         with (
             mock.patch.object(pickup.titles, "load_cache", return_value={}),
-            mock.patch.object(pickup.keepalive, "annotate"),
+            mock.patch.object(pickup.liveness, "annotate"),
         ):
             store = pickup.SessionStore(limit=20, registry=registry)
             store.load()
@@ -3933,7 +4019,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: "旧标题" in pane.render().plain)
             old_snapshot = store.sessions["claude"][0]
 
-            with mock.patch.object(pickup.keepalive, "annotate"):
+            with mock.patch.object(pickup.liveness, "annotate"):
                 self.assertTrue(store.refresh())
             # 历史 path 未变时对话缓存仍有效；清掉让右栏重新 warm 到新对话。
             store.conversations.clear()
@@ -3953,14 +4039,17 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("最近提问", detail)
 
     async def test_rebuild_falls_back_to_full_rebuild_when_session_set_changes(self) -> None:
-        """回归测试：新增/删除会话导致集合真的变了时，`rebuild()` 必须仍然正确
-        走批量清空重建路径，不能被上面的原地更新优化误伤。"""
+        """新增一条会话时走 splice：旧卡实例保留，且不得 clear()+extend() 整表。"""
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
-            self.assertEqual(len(list_view._session_cards()), 3)
+            cards_before = list_view._session_cards()
+            self.assertEqual(len(cards_before), 3)
+            before_ids = {
+                pickup.session_key(card.session): id(card) for card in cards_before
+            }
 
             new_session = {
                 "source": "claude", "id": "s99", "short_id": "s99",
@@ -3970,11 +4059,87 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             }
             store.sessions["claude"].append(new_session)
 
-            await list_view.rebuild()
+            with mock.patch.object(
+                list_view, "_replace_list_items", wraps=list_view._replace_list_items,
+            ) as full_replace:
+                t0 = time.perf_counter()
+                await list_view.rebuild()
+                splice_ms = (time.perf_counter() - t0) * 1000
+                full_replace.assert_not_called()
 
             cards = list_view._session_cards()
             self.assertEqual(len(cards), 4)
             self.assertIn("claude:s99", [pickup.session_key(c.session) for c in cards])
+            for card in cards:
+                key = pickup.session_key(card.session)
+                if key in before_ids:
+                    self.assertEqual(
+                        id(card), before_ids[key],
+                        f"增一条时旧卡 {key} 不应被拆掉重建",
+                    )
+
+            store.sessions["claude"].extend(
+                [
+                    {
+                        "source": "claude", "id": sid, "short_id": sid,
+                        "mtime": time.time() + 2000, "size_bytes": 1, "size_kb": 1,
+                        "native_title": None, "fallback_title": sid,
+                        "cwd": "/tmp", "live": False,
+                    }
+                    for sid in ("s97", "s96")
+                ]
+            )
+            with mock.patch.object(
+                list_view, "_replace_list_items", wraps=list_view._replace_list_items,
+            ) as full_replace:
+                t0 = time.perf_counter()
+                await list_view.rebuild()
+                full_ms = (time.perf_counter() - t0) * 1000
+                full_replace.assert_called()
+            print(f"\n[列表增一条] splice {splice_ms:.1f}ms；一次加两条 full {full_ms:.1f}ms")
+
+    async def test_rebuild_splices_single_deleted_session(self) -> None:
+        """删一条会话同样只摘那一行，其余卡片实例保持。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            cards_before = list_view._session_cards()
+            keep_key = pickup.session_key(cards_before[0].session)
+            keep_id = id(cards_before[0])
+
+            store.sessions["claude"] = store.sessions["claude"][:-1]
+            with mock.patch.object(
+                list_view, "_replace_list_items", wraps=list_view._replace_list_items,
+            ) as full_replace:
+                t0 = time.perf_counter()
+                await list_view.rebuild()
+                splice_ms = (time.perf_counter() - t0) * 1000
+                full_replace.assert_not_called()
+
+            cards = list_view._session_cards()
+            self.assertEqual(len(cards), 2)
+            remaining = {pickup.session_key(card.session): id(card) for card in cards}
+            self.assertIn(keep_key, remaining)
+            self.assertEqual(remaining[keep_key], keep_id)
+            print(f"\n[列表删一条] splice {splice_ms:.1f}ms")
+
+    def test_single_identity_splice_only_matches_one_insert_or_remove(self) -> None:
+        from pickup.ui.session_list import _single_identity_splice
+
+        self.assertEqual(
+            _single_identity_splice(["a", "b"], ["x", "a", "b"]), ("insert", 0)
+        )
+        self.assertEqual(
+            _single_identity_splice(["a", "b"], ["a", "b", "x"]), ("insert", 2)
+        )
+        self.assertEqual(
+            _single_identity_splice(["a", "b", "c"], ["a", "c"]), ("remove", 1)
+        )
+        self.assertIsNone(_single_identity_splice(["a", "b"], ["b", "a"]))
+        self.assertIsNone(_single_identity_splice(["a"], ["b", "c"]))
+        self.assertIsNone(_single_identity_splice(["a", "b"], ["a", "b"]))
 
     async def test_screen_serializes_concurrent_list_rebuilds(self) -> None:
         """后台重扫和交互刷新同时到达时，列表重建必须串行，不能重复挂载条目。"""
@@ -4094,7 +4259,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4121,7 +4286,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4146,7 +4311,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4234,7 +4399,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4270,7 +4435,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4317,7 +4482,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4374,7 +4539,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 "pickup.embed.host_session",
                 side_effect=AssertionError("已托管会话不该重新拉起"),
             ),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4407,7 +4572,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         """托管落库早于列表重建时，旧卡片高亮事件不能把实时终端盖回静态预览。"""
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.is_alive", return_value=True):
+        with mock.patch("pickup.liveness.is_alive", return_value=True):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 screen = app.screen
@@ -4528,7 +4693,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-new"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4570,7 +4735,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "pickup.embed.host_session", return_value="pickup-cursor-handoff"
             ) as host_mock,
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4642,7 +4807,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "pickup.embed.host_session", return_value="pickup-claude-handoff-self"
             ) as host_mock,
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4702,7 +4867,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "pickup.embed.host_session", return_value="pickup-claude-copy-fork"
             ) as host_mock,
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -6138,7 +6303,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "pickup.embed.host_session", return_value="pickup-claude-s0",
             ) as host,
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
@@ -6165,7 +6330,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "pickup.embed.host_session", return_value="pickup-claude-again",
             ) as host,
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
@@ -6198,7 +6363,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "pickup.embed.host_session", return_value="pickup-claude-s0",
             ) as host,
-            mock.patch("pickup.embed.is_alive", return_value=False),
+            mock.patch("pickup.liveness.is_alive", return_value=False),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -6229,7 +6394,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -6257,7 +6422,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -6284,7 +6449,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -6318,7 +6483,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "pickup.embed.host_session", return_value="pickup-claude-s1",
             ) as host,
-            mock.patch("pickup.embed.is_alive", return_value=False),
+            mock.patch("pickup.liveness.is_alive", return_value=False),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
@@ -6346,7 +6511,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         for session in store.all_sessions():
             session["keepalive_name"] = f"pickup-{session['id']}"
         app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.is_alive", return_value=True):
+        with mock.patch("pickup.liveness.is_alive", return_value=True):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
                 cards = list(app.screen.query(SessionCard))
@@ -6374,7 +6539,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "pickup.embed.host_session", return_value="pickup-claude-s0",
             ),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
@@ -8427,7 +8592,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-shell-abc123") as host_mock,
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -8447,7 +8612,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-shell-sidebar"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -8461,7 +8626,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-shell-closeme"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
             mock.patch("pickup.keepalive.kill", return_value=True) as kill_mock,
             mock.patch("pickup.embed.close_channel") as close_mock,
         ):
@@ -8487,7 +8652,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
             mock.patch("pickup.keepalive.kill", return_value=True) as kill_mock,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
@@ -8526,7 +8691,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-shell-grp1"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -8566,7 +8731,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
         app = PickupApp(store, embed_ok=True)
         with (
             mock.patch("pickup.embed.host_session", return_value="pickup-shell-srch1"),
-            mock.patch("pickup.embed.is_alive", return_value=True),
+            mock.patch("pickup.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)

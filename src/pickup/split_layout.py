@@ -28,6 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pickup.projects import normalize_cwd
 from pickup.titles import CACHE_DIR
 
 LAYOUT_VERSION = 2
@@ -902,9 +903,7 @@ def resolve_active_group(
         session = find_session(session_key)
         project = ""
         if session:
-            from pickup.display import _normalize_cwd
-
-            project = _normalize_cwd(session.get("cwd"))
+            project = normalize_cwd(session.get("cwd"))
         return project, [session_key]
     alive = [k for k in group.session_keys if is_active(k)]
     if session_key not in alive:

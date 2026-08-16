@@ -132,7 +132,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **Textual 后台 worker 必须可取消**：用 `get_current_worker().is_cancelled` / `cancelled_event.wait(interval)`；worker 内不得直接读写 Widget/DOM，结果经 `call_from_thread` 回写。托管启动同样走单飞 worker。
 - **侧边栏末行间隔（硬约定）**：搜索框、新建项的最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin/兄弟空隙/`ListItem` padding。会话卡固定三行正文（首行最左关注圆点 + 空格分隔的「项目 标题」/ 运行时靠右 / 时间靠右），不再另加末行空行；单圆点优先级为黄 > 绿 > 红，详情头有文字状态。基准：搜索框高 2、新建项高 2、会话卡高 3。
 - **筛选状态只认 `nav` 一份**：顶部搜索框写 `nav.project_query`；测试必须断言渲染结果。
-- 卡片列宽按终端显示宽度计算（`pickup._text_width` / `_fit_cell`），不要用字符数 `ljust`。
+- 卡片列宽按终端显示宽度计算（`pickup.textutil.text_width` / `fit_cell`，包顶层兼容名 `pickup._text_width` / `_fit_cell`），不要用字符数 `ljust`。
 - 主界面同时消费进程活性与会话关注状态，但两者不同：`live` 只表示进程在不在；关注圆点表示等待回答/执行中/新结果未读；`titles.status_tag` 与 `agent_api` 英文枚举又是已发布的第三套语义。三者不要混用或互相覆盖。
 - 判活只做「进程在/不在」两档；Claude / Codex / OpenCode 各自判活细节见对应扫描节。
 - 聊天预览按需读取，只展示真实用户消息与最终答复；消息可选带 `timestamp`，有则由 `_preview_lines` 追加时间后缀。

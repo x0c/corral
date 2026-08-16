@@ -18,6 +18,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from pickup.models import session_key
+from pickup.projects import session_project_label
 
 # 单条命中行最多保留多少字符；更长的行按命中位置开窗，只给关键词附近的上下文。
 _MAX_LINE_CHARS = 200
@@ -113,7 +114,7 @@ class _CleanMap(dict):
 
 # 换行必须留着——正文要按行切开才能给出「命中的那一行」；ZWNJ/ZWJ 虽然也归在 Cf
 # 类，但它们是连写和 emoji 组合的有效组成部分，一并保留（与
-# `display._wrap_preview_text` 的口径一致）。制表符在上面摊平成四个空格。
+# `wrap_preview_text` 的口径一致）。制表符在上面摊平成四个空格。
 _KEEP_CONTROL_CHARS = "\n\u200c\u200d"
 _CLEAN_MAP = _CleanMap()
 
@@ -273,12 +274,10 @@ class ConversationIndex:
 
 def _meta_text(session: dict, title: str) -> str:
     """标题 / 项目名 / 路径拼成的小写串，让弹窗同时保留原来的筛选能力。"""
-    from pickup.display import _session_project_label
-
     parts = [
         title,
         str(session.get("fallback_title") or ""),
-        _session_project_label(session),
+        session_project_label(session),
         str(session.get("cwd") or ""),
         str(session.get("cwd_display") or ""),
     ]

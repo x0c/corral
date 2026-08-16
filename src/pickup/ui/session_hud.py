@@ -33,9 +33,9 @@ from textual.color import Color as TextualColor
 from textual.geometry import Size
 from textual.widget import Widget
 
-from pickup.display import _fit_cell, _text_width, _wrap_preview_text
 from pickup.i18n import t
 from pickup.models import ConversationMessage
+from pickup.textutil import fit_cell, text_width, wrap_preview_text
 
 # 展开态最多列几条提问；再多就靠"更早 N 条"一行如实说明，不做静默截断。
 MAX_ENTRIES = 6
@@ -362,7 +362,7 @@ class SessionHud(Widget):
         """收起态用：前缀（最初/最近标签）淡色，正文一行内截断。"""
         line = Text(no_wrap=True)
         line.append(prefix, style="dim")
-        line.append(_fit_cell(body, max(1, width - _text_width(prefix)), ellipsis=True))
+        line.append(fit_cell(body, max(1, width - text_width(prefix)), ellipsis=True))
         return line
 
     def _entry_lines(self, stamp: str, body: str, width: int) -> list[Text]:
@@ -374,9 +374,9 @@ class SessionHud(Widget):
         """
         cell = stamp if stamp else _MISSING_TIME
         prefix = f"{cell}  "
-        indent = " " * _text_width(prefix)
-        body_width = max(1, width - _text_width(prefix))
-        wrapped = _wrap_preview_text(body, body_width) or [""]
+        indent = " " * text_width(prefix)
+        body_width = max(1, width - text_width(prefix))
+        wrapped = wrap_preview_text(body, body_width) or [""]
         truncated = len(wrapped) > _MAX_PROMPT_LINES
         if truncated:
             wrapped = wrapped[:_MAX_PROMPT_LINES]
@@ -385,7 +385,7 @@ class SessionHud(Widget):
         for index, part in enumerate(wrapped):
             line = Text(no_wrap=True)
             line.append(prefix if index == 0 else indent, style="dim")
-            line.append(_fit_cell(
+            line.append(fit_cell(
                 part if not (truncated and index == last) else f"{part}...",
                 body_width,
                 ellipsis=truncated and index == last,
@@ -401,7 +401,7 @@ class SessionHud(Widget):
                 # 省略的是中间那段，说明行就画在被省掉的位置上。页眉页脚和这行
                 # 都不参与斑马纹，避免把「中间省略 N 条」涂成一块实心。
                 out.append(Text(
-                    _fit_cell(_plural("hud.omitted", self._data.omitted), width, ellipsis=True),
+                    fit_cell(_plural("hud.omitted", self._data.omitted), width, ellipsis=True),
                     style="dim", no_wrap=True,
                 ))
             paint = stripe_on if index % 2 else ""
@@ -428,22 +428,22 @@ class SessionHud(Widget):
         stripe_on = self._stripe_on()
         if not self._expanded:
             out: list[Text] = [Text(
-                _fit_cell(_plural("hud.count", data.count), width, ellipsis=True),
+                fit_cell(_plural("hud.count", data.count), width, ellipsis=True),
                 style="bold", no_wrap=True,
             )]
             label_width = max(
-                _text_width(t("hud.label_first")), _text_width(t("hud.label_latest")),
+                text_width(t("hud.label_first")), text_width(t("hud.label_latest")),
             ) + 2
             oldest, latest = data.oldest, data.latest
             # 收起态两行提问也按块斑马：最初不涂、最近涂一层，和展开态 index%2 同相。
             if data.count > 1 and oldest is not None:
                 out.append(self._prefixed(
-                    _fit_cell(t("hud.label_first"), label_width), oldest[1], width,
+                    fit_cell(t("hud.label_first"), label_width), oldest[1], width,
                 ))
             if latest is not None:
                 out.append(self._paint_stripe(
                     self._prefixed(
-                        _fit_cell(t("hud.label_latest"), label_width), latest[1], width,
+                        fit_cell(t("hud.label_latest"), label_width), latest[1], width,
                     ),
                     stripe_on if data.count > 1 else "",
                 ))
@@ -459,10 +459,10 @@ class SessionHud(Widget):
         window = body[self._scroll:self._scroll + capacity]
         hint = t("hud.collapse_hint_scroll") if self._max_scroll else t("hud.collapse_hint")
         return [
-            Text(_fit_cell(t("hud.title", count=data.count), width, ellipsis=True),
+            Text(fit_cell(t("hud.title", count=data.count), width, ellipsis=True),
                  style="bold", no_wrap=True),
             *window,
-            Text(_fit_cell(hint, width, ellipsis=True), style="dim", no_wrap=True),
+            Text(fit_cell(hint, width, ellipsis=True), style="dim", no_wrap=True),
         ]
 
     def get_content_width(self, container: Size, viewport: Size) -> int:
@@ -476,7 +476,7 @@ class SessionHud(Widget):
         if not rendered:
             return 0
         # 各行等宽是浮层底色画成规整矩形的前提，所以取最宽那行，再由 lines() 统一补齐。
-        return min(width, max(_text_width(line.plain.rstrip()) for line in rendered))
+        return min(width, max(text_width(line.plain.rstrip()) for line in rendered))
 
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
         if not self._data or container.width < _MIN_PANE_WIDTH:

@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from pickup import keepalive, titles
+from pickup import liveness, titles
 from pickup.cache import cache_dir, get_cache, scan_period
 from pickup.models import format_message_time, session_key
 from pickup.runtime import LaunchError, default_registry
@@ -244,7 +244,7 @@ def resolve_ref(registry, ref: str, limit: int) -> dict:
             hint="确认会话 ID 或前缀是否正确，可先用 pickup search 或 pickup list 查看",
             next_commands=[f"pickup search {ref}", "pickup list"],
         )
-    keepalive.annotate(matches)
+    liveness.annotate(matches)
 
     exact = [s for s in matches if s.get("id") == ref or session_key(s) == ref]
     if len(exact) == 1:
@@ -316,7 +316,7 @@ def cmd_list(args, registry) -> dict:
     cache = titles.load_cache()
 
     scanned = _scan_runtimes(runtimes, args.limit)
-    keepalive.annotate([session for bucket in scanned.values() for session in bucket])
+    liveness.annotate([session for bucket in scanned.values() for session in bucket])
 
     candidates = []
     for runtime in runtimes:
@@ -353,7 +353,7 @@ def cmd_search(args, registry) -> dict:
     cache = titles.load_cache()
 
     scanned = _scan_runtimes(runtimes, args.limit)
-    keepalive.annotate([session for bucket in scanned.values() for session in bucket])
+    liveness.annotate([session for bucket in scanned.values() for session in bucket])
 
     results = []
     for runtime in runtimes:
@@ -506,7 +506,7 @@ def cmd_export(args, registry) -> dict:
     cache = titles.load_cache()
 
     scanned = _scan_runtimes(runtimes, args.limit)
-    keepalive.annotate([session for bucket in scanned.values() for session in bucket])
+    liveness.annotate([session for bucket in scanned.values() for session in bucket])
 
     candidates = []
     for runtime in runtimes:

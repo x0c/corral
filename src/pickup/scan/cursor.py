@@ -420,7 +420,7 @@ def _text_from_content(content) -> str:
     return "\n".join(parts)
 
 
-def _user_text_from_blob(obj: dict) -> str | None:
+def user_text_from_blob(obj: dict) -> str | None:
     if obj.get("role") != "user":
         return None
     raw = _text_from_content(obj.get("content"))
@@ -434,6 +434,9 @@ def _user_text_from_blob(obj: dict) -> str | None:
     if "<" in raw[:80] or len(raw) > 2000:
         return None
     return raw.strip() or None
+
+
+_user_text_from_blob = user_text_from_blob  # 旧私有名兼容：模块内部仍引用
 
 
 def _assistant_text_from_blob(obj: dict) -> str | None:
@@ -512,7 +515,7 @@ def clone_session(session: SessionInfo) -> SessionInfo:
     return info
 
 
-def _connect_store_ro(store_path: str) -> sqlite3.Connection | None:
+def connect_store_ro(store_path: str) -> sqlite3.Connection | None:
     """只读打开 Cursor store.db；必须能看见 WAL，不能加 immutable=1。
 
     Cursor 长期开着 WAL，最新轮次常常还停在 ``store.db-wal`` 里、主库尚未
@@ -524,6 +527,9 @@ def _connect_store_ro(store_path: str) -> sqlite3.Connection | None:
         return sqlite3.connect(uri, uri=True, timeout=0.5)
     except sqlite3.Error:
         return None
+
+
+_connect_store_ro = connect_store_ro  # 旧私有名兼容：模块内部仍引用
 
 
 def load_conversation(path: str) -> list[ConversationMessage]:

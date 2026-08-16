@@ -270,7 +270,7 @@ class InstrumentationTests(unittest.TestCase):
         runtime.scan_sessions.return_value = []
         registry = pickup.RuntimeRegistry((runtime,))
         with mock.patch.object(pickup.titles, "load_cache", return_value={}), mock.patch.object(
-            pickup.keepalive, "annotate"
+            pickup.liveness, "annotate"
         ):
             store = pickup.SessionStore(limit=5, registry=registry)
             store.load()

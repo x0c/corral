@@ -67,7 +67,7 @@ LAYOUT_POLL_INTERVAL = 1.0
 LIST_PANE_WIDTH = 39  # 分栏时左栏固定宽度，对应旧版 EMBED_LEFT_BAND
 # 活跃判定可接受的存活证据陈旧上限（秒）。右栏在显示的会话每轮抓帧都会刷新证据，
 # 所以这条路几乎永远命中缓存；只有久未露面的会话才真去 fork 一次 has-session。
-# 判定「会话是否已结束」不走这条缓存，见 embed.is_alive 的 max_age 说明。
+# 判定「会话是否已结束」不走这条缓存，见 liveness.is_alive 的 max_age 说明。
 _ALIVE_EVIDENCE_TTL = 3.0
 # 选择跟随的节流窗口（秒）。单次方向键立即生效（无额外延迟），连按时窗口内只
 # 保留最后一次——否则连按 N 下就实打实重建 N 次右栏，每次约 180ms。
@@ -272,8 +272,9 @@ class MainScreen(
         self._app_focused = True
         self._update_channel: str | None = None
         self._update_latest: str | None = None
-        # 全文搜索索引：首屏扫描完成后在后台预热，Ctrl+F 打开弹窗时通常已就绪。
+        # 全文搜索索引：首屏卡片画完后再延后预热，Ctrl+F 打开弹窗时通常已就绪。
         self._search_index = None
+        self._search_warm_scheduled = False
         # 右上角会话小窗：展开状态全局共用一份（切格不该让它一会儿开一会儿关），
         # 最近一次算好的摘要按会话键留着，历史文件正在被写、缓存暂时失效时继续
         # 显示旧摘要，避免小窗一秒一闪。
@@ -286,6 +287,7 @@ class MainScreen(
         self._preview_warm_at: dict[str, float] = {}
         self._activity_board = ActivityBoard()
         self._activity_board_active = False
+        self._board_linger_timer = None
         self._shell_after_board = False
 
     def compose(self) -> ComposeResult:
@@ -337,7 +339,9 @@ class MainScreen(
         # registry.scan_all()（RuntimeRegistry 的廉价预检缓存不是线程安全的）。
         if self.store.loaded:
             self._start_background_refresh()
-            self._schedule_search_index_warm()
+            # 必须等首帧 refresh 之后再开始倒计时：从 on_mount 起算墙钟，
+            # 首屏本身一慢（真机高负载 / Pilot）预热就会撞上出卡片。
+            self.call_after_refresh(self._schedule_search_index_warm)
         else:
             self._await_initial_load()
         self.set_interval(CACHE_POLL_INTERVAL, self._poll_cache)
@@ -395,21 +399,28 @@ class MainScreen(
 
         本进程 `store.hosted` 仍登记时优先相信托管身份，避免单次
         `has-session` 超时假阴性把分屏组拆掉再 remount。
+
+        判活顺序必须先走 hosted / live：二者都是内存字段，开屏和方向键跟随
+        会对每个组成员调用这里。先问 `is_alive` 会在证据缓存未命中时同步
+        fork `has-session`（约 5ms × 格数），而结果就算失败也仍会落到 hosted/live。
+        `is_alive(..., max_age=)` 只留给「扫描器还没标 live、本进程也没登记」的
+        兜底；抓帧死亡宣告仍走不带缓存的那条路径。
         """
         import pickup
-        from pickup import embed
+        from pickup import liveness
 
-        kname = session.get("keepalive_name")
-        if kname and embed.is_alive(str(kname), max_age=_ALIVE_EVIDENCE_TTL):
-            return True
         key = pickup.session_key(session)
-        hosted = self.store.hosted.get(key)
-        if hosted:
+        if self.store.hosted.get(key):
             return True
-        return bool(session.get("live"))
+        if session.get("live"):
+            return True
+        kname = session.get("keepalive_name")
+        if kname and liveness.is_alive(str(kname), max_age=_ALIVE_EVIDENCE_TTL):
+            return True
+        return False
 
     def _is_session_active(self, key: str) -> bool:
-        from pickup import embed
+        from pickup import liveness
 
         session = self.store.find_session(key)
         if session is not None and self._session_is_active(session):
@@ -430,14 +441,9 @@ class MainScreen(
             if spec.keepalive_name in checked:
                 continue
             checked.add(spec.keepalive_name)
-            if embed.is_alive(spec.keepalive_name, max_age=_ALIVE_EVIDENCE_TTL):
+            if liveness.is_alive(spec.keepalive_name, max_age=_ALIVE_EVIDENCE_TTL):
                 return True
         return False
-
-
-        # 焦点由 SplitPaneArea 收尾：还有剩余实时格就接着用，最后一格被关掉才
-        # 回列表。这里再调一次 _focus_list() 会把焦点提前抢走，让接力落空。
-
 
     def _play_dragon(self) -> None:
         try:
@@ -550,11 +556,11 @@ class MainScreen(
                 self.nav.source = alt
         self.call_next(self._rebuild_and_follow)
         self._start_background_refresh()
-        self._schedule_search_index_warm()
 
     async def _rebuild_and_follow(self) -> None:
         await self._rebuild_list()
         self._try_restore_startup_layout()
+        self._schedule_search_index_warm()
 
     # ---- 后台重扫：Textual worker（取代旧版裸 threading.Thread + 0.5s dirty 轮询），
     # 发现变化直接 call_from_thread 触发重建，不再有轮询延迟；连续空闲多轮后自适应
@@ -1134,7 +1140,7 @@ class MainScreen(
         area = self._split_area()
         if key in area.ordered_session_keys():
             return
-        name = session.get("keepalive_name") if self._is_session_active(session) else None
+        name = session.get("keepalive_name") if self._session_is_active(session) else None
         if name:
             project = pickup._normalize_cwd(session.get("cwd"))
             area.show_hosted_group(
@@ -1398,8 +1404,11 @@ class MainScreen(
 
         预热跑在后台线程，但 Python 有 GIL：解析正文期间实测会让界面每帧多滞后
         4~5ms（p95 9~14ms），首屏出卡片因此慢了 110~165ms——而首屏目标本来就只有
-        1 秒。延后一小会儿再开始，用户完全无感，首屏回归也回到噪声水平。
+        1 秒。倒计时必须从「卡片已经画出来」算起，不能从 on_mount 起算墙钟。
         """
+        if self._search_warm_scheduled:
+            return
+        self._search_warm_scheduled = True
         self.set_timer(_SEARCH_INDEX_WARM_DELAY, self._warm_search_index)
 
     @work(thread=True, group="search-index")

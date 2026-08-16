@@ -33,7 +33,7 @@ _SKIP_PREFIXES = (
 )
 
 
-def _extract_text(content) -> str | None:
+def extract_text(content) -> str | None:
     """从消息 content 中提取纯文本，跳过本地命令回显。"""
     if isinstance(content, str):
         t = content.strip()
@@ -61,11 +61,17 @@ def _extract_text(content) -> str | None:
     return None
 
 
-def _entry_time(entry: dict) -> float | None:
+_extract_text = extract_text  # 旧私有名兼容：模块内部与测试仍引用
+
+
+def entry_time(entry: dict) -> float | None:
     # entry.get("snapshot", {}) 的默认值只在 key 缺失时生效；key 存在但值是 JSON null
     # 时会拿到 None，再 .get("timestamp") 直接 AttributeError，必须 `or {}` 兜底。
     snapshot = entry.get("snapshot") or {}
     return _parse_timestamp(entry.get("timestamp")) or _parse_timestamp(snapshot.get("timestamp"))
+
+
+_entry_time = entry_time  # 旧私有名兼容：模块内部与测试仍引用
 
 
 def _read_head(path: str, max_lines: int = 300) -> list[dict]:
@@ -114,7 +120,8 @@ def _read_tail(path: str, max_bytes: int = 65536) -> list[dict]:
     return entries
 
 
-_INTERRUPTED_MARKER = "[Request interrupted by user]"
+INTERRUPTED_MARKER = "[Request interrupted by user]"
+_INTERRUPTED_MARKER = INTERRUPTED_MARKER  # 旧私有名兼容：模块内部仍引用
 
 _LOW_VALUE_PROMPTS = {
     "继续",

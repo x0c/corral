@@ -246,13 +246,15 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
                 used.add(pid)
 
 
-def _event_time(entry: dict) -> float | None:
+def event_time(entry: dict) -> float | None:
     """wire.jsonl 每行的 time 是毫秒 epoch，转成秒。"""
     t = entry.get("time")
     if isinstance(t, (int, float)):
         return t / 1000
     return None
 
+
+_event_time = event_time  # 旧私有名兼容：模块内部仍引用
 
 
 def _text_from_parts(parts) -> str:
@@ -268,7 +270,7 @@ def _text_from_parts(parts) -> str:
     return "\n\n".join(texts)
 
 
-def _user_text(entry: dict) -> str | None:
+def user_text(entry: dict) -> str | None:
     """从 context.append_message 事件里取真人用户正文；系统注入事件返回 None。"""
     message = entry.get("message")
     if not isinstance(message, dict) or message.get("role") != "user":
@@ -280,6 +282,9 @@ def _user_text(entry: dict) -> str | None:
         return None
     text = _text_from_parts(message.get("content"))
     return text or None
+
+
+_user_text = user_text  # 旧私有名兼容：模块内部仍引用
 
 
 def _assistant_part_text(entry: dict) -> str | None:
@@ -294,7 +299,7 @@ def _assistant_part_text(entry: dict) -> str | None:
     return text or None
 
 
-def _iter_message_entries(lines):
+def iter_message_entries(lines):
     """从原始文本行里过滤并解析出对话事件（跳过系统提示 / 工具快照等大行）。"""
     for line in lines:
         line = line.strip()
@@ -306,6 +311,9 @@ def _iter_message_entries(lines):
             yield json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
+
+
+_iter_message_entries = iter_message_entries  # 旧私有名兼容：模块内部仍引用
 
 
 def _read_head_lines(path: str, max_lines: int = 400) -> list[str]:

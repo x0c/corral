@@ -47,6 +47,11 @@ class I18nCatalogTests(unittest.TestCase):
         i18n.set_lang("en")
         self.assertEqual(t("action.advanced"), "Advanced")
         self.assertEqual(t("list.new_session"), "+ New session")
+        self.assertEqual(t("list.activity_board"), "Active sessions")
+        self.assertEqual(
+            t("list.activity_board_count", count="3 sessions"),
+            "Active sessions  ·  3 sessions",
+        )
         self.assertEqual(t("list.sep_pinned"), "Pinned")
         self.assertEqual(t("list.sep_today"), "Today")
         self.assertEqual(t("time.minutes_ago", n=2), "2m ago")
@@ -54,6 +59,11 @@ class I18nCatalogTests(unittest.TestCase):
         i18n.set_lang("zh")
         self.assertEqual(t("action.advanced"), "高级操作")
         self.assertEqual(t("list.new_session"), "＋ 新建会话")
+        self.assertEqual(t("list.activity_board"), "活跃会话")
+        self.assertEqual(
+            t("list.activity_board_count", count="3 个会话"),
+            "活跃会话  ·  3 个会话",
+        )
         self.assertEqual(t("list.sep_pinned"), "置顶")
         self.assertEqual(t("list.sep_today"), "今天")
         self.assertEqual(t("time.minutes_ago", n=2), "2分钟前")

@@ -80,6 +80,23 @@ class ClaudeAttentionSignalTests(unittest.TestCase):
             _write_jsonl(path, base)
             self.assertEqual(inspect_session(_session("claude", path)).phase, "idle")
 
+    def test_live_user_prompt_without_agent_work_is_idle(self) -> None:
+        """常驻进程还在、历史上只有用户开口时，不能把绿点当成执行中。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "user",
+                        "uuid": "u1",
+                        "origin": {"kind": "human"},
+                        "message": {"role": "user", "content": "开始"},
+                    }
+                ],
+            )
+            self.assertEqual(inspect_session(_session("claude", path)).phase, "idle")
+
     def test_non_live_session_never_reports_working_or_waiting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "claude.jsonl"
@@ -160,6 +177,22 @@ class CodexAttentionSignalTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(inspect_session(_session("codex", path)).phase, "working")
+            self.assertEqual(inspect_session(_session("codex", path, live=False)).phase, "idle")
+
+    def test_live_user_message_without_task_start_is_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "timestamp": "2026-08-16T10:00:00Z",
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "请继续"},
+                    }
+                ],
+            )
+            self.assertEqual(inspect_session(_session("codex", path)).phase, "idle")
             self.assertEqual(inspect_session(_session("codex", path, live=False)).phase, "idle")
 
 
@@ -265,6 +298,62 @@ class PiAttentionSignalTests(unittest.TestCase):
             }])
             self.assertEqual(inspect_session(_session("pi", path, live=False)).phase, "idle")
 
+    def test_live_completed_turn_stays_idle_while_process_resident(self) -> None:
+        """进程仍在、最后一轮已 stop：常驻 TUI 不得亮执行中绿点。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pi.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "message", "id": "u1", "timestamp": "2026-08-16T13:00:00Z",
+                        "message": {"role": "user", "content": "请继续"},
+                    },
+                    {
+                        "type": "message", "id": "a1", "timestamp": "2026-08-16T13:01:00Z",
+                        "message": {
+                            "role": "assistant", "stopReason": "stop",
+                            "content": [{"type": "text", "text": "做完了"}],
+                        },
+                    },
+                ],
+            )
+            self.assertEqual(inspect_session(_session("pi", path)).phase, "idle")
+
+    def test_live_user_prompt_after_quota_error_is_not_working(self) -> None:
+        """额度挂掉后最后一条常常是 user；进程还在也不能亮绿。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pi.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "message", "id": "u1", "timestamp": "2026-08-16T13:15:00Z",
+                        "message": {"role": "user", "content": "下一问"},
+                    }
+                ],
+            )
+            self.assertEqual(inspect_session(_session("pi", path)).phase, "idle")
+
+    def test_live_tool_use_without_result_stays_working(self) -> None:
+        """进程仍在且明确在跑工具时，绿点必须保留。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pi.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "message", "id": "a1", "timestamp": "2026-08-16T15:00:00Z",
+                        "message": {
+                            "role": "assistant", "stopReason": "toolUse",
+                            "content": [{"type": "toolCall", "id": "bash-1", "name": "bash"}],
+                        },
+                    }
+                ],
+            )
+            self.assertEqual(inspect_session(_session("pi", path)).phase, "working")
+            self.assertEqual(inspect_session(_session("pi", path, live=False)).phase, "idle")
+
 
 class OpenCodeAttentionSignalTests(unittest.TestCase):
     def _database(self, path: Path) -> sqlite3.Connection:
@@ -350,6 +439,60 @@ class OpenCodeAttentionSignalTests(unittest.TestCase):
             self.assertIsNone(evidence.question_token)
             self.assertIsNotNone(evidence.activity_token)
 
+    def test_empty_incomplete_assistant_is_idle_even_while_live(self) -> None:
+        """tool-calls 之后插入的空助手占位不能因为进程还在就亮绿。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            connection.execute(
+                "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                ("m1", "session-1", 1, 1, json.dumps({"role": "assistant", "time": {"created": 1}})),
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "idle")
+            self.assertEqual(inspect_session(_session("opencode", path, live=False)).phase, "idle")
+
+    def test_streaming_assistant_parts_keep_live_turn_working(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            connection.execute(
+                "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                ("m1", "session-1", 1, 1, json.dumps({"role": "assistant", "time": {"created": 1}})),
+            )
+            connection.execute(
+                "INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+                ("p1", "m1", "session-1", 2, 2, json.dumps({"type": "step-start"})),
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "working")
+            self.assertEqual(inspect_session(_session("opencode", path, live=False)).phase, "idle")
+
+    def test_running_tool_keeps_live_turn_working(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "opencode.db"
+            connection = self._database(path)
+            connection.execute(
+                "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                ("m1", "session-1", 1, 1, json.dumps({"role": "assistant", "time": {"created": 1}})),
+            )
+            connection.execute(
+                "INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "p1",
+                    "m1",
+                    "session-1",
+                    2,
+                    2,
+                    json.dumps({"type": "tool", "tool": "bash", "callID": "c1", "state": {"status": "running"}}),
+                ),
+            )
+            connection.commit()
+            connection.close()
+            self.assertEqual(inspect_session(_session("opencode", path)).phase, "working")
+
 
 class CursorAttentionSignalTests(unittest.TestCase):
     def _database(self, path: Path, objects: list[dict | bytes]) -> None:
@@ -388,8 +531,43 @@ class CursorAttentionSignalTests(unittest.TestCase):
                 ],
             )
             evidence = inspect_session(_session("cursor", path, live=False, signal_probe=True))
-            self.assertEqual(evidence.phase, "unknown")
+            self.assertEqual(evidence.phase, "idle")
+            self.assertNotEqual(evidence.phase, "working")
             self.assertIsNotNone(evidence.activity_token)
+
+    def test_live_completed_assistant_text_is_idle_despite_resident_process(self) -> None:
+        """Cursor 常驻进程还在、历史已有最终答复时，不得亮执行中绿点。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.db"
+            self._database(
+                path,
+                [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "对照 BrainDrop 的液态玻璃已经改完"}],
+                    }
+                ],
+            )
+            evidence = inspect_session(_session("cursor", path))
+            self.assertEqual(evidence.phase, "idle")
+            self.assertNotEqual(evidence.phase, "working")
+
+    def test_live_open_tool_call_does_not_infer_working_from_history(self) -> None:
+        """历史里最新是未完成工具调用时仍不从数据库推导 working，交给观察器。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.db"
+            self._database(
+                path,
+                [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool-call", "toolName": "Shell", "toolCallId": "call-shell-1"}
+                        ],
+                    }
+                ],
+            )
+            self.assertEqual(inspect_session(_session("cursor", path)).phase, "unknown")
 
     def test_structured_terminal_marker_generates_activity_without_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -399,7 +577,7 @@ class CursorAttentionSignalTests(unittest.TestCase):
                 [{"role": "assistant", "content": [], "status": "aborted"}],
             )
             evidence = inspect_session(_session("cursor", path, live=False, signal_probe=True))
-            self.assertEqual(evidence.phase, "unknown")
+            self.assertEqual(evidence.phase, "idle")
             self.assertIsNotNone(evidence.activity_token)
 
     def test_unpaired_ask_question_is_waiting_only_while_live(self) -> None:
@@ -452,7 +630,7 @@ class CursorAttentionSignalTests(unittest.TestCase):
             ]
             self._database(bounded_path, [old_question, *fillers])
             evidence = inspect_session(_session("cursor", bounded_path))
-            self.assertEqual(evidence.phase, "unknown")
+            self.assertEqual(evidence.phase, "idle")
             self.assertIsNone(evidence.question_token)
 
     def test_result_before_call_is_not_waiting(self) -> None:
@@ -552,7 +730,7 @@ class CursorAttentionSignalTests(unittest.TestCase):
             ]
             self._database(path, [_cursor_ask_question_blob(call_id), *fillers])
             evidence = inspect_session(_session("cursor", path))
-            self.assertEqual(evidence.phase, "unknown")
+            self.assertEqual(evidence.phase, "idle")
             self.assertIsNone(evidence.question_token)
 
 

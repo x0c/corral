@@ -16,8 +16,9 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Input, Label, ListView, Static
 
-from pickup.display import _fuzzy_match
 from pickup.i18n import t
+from pickup.projects import fuzzy_match
+from pickup.textutil import fit_cell, text_width
 from pickup.ui.session_list import NoSelectListItem
 
 
@@ -138,12 +139,10 @@ class RuntimePickerModal(OutsideClickDismiss, ModalScreen[str | None]):
 
 def _tail(text: str, width: int) -> str:
     """路径这类「越靠后越关键」的文案：放不下时砍开头，保住结尾那几级目录。"""
-    import pickup
-
-    if pickup._text_width(text) <= width or width <= 1:
+    if text_width(text) <= width or width <= 1:
         return text
     body = text
-    while body and pickup._text_width(body) > width - 1:
+    while body and text_width(body) > width - 1:
         body = body[1:]
     return "…" + body
 
@@ -179,12 +178,10 @@ class _ColumnRow(Widget):
         self.available = available
 
     def render(self) -> Text:
-        import pickup
-
         width = max(4, self.size.width or 24)
-        main_width = min(pickup._text_width(self.main), width)
+        main_width = min(text_width(self.main), width)
         text = Text(
-            pickup._fit_cell(self.main, main_width, ellipsis=True),
+            fit_cell(self.main, main_width, ellipsis=True),
             style="" if self.available else "dim",
         )
         rest = width - main_width - 2
@@ -298,7 +295,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
             return list(self._projects)
         out: list[tuple[str, str, str]] = []
         for cwd_key, label, hint in self._projects:
-            if _fuzzy_match(needle, label, cwd_key, _short_path(hint)):
+            if fuzzy_match(needle, label, cwd_key, _short_path(hint)):
                 out.append((cwd_key, label, hint))
         return out
 

@@ -59,7 +59,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
             "pickup.store.titles.resolve_initial_title",
             side_effect=lambda session, cache: (session["fallback_title"], False),
         )
-        self.keepalive_patch = mock.patch("pickup.store.keepalive.annotate")
+        self.keepalive_patch = mock.patch("pickup.store.liveness.annotate")
         self.title_patch.start()
         self.keepalive = self.keepalive_patch.start()
 

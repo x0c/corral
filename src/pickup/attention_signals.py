@@ -89,6 +89,27 @@ def _advance_observed(current: float, *values: Any) -> float:
     return current
 
 
+def _path_mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _finalize_history_phase(phase: str, live: bool) -> str:
+    """把历史证据收成可展示阶段；进程活着本身不能冒充执行中。
+
+    Cursor 不走这里：它的 ``unknown`` 要留给观察器决定绿点。
+    """
+    if phase in {"working", "waiting"} and not live:
+        return "idle"
+    if phase == "unknown":
+        # 常驻 TUI 停在输入框、额度挂掉、或尾部看不到执行证据时，不能把
+        # unknown 留给状态库去沿用旧的执行中。
+        return "idle"
+    return phase
+
+
 def _read_jsonl_tail(path: str) -> list[dict]:
     try:
         size = os.path.getsize(path)
@@ -166,8 +187,7 @@ def _inspect_claude(session: dict) -> AttentionEvidence:
             if content == "[Request interrupted by user]":
                 phase = "idle"
                 activity_token = _token("claude", "interrupted", native)
-            else:
-                phase = "working"
+            # 用户开口不是执行证据。常驻窗口停在输入框时最后一条常常是 user。
 
         if entry_type == "assistant":
             has_agent_output = False
@@ -209,8 +229,7 @@ def _inspect_claude(session: dict) -> AttentionEvidence:
             question_token=question_token,
             observed_at=observed_at,
         )
-    if phase in {"working", "waiting"} and not live:
-        phase = "idle"
+    phase = _finalize_history_phase(phase, live)
     return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
 
 
@@ -238,7 +257,7 @@ def _inspect_codex(session: dict) -> AttentionEvidence:
         relevant = False
 
         if entry.get("type") == "event_msg" and payload_type == "user_message":
-            phase = "working"
+            # 用户消息只说明新一轮可能开始，不能当成正在跑模型。
             relevant = True
         elif payload_type == "task_started":
             phase = "working"
@@ -279,8 +298,7 @@ def _inspect_codex(session: dict) -> AttentionEvidence:
             question_token=next(reversed(pending.values())),
             observed_at=observed_at,
         )
-    if phase in {"working", "waiting"} and not live:
-        phase = "idle"
+    phase = _finalize_history_phase(phase, live)
     return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
 
 
@@ -318,7 +336,7 @@ def _inspect_kimi(session: dict) -> AttentionEvidence:
             native = _event_native(entry, "uuid", "time")
 
         if top_type == "turn.prompt":
-            phase = "working"
+            # 提问落盘不是执行证据；真正在跑要看随后的 tool.call / content.part。
             last_structured_type = top_type
             last_structured_native = native
             observed_at = _advance_observed(observed_at, entry.get("time"))
@@ -361,8 +379,7 @@ def _inspect_kimi(session: dict) -> AttentionEvidence:
             question_token=next(reversed(pending.values())),
             observed_at=observed_at,
         )
-    if phase in {"working", "waiting"} and not live:
-        phase = "idle"
+    phase = _finalize_history_phase(phase, live)
     return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
 
 
@@ -370,9 +387,9 @@ def _inspect_pi(session: dict) -> AttentionEvidence:
     """从 Pi 已落盘的完整消息与工具调用判断会话关注状态。
 
     Pi 只在一轮助手输出完成后写入 assistant 消息，因此 ``stop``、``error`` 和
-    ``aborted`` 都是稳定的空闲证据；用户消息、工具调用和工具结果后的下一轮则只在
-    进程仍存活时显示为执行中。自定义扩展若使用统一的结构化提问工具名，同样可得到
-    等待回答提示。
+    ``aborted`` 都是稳定的空闲证据。常驻 TUI 不退出时 ``live`` 仍可为真，但不能
+    只因为最后一条是用户消息就亮绿；执行中只认尚未收束的工具调用。自定义扩展若
+    使用统一的结构化提问工具名，同样可得到等待回答提示。
     """
     path = str(session.get("path") or "")
     entries = _read_jsonl_tail(path)
@@ -396,7 +413,7 @@ def _inspect_pi(session: dict) -> AttentionEvidence:
         timestamp = message.get("timestamp") or entry.get("timestamp")
 
         if role == "user":
-            phase = "working"
+            # 用户开口不是执行证据。额度挂掉、窗口停在输入框时最后一条也常是 user。
             observed_at = _advance_observed(observed_at, timestamp)
             continue
 
@@ -435,8 +452,7 @@ def _inspect_pi(session: dict) -> AttentionEvidence:
             question_token=next(reversed(pending.values())),
             observed_at=observed_at,
         )
-    if phase in {"working", "waiting"} and not live:
-        phase = "idle"
+    phase = _finalize_history_phase(phase, live)
     return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
 
 
@@ -498,20 +514,35 @@ def _inspect_opencode(session: dict) -> AttentionEvidence:
     pending: dict[str, str] = {}
     activity_token = None
     relevant_times: list[float] = []
+    newest_id = str(messages[0]["id"] or "") if messages else ""
+    newest_has_parts = False
+    newest_open_step = False
+    running_tools = False
     # 逆序恢复时间顺序，确保回答/完成能消掉此前的问题。
     for row in reversed(parts):
         part = _json_object(row["data"])
-        if part.get("type") == "tool" and part.get("tool") in _QUESTION_TOOLS:
-            row_time = _timestamp(row["time_updated"]) or _timestamp(row["time_created"])
-            if row_time is not None:
-                relevant_times.append(row_time)
-            call_id = str(part.get("callID") or row["id"] or "")
-            state = part.get("state") if isinstance(part.get("state"), dict) else {}
-            status = state.get("status")
+        part_type = part.get("type")
+        row_time = _timestamp(row["time_updated"]) or _timestamp(row["time_created"])
+        if newest_id and str(row["message_id"] or "") == newest_id:
+            newest_has_parts = True
+            if part_type == "step-start":
+                newest_open_step = True
+            elif part_type == "step-finish":
+                newest_open_step = False
+        if part_type != "tool":
+            continue
+        if row_time is not None:
+            relevant_times.append(row_time)
+        call_id = str(part.get("callID") or row["id"] or "")
+        state = part.get("state") if isinstance(part.get("state"), dict) else {}
+        status = state.get("status")
+        if part.get("tool") in _QUESTION_TOOLS:
             if status in {"pending", "running"} and call_id:
                 pending[call_id] = _token("opencode", "question", call_id) or call_id
             elif call_id:
                 pending.pop(call_id, None)
+        elif status in {"pending", "running"}:
+            running_tools = True
 
     phase = "unknown"
     if messages:
@@ -524,13 +555,23 @@ def _inspect_opencode(session: dict) -> AttentionEvidence:
             relevant_times.append(message_time)
         if role == "assistant":
             completed = (message.get("time") or {}).get("completed") if isinstance(message.get("time"), dict) else None
-            if message.get("error") or completed is not None or message.get("finish") == "stop":
-                phase = "idle"
-            elif live:
-                phase = "working"
+            finish = message.get("finish")
             activity_token = _token("opencode", "assistant", native)
-        elif role == "user" and live:
-            phase = "working"
+            if message.get("error") or finish == "stop" or completed is not None:
+                phase = "idle"
+            elif live and (running_tools or newest_open_step or newest_has_parts):
+                # 本条助手消息已经开始写 step/正文/工具，才算正在跑。
+                phase = "working"
+            else:
+                # 空的下一轮助手占位：tool-calls 完成后 OpenCode 会先插入下一条
+                # assistant 行；没有 part 就还没开始生成，常驻窗口不能亮绿。
+                # 进程已死且没有完成标记时同样视为空闲，避免 status 停在 unknown。
+                phase = "idle"
+        elif role == "user":
+            phase = "idle"
+
+    if live and (running_tools or newest_open_step) and phase != "waiting":
+        phase = "working"
 
     if relevant_times:
         observed_at = max(relevant_times)
@@ -639,7 +680,11 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
     if not live and session.get("signal_probe") is not True:
         return _evidence(observed_at=_stable_observed_at(session))
     store_path = _cursor_store_path(str(session.get("path") or ""))
-    observed_at = _stable_observed_at(session, store_path)
+    observed_at = max(
+        _stable_observed_at(session, store_path),
+        _path_mtime(store_path),
+        _path_mtime(store_path + "-wal"),
+    )
     if not store_path or not os.path.isfile(store_path):
         return _evidence(observed_at=observed_at)
     # 有 WAL 时绝不能 immutable：冷会话若刚结束、最新轮次还在 wal 里，
@@ -672,6 +717,8 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
     question_rowids: dict[str, int] = {}
     activity_token = None
     continuation_max = 0
+    last_output_rowid = 0
+    last_tool_activity_rowid = 0
     min_json_rowid = min((row["rowid"] for row in json_rows), default=0)
 
     def _note_question(call_id: str, rowid: int) -> None:
@@ -695,17 +742,20 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
             call_id = str(part.get("toolCallId") or "")
             if part_type == "tool-result" and call_id:
                 answered.add(call_id)
+                last_tool_activity_rowid = max(last_tool_activity_rowid, rowid)
                 if tool_name != "AskQuestion":
                     continuation_max = max(continuation_max, rowid)
             elif part_type == "tool-call" and tool_name == "AskQuestion" and call_id:
                 has_ask_question = True
                 _note_question(call_id, rowid)
             elif part_type == "tool-call" and call_id:
+                last_tool_activity_rowid = max(last_tool_activity_rowid, rowid)
                 continuation_max = max(continuation_max, rowid)
             elif part_type == "text" and str(part.get("text") or "").strip():
                 has_text = True
         if has_text and not has_ask_question:
             continuation_max = max(continuation_max, rowid)
+            last_output_rowid = max(last_output_rowid, rowid)
         terminal = (
             message.get("stopReason")
             or message.get("finishReason")
@@ -716,6 +766,8 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
         if role == "assistant" and (has_text or message.get("error") or is_terminal):
             kind = "terminal" if message.get("error") or is_terminal else "assistant"
             activity_token = _token("cursor", kind, rowid)
+            if message.get("error") or is_terminal:
+                last_output_rowid = max(last_output_rowid, rowid)
 
     for row in reversed(proto_rows):
         raw = row["data"]
@@ -730,6 +782,7 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
         else:
             # 其它工具的 field-2 记录：助手已经在提问之后继续干活。
             continuation_max = max(continuation_max, rowid)
+            last_tool_activity_rowid = max(last_tool_activity_rowid, rowid)
 
     pending: list[str] = []
     for call_id, token in questions.items():
@@ -750,7 +803,10 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
             question_token=pending[-1],
             observed_at=observed_at,
         )
-    # Cursor 的历史库没有可靠执行中标志，永远不从数据库推导 working。
+    # 历史库仍不推导 working：绿点只来自观察器。最新动作已是可见答复或
+    # 结束标记时，必须给出 idle，否则常驻进程会把旧的执行中钉死。
+    if last_output_rowid > last_tool_activity_rowid:
+        return _evidence("idle", activity_token=activity_token, observed_at=observed_at)
     return _evidence("unknown", activity_token=activity_token, observed_at=observed_at)
 
 

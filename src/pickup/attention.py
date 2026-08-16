@@ -493,8 +493,10 @@ class AttentionStore:
                         and current.phase == "waiting"
                         and current.question_token
                         and not _clean_token(evidence.question_token)
+                        and evidence.phase != "idle"
                     ):
                         # 提问已从历史消失、进程还在：视为继续执行，避免黄点粘住。
+                        # 若历史已经给出本轮结束，不能再因为进程还在而强行亮绿。
                         evidence = replace(
                             evidence,
                             phase="working",

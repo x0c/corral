@@ -3657,7 +3657,7 @@ class TuiLayoutTests(unittest.TestCase):
             "cwd": "/tmp", "live": True, "pid": 99,
         }
         claude_runtime.scan_sessions.return_value = [still_live]
-        with mock.patch.object(pickup.keepalive, "annotate"):
+        with mock.patch.object(pickup.liveness, "annotate"):
             store.refresh()
         current = store.find_session("claude:s0")
         self.assertFalse(current.get("live"))
@@ -3665,7 +3665,7 @@ class TuiLayoutTests(unittest.TestCase):
 
         dead = dict(still_live, live=False, pid=None)
         claude_runtime.scan_sessions.return_value = [dead]
-        with mock.patch.object(pickup.keepalive, "annotate"):
+        with mock.patch.object(pickup.liveness, "annotate"):
             store.refresh()
         self.assertNotIn("claude:s0", store._force_ended)
         self.assertFalse(store.find_session("claude:s0").get("live"))
@@ -3693,8 +3693,8 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertTrue(provisional.get("provisional"))
         self.assertEqual(store.find_session(key)["fallback_title"], "接力自 Claude")
 
-        with mock.patch.object(pickup.keepalive, "annotate"), mock.patch.object(
-            pickup.embed, "is_alive", return_value=True
+        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
+            pickup.liveness, "is_alive", return_value=True
         ):
             store.refresh()
         kept = store.find_session(key)
@@ -3708,8 +3708,8 @@ class TuiLayoutTests(unittest.TestCase):
             "keepalive_name": "pickup-cursor-abcd1234",
         }
         cursor_runtime.scan_sessions.return_value = [real]
-        with mock.patch.object(pickup.keepalive, "annotate"), mock.patch.object(
-            pickup.embed, "is_alive", return_value=True
+        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
+            pickup.liveness, "is_alive", return_value=True
         ):
             store.refresh()
         self.assertIsNone(store.find_session(key))
@@ -3747,8 +3747,8 @@ class TuiLayoutTests(unittest.TestCase):
             "fallback_title": "真会话", "cwd": "/tmp/proj", "live": False, "pid": None,
         }
         pi_runtime.scan_sessions.return_value = [real]
-        with mock.patch.object(pickup.keepalive, "annotate"), mock.patch.object(
-            pickup.embed, "is_alive", return_value=True
+        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
+            pickup.liveness, "is_alive", return_value=True
         ):
             store.refresh()
         self.assertIsNone(store.find_session(old_key))
@@ -3798,8 +3798,8 @@ class TuiLayoutTests(unittest.TestCase):
             "cwd": "/tmp/proj", "live": False,
         }
         pi_runtime.scan_sessions.return_value = [real_a, real_b]
-        with mock.patch.object(pickup.keepalive, "annotate"), mock.patch.object(
-            pickup.embed, "is_alive", return_value=True
+        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
+            pickup.liveness, "is_alive", return_value=True
         ):
             store.refresh()
         self.assertIsNotNone(store.find_session(pickup.session_key(first)))
@@ -3835,8 +3835,8 @@ class TuiLayoutTests(unittest.TestCase):
             "fallback_title": "真会话", "cwd": "/tmp/proj", "live": False,
         }
         pi_runtime.scan_sessions.return_value = [real]
-        with mock.patch.object(pickup.keepalive, "annotate"), mock.patch.object(
-            pickup.embed, "is_alive", return_value=True
+        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
+            pickup.liveness, "is_alive", return_value=True
         ):
             store.refresh()
         found = store.find_session(key)
@@ -3871,8 +3871,8 @@ class TuiLayoutTests(unittest.TestCase):
         store.find_session("claude:s1").pop("keepalive_name", None)
         claude_runtime.scan_sessions.return_value = [dict(session)]
         with (
-            mock.patch.object(pickup.keepalive, "annotate"),
-            mock.patch("pickup.store.embed.is_alive", return_value=True) as alive,
+            mock.patch.object(pickup.liveness, "annotate"),
+            mock.patch("pickup.store.liveness.is_alive", return_value=True) as alive,
         ):
             store.refresh()
         alive.assert_called_with("pickup-claude-s1")
@@ -3941,7 +3941,7 @@ class ProjectSidebarTests(unittest.TestCase):
         runtime.scan_sessions.return_value = []
         registry = pickup.RuntimeRegistry((runtime,))
         with mock.patch.object(pickup.titles, "load_cache", return_value={}), mock.patch.object(
-            pickup.keepalive, "annotate"
+            pickup.liveness, "annotate"
         ):
             store = SessionStore(limit=5, registry=registry)
         store.sessions = {
@@ -4464,14 +4464,14 @@ class AgentApiTests(unittest.TestCase):
                 if item.get("pid") == 555:
                     item["keepalive_name"] = "sc-claude-live1234"
 
-        with mock.patch.object(agent_api.keepalive, "annotate", side_effect=_fake_annotate) as mocked:
+        with mock.patch.object(agent_api.liveness, "annotate", side_effect=_fake_annotate) as mocked:
             list_args = mock.Mock(runtime=None, limit=10, top=None, compact=True, status=None, cwd=None,
                                    fields=None, live=None)
             list_result = agent_api.cmd_list(list_args, registry)
             self.assertTrue(mocked.called)
             self.assertTrue(list_result["data"]["sessions"][0]["keepalive"])
 
-        with mock.patch.object(agent_api.keepalive, "annotate", side_effect=_fake_annotate):
+        with mock.patch.object(agent_api.liveness, "annotate", side_effect=_fake_annotate):
             search_args = mock.Mock(keywords=["在跑"], deep=False, runtime=None, limit=10, top=None,
                                      compact=True, fields=None)
             search_result = agent_api.cmd_search(search_args, registry)

@@ -53,6 +53,50 @@ def parse_timestamp(value) -> float | None:
         return None
 
 
+# 工具名 → 语义类别。手机端按类别选图标与配色，不认识的一律 other。
+# 从 remote.richmsg 下沉：这是各端共用的无状态词表，不属于远程展示层。
+_KIND_BY_NAME = {
+    "read": "read",
+    "read_file": "read",
+    "view": "read",
+    "edit": "edit",
+    "str_replace": "edit",
+    "strreplace": "edit",
+    "apply_patch": "edit",
+    "multiedit": "edit",
+    "write": "write",
+    "create_file": "write",
+    "notebookedit": "edit",
+    "bash": "shell",
+    "shell": "shell",
+    "exec": "shell",
+    "exec_command": "shell",
+    "run_terminal_cmd": "shell",
+    "local_shell": "shell",
+    "grep": "search",
+    "glob": "search",
+    "search": "search",
+    "codebase_search": "search",
+    "search_code": "search",
+    "websearch": "web",
+    "web_search": "web",
+    "webfetch": "web",
+    "fetch": "web",
+    "task": "task",
+    "todowrite": "todo",
+    "todo_write": "todo",
+    "askuserquestion": "question",
+    "askquestion": "question",
+    "request_user_input": "question",
+    "question": "question",
+}
+
+
+def classify_tool(name: str) -> str:
+    """把工具名映射为语义类别；未收录的返回 other。"""
+    return _KIND_BY_NAME.get((name or "").strip().lower(), "other")
+
+
 def is_cursor_agent_cmdline(cmdline: str) -> bool:
     """判断命令行是否为 Cursor Agent CLI 主进程（不是 worker-server）。
 

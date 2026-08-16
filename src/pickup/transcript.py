@@ -14,14 +14,13 @@ import re
 import sqlite3
 from typing import Any
 
-from pickup.remote.richmsg import classify
 from pickup.scan import claude as scan_claude
 from pickup.scan import codex as scan_codex
 from pickup.scan import cursor as scan_cursor
 from pickup.scan import kimi as scan_kimi
 from pickup.scan import opencode as scan_opencode
 from pickup.scan import pi as scan_pi
-from pickup.scan.common import parse_timestamp
+from pickup.scan.common import classify_tool, parse_timestamp
 
 SCHEMA_ID = "pickup.share/v1"
 EVENT_TYPES = (
@@ -72,7 +71,7 @@ class _Sink:
         if event_type == "tool_call":
             fields["id"] = str(fields.get("id") or "")
             fields["name"] = str(fields.get("name") or "tool")
-            fields["kind"] = classify(fields["name"])
+            fields["kind"] = classify_tool(fields["name"])
             if "input" not in fields:
                 fields["input"] = {}
         if event_type == "tool_result":
@@ -179,7 +178,7 @@ def _parse_claude(session: dict) -> list[dict]:
             message = entry.get("message")
             if not isinstance(message, dict):
                 continue
-            ts = scan_claude._entry_time(entry)
+            ts = scan_claude.entry_time(entry)
             entry_type = entry.get("type")
             content = message.get("content")
             if entry_type == "user":
@@ -198,8 +197,8 @@ def _parse_claude(session: dict) -> list[dict]:
                         )
                 if origin_kind not in (None, "human"):
                     continue
-                text = scan_claude._extract_text(content or "")
-                if text and text != scan_claude._INTERRUPTED_MARKER:
+                text = scan_claude.extract_text(content or "")
+                if text and text != scan_claude.INTERRUPTED_MARKER:
                     sink.add("user_message", ts, text=text)
                 continue
             if entry_type != "assistant" or not isinstance(content, list):
@@ -270,14 +269,14 @@ def _parse_codex(session: dict) -> list[dict]:
             payload = entry.get("payload")
             if not isinstance(payload, dict):
                 continue
-            ts = scan_codex._entry_time(entry)
+            ts = scan_codex.entry_time(entry)
             kind = payload.get("type")
-            user_text = scan_codex._user_message_text(entry)
+            user_text = scan_codex.user_message_text(entry)
             if user_text:
                 if not _adjacent_dup(sink, "user_message", user_text):
                     sink.add("user_message", ts, text=user_text)
                 continue
-            assistant_text = scan_codex._assistant_message_text(entry)
+            assistant_text = scan_codex.assistant_message_text(entry)
             if assistant_text:
                 if not _adjacent_dup(sink, "assistant_message", assistant_text):
                     sink.add("assistant_message", ts, text=assistant_text)
@@ -325,9 +324,9 @@ def _parse_kimi(session: dict) -> list[dict]:
     except OSError:
         return []
     with handle:
-        for entry in scan_kimi._iter_message_entries(handle):
-            ts = scan_kimi._event_time(entry)
-            user_text = scan_kimi._user_text(entry)
+        for entry in scan_kimi.iter_message_entries(handle):
+            ts = scan_kimi.event_time(entry)
+            user_text = scan_kimi.user_text(entry)
             if user_text is not None:
                 sink.add("user_message", ts, text=user_text)
                 continue
@@ -386,7 +385,7 @@ def _parse_opencode(session: dict) -> list[dict]:
     db_path = str(session.get("path") or "")
     session_id = str(session.get("id") or "")
     sink = _Sink()
-    conn = scan_opencode._connect_ro(db_path)
+    conn = scan_opencode.connect_ro(db_path)
     if conn is None:
         return []
     try:
@@ -458,7 +457,7 @@ def _parse_cursor(session: dict) -> list[dict]:
     sink = _Sink()
     if not os.path.isfile(store_path):
         return []
-    conn = scan_cursor._connect_store_ro(store_path)
+    conn = scan_cursor.connect_store_ro(store_path)
     if conn is None:
         return []
     try:
@@ -503,7 +502,7 @@ def _parse_cursor(session: dict) -> list[dict]:
         role = obj.get("role")
         content = obj.get("content")
         if role == "user":
-            text = scan_cursor._user_text_from_blob(obj)
+            text = scan_cursor.user_text_from_blob(obj)
             if text:
                 sink.add("user_message", text=text)
             continue
@@ -545,14 +544,14 @@ def _parse_cursor(session: dict) -> list[dict]:
 def _parse_pi(session: dict) -> list[dict]:
     path = str(session.get("path") or "")
     sink = _Sink()
-    for item in scan_pi._active_messages(scan_pi._read_entries(path)):
+    for item in scan_pi.active_messages(scan_pi.read_entries(path)):
         message = item.get("message")
         if not isinstance(message, dict):
             continue
         ts = parse_timestamp(item.get("timestamp")) or parse_timestamp(message.get("timestamp"))
         role = message.get("role")
         if role == "user":
-            sink.add("user_message", ts, text=scan_pi._text(message.get("content")))
+            sink.add("user_message", ts, text=scan_pi.message_text(message.get("content")))
             continue
         if role == "toolResult":
             output = message.get("content")

@@ -85,11 +85,14 @@ def _extract_datetime_from_filename(path: str) -> datetime | None:
     return None
 
 
-def _entry_time(entry: dict) -> float | None:
+def entry_time(entry: dict) -> float | None:
     # entry.get("payload", {}) 的默认值只在 key 缺失时生效；key 存在但值是
     # JSON null 时会拿到 None，再 .get(...) 直接 AttributeError，必须 `or {}` 兜底。
     payload = entry.get("payload") or {}
     return _parse_timestamp(entry.get("timestamp")) or _parse_timestamp(payload.get("timestamp"))
+
+
+_entry_time = entry_time  # 旧私有名兼容：模块内部与测试仍引用
 
 
 def _response_message_text(payload: dict, role: str) -> str:
@@ -110,7 +113,7 @@ def _response_message_text(payload: dict, role: str) -> str:
     return text
 
 
-def _user_message_text(entry: dict) -> str:
+def user_message_text(entry: dict) -> str:
     """兼容旧 event_msg 与新版 response_item 的真实用户输入。"""
     payload = entry.get("payload") or {}
     if not isinstance(payload, dict):
@@ -122,7 +125,10 @@ def _user_message_text(entry: dict) -> str:
     return ""
 
 
-def _assistant_message_text(entry: dict) -> str:
+_user_message_text = user_message_text  # 旧私有名兼容：模块内部仍引用
+
+
+def assistant_message_text(entry: dict) -> str:
     """兼容旧 event_msg 与新版 response_item 的助手文本。"""
     payload = entry.get("payload") or {}
     if not isinstance(payload, dict):
@@ -132,6 +138,9 @@ def _assistant_message_text(entry: dict) -> str:
     if entry.get("type") == "response_item":
         return _response_message_text(payload, "assistant")
     return ""
+
+
+_assistant_message_text = assistant_message_text  # 旧私有名兼容：模块内部仍引用
 
 
 def _read_session_head(path: str, max_lines: int = 128) -> list[dict]:

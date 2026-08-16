@@ -17,10 +17,10 @@ import sys as sys
 # 回归用例全挂正是这么来的。包顶层是唯一「任何用法都必经」的位置。
 os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
 
-__version__ = "0.24.128"
+__version__ = "0.24.130"
 
 _MODULE_EXPORTS = {
-    "embed", "keepalive", "titles", "updater", "split_layout", "observe", "theme", "search",
+    "embed", "keepalive", "liveness", "titles", "updater", "split_layout", "observe", "theme", "search",
 }
 _STANDARD_MODULE_EXPORTS = {"shutil"}
 _STANDARD_SYMBOL_EXPORTS = {"datetime": ("datetime", "datetime")}
@@ -34,22 +34,22 @@ _SYMBOL_EXPORTS = {
     "_spawn_title_daemon": ("pickup.cli", "_spawn_title_daemon"),
     "main": ("pickup.bootstrap", "main"),
     "SPINNER_FRAMES": ("pickup.display", "SPINNER_FRAMES"),
-    "UNKNOWN_PROJECT_LABEL": ("pickup.display", "UNKNOWN_PROJECT_LABEL"),
-    "_disambiguate_labels": ("pickup.display", "_disambiguate_labels"),
+    "UNKNOWN_PROJECT_LABEL": ("pickup.projects", "UNKNOWN_PROJECT_LABEL"),
+    "_disambiguate_labels": ("pickup.projects", "disambiguate_labels"),
     "_filter_sessions": ("pickup.display", "_filter_sessions"),
     "_filter_sessions_by_query": ("pickup.display", "_filter_sessions_by_query"),
-    "_fit_cell": ("pickup.display", "_fit_cell"),
-    "_fit_cell_right": ("pickup.display", "_fit_cell_right"),
+    "_fit_cell": ("pickup.textutil", "fit_cell"),
+    "_fit_cell_right": ("pickup.textutil", "fit_cell_right"),
     "_format_relative_time": ("pickup.display", "_format_relative_time"),
-    "_fuzzy_match": ("pickup.display", "_fuzzy_match"),
+    "_fuzzy_match": ("pickup.projects", "fuzzy_match"),
     "_time_brightness_tier": ("pickup.display", "_time_brightness_tier"),
     "TIME_BRIGHTNESS_TIERS": ("pickup.display", "TIME_BRIGHTNESS_TIERS"),
     "TODAY_SECONDS": ("pickup.display", "TODAY_SECONDS"),
-    "_normalize_cwd": ("pickup.display", "_normalize_cwd"),
+    "_normalize_cwd": ("pickup.projects", "normalize_cwd"),
     "_preview_blocks": ("pickup.display", "_preview_blocks"),
     "_project_groups": ("pickup.display", "_project_groups"),
-    "_text_width": ("pickup.display", "_text_width"),
-    "_wrap_preview_text": ("pickup.display", "_wrap_preview_text"),
+    "_text_width": ("pickup.textutil", "text_width"),
+    "_wrap_preview_text": ("pickup.textutil", "wrap_preview_text"),
     "ConversationMessage": ("pickup.models", "ConversationMessage"),
     "LaunchPlan": ("pickup.models", "LaunchPlan"),
     "LaunchRequest": ("pickup.models", "LaunchRequest"),

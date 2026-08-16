@@ -4,7 +4,7 @@
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
 或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
-无末行空行）。筛选框在列表外固定；`＋ 新建` 和活动会话看板在 `#sidebar-sticky` 里也不随
+无末行空行）。筛选框在列表外固定；`＋ 新建` 和活跃会话看板在 `#sidebar-sticky` 里也不随
 列表滚。置顶块、Pinned 分隔线与未置顶（Today / 更早）都在 `#sidebar-scroll`
 里一起滚——置顶只改变排序，不冻在视口里。鼠标在固定头（含筛选框）上滚轮
 仍带动会话列表，顶部位置不变。
@@ -12,7 +12,7 @@
 `$primary` 蓝横线；未置顶再按滚动 24 小时切 today / older 两桶（桶内不重排），
 两侧都有时再插 `Today`/`今天` 线。分隔高 1、disabled、键盘跳过；禁止 Older/其他
 标签。斑马纹按**块**交替，不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
-`＋ 新建`、活动看板与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
+`＋ 新建`、活跃会话看板与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
 起头）。条纹画在 `SessionCard` / `SessionGroupCard` 上，用 `$foreground` 的半透明
 底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类 DEFAULT_CSS 会压过
 ListView 自带的 `.-highlight`，把选中底色吃掉。光标停在会话组卡上时，组卡和
@@ -96,12 +96,27 @@ def _focused_live_session_key(focused) -> str | None:
     if focused is None or getattr(focused, "dead", True):
         # 只有 EmbedPane 有 dead；其它控件（列表、搜索框）一律不算持有右栏输入
         return None
-    node = getattr(focused, "parent", None)
+    return _pane_session_key(getattr(focused, "parent", None), require_live=True)
+
+
+def _focused_board_session_key(focused) -> str | None:
+    """看板用：焦点所在格的会话键，格子刚结束也算。
+
+    `_focused_live_session_key` 要求格子还活着：会话一结束 `dead` 或托管名清空，
+    钉住会被清掉，格子当场从看板消失。看板里用户可能还在看收尾。
+    """
+    return _pane_session_key(focused, require_live=False)
+
+
+def _pane_session_key(focused, *, require_live: bool) -> str | None:
+    node = focused
     while node is not None:
         spec = getattr(node, "spec", None)
         session_key = getattr(spec, "session_key", None)
-        if session_key:
-            return session_key if getattr(spec, "keepalive_name", None) else None
+        if session_key and not str(session_key).startswith("__"):
+            if require_live and not getattr(spec, "keepalive_name", None):
+                return None
+            return str(session_key)
         node = getattr(node, "parent", None)
     return None
 
@@ -138,6 +153,33 @@ class _SidebarRow:
     tree_position: str | None = None
     pinned: bool = False
     stripe: bool = False
+
+
+def _single_identity_splice(
+    old: list[str], new: list[str]
+) -> tuple[str, int] | None:
+    """若 new 相对 old 只插入或删除一个身份，返回 ('insert'|'remove', 下标)。
+
+    增删单条会话是侧栏最常见的集合变化；这时不必 clear()+extend() 整表拆挂。
+    多处变化（搜索、分组展开、一次删整组）仍走全量重建。
+    """
+    if old == new:
+        return None
+    if len(new) == len(old) + 1:
+        index = 0
+        while index < len(old) and old[index] == new[index]:
+            index += 1
+        if old[index:] == new[index + 1:]:
+            return ("insert", index)
+        return None
+    if len(old) == len(new) + 1:
+        index = 0
+        while index < len(new) and old[index] == new[index]:
+            index += 1
+        if old[index + 1:] == new[index:]:
+            return ("remove", index)
+        return None
+    return None
 
 
 def _assign_block_stripes(rows: list[_SidebarRow]) -> list[_SidebarRow]:
@@ -644,8 +686,20 @@ class NewSessionCard(Widget):
         return Text(t("list.new_session"), style="bold") + Text("\n")
 
 
+def activity_board_label(snap: BoardSnapshot | None) -> str:
+    """侧栏入口文案：没人盯时只写名称；有人时写成「活跃会话 · N 个会话」，不写页码。"""
+    if snap is None or not snap.total:
+        return t("list.activity_board")
+    count = (
+        t("group.session_count_one")
+        if snap.total == 1
+        else t("group.session_count", count=snap.total)
+    )
+    return t("list.activity_board_count", count=count)
+
+
 class ActivityBoardCard(Widget):
-    """列表顶部「活动会话」看板入口：一行正文 + 末行间隔（总高 2）。"""
+    """列表顶部「活跃会话」看板入口：一行正文 + 末行间隔（总高 2）。"""
 
     ALLOW_SELECT = False
 
@@ -663,15 +717,7 @@ class ActivityBoardCard(Widget):
 
     def render(self) -> Text:
         snap = self._owner.board_snapshot
-        if snap is not None and snap.total:
-            label = t(
-                "list.activity_board_pages",
-                page=snap.page + 1,
-                pages=snap.page_count,
-            )
-        else:
-            label = t("list.activity_board")
-        out = Text(label, style="bold")
+        out = Text(activity_board_label(snap), style="bold")
         if snap is not None and snap.waiting_off_page:
             out.append(" ")
             out.append("●", style="bold yellow")
@@ -1760,6 +1806,98 @@ class SessionListView(Vertical):
 
         self.call_after_refresh(_reapply)
 
+    def _item_for_row(self, row: _SidebarRow, display_titles: dict) -> ListItem | None:
+        """把一行逻辑条目做成 ListItem；分隔线带稳定 id，会话/组卡不设 id。"""
+        import pickup
+
+        if row.kind == "separator":
+            return NoSelectListItem(
+                PinSeparatorCard(
+                    _SEP_LABEL_KEYS.get(row.identity, "list.sep_pinned")
+                ),
+                id=row.identity,
+                disabled=True,
+            )
+        if row.kind == "group" and row.group is not None:
+            card: Widget = SessionGroupCard(
+                row.group, row.member_sessions, pinned=row.pinned
+            )
+        elif row.session is not None:
+            key = pickup.session_key(row.session)
+            card = SessionCard(
+                row.session,
+                self.store,
+                display_title=display_titles.get(
+                    key, row.session["fallback_title"]
+                ),
+                tree_position=row.tree_position,
+                pinned=row.pinned,
+            )
+        else:
+            return None
+        return NoSelectListItem(card)
+
+    def _target_index_after_rows(
+        self,
+        previous_identity: str | None,
+        new_identities: list[str],
+        *,
+        had_rows: bool,
+    ) -> int | None:
+        """集合变化后按原选中身份定位下标；找不到则停在固定头。"""
+        sticky_n = self._sticky_count()
+        new_index = 0
+        if previous_identity in _STICKY_ID_SET:
+            for i, item in enumerate(self._list_items()):
+                if item.id == previous_identity:
+                    new_index = i
+                    break
+        else:
+            for i, identity in enumerate(new_identities):
+                if previous_identity is not None and identity == previous_identity:
+                    new_index = i + sticky_n
+                    break
+        if previous_identity is not None:
+            return new_index
+        if not had_rows:
+            return sticky_n if new_identities else 0
+        return None
+
+    async def _splice_single_row(
+        self,
+        *,
+        action: str,
+        index: int,
+        rows: list[_SidebarRow],
+        display_titles: dict,
+    ) -> bool:
+        """在滚动区插入或摘掉一行。失败返回 False，调用方改走全量重建。"""
+        scroll = self._scroll_list
+        if scroll is None:
+            return False
+        self._syncing_index = True
+        try:
+            with self.app.batch_update():
+                if action == "insert":
+                    if index < 0 or index >= len(rows):
+                        return False
+                    item = self._item_for_row(rows[index], display_titles)
+                    if item is None:
+                        return False
+                    if index >= len(scroll._nodes):
+                        await scroll.append(item)
+                    else:
+                        await scroll.insert(index, [item])
+                elif action == "remove":
+                    if index < 0 or index >= len(scroll._nodes):
+                        return False
+                    await scroll.pop(index)
+                else:
+                    return False
+        finally:
+            self._syncing_index = False
+        return True
+
     async def rebuild(
         self,
         *,
@@ -1769,9 +1907,9 @@ class SessionListView(Vertical):
         """按当前筛选重建条目；尽量保持原有选中的会话不变（后台重扫后调用）。
 
         会话集合（顺序+成员）没变时走原地更新——只换 SessionCard 手上的
-        session 引用、按需 refresh()，不碰 ListView 子项结构；集合真的变了
-        （新增/删除/顺序变化）才走批量清空重建，见 docs/MAINTAINER_GUIDE.md
-        「界面」节的性能优化记录。
+        session 引用、按需 refresh()，不碰 ListView 子项结构；只插入或删除
+        一条时在滚动区就地 splice，避免 clear()+extend() 把整表拆挂一遍；
+        多处变化才走批量清空重建。见 docs/MAINTAINER_GUIDE.md「界面」节。
 
         `select_key`：跨运行时接力 / 空白新建后强制选中刚插入的托管占位卡。
 
@@ -1802,8 +1940,6 @@ class SessionListView(Vertical):
         select_key: str | None,
     ) -> None:
         """rebuild() 的实现体；只允许持 `_rebuild_lock` 时调用。"""
-        import pickup
-
         previous_identity = select_key
         if previous_identity is None and keep_selection:
             previous_identity = self._displayed_selected_identity()
@@ -1814,11 +1950,19 @@ class SessionListView(Vertical):
             {row.identity for row in rows if row.kind == "session"}
         )
         t0 = time.perf_counter()
+        current_identities = self._current_row_identities()
+        had_rows = bool(current_identities)
 
-        if new_identities == self._current_row_identities() and select_key is None:
+        if new_identities == current_identities:
             self._update_rows_in_place(rows)
             self.refresh_board_card()
-            if previous_identity is None and self.index is None:
+            if select_key is not None:
+                target_index = self._target_index_after_rows(
+                    previous_identity, new_identities, had_rows=True
+                )
+                if target_index is not None:
+                    self._apply_index_after_rebuild(target_index)
+            elif previous_identity is None and self.index is None:
                 self.index = self._sticky_count() if rows else 0
             from pickup import observe
             observe.event(
@@ -1829,44 +1973,46 @@ class SessionListView(Vertical):
             )
             return
 
+        splice = _single_identity_splice(current_identities, new_identities)
+        if splice is not None:
+            display_titles = self.store.snapshot()
+            spliced = await self._splice_single_row(
+                action=splice[0],
+                index=splice[1],
+                rows=rows,
+                display_titles=display_titles,
+            )
+            if spliced:
+                self._update_rows_in_place(rows)
+                target_index = self._target_index_after_rows(
+                    previous_identity, new_identities, had_rows=had_rows
+                )
+                if target_index is not None:
+                    self._apply_index_after_rebuild(target_index)
+                else:
+                    self.call_after_refresh(
+                        lambda: setattr(self, "_syncing_index", False)
+                    )
+                self._apply_split_marks()
+                self.refresh_board_card()
+                from pickup import observe
+                observe.event(
+                    "list_rebuild",
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    mode="splice",
+                    card_count=len(rows),
+                )
+                return
+
         display_titles = self.store.snapshot()
         items = [
             NoSelectListItem(NewSessionCard(), id=NEW_SESSION_ID),
             NoSelectListItem(ActivityBoardCard(self), id=ACTIVITY_BOARD_ID),
         ]
         for row in rows:
-            if row.kind == "separator":
-                items.append(
-                    NoSelectListItem(
-                        PinSeparatorCard(
-                            _SEP_LABEL_KEYS.get(row.identity, "list.sep_pinned")
-                        ),
-                        id=row.identity,
-                        disabled=True,
-                    )
-                )
-                continue
-            if row.kind == "group" and row.group is not None:
-                card: Widget = SessionGroupCard(
-                    row.group, row.member_sessions, pinned=row.pinned
-                )
-            elif row.session is not None:
-                key = pickup.session_key(row.session)
-                card = SessionCard(
-                    row.session,
-                    self.store,
-                    display_title=display_titles.get(
-                        key, row.session["fallback_title"]
-                    ),
-                    tree_position=row.tree_position,
-                    pinned=row.pinned,
-                )
-            else:
-                continue
-            items.append(NoSelectListItem(card))
-
-        # clear 前记下是否已有会话卡：用来区分「初次填充」和「用户正停在新建项」
-        had_rows = bool(self._current_row_identities())
+            item = self._item_for_row(row, display_titles)
+            if item is not None:
+                items.append(item)
 
         # batch_update() 抑制 clear()+extend() 中间那次多余重绘；两步都要 await
         # 完成（DOM 真正更新），批量 API 本身已经把"多次 mount"合成一轮。
@@ -1874,25 +2020,9 @@ class SessionListView(Vertical):
         with self.app.batch_update():
             await self._replace_list_items(sticky_items, scroll_items)
 
-        sticky_n = self._sticky_count()
-        new_index = 0
-        if previous_identity in _STICKY_ID_SET:
-            for i, item in enumerate(self._list_items()):
-                if item.id == previous_identity:
-                    new_index = i
-                    break
-        else:
-            for i, identity in enumerate(new_identities):
-                if previous_identity is not None and identity == previous_identity:
-                    new_index = i + sticky_n
-                    break
-        target_index: int | None = None
-        if previous_identity is not None:
-            target_index = new_index
-        elif not had_rows:
-            # 初次填充：默认选列表第一条会话/会话组（跳过固定头），
-            # 进 pickup 即可直接回车恢复，不必先按 ↓。
-            target_index = sticky_n if rows else 0
+        target_index = self._target_index_after_rows(
+            previous_identity, new_identities, had_rows=had_rows
+        )
         if target_index is not None:
             self._apply_index_after_rebuild(target_index)
         else:

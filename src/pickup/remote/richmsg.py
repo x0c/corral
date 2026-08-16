@@ -31,52 +31,16 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 
+from pickup.scan.common import classify_tool
+
 _MAX_DETAIL = 4000
 _MAX_OUTPUT = 2000
 _MAX_TEXT = 40000
 
-# 工具名 → 语义类别。手机端按类别选图标与配色，不认识的一律 other。
-_KIND_BY_NAME = {
-    "read": "read",
-    "read_file": "read",
-    "view": "read",
-    "edit": "edit",
-    "str_replace": "edit",
-    "strreplace": "edit",
-    "apply_patch": "edit",
-    "multiedit": "edit",
-    "write": "write",
-    "create_file": "write",
-    "notebookedit": "edit",
-    "bash": "shell",
-    "shell": "shell",
-    "exec": "shell",
-    "exec_command": "shell",
-    "run_terminal_cmd": "shell",
-    "local_shell": "shell",
-    "grep": "search",
-    "glob": "search",
-    "search": "search",
-    "codebase_search": "search",
-    "search_code": "search",
-    "websearch": "web",
-    "web_search": "web",
-    "webfetch": "web",
-    "fetch": "web",
-    "task": "task",
-    "todowrite": "todo",
-    "todo_write": "todo",
-    "askuserquestion": "question",
-    "askquestion": "question",
-    "request_user_input": "question",
-    "question": "question",
-}
-
+# 只驱动手机端「问题选项按钮」；词表与分类函数已下沉到 scan.common.classify_tool。
 QUESTION_KINDS = {"question"}
 
-
-def classify(name: str) -> str:
-    return _KIND_BY_NAME.get((name or "").strip().lower(), "other")
+classify = classify_tool
 
 
 @dataclass
@@ -442,10 +406,10 @@ def _parse_codex(reader: RichReader) -> list[RichMessage]:
 
 
 def _codex_time(entry: dict) -> float | None:
-    from pickup.scan.codex import _entry_time  # 复用既有的时间解析，避免两套口径
+    from pickup.scan.codex import entry_time  # 复用既有的时间解析，避免两套口径
 
     try:
-        return _entry_time(entry)
+        return entry_time(entry)
     except Exception:
         return None
 
@@ -462,7 +426,7 @@ def _codex_content_text(content: object) -> str:
 # --- Claude ---------------------------------------------------------------
 
 def _parse_claude(reader: RichReader) -> list[RichMessage]:
-    from pickup.scan.claude import _entry_time, _extract_text
+    from pickup.scan.claude import entry_time, extract_text
 
     messages: list[RichMessage] = []
     for entry in _iter_new_jsonl(reader):
@@ -474,7 +438,7 @@ def _parse_claude(reader: RichReader) -> list[RichMessage]:
             continue
         content = message.get("content")
         try:
-            timestamp = _entry_time(entry)
+            timestamp = entry_time(entry)
         except Exception:
             timestamp = None
 
@@ -497,7 +461,7 @@ def _parse_claude(reader: RichReader) -> list[RichMessage]:
             origin = entry.get("origin")
             if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
                 continue
-            text = _extract_text(content or "")
+            text = extract_text(content or "")
             if text:
                 messages.append(RichMessage(reader._next_seq(), "user", _clip(text, _MAX_TEXT), timestamp))
             continue

@@ -211,12 +211,12 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "＋ 新建会话",
     },
     "list.activity_board": {
-        "en": "Activity",
-        "zh": "活动会话",
+        "en": "Active sessions",
+        "zh": "活跃会话",
     },
-    "list.activity_board_pages": {
-        "en": "Activity  {page}/{pages}",
-        "zh": "活动会话  {page}/{pages}",
+    "list.activity_board_count": {
+        "en": "Active sessions  ·  {count}",
+        "zh": "活跃会话  ·  {count}",
     },
     "list.sep_pinned": {
         "en": "Pinned",

@@ -13,9 +13,108 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TextIO
 
-from pickup.display import _disambiguate_labels, _fuzzy_match, _normalize_cwd
 from pickup.i18n import t
 from pickup.scan.common import is_ephemeral_agent_cwd
+
+
+class _LocalizedLabel:
+    """可当字符串用的惰性文案：比较/拼接时按当前语言求值。"""
+
+    def __init__(self, key: str) -> None:
+        self._key = key
+
+    def __str__(self) -> str:
+        from pickup.i18n import t
+
+        return t(self._key)
+
+    def __eq__(self, other: object) -> bool:
+        return str(self) == other
+
+    def __hash__(self) -> int:
+        return hash(self._key)
+
+    def __format__(self, spec: str) -> str:
+        return format(str(self), spec)
+
+    def __add__(self, other: object) -> str:
+        return str(self) + str(other)
+
+    def __radd__(self, other: object) -> str:
+        return str(other) + str(self)
+
+
+UNKNOWN_PROJECT_LABEL = _LocalizedLabel("project.unknown_dir")
+
+
+def normalize_cwd(cwd: object) -> str:
+    """把工作目录归一化为分组/过滤用的唯一键；空值或根目录归一为空字符串。"""
+    text = str(cwd or "").strip()
+    if not text:
+        return ""
+    normalized = os.path.normpath(text)
+    if normalized in (".", "/"):
+        return ""
+    return normalized
+
+
+def disambiguate_labels(cwd_keys: list[str]) -> dict[str, str]:
+    """同名末级目录逐级向上补父级路径，直到唯一（VS Code 标签页风格）。"""
+    parts = {key: [p for p in key.split("/") if p] for key in cwd_keys}
+    depth = {key: 1 for key in cwd_keys}
+    labels: dict[str, str] = {}
+
+    while True:
+        labels = {}
+        for key in cwd_keys:
+            segments = parts[key]
+            d = min(depth[key], len(segments)) if segments else 0
+            labels[key] = "/".join(segments[-d:]) if d else key
+
+        groups: dict[str, list[str]] = {}
+        for key, label in labels.items():
+            groups.setdefault(label, []).append(key)
+
+        changed = False
+        for members in groups.values():
+            if len(members) <= 1:
+                continue
+            for key in members:
+                if depth[key] < len(parts[key]):
+                    depth[key] += 1
+                    changed = True
+        if not changed:
+            return labels
+
+
+def fuzzy_match(query: str, *texts: str) -> bool:
+    """大小写无关模糊匹配：子串包含，或查询字符按序出现（子序列）。
+
+    空查询视为匹配全部。用于侧边栏项目搜索框过滤会话。
+    """
+    needle = (query or "").casefold().strip()
+    if not needle:
+        return True
+    for raw in texts:
+        hay = (raw or "").casefold()
+        if not hay:
+            continue
+        if needle in hay:
+            return True
+        it = iter(hay)
+        if all(ch in it for ch in needle):
+            return True
+    return False
+
+
+def session_project_label(session: dict) -> str:
+    """会话所属项目的展示名（cwd 末级目录；未知目录用统一文案）。"""
+    cwd_key = normalize_cwd(session.get("cwd"))
+    if not cwd_key:
+        return str(session.get("cwd_display") or UNKNOWN_PROJECT_LABEL)
+    base = os.path.basename(cwd_key)
+    return base or str(session.get("cwd_display") or UNKNOWN_PROJECT_LABEL)
+
 
 DEFAULT_SCAN_DEPTH = 4
 
@@ -183,7 +282,7 @@ def _scan_one_root(
     """
     # 根自身若是 git 项目也收录（深度 0）。
     if _has_git_marker(root):
-        seen[_normalize_cwd(root) or root] = None
+        seen[normalize_cwd(root) or root] = None
         if not allow_nested:
             return
 
@@ -211,7 +310,7 @@ def _scan_one_root(
                 continue
             visited.add(child)
             if _has_git_marker(child):
-                seen[_normalize_cwd(child) or child] = None
+                seen[normalize_cwd(child) or child] = None
                 if not allow_nested:
                     continue
             stack.append((child, depth + 1))
@@ -230,7 +329,7 @@ def discover(
     by_path: dict[str, set[str]] = {}
 
     for raw in session_cwds or ():
-        key = _normalize_cwd(raw)
+        key = normalize_cwd(raw)
         if not key or is_ephemeral_agent_cwd(key):
             continue
         # 会话 cwd 即使目录已删也保留（与旧 _project_groups 一致）；启动时再校验。
@@ -243,11 +342,11 @@ def discover(
             extra_excludes=extra_excludes,
             use_cache=use_cache,
         ):
-            key = _normalize_cwd(path) or path
+            key = normalize_cwd(path) or path
             by_path.setdefault(key, set()).add(_SOURCE_FILESYSTEM)
 
     named = [p for p in by_path if p]
-    labels = _disambiguate_labels(named)
+    labels = disambiguate_labels(named)
     projects = [
         Project(
             path=path,
@@ -283,11 +382,11 @@ def _match_rank(query: str, project: Project) -> int | None:
         return 2
     if needle in path:
         return 3
-    if _fuzzy_match(query, project.name):
+    if fuzzy_match(query, project.name):
         return 4
-    if _fuzzy_match(query, project.label):
+    if fuzzy_match(query, project.label):
         return 5
-    if _fuzzy_match(query, project.path):
+    if fuzzy_match(query, project.path):
         return 6
     return None
 
@@ -359,7 +458,7 @@ def session_cwds_from_sessions(sessions_by_source: dict[str, list[dict]]) -> lis
     seen: set[str] = set()
     for bucket in sessions_by_source.values():
         for session in bucket:
-            key = _normalize_cwd(session.get("cwd"))
+            key = normalize_cwd(session.get("cwd"))
             if not key or key in seen or is_ephemeral_agent_cwd(key):
                 continue
             seen.add(key)
@@ -383,7 +482,7 @@ def project_entries(
     stats: dict[str, dict] = {}
     for bucket in sessions_by_source.values():
         for session in bucket:
-            key = _normalize_cwd(session.get("cwd"))
+            key = normalize_cwd(session.get("cwd"))
             if not key or is_ephemeral_agent_cwd(key):
                 # 未知目录仍留给旧逻辑：空 cwd 聚合在侧边栏意义不大，跳过。
                 continue
@@ -398,7 +497,7 @@ def project_entries(
     unknown_mtime = 0.0
     for bucket in sessions_by_source.values():
         for session in bucket:
-            key = _normalize_cwd(session.get("cwd"))
+            key = normalize_cwd(session.get("cwd"))
             if key:
                 continue
             unknown_count += 1
@@ -425,8 +524,6 @@ def project_entries(
         })
 
     if unknown_count:
-        from pickup.display import UNKNOWN_PROJECT_LABEL
-
         entries.append({
             "cwd_key": "",
             "label": UNKNOWN_PROJECT_LABEL,

@@ -63,7 +63,7 @@ from textual.style import Style as VisualStyle
 from textual.visual import Visual, visualize
 from textual.widget import Widget
 
-from pickup import embed
+from pickup import embed, liveness
 from pickup.split_layout import MAX_PANES as _LAYOUT_MAX_PANES
 
 
@@ -718,7 +718,7 @@ class EmbedPane(Widget):
 
                 if text is None:
                     misses += 1
-                    if misses >= 3 and not embed.is_alive(name):
+                    if misses >= 3 and not liveness.is_alive(name):
                         self.app.call_from_thread(self._apply_dead, generation, name)
                 else:
                     misses = 0

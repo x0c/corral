@@ -178,6 +178,26 @@ class AttentionStoreTests(unittest.TestCase):
         )
         self.assertEqual(states["cursor:one"].kind, "working")
 
+    def test_live_history_idle_does_not_force_working_when_question_gone(self) -> None:
+        """提问消失且历史已表明本轮结束时，常驻进程不得再被强行标成执行中。"""
+        self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
+        self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="waiting",
+                question_token="ask-1",
+                observed_at=1,
+                source="history",
+            ),
+        )
+        states = self.store.reconcile(
+            [_session("cursor", "one", live=True)],
+            {"cursor:one": AttentionEvidence(phase="idle", observed_at=2, source="history")},
+        )
+        self.assertNotEqual(states["cursor:one"].kind, "working")
+        self.assertNotEqual(states["cursor:one"].kind, "waiting")
+
     def test_after_agent_response_clears_working_even_while_live(self):
         self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
         self.store.record_event(
