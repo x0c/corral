@@ -178,6 +178,53 @@ class AttentionStoreTests(unittest.TestCase):
         )
         self.assertEqual(states["cursor:one"].kind, "working")
 
+    def test_after_agent_response_clears_working_even_while_live(self):
+        self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
+        self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="working",
+                activity_token="gen-1:beforeSubmitPrompt",
+                observed_at=1,
+                source="observer",
+            ),
+        )
+        state = self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="idle",
+                activity_token="gen-1:afterAgentResponse",
+                observed_at=2,
+                source="observer",
+            ),
+        )
+        self.assertNotEqual(state.kind, "working")
+        states = self.store.reconcile(
+            [_session("cursor", "one", live=True)],
+            {"cursor:one": AttentionEvidence(phase="unknown", observed_at=2, source="history")},
+        )
+        self.assertNotEqual(states["cursor:one"].kind, "working")
+
+    def test_stale_after_agent_response_working_self_heals_while_live(self):
+        self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
+        self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="working",
+                activity_token="gen-1:afterAgentResponse",
+                observed_at=10,
+                source="observer",
+            ),
+        )
+        states = self.store.reconcile(
+            [_session("cursor", "one", live=True)],
+            {"cursor:one": AttentionEvidence(phase="unknown", observed_at=10, source="history")},
+        )
+        self.assertNotEqual(states["cursor:one"].kind, "working")
+
     def test_non_live_reconcile_clears_active_phase_and_surfaces_terminal_unread(self):
         self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
         self.store.record_event(

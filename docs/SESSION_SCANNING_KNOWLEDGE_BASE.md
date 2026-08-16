@@ -253,8 +253,9 @@ flowchart TD
 - **AI 易错点**【消歧】主界面的“运行中” vs `titles.status_tag` / 机器接口英文状态：前者只表示关联进程当前是否活着（`live`），后两者描述最后一轮对话的完成、待回复或中断语义；两者不能相互推导或互相替换。
 - **AI 易错点**【消歧】关注状态圆点是第三套面向注意力的本地状态：黄=结构化问题待回答、绿=当前轮执行、红=新结果未读。它不得覆盖或改写 `live`、`status`、`status_tag`，也不得参与会话排序。
 - **AI 易错点**【必须】等待回答只认运行时的结构化问题及其未配对结果；普通文本里有问号、询问语气或“请确认”都不能推导黄点（原因：误报会让黄点与绿点几乎重叠，失去提醒价值）。
-- **AI 易错点**【必须】Cursor 等待回答不能只扫 `store.db` 里以 `{` 开头的 JSON blob。用户还没点选项时，AskQuestion 通常只出现在首字节 `0x12` 的 protobuf（外层 field 2，内层 field 23 题目 + field 57 调用标识）；JSON `tool-call`/`tool-result` 要等作答后才成对出现。其它工具的同类 field 2 记录没有 field 23，不能当成提问。二进制 DAG（`0x0A`）仍跳过。配对必须按 `toolCallId` 做集合差，禁止按 rowid 顺序 pop——真实历史里 tool-result 的 rowid 可以早于 tool-call，顺序 pop 会把已答问题判成仍在等待，或把当前提问漏掉。
+- **AI 易错点**【必须】Cursor 等待回答不能只扫 `store.db` 里以 `{` 开头的 JSON blob。用户还没点选项时，AskQuestion 通常只出现在首字节 `0x12` 的 protobuf（外层 field 2，内层 field 23 题目 + field 57 调用标识）；JSON `tool-call`/`tool-result` 要等作答后才成对出现。其它工具的同类 field 2 记录没有 field 23，不能当成提问。二进制 DAG（`0x0A`）仍跳过。配对必须按 `toolCallId` 做集合差，禁止按 rowid 顺序 pop——真实历史里 tool-result 的 rowid 可以早于 tool-call，顺序 pop 会把已答问题判成仍在等待，或把当前提问漏掉。**protobuf 提问只有仍是最新动作时才算 waiting**：答完后助手继续改代码或调其它工具时，提问的 protobuf 记录还在，JSON 结果却可能已滚出 192 条 JSON 窗口，集合差会把旧提问判成未答。必须丢掉「JSON 窗口已经前移」的更早 protobuf，以及后面已有非提问工具/正文的提问。正在等答时，提问记录会新于当前 JSON 尾巴，这两条过滤都不会误清。
 - **AI 易错点**【必须】历史证据的观察时间取真实事件或源文件/数据库时间；禁止用每次扫描的当前时间制造“新变化”。**唯一对称例外**：扫描确认进程已结束时强制 idle、以及仍活着且历史里仍有未配对结构化问题时强制 waiting，都必须把时间推进到已存状态之后（与「不活 → idle」同一手法）。否则一次误判不活或 `stop` hook 盖上更晚时间戳后，提问证据会永远回不来。`stop` / `afterAgentResponse` 观察事件不得清掉未作答的等待；只有用户提交（`beforeSubmitPrompt`）、会话结束（`sessionEnd`）或进程不活才能结束黄点。
+- **AI 易错点**【必须】Cursor 绿点只来自 `beforeSubmitPrompt`。`afterAgentResponse` 是本轮最终答复，必须记成 idle，不能记成 working。Cursor 托管进程说完后仍活着，历史扫描对 Cursor 又从不推导 working/idle；一旦把「说完」写成执行中，后续 unknown 会把绿点钉死。旧库里已把 `afterAgentResponse` 记成 working 的记录，合并时必须纠正为 idle。官方确认该事件在一轮的最终可见答复之后触发，不是工具调用之间的中间句。
 - **AI 易错点**【性能】Cursor 关注信号默认只在 live 或相关文件签名变化时打开 `store.db`；冷会话不得随每轮刷新重复打开数据库。
 - **AI 易错点**【隐私与可靠性】关注状态库只存标识、令牌、时间和状态，不存正文；Cursor hook 配置必须增量保存、先备份再原子替换，任何接收失败都故障开放。
 - **AI 易错点**【禁止】为 Claude/Codex 用父目录 mtime 实现 `scan_signature` → 保持返回 `None`，每次正常扫描（原因：深层 JSONL 写入不会可靠冒泡到祖先目录，错误缓存会让新会话或活性变化冻结）。
@@ -298,7 +299,7 @@ python3 -m unittest -v
 
 重点覆盖：JSON `null`、系统 `origin.kind` 过滤、Claude `stop_reason` 文本保留、Codex 子代理过滤、OpenCode 只读失败回退、预览 mtime 失效、Cursor blob 解析与启动延迟；`DeleteSessionScanTests` 覆盖各助手 `delete_session()`，重点断言删对了、没删多（尤其 OpenCode 共享库不能连带删掉其他会话）。
 
-涉及关注状态时还要覆盖：黄 > 绿 > 红优先级、仅结构化问题变黄、重复扫描不制造新令牌、首次历史基线不批量亮红、占位会话转正迁移、删除清理、Cursor 冷会话不打开数据库、Cursor protobuf AskQuestion 在 JSON 结果出现前为 waiting、JSON tool-result 早于 tool-call 不得误判 waiting、仍活着的未配对提问能覆盖更早的 idle 时间戳、`stop` 不得清掉未作答等待，以及 observer 安装两次不重复、`--dry-run` 零写入、卸载只移除 pickup 条目、损坏配置与 hook 写入失败均不阻断调用方。
+涉及关注状态时还要覆盖：黄 > 绿 > 红优先级、仅结构化问题变黄、重复扫描不制造新令牌、首次历史基线不批量亮红、占位会话转正迁移、删除清理、Cursor 冷会话不打开数据库、Cursor protobuf AskQuestion 在 JSON 结果出现前为 waiting、JSON tool-result 早于 tool-call 不得误判 waiting、protobuf 提问之后若已有其它工具或 JSON 窗口已前移不得误判 waiting、`afterAgentResponse` 不得把仍活着的会话钉在 working、仍活着的未配对提问能覆盖更早的 idle 时间戳、`stop` 不得清掉未作答等待，以及 observer 安装两次不重复、`--dry-run` 零写入、卸载只移除 pickup 条目、损坏配置与 hook 写入失败均不阻断调用方。
 
 ### 7.2 真实抽查 5 条会话
 

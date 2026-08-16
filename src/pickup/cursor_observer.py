@@ -298,7 +298,9 @@ def uninstall(
 def _evidence(event_name: str, payload: dict[str, Any]):
     from pickup.attention import AttentionEvidence
 
-    phase = "working" if event_name in {"beforeSubmitPrompt", "afterAgentResponse"} else "idle"
+    # afterAgentResponse 是本轮最终答复，不是还在干活。Cursor 托管进程常在
+    # 说完后仍活着，若把该事件记成 working，历史又给不出 idle，绿点会一直挂着。
+    phase = "working" if event_name == "beforeSubmitPrompt" else "idle"
     generation = payload.get("generation_id")
     timestamp = payload.get("timestamp")
     token_base = str(generation or timestamp or time.time_ns())

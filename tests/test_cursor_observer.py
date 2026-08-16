@@ -181,7 +181,7 @@ class CursorObserverTests(unittest.TestCase):
         store = _FakeAttentionStore()
         for event, expected in (
             ("beforeSubmitPrompt", "working"),
-            ("afterAgentResponse", "working"),
+            ("afterAgentResponse", "idle"),
             ("stop", "idle"),
             ("sessionEnd", "idle"),
         ):

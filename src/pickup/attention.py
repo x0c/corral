@@ -315,6 +315,22 @@ class AttentionStore:
 
         if (
             current is not None
+            and current.phase == "working"
+            and current.source == "observer"
+            and cls._observer_event(
+                AttentionEvidence(
+                    phase="working",
+                    activity_token=current.activity_token,
+                    source="observer",
+                )
+            )
+            == "afterAgentResponse"
+        ):
+            # 旧版本把「本轮说完」记成执行中；进程仍活着时后续 unknown 会把绿点钉死。
+            current = replace(current, phase="idle")
+
+        if (
+            current is not None
             and current.phase == "waiting"
             and current.question_token
             and evidence.source == "observer"

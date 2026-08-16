@@ -280,7 +280,8 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **产品边界**：侧边栏只显示一个小圆点，优先级固定为「等待回答黄 > 执行中绿 > 未读新结果红 > 无」。圆点不参与排序、筛选、计数，不触发声音或系统通知；详情头同步写出文字状态，避免把颜色当唯一信息。标题始终用基础标题样式，不再整行变绿。
 - **黄绿不会高度重叠**：黄点只在运行时留下明确的结构化提问、且尚未出现对应结果时出现；普通自然语言问句不算。多数正常执行阶段显示绿点，真正停下来等用户输入时黄点才临时覆盖绿点。不要把 `live` 直接等同于黄/绿，也不要用问号或关键词猜测待回答。
 - **各运行时证据**：Claude Code、Codex CLI、OpenCode、Kimi Code 从本地历史中的明确开始、完成、中止、结构化问题及结果事件推导；Cursor 的结果/问题可以读本地历史，实时开始/结束优先由用户级 hook 提供。历史证据的 `observed_at` 必须来自真实事件或源文件/数据库时间，禁止用每次扫描的当前时间制造“新变化”。**例外**：仍活着且历史里有未配对结构化问题时，waiting 与「进程不活 → idle」一样是当前事实，必须把时间推进到已存状态之后，否则一次误判不活或 `stop` 的更晚时间戳会让黄点永久回不来。
-- **Cursor 提问落盘**：等用户作答时 AskQuestion 往往只在 `store.db` 的 field-2 protobuf（内层 field 23 + field 57 调用标识），JSON `tool-call` 要到用户选完才出现。关注信号必须另查这些 protobuf，不能只扫 `{` JSON；其它工具的 field-2 记录没有 field 23，不能当提问。`stop` / `afterAgentResponse` 只表示本轮生成结束，不得清掉未作答的等待；`beforeSubmitPrompt` 与 `sessionEnd` 可以。配对按 `toolCallId` 做集合差，不要按 rowid 顺序 pop。
+- **Cursor 绿点**：只有用户提交（`beforeSubmitPrompt`）是执行中。`afterAgentResponse` / `stop` / `sessionEnd` 都是本轮结束。禁止把 `afterAgentResponse` 记成 working——会话进程说完后仍活着，Cursor 历史又不推导 idle，绿点会一直挂着。旧记录若已把该事件写成 working，合并时纠正为 idle。该事件不得清掉未作答的黄点。
+- **Cursor 提问落盘**：等用户作答时 AskQuestion 往往只在 `store.db` 的 field-2 protobuf（内层 field 23 + field 57 调用标识），JSON `tool-call` 要到用户选完才出现。关注信号必须另查这些 protobuf，不能只扫 `{` JSON；其它工具的 field-2 记录没有 field 23，不能当提问。`stop` / `afterAgentResponse` 只表示本轮生成结束，不得清掉未作答的等待；`beforeSubmitPrompt` 与 `sessionEnd` 可以。配对按 `toolCallId` 做集合差，不要按 rowid 顺序 pop。**已答提问的 protobuf 会一直留着**：JSON 结果滚出窗口后，不能只凭 protobuf 还在就亮黄点。提问必须仍是最新动作（后面没有其它工具/正文，且没有落在当前 JSON 窗口之前）才算 waiting。
 - **状态裁决与本地库**：`AttentionStore` 默认写 `~/.cache/pickup/session-attention.sqlite3`，唯一键仍是运行时 + 会话 ID。只保存阶段、活动/问题的不透明令牌、时间、当前裁决和已读基线，不保存标题、提示词、回答或工具正文。临时占位会话转为正式会话时必须按同一托管身份迁移状态；彻底删除会话时同步清理。
 - **首升级基线**：首次见到既有历史时把已有结果视为已读，防止升级后所有旧会话批量亮红；当下仍在执行或等待回答的会话照常显示绿/黄。以后只有新的助手结果、完成或中止令牌产生红点。
 - **已读不是“选中过”**：红点只有在该会话对应的右侧内容已成功加载并稳定可见 0.5 秒后清除。切换选择、快速掠过、预览失败或应用失焦都要取消计时；查看不能清掉黄点或绿点。多分屏时只对实际可见且内容就绪的会话执行同一规则。

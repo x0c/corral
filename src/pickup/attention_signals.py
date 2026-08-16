@@ -654,8 +654,9 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
             "ORDER BY rowid DESC LIMIT ?",
             (_DB_TAIL_ROWS,),
         ).fetchall()
-        # 提问等待态常只在 field-2 protobuf 里；与 JSON 分查，避免被大量 JSON
-        # 尾巴挤出窗口，也不去扫体积很大的 DAG 节点。
+        # 提问等待态常只在 field-2 protobuf 里；与 JSON 分查，避免当前提问被
+        # 大量 JSON 尾巴挤出窗口。旧提问的 JSON 结果滚出窗口后，不能只凭还在
+        # protobuf 尾巴里就判成仍在等待——见下方 continuation / JSON 窗口过滤。
         proto_rows = connection.execute(
             "SELECT rowid, data FROM blobs WHERE substr(data, 1, 1) = X'12' "
             "ORDER BY rowid DESC LIMIT ?",
@@ -668,14 +669,24 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
 
     answered: set[str] = set()
     questions: dict[str, str] = {}
+    question_rowids: dict[str, int] = {}
     activity_token = None
+    continuation_max = 0
+    min_json_rowid = min((row["rowid"] for row in json_rows), default=0)
+
+    def _note_question(call_id: str, rowid: int) -> None:
+        questions[call_id] = _token("cursor", "question", call_id) or call_id
+        question_rowids[call_id] = max(question_rowids.get(call_id, 0), rowid)
+
     for row in reversed(json_rows):
+        rowid = row["rowid"]
         message = _json_object(row["data"])
         role = message.get("role")
         content = message.get("content")
         if not isinstance(content, list):
             content = []
         has_text = False
+        has_ask_question = False
         for part in content:
             if not isinstance(part, dict):
                 continue
@@ -684,10 +695,17 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
             call_id = str(part.get("toolCallId") or "")
             if part_type == "tool-result" and call_id:
                 answered.add(call_id)
+                if tool_name != "AskQuestion":
+                    continuation_max = max(continuation_max, rowid)
             elif part_type == "tool-call" and tool_name == "AskQuestion" and call_id:
-                questions[call_id] = _token("cursor", "question", call_id) or call_id
+                has_ask_question = True
+                _note_question(call_id, rowid)
+            elif part_type == "tool-call" and call_id:
+                continuation_max = max(continuation_max, rowid)
             elif part_type == "text" and str(part.get("text") or "").strip():
                 has_text = True
+        if has_text and not has_ask_question:
+            continuation_max = max(continuation_max, rowid)
         terminal = (
             message.get("stopReason")
             or message.get("finishReason")
@@ -697,7 +715,7 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
         is_terminal = terminal in {"stop", "stopped", "error", "abort", "aborted", "cancelled"}
         if role == "assistant" and (has_text or message.get("error") or is_terminal):
             kind = "terminal" if message.get("error") or is_terminal else "assistant"
-            activity_token = _token("cursor", kind, row["rowid"])
+            activity_token = _token("cursor", kind, rowid)
 
     for row in reversed(proto_rows):
         raw = row["data"]
@@ -705,11 +723,26 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
             raw = bytes(raw)
         if not isinstance(raw, (bytes, bytearray)):
             continue
+        rowid = row["rowid"]
         call_id = _cursor_ask_question_id(bytes(raw))
         if call_id:
-            questions[call_id] = _token("cursor", "question", call_id) or call_id
+            _note_question(call_id, rowid)
+        else:
+            # 其它工具的 field-2 记录：助手已经在提问之后继续干活。
+            continuation_max = max(continuation_max, rowid)
 
-    pending = [token for call_id, token in questions.items() if call_id not in answered]
+    pending: list[str] = []
+    for call_id, token in questions.items():
+        if call_id in answered:
+            continue
+        question_rowid = question_rowids.get(call_id, 0)
+        # JSON 窗口已经前移时，更早的 protobuf 提问无法核对是否已答，
+        # 不能当成仍在等待。正在等答时，提问记录会新于当前 JSON 尾巴。
+        if json_rows and question_rowid < min_json_rowid:
+            continue
+        if question_rowid < continuation_max:
+            continue
+        pending.append(token)
     if pending and live:
         return _evidence(
             "waiting",

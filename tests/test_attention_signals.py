@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup.attention_signals import inspect_session
+from pickup.attention_signals import _DB_TAIL_ROWS, inspect_session
 
 
 def _write_jsonl(path: Path, entries: list[dict]) -> None:
@@ -506,6 +506,54 @@ class CursorAttentionSignalTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(inspect_session(_session("cursor", answered_path)).phase, "unknown")
+
+    def test_protobuf_ask_question_clears_after_later_tool_work(self) -> None:
+        call_id = "call-stale\nfc_child_0"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.db"
+            self._database(
+                path,
+                [
+                    _cursor_ask_question_blob(call_id),
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool-call",
+                                "toolName": "Shell",
+                                "toolCallId": "call-shell-1",
+                            }
+                        ],
+                    },
+                ],
+            )
+            self.assertEqual(inspect_session(_session("cursor", path)).phase, "unknown")
+
+    def test_protobuf_ask_question_clears_after_later_protobuf_tool(self) -> None:
+        call_id = "call-stale\nfc_child_0"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.db"
+            self._database(
+                path,
+                [
+                    _cursor_ask_question_blob(call_id),
+                    _cursor_field2_blob(8, b"grep-hits", "call-grep\nfc_child_1"),
+                ],
+            )
+            self.assertEqual(inspect_session(_session("cursor", path)).phase, "unknown")
+
+    def test_stale_protobuf_question_outside_json_window_is_not_waiting(self) -> None:
+        call_id = "call-old\nfc_child_0"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.db"
+            fillers = [
+                {"role": "assistant", "content": [{"type": "text", "text": f"结果 {index}"}]}
+                for index in range(_DB_TAIL_ROWS + 1)
+            ]
+            self._database(path, [_cursor_ask_question_blob(call_id), *fillers])
+            evidence = inspect_session(_session("cursor", path))
+            self.assertEqual(evidence.phase, "unknown")
+            self.assertIsNone(evidence.question_token)
 
 
 def _pb_varint(value: int) -> bytes:
