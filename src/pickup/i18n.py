@@ -210,6 +210,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "+ New session",
         "zh": "＋ 新建会话",
     },
+    "list.activity_board": {
+        "en": "Activity",
+        "zh": "活动会话",
+    },
+    "list.activity_board_pages": {
+        "en": "Activity  {page}/{pages}",
+        "zh": "活动会话  {page}/{pages}",
+    },
     "list.sep_pinned": {
         "en": "Pinned",
         "zh": "置顶",
@@ -266,6 +274,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "New session: pick a project and assistant",
         "zh": "新建会话：选择项目与助手",
     },
+    "detail.activity_board_empty": {
+        "en": "No sessions need attention",
+        "zh": "现在没有需要盯的会话",
+    },
     "split.empty_hint": {
         "en": "Pick a session or tap a runtime above",
         "zh": "选择会话，或点击上方助手",
@@ -297,6 +309,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "action.toggle_pin": {
         "en": "Pin",
         "zh": "置顶",
+    },
+    "action.board_prev": {
+        "en": "Board prev",
+        "zh": "看板上一页",
+    },
+    "action.board_next": {
+        "en": "Board next",
+        "zh": "看板下一页",
     },
     "group.session_count": {
         "en": "{count} sessions",

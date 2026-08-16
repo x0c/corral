@@ -170,9 +170,12 @@ live turn boundaries through user-level hooks; pickup installs its entries idemp
 preserves unrelated entries, backs up changed files, writes atomically, and fails open so observer problems never
 block Cursor. Use the `pickup observer ... cursor` commands above to audit, preview, repair, or remove that integration.
 
-- The first row is a pinned `+ New session` item (Chinese locale: `＋ 新建会话`) that never scrolls away: press
-  `Enter` on it to pick a project directory and an agent runtime, and the blank session starts
-  hosted in the right-hand pane.
+- The first two rows never scroll away. `+ New session` (Chinese: `＋ 新建会话`) still starts a blank
+  hosted session. The row under it is **Activity**: it auto-tiles up to four hosted sessions that
+  currently need you — waiting for an answer, working, or a new unread result. Sessions idle in
+  another window are left out (no live picture). Overflow is paged with `[` / `]`; a yellow dot
+  means more waiting off the current page. Opening a specific sidebar session leaves the board
+  and restores your usual single pane or split. The board never writes a named split group.
 - Click a runtime button above the right side to add that agent as another pane in the current project.
   Up to four panes may run together; click a pane to focus it and sync the sidebar selection.
 - A small **session card floats in the top-right corner of each live pane**, so every split
@@ -362,7 +365,7 @@ agent workflows.
 | `/` | Focus the sidebar filter box (case-insensitive fuzzy match on group name, project name, path and session title) |
 | `Ctrl+F` | Full-text search across session conversations; results show the matching lines, newest session first. `Enter` opens the selected session in the sidebar |
 | `Ctrl+P` | Pin / unpin the current window or its split group (works even while a live pane has input; Textual's command palette is disabled) |
-| `Enter` | Resume selected session with the native runtime (reattach if it's already running in the background); on the pinned first row `+ New session` (Chinese: `＋ 新建会话`), start the new-session flow instead. For a session whose process is gone this is the **only** way to restart it — clicking its card only shows the transcript. Also works with focus in the right-hand pane whenever that pane holds a conversation preview or a `Session ended` screen |
+| `Enter` | Resume selected session with the native runtime (reattach if it's already running in the background); on the pinned `+ New session` row, start the new-session flow; on **Activity**, open the live board. For a session whose process is gone this is the **only** way to restart it — clicking its card only shows the transcript. Also works with focus in the right-hand pane whenever that pane holds a conversation preview or a `Session ended` screen |
 | `a` | Open advanced handoff actions |
 | `q` | End a backgrounded / in-progress (keep-alive) session; press `q` again in the confirm dialog |
 | `x` | Permanently delete the selected local session (or every session in the selected group); press `x` again in the confirm dialog |

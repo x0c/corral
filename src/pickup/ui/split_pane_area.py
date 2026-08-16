@@ -550,6 +550,8 @@ class SplitPaneArea(Vertical):
         self._render_detail = render_detail
         self._sidebar_visible = sidebar_visible
         self.current_project: str = ""
+        self.title_with_project = False
+        self.allow_cross_project = False
         self._panes: list[PaneSpec] = []
         self._focus_key: str | None = None
         # 「把输入交给某一格」的待兑现意图，以及尚未执行完的整排挂载数量。
@@ -748,6 +750,8 @@ class SplitPaneArea(Vertical):
                 self._close_spec(spec, notify=False)
 
     def show_new_session_hint(self) -> None:
+        self.title_with_project = False
+        self.allow_cross_project = False
         spec = PaneSpec(session_key="__hint__", cell_id=self._new_cell_id())
         self._panes = []
         self._schedule_mount(
@@ -756,6 +760,21 @@ class SplitPaneArea(Vertical):
                     spec,
                     {"source": "", "id": "__hint__", "fallback_title": ""},
                     lambda: Text(t("detail.new_session_hint")),
+                ),
+            ],
+        )
+
+    def show_activity_board_empty(self) -> None:
+        self.title_with_project = True
+        self.allow_cross_project = True
+        spec = PaneSpec(session_key="__board_empty__", cell_id=self._new_cell_id())
+        self._panes = []
+        self._schedule_mount(
+            [
+                (
+                    spec,
+                    {"source": "", "id": "__board_empty__", "fallback_title": ""},
+                    lambda: Text(t("detail.activity_board_empty")),
                 ),
             ],
         )
@@ -770,6 +789,8 @@ class SplitPaneArea(Vertical):
 
         project = pickup._normalize_cwd(session.get("cwd"))
         self.current_project = project
+        self.title_with_project = False
+        self.allow_cross_project = False
         spec = PaneSpec(session_key=key, cell_id=self._new_cell_id())
         self._schedule_mount(
             [(spec, session, renderer)],
@@ -790,6 +811,8 @@ class SplitPaneArea(Vertical):
         *,
         focus_key: str | None = None,
         focus_pane: bool = False,
+        title_with_project: bool = False,
+        allow_cross_project: bool = False,
     ) -> None:
         """entries: (session, keepalive_name, detail_renderer)。
 
@@ -801,6 +824,8 @@ class SplitPaneArea(Vertical):
         此时把键盘焦点交给 `focus_key` 那一格；单纯的选择跟随不得传 True。
         """
         self.current_project = project
+        self.title_with_project = title_with_project
+        self.allow_cross_project = allow_cross_project
         # 这是最后一道边界：调用方未来即使错传预览，也不能污染活跃格。
         entries = [
             (session, kname, None if kname else renderer)
@@ -878,7 +903,12 @@ class SplitPaneArea(Vertical):
 
         key = make_session_key(session)
         project = pickup._normalize_cwd(session.get("cwd"))
-        if self.current_project and project and project != self.current_project:
+        if (
+            not self.allow_cross_project
+            and self.current_project
+            and project
+            and project != self.current_project
+        ):
             self.current_project = project
             self._panes = []
         elif not self.current_project:
@@ -978,6 +1008,9 @@ class SplitPaneArea(Vertical):
             return t("shell.pane_title")
         runtime = self.store.registry.get(source)
         title = self.store.get_title(session)
+        if self.title_with_project:
+            project = str(session.get("cwd_display") or t("project.unknown"))
+            return f"{project} · {title}"
         return f"{runtime.display_name} · {title}"
 
     def _sync_leading_cells(self) -> None:

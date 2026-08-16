@@ -4,7 +4,7 @@
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
 或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
-无末行空行）。筛选框在列表外固定；`＋ 新建` 在 `#sidebar-sticky` 里也不随
+无末行空行）。筛选框在列表外固定；`＋ 新建` 和活动会话看板在 `#sidebar-sticky` 里也不随
 列表滚。置顶块、Pinned 分隔线与未置顶（Today / 更早）都在 `#sidebar-scroll`
 里一起滚——置顶只改变排序，不冻在视口里。鼠标在固定头（含筛选框）上滚轮
 仍带动会话列表，顶部位置不变。
@@ -12,7 +12,7 @@
 `$primary` 蓝横线；未置顶再按滚动 24 小时切 today / older 两桶（桶内不重排），
 两侧都有时再插 `Today`/`今天` 线。分隔高 1、disabled、键盘跳过；禁止 Older/其他
 标签。斑马纹按**块**交替，不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
-`＋ 新建` 与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
+`＋ 新建`、活动看板与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
 起头）。条纹画在 `SessionCard` / `SessionGroupCard` 上，用 `$foreground` 的半透明
 底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类 DEFAULT_CSS 会压过
 ListView 自带的 `.-highlight`，把选中底色吃掉。光标停在会话组卡上时，组卡和
@@ -45,10 +45,14 @@ if TYPE_CHECKING:
     import pickup
     from pickup.split_layout import SplitGroup, SplitLayoutStore
 
+from pickup.activity_board import BoardSnapshot
 from pickup.display import TODAY_SECONDS
 from pickup.i18n import t
 
 NEW_SESSION_ID = "__new_session__"
+ACTIVITY_BOARD_ID = "__activity_board__"
+STICKY_IDS = (NEW_SESSION_ID, ACTIVITY_BOARD_ID)
+_STICKY_ID_SET = frozenset(STICKY_IDS)
 PIN_SEP_ID = "__pin_sep__"
 TODAY_SEP_ID = "__today_sep__"
 GROUP_ID_PREFIX = "__group__-"
@@ -640,6 +644,41 @@ class NewSessionCard(Widget):
         return Text(t("list.new_session"), style="bold") + Text("\n")
 
 
+class ActivityBoardCard(Widget):
+    """列表顶部「活动会话」看板入口：一行正文 + 末行间隔（总高 2）。"""
+
+    ALLOW_SELECT = False
+
+    DEFAULT_CSS = """
+    ActivityBoardCard {
+        height: 2;
+        width: 1fr;
+        pointer: pointer;
+    }
+    """
+
+    def __init__(self, owner: SessionListView, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._owner = owner
+
+    def render(self) -> Text:
+        snap = self._owner.board_snapshot
+        if snap is not None and snap.total:
+            label = t(
+                "list.activity_board_pages",
+                page=snap.page + 1,
+                pages=snap.page_count,
+            )
+        else:
+            label = t("list.activity_board")
+        out = Text(label, style="bold")
+        if snap is not None and snap.waiting_off_page:
+            out.append(" ")
+            out.append("●", style="bold yellow")
+        out.append("\n")
+        return out
+
+
 class PinSeparatorCard(Widget):
     """区尾分隔：两侧 `─`、居中标签，整行 `$primary` 冷蓝。
 
@@ -683,7 +722,7 @@ class PinSeparatorCard(Widget):
 
 
 class _SidebarList(ListView):
-    """侧边栏一段列表：固定头（仅新建）或会话滚动区（置顶与未置顶一起滚）。"""
+    """侧边栏一段列表：固定头（新建 + 活动看板）或会话滚动区（置顶与未置顶一起滚）。"""
 
     ALLOW_SELECT = False
 
@@ -812,7 +851,7 @@ class _SidebarList(ListView):
 
 
 class SessionListView(Vertical):
-    """会话列表外壳：固定头（仅新建）+ 会话滚动区（置顶与未置顶一起滚）。
+    """会话列表外壳：固定头（新建 + 活动看板）+ 会话滚动区（置顶与未置顶一起滚）。
 
     对外仍是一个控件：统一 `index` 从「＋ 新建」起算。真正滚动的只有
     `#sidebar-scroll`。鼠标在固定头上滚轮转发到会话列表，顶部不动。
@@ -871,6 +910,7 @@ class SessionListView(Vertical):
         self._selected_by_key = False
         self._rebuild_lock = asyncio.Lock()
         self._rebuild_seq = 0
+        self.board_snapshot: BoardSnapshot | None = None
 
     def compose(self) -> ComposeResult:
         self._sticky_list = _SidebarList(self, sticky=True, id="sidebar-sticky")
@@ -1060,8 +1100,9 @@ class SessionListView(Vertical):
     def _partition_items(
         self, items: list[ListItem]
     ) -> tuple[list[ListItem], list[ListItem]]:
-        """固定头只留「＋ 新建」；置顶与未置顶都进滚动区。"""
-        return items[:1], items[1:]
+        """固定头只留「＋ 新建」和活动看板；置顶与未置顶都进滚动区。"""
+        sticky_n = len(STICKY_IDS)
+        return items[:sticky_n], items[sticky_n:]
 
     async def _replace_list_items(
         self, sticky_items: list[ListItem], scroll_items: list[ListItem]
@@ -1122,14 +1163,14 @@ class SessionListView(Vertical):
         await self.rebuild()
 
     def _session_items(self) -> list[tuple[ListItem, SessionCard]]:
-        """按当前显示顺序返回 (列表项, 会话卡)（跳过顶部固定的新建会话项）。
+        """按当前显示顺序返回 (列表项, 会话卡)（跳过顶部固定项）。
 
         底色类标在 ListItem 上而不是卡片上：整行铺满、且不会盖掉卡片自身的文字
         样式，也才能和 Textual 内置的选中高亮按 CSS 优先级正常分胜负。
         """
         items = []
         for item in self._list_items():
-            if item.id == NEW_SESSION_ID:
+            if item.id in _STICKY_ID_SET:
                 continue
             card = item.children[0] if item.children else None
             if isinstance(card, SessionCard):
@@ -1137,7 +1178,7 @@ class SessionListView(Vertical):
         return items
 
     def _session_cards(self) -> list[SessionCard]:
-        """按当前显示顺序返回全部 SessionCard（跳过顶部固定的新建会话项）。"""
+        """按当前显示顺序返回全部 SessionCard（跳过顶部固定项）。"""
         return [card for _, card in self._session_items()]
 
     def _group_items(self) -> list[tuple[ListItem, SessionGroupCard]]:
@@ -1155,7 +1196,7 @@ class SessionListView(Vertical):
 
         identities: list[str] = []
         for item in self._list_items():
-            if item.id == NEW_SESSION_ID or not item.children:
+            if item.id in _STICKY_ID_SET or not item.children:
                 continue
             card = item.children[0]
             if isinstance(card, PinSeparatorCard) or item.id in _SEPARATOR_IDS:
@@ -1175,7 +1216,7 @@ class SessionListView(Vertical):
         widgets = [
             item.children[0]
             for item in self._list_items()
-            if item.id != NEW_SESSION_ID and item.children
+            if item.id not in _STICKY_ID_SET and item.children
         ]
         for widget, row in zip(widgets, rows, strict=False):
             if row.kind == "separator" or isinstance(widget, PinSeparatorCard):
@@ -1406,8 +1447,31 @@ class SessionListView(Vertical):
         card = item.children[0] if item.children else None
         return card.group if isinstance(card, SessionGroupCard) else None
 
+    def _selected_item_id(self) -> str | None:
+        idx = self.index
+        items = self._list_items()
+        if idx is None or idx < 0 or idx >= len(items):
+            return None
+        return items[idx].id
+
     def is_new_session_selected(self) -> bool:
-        return self.index == 0
+        return self._selected_item_id() == NEW_SESSION_ID
+
+    def is_activity_board_selected(self) -> bool:
+        return self._selected_item_id() == ACTIVITY_BOARD_ID
+
+    def set_board_snapshot(self, snapshot: BoardSnapshot | None) -> None:
+        self.board_snapshot = snapshot
+        self.refresh_board_card()
+
+    def refresh_board_card(self) -> None:
+        for item in self._list_items():
+            if item.id != ACTIVITY_BOARD_ID or not item.children:
+                continue
+            card = item.children[0]
+            if isinstance(card, ActivityBoardCard):
+                card.refresh()
+            return
 
     def multi_count(self) -> int:
         return len(self._multi_keys)
@@ -1474,11 +1538,11 @@ class SessionListView(Vertical):
             item.set_class(key in selected_members, "-group-selected")
 
     def _apply_stripes(self, rows: list[_SidebarRow]) -> None:
-        """把块级斑马纹贴到卡片上；＋新建与分隔线不参与。幂等。"""
+        """把块级斑马纹贴到卡片上；＋新建、活动看板与分隔线不参与。幂等。"""
         widgets = [
             item.children[0]
             for item in self._list_items()
-            if item.id != NEW_SESSION_ID and item.children
+            if item.id not in _STICKY_ID_SET and item.children
         ]
         for widget, row in zip(widgets, rows, strict=False):
             if isinstance(widget, (SessionCard, SessionGroupCard)):
@@ -1655,9 +1719,12 @@ class SessionListView(Vertical):
         import pickup
 
         idx = self.index
-        if idx is None or idx == 0 or idx >= len(self._list_items()):
+        items = self._list_items()
+        if idx is None or idx < 0 or idx >= len(items):
             return None
-        item = self._list_items()[idx]
+        item = items[idx]
+        if item.id in _STICKY_ID_SET:
+            return item.id
         card = item.children[0] if item.children else None
         if isinstance(card, SessionGroupCard):
             return f"{GROUP_ID_PREFIX}{card.group.group_id}"
@@ -1668,7 +1735,11 @@ class SessionListView(Vertical):
     def _displayed_selected_key(self) -> str | None:
         """兼容只关心会话的调用方；组卡选中时返回 None。"""
         identity = self._displayed_selected_identity()
-        if identity is None or identity.startswith(GROUP_ID_PREFIX):
+        if (
+            identity is None
+            or identity.startswith(GROUP_ID_PREFIX)
+            or identity in _STICKY_ID_SET
+        ):
             return None
         return identity
 
@@ -1746,8 +1817,9 @@ class SessionListView(Vertical):
 
         if new_identities == self._current_row_identities() and select_key is None:
             self._update_rows_in_place(rows)
+            self.refresh_board_card()
             if previous_identity is None and self.index is None:
-                self.index = 1 if rows else 0
+                self.index = self._sticky_count() if rows else 0
             from pickup import observe
             observe.event(
                 "list_rebuild",
@@ -1758,7 +1830,10 @@ class SessionListView(Vertical):
             return
 
         display_titles = self.store.snapshot()
-        items = [NoSelectListItem(NewSessionCard(), id=NEW_SESSION_ID)]
+        items = [
+            NoSelectListItem(NewSessionCard(), id=NEW_SESSION_ID),
+            NoSelectListItem(ActivityBoardCard(self), id=ACTIVITY_BOARD_ID),
+        ]
         for row in rows:
             if row.kind == "separator":
                 items.append(
@@ -1799,18 +1874,25 @@ class SessionListView(Vertical):
         with self.app.batch_update():
             await self._replace_list_items(sticky_items, scroll_items)
 
+        sticky_n = self._sticky_count()
         new_index = 0
-        for i, identity in enumerate(new_identities):
-            if previous_identity is not None and identity == previous_identity:
-                new_index = i + 1
-                break
+        if previous_identity in _STICKY_ID_SET:
+            for i, item in enumerate(self._list_items()):
+                if item.id == previous_identity:
+                    new_index = i
+                    break
+        else:
+            for i, identity in enumerate(new_identities):
+                if previous_identity is not None and identity == previous_identity:
+                    new_index = i + sticky_n
+                    break
         target_index: int | None = None
         if previous_identity is not None:
             target_index = new_index
         elif not had_rows:
-            # 初次填充：默认选列表第一条会话/会话组（跳过固定的「＋ 新建」），
+            # 初次填充：默认选列表第一条会话/会话组（跳过固定头），
             # 进 pickup 即可直接回车恢复，不必先按 ↓。
-            target_index = 1 if rows else 0
+            target_index = sticky_n if rows else 0
         if target_index is not None:
             self._apply_index_after_rebuild(target_index)
         else:
@@ -1819,6 +1901,7 @@ class SessionListView(Vertical):
         # 路径不动列表项结构，标记还在，不必重贴）。
         self._apply_split_marks()
         self._apply_stripes(rows)
+        self.refresh_board_card()
         # Textual 已知问题（issue #6300）：clear()+extend() 后紧接着设置 index，
         # 高亮理论上可能只在内部状态里正确、要等用户交互才真正刷新到屏幕。在当前
         # 锁定版本（8.2.8）下用 Pilot 直接探查过 compositor 的增量重绘路径，没有

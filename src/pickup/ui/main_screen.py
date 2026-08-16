@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from collections import OrderedDict
+from collections.abc import Callable
 
 from rich.text import Text
 from textual import events, work
@@ -27,8 +29,10 @@ from textual.widgets import Input
 from textual.worker import get_current_worker
 
 from pickup import i18n, ui_prefs
+from pickup.activity_board import ActivityBoard
 from pickup.i18n import t
 from pickup.ui.controllers.attention_reader import AttentionReaderMixin
+from pickup.ui.controllers.board_controller import BoardControllerMixin
 from pickup.ui.controllers.host_controller import HostControllerMixin
 from pickup.ui.controllers.hud_controller import HUD_POLL_INTERVAL, HudControllerMixin
 from pickup.ui.controllers.layout_controller import LayoutControllerMixin
@@ -43,7 +47,7 @@ from pickup.ui.modals import (
 )
 from pickup.ui.nav import NavState
 from pickup.ui.runtime_top_bar import RuntimeTopBar
-from pickup.ui.session_list import SessionListView
+from pickup.ui.session_list import STICKY_IDS, SessionListView
 from pickup.ui.split_pane_area import SplitPaneArea
 from pickup.ui.update_toast import UpdateToast
 
@@ -135,6 +139,8 @@ _ACTION_I18N = {
     "preview_end": "action.preview_end",
     "preview_page_up": "action.preview_page_up",
     "preview_page_down": "action.preview_page_down",
+    "board_prev": "action.board_prev",
+    "board_next": "action.board_next",
     "quit_app": "action.quit",
 }
 
@@ -156,6 +162,8 @@ _LIST_ONLY_ACTIONS = frozenset(
         "preview_end",
         "preview_page_up",
         "preview_page_down",
+        "board_prev",
+        "board_next",
     }
 )
 
@@ -187,6 +195,8 @@ def _main_bindings() -> list[Binding]:
         Binding("end", "preview_end", t("action.preview_end"), show=False, priority=True),
         Binding("pageup", "preview_page_up", t("action.preview_page_up"), show=False, priority=True),
         Binding("pagedown", "preview_page_down", t("action.preview_page_down"), show=False, priority=True),
+        Binding("left_square_bracket", "board_prev", t("action.board_prev"), show=False),
+        Binding("right_square_bracket", "board_next", t("action.board_next"), show=False),
         Binding("escape", "quit_app", t("action.quit")),
         # 不再单独绑 ctrl+c 退出：Textual 的 Screen 基类自带 ctrl+c -> copy_text。
         # 划词抬起已由 on_text_selected 自动复制；Ctrl+C 仍作手动再复制/无选区时
@@ -210,6 +220,7 @@ class MainScreen(
     Screen,
     LayoutControllerMixin,
     AttentionReaderMixin,
+    BoardControllerMixin,
     HostControllerMixin,
     HudControllerMixin,
     UpdateControllerMixin,
@@ -245,12 +256,18 @@ class MainScreen(
         # 选择跟随的节流状态，见 _schedule_follow_selection
         self._follow_timer = None
         self._follow_last_run = 0.0
-        # 稳定查看判定：只跟踪当前主选择的红点；切换、失焦或内容未就绪都会
-        # 取消连续计时，重新看到后必须再完整停留 0.5 秒。
+        # 静态详情 renderer 的内容签名缓存：同一份内容（会话键+mtime+标题+
+        # 关注态都未变）复用同一个闭包，EmbedPane 才能靠 renderer 身份命中
+        # 全文排版 LRU，A->B->A 切回与无变化重扫都零重排（见 _detail_renderer_for）。
+        self._detail_renderers: OrderedDict[tuple, Callable[[], object]] = OrderedDict()
+        # 尾部优先渲染状态：_preview_tail 是当前处于尾部模式的会话键，
+        # _preview_full_done 是已升级过全文、下次直接整篇的会话键。
+        self._preview_tail: set[str] = set()
+        self._preview_full_done: set[str] = set()
+        # 关注已读判定：观察右侧可见的红点会话（分屏下所有可见格一起），
+        # 内容真实就绪即清；切换、失焦会取消观察。
         self._attention_read_timer = None
-        self._attention_read_key: str | None = None
-        self._attention_read_token: str | None = None
-        self._attention_visible_since: float | None = None
+        self._attention_read_keys: set[str] = set()
         self._app_focused = True
         self._update_channel: str | None = None
         self._update_latest: str | None = None
@@ -266,6 +283,9 @@ class MainScreen(
         self._hud_warm_at: dict[str, float] = {}
         # 静态详情预览的续温节流表（会话写入期按 _PREVIEW_WARM_INTERVAL 重解析）。
         self._preview_warm_at: dict[str, float] = {}
+        self._activity_board = ActivityBoard()
+        self._activity_board_active = False
+        self._shell_after_board = False
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -429,7 +449,7 @@ class MainScreen(
         from pickup.split_layout import MAX_PANES
 
         area = self._split_area()
-        if not area.can_add_pane():
+        if not self._board_skips_split_cap() and not area.can_add_pane():
             self.notify(t("split.full", n=MAX_PANES))
             self.app.bell()
             return
@@ -449,8 +469,15 @@ class MainScreen(
         import pickup
         from pickup.split_layout import MAX_PANES
 
+        leaving_board = self._board_skips_split_cap()
+        if leaving_board:
+            if self._host_pending > 0:
+                self.app.bell()
+                return
+            self._shell_after_board = True
+            self._leave_activity_board_to_first_session()
         area = self._split_area()
-        if not area.can_add_pane():
+        if not leaving_board and not area.can_add_pane():
             self.notify(t("split.full", n=MAX_PANES))
             self.app.bell()
             return
@@ -460,6 +487,7 @@ class MainScreen(
             pickup._new_session_cwd(self.store, self.nav, session)
         )
         if cwd is None:
+            self._shell_after_board = False
             self.notify(t("split.no_project"))
             self.app.bell()
             return
@@ -587,6 +615,14 @@ class MainScreen(
     # 而不是一路停留在「正在读取对话内容…」空态。
     _PREVIEW_WARM_INTERVAL = 2.0
 
+    # 长对话尾部优先渲染：消息数超过下限时先只排版最近 _PREVIEW_TAIL_MESSAGES
+    # 条（首次上屏从数百毫秒降到百毫秒内），首帧后 _PREVIEW_FULL_UPGRADE_DELAY
+    # 秒自动升级为整篇排版。钉底语义保证升级瞬间可见画面不跳（只是上方多出
+    # 更早的消息）。已升级过（或全文排版已在缓存里）的会话不再走尾部模式。
+    _PREVIEW_TAIL_MIN_MESSAGES = 80
+    _PREVIEW_TAIL_MESSAGES = 40
+    _PREVIEW_FULL_UPGRADE_DELAY = 0.2
+
     def _sustain_preview_warm(self) -> None:
         """当前右侧静态详情预览的会话若缓存已失效（会话正在写入），节流地后台
         重新解析；其余场景（托管格、无预览）不动作。"""
@@ -626,10 +662,14 @@ class MainScreen(
                 select_key = migrated.get(select_key, select_key)
             await session_list.rebuild(select_key=select_key)
             self._update_header()
+            self._sync_activity_board_entry()
             if self.embed_ok:
                 # 仅刷新当前可见预览格，避免每次重扫都把 Cursor store.db 预览整页重载。
                 self._split_area().invalidate_visible_previews()
                 self._schedule_follow_selection()
+                # 后台重扫带来的新红点（含分屏中非聚焦格）也要立即纳入观察：
+                # 用户正看着这些格，画面就绪即清，不能等下一次交互。
+                self.call_next(self._begin_attention_read)
 
     def _update_header(self) -> None:
         """刷新搜索框占位文案与「有筛选」高亮：空查询时展示命中数；出错/无会话时给出原因。"""
@@ -659,8 +699,8 @@ class MainScreen(
     # ---- 选择跟随：右栏默认展示左栏当前选中项 ----
 
     def on_list_view_highlighted(self, event) -> None:
-        # 高亮一变就立刻终止上一条会话的稳定查看计时，不能等 120ms 的右栏跟随
-        # 节流结束，否则快速掠过时旧红点可能在这段空窗里被误清。
+        # 高亮一变就立刻停止观察上一条会话，不能等 120ms 的右栏跟随节流结束，
+        # 否则快速掠过时旧红点可能在这段空窗里被误清。
         self._cancel_attention_read()
         self._schedule_follow_selection()
 
@@ -707,7 +747,12 @@ class MainScreen(
         if session_list.multi_count() > 0:
             return
         area = self._split_area()
-        if area.any_embed_focused():
+        if session_list.is_activity_board_selected():
+            self._show_activity_board(focus_pane=False)
+            return
+        was_board = getattr(self, "_activity_board_active", False)
+        self._leave_activity_board()
+        if area.any_embed_focused() and not was_board:
             return
         if session_list.is_new_session_selected():
             # 已在新建提示格时勿重复挂载，否则 remount 会抢走列表焦点
@@ -777,7 +822,7 @@ class MainScreen(
             return
         self._preview_gen += 1
         self._warm_conversation(session, self._preview_gen)
-        area.show_single_preview(session, lambda s=session: self._render_detail(s))
+        area.show_single_preview(session, self._detail_renderer_for(session))
         self._begin_attention_read(key)
 
     def _detail_header(self, session: dict) -> Text:
@@ -809,6 +854,60 @@ class MainScreen(
             # 这条会话再也接不上了。把回车这条路写在头上。
             out.append("\n" + t("detail.restart_hint"), style="dim")
         return out
+
+    # 静态详情 renderer 缓存上限：覆盖最近看过的几个会话，超过就淘汰最旧的。
+    # renderer 本体被 EmbedPane 的布局 LRU 键强引用，这里淘汰不会导致 id 复用。
+    _DETAIL_RENDERER_CACHE_MAX = 12
+
+    def _detail_signature(self, session: dict) -> tuple:
+        """渲染静态详情所需的全部外部输入的轻量签名。
+
+        `_render_detail` 读什么，这里就得囊括什么：详情头（标题/状态/关注态）、
+        项目路径、对话正文（按 mtime 失效）。签名变了就是新 renderer、新排版；
+        签名没变则复用同一个 renderer，EmbedPane 靠它的身份命中全文排版 LRU。
+        """
+        import pickup
+
+        return (
+            pickup.session_key(session),
+            session.get("mtime"),
+            session.get("size_bytes"),
+            bool(session.get("live")),
+            session.get("keepalive_name"),
+            session.get("attention_kind"),
+            session.get("attention_updated_at"),
+            self.store.get_title(session),
+        )
+
+    def _detail_renderer_for(self, session: dict) -> Callable[[], object]:
+        """按内容签名取稳定的静态详情 renderer。
+
+        以前每次选择跟随都新建 `lambda s=session: ...`，EmbedPane 的全文排版
+        缓存键是 renderer 身份，闭包一换缓存必失效——切回刚看过的会话也要把
+        整篇对话重新排版（百消息量级数百毫秒，主线程阻塞）。改成同一份内容
+        复用同一闭包后，切回/无变化重扫都能命中已有排版。内容真正变化时
+        签名变、新闭包、自然重排，不需要额外的失效路径。
+        """
+        signature = self._detail_signature(session)
+        renderer = self._detail_renderers.get(signature)
+        if renderer is None:
+            key = signature[0]
+
+            def _render(_key=key):
+                # 闭包不捕获 session dict（后台重扫会换对象），渲染时按稳定键
+                # 现查 store 最新快照。
+                current = self.store.find_session(_key)
+                if current is None:
+                    return Text(t("detail.loading_preview"), style="dim")
+                return self._render_detail(current)
+
+            renderer = _render
+            self._detail_renderers[signature] = renderer
+            while len(self._detail_renderers) > self._DETAIL_RENDERER_CACHE_MAX:
+                self._detail_renderers.popitem(last=False)
+        else:
+            self._detail_renderers.move_to_end(signature)
+        return renderer
 
     def _render_detail(self, session: dict):
         """右栏静态预览的整篇内容：详情头 + 逐条消息（角色抬头 + Markdown 正文）。
@@ -904,8 +1003,13 @@ class MainScreen(
             return
         session_list.clear_multi()
         if session_list.is_new_session_selected():
+            self._leave_activity_board()
             await self._start_new_session_flow()
             return
+        if session_list.is_activity_board_selected():
+            self._show_activity_board(focus_pane=True)
+            return
+        self._leave_activity_board()
         group = session_list.selected_group()
         if group is not None:
             focus_key = (
@@ -1034,12 +1138,12 @@ class MainScreen(
             project = pickup._normalize_cwd(session.get("cwd"))
             area.show_hosted_group(
                 project,
-                [(session, str(name), lambda s=session: self._render_detail(s))],
+                [(session, str(name), self._detail_renderer_for(session))],
                 focus_key=key,
             )
         else:
             area.show_single_preview(
-                session, lambda s=session: self._render_detail(s)
+                session, self._detail_renderer_for(session)
             )
 
     async def _confirm_external_resume(self, request) -> bool:
@@ -1191,6 +1295,12 @@ class MainScreen(
         if action == "toggle_hud" and not self.embed_ok:
             # 纯列表模式没有右栏，也就没有小窗可展开。
             return False
+        if action in ("board_prev", "board_next"):
+            if not self._activity_board_active:
+                return False
+            snap = self.query_one(SessionListView).board_snapshot
+            if snap is None or snap.page_count <= 1:
+                return False
         if action in _LIST_ONLY_ACTIONS and self._live_embed_focused():
             return False
         return True
@@ -1199,11 +1309,15 @@ class MainScreen(
         """右栏某格拿到焦点后，侧边栏高亮切到同一会话（不改右栏布局）。"""
         list_view = self.query_one(SessionListView)
         list_view.clear_multi()
+        if getattr(self, "_activity_board_active", False):
+            self._activity_board.set_typing_key(session_key)
+            self.call_next(self._begin_attention_read, session_key)
+            return
         if not list_view.select_session_key(session_key):
             return
         self._persist_split_focus()
         # 选择事件与焦点事件可能同帧到达；放到下一轮，确保高亮变更的取消逻辑
-        # 先执行，再以实际持有焦点的可见格重新开始完整 0.5 秒计时。
+        # 先执行，再以实际持有焦点的可见格重新开始观察。
         self.call_next(self._begin_attention_read, session_key)
 
     # ---- 动作 ----
@@ -1376,7 +1490,7 @@ class MainScreen(
         list_view = self.query_one(SessionListView)
         list_view.focus()
         if list_view.index is None:
-            list_view.index = 1 if list_view.visible_sessions() else 0
+            list_view.index = len(STICKY_IDS) if list_view.visible_sessions() else 0
 
     def on_text_selected(self, event: events.TextSelected) -> None:
         """划词抬起：有选区则经 OSC 52 自动复制（无需再按 Ctrl+C / ⌘C）。
@@ -1420,7 +1534,9 @@ class MainScreen(
                 event.stop()
                 list_view.focus()
                 if list_view.index is None:
-                    list_view.index = 1 if list_view.visible_sessions() else 0
+                    list_view.index = (
+                        len(STICKY_IDS) if list_view.visible_sessions() else 0
+                    )
             return
         # 列表聚焦时 / 打开搜索（不用 Screen Binding，否则搜索框里按 / 会被截走）
         if event.key == "slash" and list_view.has_focus:

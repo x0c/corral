@@ -118,6 +118,9 @@ class LayoutControllerMixin:
         已结束成员仍属于会话组，因此持久化不按活跃状态裁剪。顺手把侧边栏的当前组与
         激活会话底色对齐。
         """
+        if getattr(self, "_activity_board_active", False):
+            self._sync_split_marks()
+            return
         if not self.embed_ok:
             return
         self._sync_split_marks()
@@ -142,6 +145,8 @@ class LayoutControllerMixin:
         刚把某个成员移出去时，这边一切焦点就又把组重建回来（组名还会重新随机），两个
         窗口来回打架。
         """
+        if getattr(self, "_activity_board_active", False):
+            return
         if not self.embed_ok:
             return
         self._sync_split_marks()
@@ -155,6 +160,9 @@ class LayoutControllerMixin:
         self._apply_layout_change(lambda store: store.set_focus(project, focus))
 
     def _on_pane_close(self, session_key: str) -> None:
+        if getattr(self, "_activity_board_active", False):
+            self._dismiss_board_pane(session_key)
+            return
         self._apply_layout_change(lambda store: store.remove_session(session_key))
         self._sync_split_marks()
         self.call_next(self._rebuild_sidebar_projection)
@@ -295,7 +303,7 @@ class LayoutControllerMixin:
                 # 跟着这条数据流进入右栏，就可能在抓帧重排的空档闪现。
                 entries.append((session, str(kname), None))
                 continue
-            entries.append((session, None, lambda s=session: self._render_detail(s)))
+            entries.append((session, None, self._detail_renderer_for(session)))
             if session.get("live"):
                 # 在别的窗口跑的会话没有实时画面，右栏就是这份对话；助手还在写
                 # 历史文件，mtime 一变 peek_conversation 就失效（正文会空掉），

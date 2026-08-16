@@ -67,10 +67,13 @@ from pickup.ui.pointer_shape import (
 from pickup.ui.runtime_top_bar import _SidebarToggleChip, _TopBarSpacer
 from pickup.ui.search_modal import FullTextSearchModal, SearchResultRow
 from pickup.ui.session_list import (
+    ACTIVITY_BOARD_ID,
     GROUP_ID_PREFIX,
     NEW_SESSION_ID,
     PIN_SEP_ID,
+    STICKY_IDS,
     TODAY_SEP_ID,
+    ActivityBoardCard,
     NewSessionCard,
     PinSeparatorCard,
     SessionCard,
@@ -787,7 +790,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             )
             await _wait_until(lambda: len(area._cells()) == 2)  # noqa: SLF001
             # 先保证侧边栏停在第一格会话（不动 focus，避免抢焦点）
-            list_view.index = 1
+            list_view.index = len(STICKY_IDS)
             await pilot.pause()
             self.assertEqual(len(area._cells()), 2)  # noqa: SLF001
             self.assertEqual(pickup.session_key(list_view.selected_session()), key0)
@@ -796,7 +799,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             second.focus()
             await pilot.pause()
             await _wait_until(
-                lambda: list_view.index == 2
+                lambda: list_view.index == len(STICKY_IDS) + 1
                 and list_view.selected_session() is not None
                 and pickup.session_key(list_view.selected_session()) == key1,
             )
@@ -1991,7 +1994,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(new_item.id, NEW_SESSION_ID)
         self.assertFalse(new_item.children[0].has_class("-stripe"))
         for item, row in zip(
-            [child for child in list_view.list_children if child.id != NEW_SESSION_ID],
+            [child for child in list_view.list_children if child.id not in STICKY_IDS],
             rows,
             strict=True,
         ):
@@ -2215,7 +2218,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
             list_view.focus()
-            list_view.index = 1
+            list_view.index = len(STICKY_IDS)
 
             await pilot.press("space")
             await _wait_until(
@@ -2320,7 +2323,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(
                 lambda: independent_key in list_view.group_store.pinned_session_keys
             )
-            first_card = list_view.list_children[1].children[0]
+            first_card = list_view.list_children[len(STICKY_IDS)].children[0]
             self.assertIsInstance(first_card, SessionCard)
             self.assertIn("↑", first_card.render().plain.splitlines()[0])
 
@@ -2331,7 +2334,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(
                 lambda: group.group_id in list_view.group_store.pinned_group_ids
             )
-            first_card = list_view.list_children[1].children[0]
+            first_card = list_view.list_children[len(STICKY_IDS)].children[0]
             self.assertIsInstance(first_card, SessionGroupCard)
             self.assertIn("↑", first_card.render().plain.splitlines()[0])
 
@@ -2405,7 +2408,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
 
             # 键盘从置顶项 ↓ 直接落到未置顶项，跳过分隔
             list_view.focus()
-            list_view.index = 1  # 置顶会话（新建项之下）
+            list_view.index = len(STICKY_IDS)  # 置顶会话（固定头之下）
             list_view.action_cursor_down()
             self.assertEqual(
                 pickup.session_key(list_view.selected_session()),
@@ -2471,7 +2474,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             scroll = list_view.query_one("#sidebar-scroll")
             sticky = list_view.query_one("#sidebar-sticky")
             sticky_ids = [child.id for child in sticky.children]
-            self.assertEqual(sticky_ids, [NEW_SESSION_ID])
+            self.assertEqual(sticky_ids, [NEW_SESSION_ID, ACTIVITY_BOARD_ID])
             self.assertEqual(pinned_card.parent.parent, scroll)
             search_y = search.region.y
             new_y = new_card.region.y
@@ -2526,7 +2529,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             scroll = list_view.query_one("#sidebar-scroll")
             self.assertEqual(
                 [child.id for child in sticky.children],
-                [NEW_SESSION_ID],
+                [NEW_SESSION_ID, ACTIVITY_BOARD_ID],
             )
             pinned_cards = [
                 card
@@ -2744,7 +2747,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
             list_view.focus()
-            list_view.index = 1  # 置顶会话
+            list_view.index = len(STICKY_IDS)  # 置顶会话
             list_view.action_cursor_down()
             self.assertEqual(
                 pickup.session_key(list_view.selected_session()),
@@ -2913,7 +2916,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             search = app.screen.query_one("#project-search", Input)
-            self.assertEqual(list_view.index, 1)  # 默认落在第一条会话，跳过「＋新建」
+            self.assertEqual(list_view.index, len(STICKY_IDS))  # 默认落在第一条会话，跳过固定头
             self.assertEqual(list_view.selected_session()["id"], "a")
             self.assertEqual(len(list_view.visible_sessions()), 3)
             self.assertIn("Filter groups / projects / titles", search.placeholder)
@@ -2921,7 +2924,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
             await pilot.press("down")
             await pilot.pause()
-            self.assertEqual(list_view.index, 2)
+            self.assertEqual(list_view.index, len(STICKY_IDS) + 1)
 
             await pilot.press("slash")
             await pilot.pause()
@@ -3475,7 +3478,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.3)
             list_view = app.screen.query_one(SessionListView)
             self.assertTrue(list_view.has_focus)
-            self.assertEqual(list_view.index, 1)
+            self.assertEqual(list_view.index, len(STICKY_IDS))
             self.assertFalse(list_view.is_new_session_selected())
             self.assertEqual(list_view.selected_session()["id"], "s0")
             area = app.screen.query_one(SplitPaneArea)
@@ -3494,9 +3497,153 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await list_view.clear()
             await list_view.rebuild(keep_selection=False)
             await pilot.pause(delay=0.2)
-            self.assertEqual(list_view.index, 1)
+            self.assertEqual(list_view.index, len(STICKY_IDS))
             self.assertIsNotNone(list_view.selected_group())
             self.assertTrue(list_view.has_focus)
+
+    async def test_activity_board_sticky_shows_empty_and_does_not_save_group(self) -> None:
+        """侧栏固定头第二项是活动看板；没人需要盯时右栏空态，且不写入水果组。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.3)
+            list_view = app.screen.query_one(SessionListView)
+            sticky = list_view.query_one("#sidebar-sticky")
+            self.assertEqual(
+                [child.id for child in sticky.children],
+                [NEW_SESSION_ID, ACTIVITY_BOARD_ID],
+            )
+            self.assertIsNotNone(app.screen.query_one(ActivityBoardCard))
+            list_view.index = 1
+            await pilot.pause()
+            self.assertTrue(list_view.is_activity_board_selected())
+            area = app.screen.query_one(SplitPaneArea)
+            await _wait_until(lambda: area.ordered_session_keys() == ["__board_empty__"])
+            self.assertIn(
+                "No sessions need attention",
+                _primary_embed_pane(app.screen).render().plain,
+            )
+            self.assertEqual(app.screen._split_store.groups, {})
+            list_view.index = len(STICKY_IDS)
+            await pilot.pause()
+            await _wait_until(lambda: area.ordered_session_keys() == ["claude:s0"])
+            self.assertFalse(list_view.is_activity_board_selected())
+            self.assertEqual(app.screen._split_store.groups, {})
+
+    async def test_activity_board_lays_out_members_without_saving_group(self) -> None:
+        """有够格成员时右栏自动铺格，跨项目标题带项目名，不写成持久会话组。"""
+        from pickup.activity_board import BoardCandidate
+
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        candidates = [
+            BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
+            BoardCandidate(key="claude:s1", kind="working", updated_at=1),
+        ]
+        with mock.patch(
+            "pickup.ui.controllers.board_controller.collect_candidates",
+            return_value=candidates,
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                list_view = app.screen.query_one(SessionListView)
+                list_view.index = 1
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                await _wait_until(
+                    lambda: area.ordered_session_keys() == ["claude:s0", "claude:s1"]
+                )
+                self.assertTrue(area.title_with_project)
+                self.assertTrue(area.allow_cross_project)
+                self.assertEqual(app.screen._split_store.groups, {})
+
+    async def test_activity_board_full_does_not_block_top_bar_new_session(self) -> None:
+        """看板铺满时顶栏加助手进队列，不报分屏已满。"""
+        from pickup.activity_board import BoardCandidate
+        from pickup.split_layout import MAX_PANES
+
+        sessions = [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": time.time() - i, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp", "live": True, "keepalive_name": f"pickup-s{i}",
+            }
+            for i in range(MAX_PANES)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        candidates = [
+            BoardCandidate(key=f"claude:s{i}", kind="working", updated_at=MAX_PANES - i)
+            for i in range(MAX_PANES)
+        ]
+        with mock.patch(
+            "pickup.ui.controllers.board_controller.collect_candidates",
+            return_value=candidates,
+        ):
+            app = PickupApp(store, embed_ok=True)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                list_view = app.screen.query_one(SessionListView)
+                list_view.index = 1
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                await _wait_until(
+                    lambda: len(area.ordered_session_keys()) == MAX_PANES
+                )
+                self.assertFalse(area.can_add_pane())
+                with (
+                    mock.patch.object(app.screen, "_embed_open") as embed_open,
+                    mock.patch.object(app.screen, "notify") as notify,
+                ):
+                    app.screen._on_runtime_pick("claude")
+                    embed_open.assert_called_once()
+                    self.assertFalse(
+                        any(
+                            t("split.full", n=MAX_PANES) in str(call)
+                            for call in notify.call_args_list
+                        )
+                    )
+
+    async def test_shell_from_activity_board_leaves_board(self) -> None:
+        """看板里点终端会离开看板，右栏换成这一格终端，不写水果组。"""
+        from pickup.activity_board import BoardCandidate
+
+        store, _ = _make_store()
+        candidates = [
+            BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
+            BoardCandidate(key="claude:s1", kind="working", updated_at=1),
+        ]
+        with (
+            mock.patch(
+                "pickup.ui.controllers.board_controller.collect_candidates",
+                return_value=candidates,
+            ),
+            mock.patch("pickup.embed.host_session", return_value="pickup-shell-from-board"),
+            mock.patch("pickup.embed.is_alive", return_value=True),
+        ):
+            app = PickupApp(store, embed_ok=True)
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                list_view = app.screen.query_one(SessionListView)
+                list_view.index = 1
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                await _wait_until(
+                    lambda: area.ordered_session_keys() == ["claude:s0", "claude:s1"]
+                )
+                area.current_project = "/tmp"
+                app.screen._on_shell_pick()
+                await _wait_until(lambda: app.screen._host_pending == 0)
+                await _wait_until(
+                    lambda: any(spec.is_shell for spec in area.pane_specs()),
+                )
+                self.assertFalse(list_view.is_activity_board_selected())
+                self.assertFalse(app.screen._activity_board_active)
+                self.assertEqual(
+                    [spec.keepalive_name for spec in area.pane_specs() if spec.is_shell],
+                    ["pickup-shell-from-board"],
+                )
+                self.assertEqual(app.screen._split_store.groups, {})
 
     async def test_escape_exits_with_no_result(self) -> None:
         store, _ = _make_store()
@@ -3643,7 +3790,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
-            list_view.index = 1
+            list_view.index = len(STICKY_IDS)
             await pilot.pause()
             await pilot.press("space")
             await pilot.pause()
@@ -3885,7 +4032,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
-            list_view.index = 2  # 选中 s1（第二条，位置 1）
+            list_view.index = len(STICKY_IDS) + 1  # 选中 s1（第二条）
             await pilot.pause()
             target_key = pickup.session_key(list_view.selected_session())
             self.assertEqual(target_key, "claude:s1")
@@ -3916,7 +4063,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
-            list_view.index = 2  # 选中 s1
+            list_view.index = len(STICKY_IDS) + 1  # 选中 s1
             await pilot.pause(delay=0.2)
             await _wait_until(lambda: "会话1" in _primary_embed_pane(app.screen).render().plain)
 

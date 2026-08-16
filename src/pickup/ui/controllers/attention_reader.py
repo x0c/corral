@@ -1,18 +1,18 @@
-"""关注已读跟踪器：红点会话在右侧真实可见并连续停留 0.5 秒后自动标已读。
+"""关注已读跟踪器：红点会话在右侧真实可见（内容就绪）后立即标已读。
 
 从 `main_screen.MainScreen` 拆出的方法组（架构整改阶段四）：只依赖屏幕提供的
 `embed_ok` / `_app_focused` / `_split_area()` / `store` / `set_timer` / `query_one`。
-状态（`_attention_read_*` / `_attention_visible_since` / `_app_focused`）仍挂在
-MainScreen 实例上，这里只是方法容器。
+状态（`_attention_read_keys` / `_app_focused`）仍挂在 MainScreen 实例上，这里只是
+方法容器。
 """
 
 from __future__ import annotations
 
 from pickup.ui.session_list import SessionListView
 
-# 红点只有在右侧内容真实可见并连续稳定一段时间后才算已读；等待首帧或对话缓存
-# 时做轻量轮询，不能把「选中过」误当成「看过了」。
-_ATTENTION_READ_DELAY = 0.5
+# 红点只要右侧内容真实可见（托管格首帧写出、静态预览对话缓存就绪）就立即清除，
+# 不再要求连续停留时长；等待首帧或对话缓存时做轻量轮询，不能把「选中过」误当成
+# 「看过了」。
 _ATTENTION_READY_POLL = 0.1
 
 
@@ -20,7 +20,7 @@ class AttentionReaderMixin:
     """依赖宿主提供：`embed_ok`、`_app_focused`、`_split_area()`、`store`。"""
 
     def _on_app_focus_changed(self, focused: bool) -> None:
-        """终端应用失焦即作废连续查看；重新聚焦后从零开始计算。"""
+        """终端应用失焦即停止观察；重新聚焦后重新开始。"""
         self._app_focused = bool(focused)
         self._cancel_attention_read()
         if focused:
@@ -31,106 +31,102 @@ class AttentionReaderMixin:
         self._attention_read_timer = None
         if timer is not None:
             timer.stop()
-        self._attention_read_key = None
-        self._attention_read_token = None
-        self._attention_visible_since = None
+        self._attention_read_keys = set()
 
     def _begin_selected_attention_read(self) -> None:
         if not self.embed_ok:
+            return
+        if getattr(self, "_activity_board_active", False):
+            key = self._split_area().focus_key
+            if key:
+                self._begin_attention_read(key)
             return
         key = self.query_one(SessionListView)._displayed_selected_key()
         if key is None:
             return
         self._begin_attention_read(key)
 
-    def _begin_attention_read(self, key: str) -> None:
-        """开始观察一条红点会话；此时不等于已读，先等右侧内容真实就绪。"""
+    def _begin_attention_read(self, key: str | None = None) -> None:
+        """开始观察右侧可见的红点会话；内容真实就绪后立即标已读。
+
+        多分屏（会话组 / 活动看板）下所有可见格同屏可见，一起纳入观察——
+        用户既然看到了每一格，红点就该一起清。`key` 是调用方关注的会话
+        （选中 / 聚焦格），可见格集合以分屏区当前状态为准。
+        """
         self._cancel_attention_read()
         if not self.embed_ok or not self._app_focused:
             return
-        session = self.store.find_session(key)
-        if session is None or session.get("attention_kind") != "unread":
-            return
-        self._attention_read_key = key
-        self._attention_read_token = session.get("attention_token")
+        self._attention_read_keys = {key} if key else set()
         self._attention_read_timer = self.set_timer(
             _ATTENTION_READY_POLL, self._check_attention_read,
         )
 
-    def _attention_view_ready(self, key: str) -> bool:
-        """目标会话是否仍被选中，且右侧已画出可读的预览或真实终端首帧。"""
-        if not self.embed_ok or not self._app_focused:
+    def _attention_cell_for(self, key: str):
+        """会话当前是否以可见格呈现在右栏；返回那格，不在返回 None。"""
+        for cell in self._split_area().cells():
+            if cell.spec.session_key == key:
+                return cell
+        return None
+
+    def _attention_pane_ready(self, cell) -> bool:
+        """这一格是否已画出可读内容：托管格要真实首帧，静态格要对话缓存有效。"""
+        session = self.store.find_session(cell.spec.session_key)
+        if session is None:
             return False
-        if self.query_one(SessionListView)._displayed_selected_key() != key:
+        pane = cell.embed_pane()
+        if pane is None or pane.size.width <= 0 or pane.size.height <= 0:
             return False
-        session = self.store.find_session(key)
-        if session is None or session.get("attention_kind") != "unread":
-            return False
-        area = self._split_area()
-        for cell in area.cells():
-            if cell.spec.session_key != key:
-                continue
-            pane = cell.embed_pane()
-            if pane is None or pane.size.width <= 0 or pane.size.height <= 0:
-                return False
-            keepalive_name = cell.spec.keepalive_name
-            if keepalive_name:
-                # 仅挂上控件或正在显示静态回退都不算；首帧成功写入网格后，用户
-                # 才真正看到了这个托管终端。
-                return (
-                    pane.session_name == keepalive_name
-                    and not pane.dead
-                    and pane._grid is not None  # noqa: SLF001
-                )
-            # 静态详情只有对话缓存已成功填充后才算就绪；加载异常会一直保持 None，
-            # 因而不会因为右栏只出现标题或空白回退而误清红点。
-            return pane.session_name is None and self.store.peek_conversation(session) is not None
-        return False
+        keepalive_name = cell.spec.keepalive_name
+        if keepalive_name:
+            # 仅挂上控件或正在显示静态回退都不算；首帧成功写入网格后，用户
+            # 才真正看到了这个托管终端。
+            return (
+                pane.session_name == keepalive_name
+                and not pane.dead
+                and pane._grid is not None  # noqa: SLF001
+            )
+        # 静态详情只有对话缓存已成功填充后才算就绪；加载异常会一直保持 None，
+        # 因而不会因为右栏只出现标题或空白回退而误清红点。peek 走严格模式：
+        # 会话又写了新结果时缓存版本失效，红点保持到新内容真实渲染出来。
+        return (
+            pane.session_name is None
+            and self.store.peek_conversation(session) is not None
+        )
 
     def _check_attention_read(self) -> None:
-        """轮询首帧/预览就绪，并在连续可见 0.5 秒后清除红点。"""
-        import time as _time
-
+        """轮询可见格内容就绪状态；红点会话一旦真实可见立即标已读。"""
         self._attention_read_timer = None
-        key = self._attention_read_key
-        if key is None:
+        if not self.embed_ok or not self._app_focused:
+            self._attention_read_keys = set()
             return
-        session = self.store.find_session(key)
-        if session is None or session.get("attention_kind") != "unread":
-            self._cancel_attention_read()
+        watched = set(self._attention_read_keys)
+        for cell in self._split_area().cells():
+            key = cell.spec.session_key
+            if key and not key.startswith("__"):
+                watched.add(key)
+        cleared = False
+        pending = False
+        for key in sorted(watched):
+            session = self.store.find_session(key)
+            if session is None or session.get("attention_kind") != "unread":
+                continue
+            cell = self._attention_cell_for(key)
+            if cell is None or not self._attention_pane_ready(cell):
+                # 画面尚未挂上（跟随节流未跑完 / 抓帧未出）或内容未就绪：
+                # 继续等，不能把「选中过」误当成「看过了」。
+                pending = True
+                continue
+            self.store.mark_session_read(key)
+            cleared = True
+        if cleared:
+            # mark_session_read 已原地更新会话快照；重建让红点与详情头的
+            # 可访问文字一起消失。不传 select_key：分屏下同时清多条时不得
+            # 强行移动列表选中。
+            self.call_next(self._rebuild_list)
             return
-        token = session.get("attention_token")
-        if token != self._attention_read_token:
-            # 正在看的 0.5 秒内又到了一条新结果：旧计时不能顺手把新结果也标成
-            # 已读，必须从新内容真实可见的时刻重新完整计算。
-            self._attention_read_token = token
-            self._attention_visible_since = None
-        if not self._attention_view_ready(key):
-            self._attention_visible_since = None
-            if self._app_focused:
-                self._attention_read_timer = self.set_timer(
-                    _ATTENTION_READY_POLL, self._check_attention_read,
-                )
-            return
-        now = _time.monotonic()
-        if self._attention_visible_since is None:
-            self._attention_visible_since = now
+        if pending:
             self._attention_read_timer = self.set_timer(
-                _ATTENTION_READ_DELAY, self._check_attention_read,
+                _ATTENTION_READY_POLL, self._check_attention_read,
             )
-            return
-        remaining = _ATTENTION_READ_DELAY - (now - self._attention_visible_since)
-        if remaining > 0:
-            self._attention_read_timer = self.set_timer(
-                remaining, self._check_attention_read,
-            )
-            return
-
-        self._attention_read_key = None
-        self._attention_read_token = None
-        self._attention_visible_since = None
-        state = self.store.mark_session_read(key)
-        if state.kind == "none":
-            # mark_session_read 已原地更新会话快照；重建只会刷新发生变化的卡片，
-            # 同时让详情头的可访问文字与红点一起消失。
-            self.call_next(self._rebuild_list, key)
+        else:
+            self._attention_read_keys = set()
