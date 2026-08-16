@@ -70,7 +70,7 @@ class SplitGroupIntegrityTests(unittest.TestCase):
             def _persist_split_composition(self) -> None:
                 self.composition_updates += 1
 
-            def _begin_attention_read(self, _key: str) -> None:
+            def _begin_attention_read(self, _key: str | None = None) -> None:
                 pass
 
             def _prefetch_group_screens(self, _entries) -> None:

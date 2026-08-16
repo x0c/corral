@@ -104,7 +104,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 
 唯一界面是 Textual 左右分栏（`ui/main_screen.py`）：左栏会话列表 + 右栏对话预览/内嵌终端。旧 curses 全宽列表、Space 全屏预览页均已删除，禁止再加回第二套界面。改界面行为以 `ui/` 源码与 `test_ui.py` 为准。
 
-- **`MainScreen` 按领域拆分为 mixin 方法容器（2026-08-05，v0.24.53）**：主控已从 2200 行拆到约 1450 行，五个领域的方法迁到 `ui/controllers/` 下的 mixin（layout / attention / host / hud / update），`MainScreen` 多重继承它们。约定：① **状态仍挂在 MainScreen 实例上**（`__init__` 里的 `self._xxx` 一律不动），mixin 只是方法容器——不要为了"面向对象"把状态搬进 mixin 类；② 每个领域的模块级常量**跟随方法搬**（如 `_ATTENTION_READ_DELAY` 在 `attention_reader.py`），谁引用谁定义；③ `MainScreen.<method>` 经 MRO 仍全部可解析，文档锚点不失效；④ 测试用 `mock.patch` 注入的常量目标路径**必须随搬迁同步改**为控制器模块路径，否则 patch 打在旧命名空间上不生效（`test_attention_ui.py` 的 patch 目标即从 `main_screen._ATTENTION_READ_DELAY` 改为 `controllers.attention_reader._ATTENTION_READ_DELAY`）；⑤ Textual 的 `@work` 装饰器与 `action_*` / `on_*` 在 mixin 里照常生效（descriptor 沿 MRO 解析），新拆领域时可以直接把框架回调一起搬过去。
+- **`MainScreen` 按领域拆分为 mixin 方法容器（2026-08-05，v0.24.53）**：主控已从 2200 行拆到约 1450 行，五个领域的方法迁到 `ui/controllers/` 下的 mixin（layout / attention / host / hud / update），`MainScreen` 多重继承它们。约定：① **状态仍挂在 MainScreen 实例上**（`__init__` 里的 `self._xxx` 一律不动），mixin 只是方法容器——不要为了"面向对象"把状态搬进 mixin 类；② 每个领域的模块级常量**跟随方法搬**（如 `_ATTENTION_READY_POLL` 在 `attention_reader.py`），谁引用谁定义；③ `MainScreen.<method>` 经 MRO 仍全部可解析，文档锚点不失效；④ 测试用 `mock.patch` 注入的常量目标路径**必须随搬迁同步改**为控制器模块路径，否则 patch 打在旧命名空间上不生效（`test_attention_ui.py` 的 poll 间隔即打在 `controllers.attention_reader._ATTENTION_READY_POLL`）；⑤ Textual 的 `@work` 装饰器与 `action_*` / `on_*` 在 mixin 里照常生效（descriptor 沿 MRO 解析），新拆领域时可以直接把框架回调一起搬过去。
 
 - **TUI 多语言（`i18n.py`）**：界面默认英文；系统 locale 主语言为 `zh*`（`LANG`/`LC_ALL`/`LC_MESSAGES`/`LANGUAGE`）时自动中文。`PICKUP_LANG=en|zh` 可强制覆盖。机器接口（`pickup list` 等 JSON）不走翻译。新增用户可见文案必须进 `_MESSAGES` 并同时写 en/zh；测试固定 `i18n.set_lang("en")` 再断言，中文覆盖用 `test_i18n.py`。Textual 的 `BINDINGS` 在类创建时会冻结：`MainScreen` 在 `__init__` 里用 `dataclasses.replace` **只改 description**，禁止整表替换 `_bindings`（会丢掉 ListView 继承的 up/down/enter，表现为方向键失灵）。
 
@@ -284,7 +284,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 - **Cursor 提问落盘**：等用户作答时 AskQuestion 往往只在 `store.db` 的 field-2 protobuf（内层 field 23 + field 57 调用标识），JSON `tool-call` 要到用户选完才出现。关注信号必须另查这些 protobuf，不能只扫 `{` JSON；其它工具的 field-2 记录没有 field 23，不能当提问。`stop` / `afterAgentResponse` 只表示本轮生成结束，不得清掉未作答的等待；`beforeSubmitPrompt` 与 `sessionEnd` 可以。配对按 `toolCallId` 做集合差，不要按 rowid 顺序 pop。**已答提问的 protobuf 会一直留着**：JSON 结果滚出窗口后，不能只凭 protobuf 还在就亮黄点。提问必须仍是最新动作（后面没有其它工具/正文，且没有落在当前 JSON 窗口之前）才算 waiting。
 - **状态裁决与本地库**：`AttentionStore` 默认写 `~/.cache/pickup/session-attention.sqlite3`，唯一键仍是运行时 + 会话 ID。只保存阶段、活动/问题的不透明令牌、时间、当前裁决和已读基线，不保存标题、提示词、回答或工具正文。临时占位会话转为正式会话时必须按同一托管身份迁移状态；彻底删除会话时同步清理。
 - **首升级基线**：首次见到既有历史时把已有结果视为已读，防止升级后所有旧会话批量亮红；当下仍在执行或等待回答的会话照常显示绿/黄。以后只有新的助手结果、完成或中止令牌产生红点。
-- **已读不是“选中过”**：红点只有在该会话对应的右侧内容已成功加载并稳定可见 0.5 秒后清除。切换选择、快速掠过、预览失败或应用失焦都要取消计时；查看不能清掉黄点或绿点。多分屏时只对实际可见且内容就绪的会话执行同一规则。
+- **已读不是“选中过”**：红点只有在该会话对应的右侧内容已成功加载并真实可见后立即清除。切换选择、快速掠过、预览失败或应用失焦都不得清；查看不能清掉黄点或绿点。多分屏时所有正在画面上的格子一视同仁，看见了就一起清。观察集合认分屏区当前规格，不要扫换页残留控件。
 - **刷新与性能**：关注字段进入列表卡片的轻量刷新签名，但绝不进入排序键。Cursor `store.db` 默认只在该会话 live 或相关文件签名变化时探测；冷会话的每轮后台刷新不得重复打开数据库。关注状态写入、读取或观察失败一律降级为无状态，不能拖垮首屏或 TUI。
 - **Cursor 自动观察**：TUI 挂载后在后台幂等检查用户级 `~/.cursor/hooks.json`，只管理 pickup 自己在 `beforeSubmitPrompt`、`afterAgentResponse`、`stop`、`sessionEnd` 下的条目；保留其他工具条目。写前把原文件备份到 pickup 缓存目录，临时文件落盘并同步后再原子替换。JSON 损坏、版本未知、权限不足时停止修改；隐藏 hook 接收入口无论输入损坏还是状态库写失败都静默返回成功，绝不能阻断 Cursor。
 - **公开维护命令**：`pickup observer status cursor` 只读检查；`pickup observer install cursor` 安装/修复；`pickup observer uninstall cursor` 只移除 pickup 管理条目。三者支持 `--json` 结构化信封；安装和卸载支持 `--dry-run` 严格预演且不创建配置、备份或目录，`status --dry-run` 是用法错误。非 TTY 自动输出 JSON；重复安装必须返回无需变更。
@@ -504,6 +504,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 2. 别人半成品会污染版本号或测不过时：先 `git stash push -u`（含未跟踪）再 bump / 测 / 提交 / 打 tag / 推送 / 跑收尾脚本；成功后再 `stash pop`，冲突按「改动即发布」合并进后续版本，禁止丢弃他人改动。
 3. 推 tag 后必须用 `git ls-remote --tags origin` / `github` 核对远端真有该 tag；本地 `git push` 因门禁失败时可能**根本没推上去**，不能只看本机 tag 列表。
 4. `PICKUP_SKIP_PUSH_GATE=1` 只允许在：**GitHub 侧该版本已验证过**（或本机刚跑完完整 `ci-test`）、且阻塞原因是脏 WIP / 双 remote 重复跑门禁之类非产品缺陷时使用；禁止用跳过门禁掩盖未跑测试。
+5. **显式给旧 tag 跑收尾时，工作区版本号必须等于该 tag。** `publish-release.sh` 按当前工作区打包，不会切回 tag 源码。2026-08-16 给 `v0.24.125` 收尾时工作区已被并行 Agent 升到 `0.24.126`，把 126 的 macOS 安装包传到了 125 的 Release（校验和清单仍是 125 的，附件列表却混了两套）。发现后应立刻从该 Release 删掉版本号不符的附件。脚本现在会在版本不一致时直接退出。
 
 
 2026-07-31 排查「GitHub 天天发失败邮件」的完整结论。故障从 2026-07-23（v0.24.1）起持续，`test` 工作流此后**没有再成功过一次**，三个独立原因叠加：

@@ -160,8 +160,8 @@ The small dot at the very start of row one is intentionally simple:
 
 Only one dot is shown, with `yellow > green > red` priority. Yellow and green therefore never overlap:
 a waiting question temporarily takes precedence, while ordinary work still shows green. Dots never reorder,
-filter, or count sessions, and they do not trigger sounds or system notifications. A red dot clears only after
-the right-pane content has remained visibly loaded for 0.5 seconds; quickly moving past a card, a failed preview,
+filter, or count sessions, and they do not trigger sounds or system notifications. A red dot clears as soon as the right-pane content is actually visible;
+split view clears every on-screen session together. Quickly moving past a card, a failed preview,
 or switching away from pickup does not mark it read. Existing history is baselined as read on the first upgraded
 launch, so old sessions do not all light up at once.
 

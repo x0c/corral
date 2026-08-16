@@ -63,6 +63,17 @@ git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null \
 git ls-remote --exit-code --tags github "refs/tags/${TAG}" >/dev/null 2>&1 \
   || die "${TAG} 还没推到 github 远端，先 git push github --tags"
 
+# 按当前工作区构建安装包，不会切回 tag 源码。版本号对不上就会把更新版本的包传到旧 Release。
+# 2026-08-16：给 v0.24.125 收尾时工作区已被并行 Agent 升到 0.24.126，macOS 包被传到 125。
+WT_VER="$(python3 -c '
+import re, pathlib
+text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+print(re.search(r"^version = \"([^\"]+)\"", text, re.M).group(1))
+')"
+if [ "$WT_VER" != "$VERSION" ]; then
+  die "工作区版本是 ${WT_VER}，与 ${TAG} 不一致。把工作区回到该 tag 再跑，或改跑更新版本的收尾。"
+fi
+
 # ---- 1. Release 本体 ----
 if gh release view "$TAG" >/dev/null 2>&1; then
   echo "==> Release ${TAG} 已存在"

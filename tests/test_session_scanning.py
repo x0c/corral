@@ -5501,6 +5501,21 @@ class PiScanTests(unittest.TestCase):
             )
             self.assertFalse(sessions[0]["live"])
 
+    def test_is_pi_tui_cmdline(self) -> None:
+        self.assertTrue(scan_pi.is_pi_tui_cmdline("pi --approve"))
+        self.assertTrue(scan_pi.is_pi_tui_cmdline("pi --approve --session /tmp/a.jsonl"))
+        self.assertTrue(scan_pi.is_pi_tui_cmdline("node /opt/pi-coding-agent/dist/cli.js --approve"))
+        self.assertTrue(scan_pi.is_pi_tui_cmdline("pi -c"))
+        self.assertTrue(scan_pi.is_pi_tui_cmdline(
+            "pi --approve Task: picking up a session. Please list files and "
+            "update the install config"
+        ))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi --print hello"))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi -p hello"))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi auth login"))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi --list-models"))
+        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi install"))
+
     def test_live_flags_bind_handoff_prompt_containing_subcommand_words(self) -> None:
         """接力位置参数里的 list/install 不得把仍在跑的 TUI 判成非交互。"""
         with tempfile.TemporaryDirectory() as td:
@@ -5550,19 +5565,6 @@ class PiScanTests(unittest.TestCase):
             self.assertTrue(by_id["pi-new"]["live"])
             self.assertEqual(by_id["pi-new"]["pid"], 42)
             self.assertFalse(by_id["pi-old"]["live"])
-        self.assertTrue(scan_pi.is_pi_tui_cmdline("pi --approve"))
-        self.assertTrue(scan_pi.is_pi_tui_cmdline("pi --approve --session /tmp/a.jsonl"))
-        self.assertTrue(scan_pi.is_pi_tui_cmdline("node /opt/pi-coding-agent/dist/cli.js --approve"))
-        self.assertTrue(scan_pi.is_pi_tui_cmdline("pi -c"))
-        self.assertTrue(scan_pi.is_pi_tui_cmdline(
-            "pi --approve Task: picking up a session. Please list files and "
-            "update the install config"
-        ))
-        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi --print hello"))
-        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi -p hello"))
-        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi auth login"))
-        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi --list-models"))
-        self.assertFalse(scan_pi.is_pi_tui_cmdline("pi install"))
 
 
 class StartupLatencyTests(unittest.TestCase):

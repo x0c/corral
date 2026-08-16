@@ -196,13 +196,12 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         i18n.set_lang("en")
 
-    async def test_loaded_preview_clears_unread_only_after_stable_delay(self) -> None:
+    async def test_loaded_preview_clears_unread_immediately(self) -> None:
         store = _make_store()
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
         app = PickupApp(store, embed_ok=True)
-        with (
-            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READ_DELAY", 0.12),
-            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01),
+        with mock.patch(
+            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -212,75 +211,89 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.12)
                 _set_attention(store, "claude:s0", "unread")
                 app.screen._begin_attention_read("claude:s0")
-                await asyncio.sleep(0.07)
-                self.assertFalse(store.mark_session_read.called)
-                await asyncio.sleep(0.18)
+                await asyncio.sleep(0.05)
                 store.mark_session_read.assert_called_once_with("claude:s0")
                 self.assertEqual(store.find_session("claude:s0")["attention_kind"], "none")
 
-    async def test_quick_selection_change_does_not_clear_passed_session(self) -> None:
+    async def test_split_view_clears_all_visible_panes(self) -> None:
+        """分屏里所有可见格同屏可见：红点一起清，不只有聚焦格。"""
         store = _make_store()
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
         app = PickupApp(store, embed_ok=True)
-        with (
-            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READ_DELAY", 0.15),
-            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01),
+        with mock.patch(
+            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.05)
+                for key in ("claude:s0", "claude:s1"):
+                    store.get_conversation(store.find_session(key))
+                    _set_attention(store, key, "unread")
+                app.screen._open_split_from_selection(["claude:s0", "claude:s1"])
+                await pilot.pause(delay=0.15)
+                self.assertEqual(
+                    {call.args[0] for call in store.mark_session_read.call_args_list},
+                    {"claude:s0", "claude:s1"},
+                )
+                for key in ("claude:s0", "claude:s1"):
+                    self.assertEqual(store.find_session(key)["attention_kind"], "none")
+
+    async def test_hidden_session_is_not_cleared_when_another_is_visible(self) -> None:
+        """右栏已切到别的会话后，没出现在画面上的红点不能清。"""
+        store = _make_store()
+        store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch(
+            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
                 await pilot.press("down")
-                await pilot.pause(delay=0.12)
+                await pilot.pause(delay=0.3)
+                self.assertEqual(
+                    app.screen._split_area().ordered_session_keys(), ["claude:s1"],
+                )
                 _set_attention(store, "claude:s0", "unread")
                 app.screen._begin_attention_read("claude:s0")
-                await asyncio.sleep(0.03)
-                list_view = app.screen.query_one("#session-list")
-                list_view.index = 2
-                app.screen.on_list_view_highlighted(None)
-                await asyncio.sleep(0.22)
+                await asyncio.sleep(0.08)
                 store.mark_session_read.assert_not_called()
                 self.assertEqual(store.find_session("claude:s0")["attention_kind"], "unread")
 
-    async def test_app_blur_cancels_read_and_refocus_restarts_full_delay(self) -> None:
+    async def test_app_blur_blocks_read_and_refocus_restarts(self) -> None:
         store = _make_store()
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
         app = PickupApp(store, embed_ok=True)
-        with (
-            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READ_DELAY", 0.14),
-            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01),
+        with mock.patch(
+            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
                 app.screen.query_one("#session-list").select_session_key("claude:s0")
                 await pilot.pause(delay=0.12)
                 _set_attention(store, "claude:s0", "unread")
-                app.screen._begin_attention_read("claude:s0")
-                await asyncio.sleep(0.06)
                 app.screen._on_app_focus_changed(False)
-                await asyncio.sleep(0.18)
+                app.screen._begin_attention_read("claude:s0")
+                await asyncio.sleep(0.08)
                 store.mark_session_read.assert_not_called()
                 app.screen._on_app_focus_changed(True)
                 await asyncio.sleep(0.08)
-                store.mark_session_read.assert_not_called()
-                await asyncio.sleep(0.14)
                 store.mark_session_read.assert_called_once_with("claude:s0")
 
     async def test_preview_load_failure_never_clears_unread(self) -> None:
         store = _make_store()
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
         app = PickupApp(store, embed_ok=True)
-        with (
-            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READ_DELAY", 0.08),
-            mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01),
+        with mock.patch(
+            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
-                await pilot.press("down")
+                app.screen.query_one("#session-list").select_session_key("claude:s0")
                 await pilot.pause(delay=0.12)
                 store.conversations.clear()
                 store.get_conversation = mock.Mock(side_effect=OSError("模拟预览加载失败"))
                 _set_attention(store, "claude:s0", "unread")
                 app.screen._begin_attention_read("claude:s0")
-                await asyncio.sleep(0.22)
+                await asyncio.sleep(0.12)
                 store.mark_session_read.assert_not_called()
 
     async def test_waiting_and_working_are_never_cleared_by_viewing(self) -> None:
