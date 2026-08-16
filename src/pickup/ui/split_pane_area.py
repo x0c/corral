@@ -26,7 +26,7 @@ _LIST_FOCUS_TYPES = frozenset({"SessionListView", "_SidebarList"})
 
 
 def _session_list_has_focus(focused) -> bool:
-    """焦点是否在侧边栏会话列表（含固定头 / 未置顶两段内层 ListView）。"""
+    """焦点是否在侧边栏会话列表（含固定头 / 会话列表两段内层 ListView）。"""
     node = focused
     while node is not None:
         if getattr(node, "id", None) in _LIST_FOCUS_IDS:

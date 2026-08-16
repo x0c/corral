@@ -4,9 +4,10 @@
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
 或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
-无末行空行）。筛选框在列表外固定；`＋ 新建`、置顶块和 Pinned 分隔线在
-`#sidebar-sticky` 里也不随列表滚。未置顶（Today / 更早）在 `#sidebar-scroll`
-里滚。鼠标在固定头（含筛选框）上滚轮仍带动未置顶列表，顶部位置不变。
+无末行空行）。筛选框在列表外固定；`＋ 新建` 在 `#sidebar-sticky` 里也不随
+列表滚。置顶块、Pinned 分隔线与未置顶（Today / 更早）都在 `#sidebar-scroll`
+里一起滚——置顶只改变排序，不冻在视口里。鼠标在固定头（含筛选框）上滚轮
+仍带动会话列表，顶部位置不变。
 置顶块与未置顶块都非空时，中间插一行居中 `Pinned`/`置顶` 的
 `$primary` 蓝横线；未置顶再按滚动 24 小时切 today / older 两桶（桶内不重排），
 两侧都有时再插 `Today`/`今天` 线。分隔高 1、disabled、键盘跳过；禁止 Older/其他
@@ -682,7 +683,7 @@ class PinSeparatorCard(Widget):
 
 
 class _SidebarList(ListView):
-    """侧边栏一段列表：固定头（新建+置顶）或未置顶滚动区。"""
+    """侧边栏一段列表：固定头（仅新建）或会话滚动区（置顶与未置顶一起滚）。"""
 
     ALLOW_SELECT = False
 
@@ -811,10 +812,10 @@ class _SidebarList(ListView):
 
 
 class SessionListView(Vertical):
-    """会话列表外壳：固定头（新建+置顶）+ 未置顶滚动区。
+    """会话列表外壳：固定头（仅新建）+ 会话滚动区（置顶与未置顶一起滚）。
 
     对外仍是一个控件：统一 `index` 从「＋ 新建」起算。真正滚动的只有
-    `#sidebar-scroll`。鼠标在固定头上滚轮转发到未置顶区，顶部不动。
+    `#sidebar-scroll`。鼠标在固定头上滚轮转发到会话列表，顶部不动。
     """
 
     can_focus = False
@@ -831,7 +832,6 @@ class SessionListView(Vertical):
     }
     SessionListView > #sidebar-sticky {
         height: auto;
-        max-height: 70%;
         overflow: hidden hidden;
         padding: 0;
         margin: 0;
@@ -1043,6 +1043,7 @@ class SessionListView(Vertical):
         self._apply_split_marks()
 
     def scroll_unpinned(self, delta: int) -> None:
+        """滚动会话列表（置顶 + 未置顶）。固定头上的滚轮转发到这里。"""
         scroll = self._scroll_list
         if scroll is None or delta == 0:
             return
@@ -1057,17 +1058,9 @@ class SessionListView(Vertical):
         return items[idx]
 
     def _partition_items(
-        self, items: list[ListItem], rows: list[_SidebarRow]
+        self, items: list[ListItem]
     ) -> tuple[list[ListItem], list[ListItem]]:
-        pin_at = next(
-            (i for i, row in enumerate(rows) if row.identity == PIN_SEP_ID),
-            None,
-        )
-        if pin_at is not None:
-            cut = pin_at + 2
-            return items[:cut], items[cut:]
-        if any(row.pinned for row in rows if row.kind != "separator"):
-            return items, []
+        """固定头只留「＋ 新建」；置顶与未置顶都进滚动区。"""
         return items[:1], items[1:]
 
     async def _replace_list_items(
@@ -1802,7 +1795,7 @@ class SessionListView(Vertical):
 
         # batch_update() 抑制 clear()+extend() 中间那次多余重绘；两步都要 await
         # 完成（DOM 真正更新），批量 API 本身已经把"多次 mount"合成一轮。
-        sticky_items, scroll_items = self._partition_items(items, rows)
+        sticky_items, scroll_items = self._partition_items(items)
         with self.app.batch_update():
             await self._replace_list_items(sticky_items, scroll_items)
 

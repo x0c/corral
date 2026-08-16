@@ -145,7 +145,7 @@ such as `Group Apple` or `Group Pineapple`. The group takes three rows, while it
 as an indented tree instead of being duplicated in the top-level timeline. Child rows omit the project name
 prefix — that already lives on the group card. Unpinned groups follow the same stable store order as
 independent sessions — once the list is shown they stay put even when a member’s mtime updates; only
-genuinely new sessions are prepended at the top, and only items pinned with `p` or `Ctrl+P` stay pinned above that.
+genuinely new sessions are prepended at the top, and only items pinned with `p` or `Ctrl+P` sort to the top of the list (they still scroll with the rest).
 The group title has no attention
 dot — dots remain on the individual sessions. Only the active group title and the currently focused child are
 highlighted. Press `Space` on a group to collapse it. Press `p` or `Ctrl+P` to pin/unpin an independent session or an

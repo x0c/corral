@@ -2437,8 +2437,8 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 pinned_key,
             )
 
-    async def test_filter_new_and_pinned_stay_fixed_when_unpinned_scrolls(self) -> None:
-        """筛选框、＋新建、置顶块固定不可滚；指针在固定头上滚轮仍带动未置顶区。"""
+    async def test_filter_and_new_stay_fixed_when_session_list_scrolls(self) -> None:
+        """筛选框、＋新建固定不可滚；置顶项跟着会话列表滚；固定头滚轮带动列表。"""
         now = time.time()
         sessions = [
             _claude_session("pin-me", now - 60, "置顶会话"),
@@ -2469,13 +2469,16 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 if pickup.session_key(card.session) == "claude:pin-me"
             )
             scroll = list_view.query_one("#sidebar-scroll")
+            sticky = list_view.query_one("#sidebar-sticky")
+            sticky_ids = [child.id for child in sticky.children]
+            self.assertEqual(sticky_ids, [NEW_SESSION_ID])
+            self.assertEqual(pinned_card.parent.parent, scroll)
             search_y = search.region.y
             new_y = new_card.region.y
             pinned_y = pinned_card.region.y
             self.assertGreater(
-                scroll.max_scroll_y, 0, "未置顶区必须长到能滚，否则测不到固定头"
+                scroll.max_scroll_y, 0, "会话列表必须长到能滚，否则测不到固定头"
             )
-            sticky = list_view.query_one("#sidebar-sticky")
             wheel = events.MouseScrollDown(
                 None, 1, 1, 0, 0, 0, False, False, False
             )
@@ -2488,8 +2491,74 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(search.region.y, search_y)
             self.assertEqual(new_card.region.y, new_y)
-            self.assertEqual(pinned_card.region.y, pinned_y)
+            self.assertNotEqual(pinned_card.region.y, pinned_y)
             self.assertGreater(scroll.scroll_y, 0)
+
+    async def test_many_pinned_sessions_scroll_with_unpinned(self) -> None:
+        """钉很多会话时不得裁切已钉项，也不得把未钉项挤出视野外无法滚到。"""
+        now = time.time()
+        sessions = [
+            *[
+                _claude_session(f"pin-{i}", now - 60 - i, f"置顶{i}")
+                for i in range(8)
+            ],
+            *[
+                _claude_session(
+                    f"old-{i}",
+                    now - 3 * pickup.TODAY_SECONDS - i,
+                    f"更早{i}",
+                )
+                for i in range(10)
+            ],
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 24)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            for i in range(8):
+                list_view.on_layout_change(
+                    lambda s, k=f"claude:pin-{i}": s.toggle_session_pin(k)
+                )
+            await list_view.rebuild()
+            await pilot.pause()
+            sticky = list_view.query_one("#sidebar-sticky")
+            scroll = list_view.query_one("#sidebar-scroll")
+            self.assertEqual(
+                [child.id for child in sticky.children],
+                [NEW_SESSION_ID],
+            )
+            pinned_cards = [
+                card
+                for card in app.screen.query(SessionCard)
+                if pickup.session_key(card.session).startswith("claude:pin-")
+            ]
+            self.assertEqual(len(pinned_cards), 8)
+            for card in pinned_cards:
+                self.assertEqual(card.parent.parent, scroll)
+            self.assertIsNotNone(scroll.query_one(f"#{PIN_SEP_ID}"))
+            last_unpinned = next(
+                card
+                for card in app.screen.query(SessionCard)
+                if pickup.session_key(card.session) == "claude:old-9"
+            )
+            self.assertGreater(scroll.max_scroll_y, 0)
+            search = app.screen.query_one("#project-search", Input)
+            new_card = app.screen.query_one(NewSessionCard)
+            search_y = search.region.y
+            new_y = new_card.region.y
+            first_pinned_y = pinned_cards[0].region.y
+            scroll.scroll_end(animate=False)
+            await pilot.pause()
+            self.assertEqual(search.region.y, search_y)
+            self.assertEqual(new_card.region.y, new_y)
+            self.assertNotEqual(pinned_cards[0].region.y, first_pinned_y)
+            last_region = last_unpinned.region
+            scroll_region = scroll.region
+            self.assertLess(last_region.y, scroll_region.y + scroll_region.height)
+            self.assertGreaterEqual(
+                last_region.y + last_region.height, scroll_region.y
+            )
 
     def test_live_or_recent_mtime_counts_as_today(self) -> None:
         """滚动 24 小时界：live 优先，与时间行 today 档共用 TODAY_SECONDS。"""

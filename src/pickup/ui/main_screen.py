@@ -1396,7 +1396,7 @@ class MainScreen(
             event.stop()
 
     def _forward_sticky_sidebar_wheel(self, event, delta: int) -> bool:
-        """筛选框在列表外；指针在固定头上滚轮仍带动未置顶列表，顶部不动。"""
+        """筛选框在列表外；指针在固定头上滚轮仍带动会话列表，顶部不动。"""
         node = getattr(event, "control", None) or getattr(event, "widget", None)
         while node is not None:
             nid = getattr(node, "id", None)
