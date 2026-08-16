@@ -258,6 +258,29 @@ class AttentionStore:
         )
 
     @staticmethod
+    def _observer_event(evidence: AttentionEvidence) -> str:
+        """观察器活动令牌形如 ``<generation>:<event>``；对不上时返回空串。"""
+        if evidence.source != "observer":
+            return ""
+        token = str(evidence.activity_token or "")
+        if ":" not in token:
+            return ""
+        return token.rsplit(":", 1)[-1]
+
+    @staticmethod
+    def _current_fact_time(
+        evidence: AttentionEvidence,
+        current: _StoredState | None,
+        now: float,
+    ) -> float:
+        """把仍成立的当前事实时间推进到已存状态之后，避免被更早的历史时间挡掉。"""
+        return max(
+            evidence.observed_at,
+            (current.observed_at + 0.000001) if current else 0.0,
+            now,
+        )
+
+    @staticmethod
     def _is_newer(evidence: AttentionEvidence, current: _StoredState) -> bool:
         if evidence.observed_at > current.observed_at:
             return True
@@ -289,6 +312,16 @@ class AttentionStore:
         activity_token = _clean_token(evidence.activity_token)
         question_token = _clean_token(evidence.question_token)
         observed_at = evidence.observed_at if evidence.observed_at > 0 else now
+
+        if (
+            current is not None
+            and current.phase == "waiting"
+            and current.question_token
+            and evidence.source == "observer"
+            and cls._observer_event(evidence) not in {"beforeSubmitPrompt", "sessionEnd"}
+        ):
+            # stop / afterAgentResponse 表示本轮生成结束，不等于用户已经作答。
+            return current
 
         if current is not None and not cls._is_newer(
             replace(evidence, observed_at=observed_at), current,
@@ -425,11 +458,32 @@ class AttentionStore:
                             evidence,
                             phase="idle",
                             question_token=None,
-                            observed_at=max(
-                                evidence.observed_at,
-                                (current.observed_at + 0.000001) if current else 0.0,
-                                now,
-                            ),
+                            observed_at=self._current_fact_time(evidence, current, now),
+                        )
+                    elif (
+                        live
+                        and evidence.phase == "waiting"
+                        and _clean_token(evidence.question_token)
+                    ):
+                        # 进程仍活且历史里有未配对结构化问题：这是当前事实，优先于
+                        # 更早的「生成结束 / 误判不活」时间戳。
+                        evidence = replace(
+                            evidence,
+                            observed_at=self._current_fact_time(evidence, current, now),
+                        )
+                    elif (
+                        live
+                        and current is not None
+                        and current.phase == "waiting"
+                        and current.question_token
+                        and not _clean_token(evidence.question_token)
+                    ):
+                        # 提问已从历史消失、进程还在：视为继续执行，避免黄点粘住。
+                        evidence = replace(
+                            evidence,
+                            phase="working",
+                            question_token=None,
+                            observed_at=self._current_fact_time(evidence, current, now),
                         )
                     state = self._apply_evidence(
                         current,

@@ -352,13 +352,17 @@ class OpenCodeAttentionSignalTests(unittest.TestCase):
 
 
 class CursorAttentionSignalTests(unittest.TestCase):
-    def _database(self, path: Path, objects: list[dict]) -> None:
+    def _database(self, path: Path, objects: list[dict | bytes]) -> None:
         connection = sqlite3.connect(path)
         connection.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)")
         for index, obj in enumerate(objects):
+            payload = (
+                obj if isinstance(obj, (bytes, bytearray))
+                else json.dumps(obj, ensure_ascii=False).encode()
+            )
             connection.execute(
                 "INSERT INTO blobs VALUES (?, ?)",
-                (f"blob-{index:04d}", json.dumps(obj, ensure_ascii=False).encode()),
+                (f"blob-{index:04d}", payload),
             )
         connection.commit()
         connection.close()
@@ -450,6 +454,80 @@ class CursorAttentionSignalTests(unittest.TestCase):
             evidence = inspect_session(_session("cursor", bounded_path))
             self.assertEqual(evidence.phase, "unknown")
             self.assertIsNone(evidence.question_token)
+
+    def test_result_before_call_is_not_waiting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.db"
+            self._database(
+                path,
+                [
+                    {
+                        "role": "tool",
+                        "content": [
+                            {"type": "tool-result", "toolName": "AskQuestion", "toolCallId": "ask-1"}
+                        ],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool-call", "toolName": "AskQuestion", "toolCallId": "ask-1"}
+                        ],
+                    },
+                ],
+            )
+            self.assertEqual(inspect_session(_session("cursor", path)).phase, "unknown")
+
+    def test_protobuf_ask_question_is_waiting_until_json_result(self) -> None:
+        call_id = "call-pending\nfc_child_0"
+        question_blob = _cursor_ask_question_blob(call_id)
+        other_tool_blob = _cursor_field2_blob(8, b"grep-hits", "call-grep\nfc_child_1")
+        with tempfile.TemporaryDirectory() as directory:
+            pending_path = Path(directory) / "pending.db"
+            self._database(pending_path, [other_tool_blob, question_blob])
+            evidence = inspect_session(_session("cursor", pending_path))
+            self.assertEqual(evidence.phase, "waiting")
+            self.assertIsNotNone(evidence.question_token)
+
+            answered_path = Path(directory) / "answered.db"
+            self._database(
+                answered_path,
+                [
+                    question_blob,
+                    {
+                        "role": "tool",
+                        "content": [
+                            {
+                                "type": "tool-result",
+                                "toolName": "AskQuestion",
+                                "toolCallId": call_id,
+                            }
+                        ],
+                    },
+                ],
+            )
+            self.assertEqual(inspect_session(_session("cursor", answered_path)).phase, "unknown")
+
+
+def _pb_varint(value: int) -> bytes:
+    out = bytearray()
+    while value > 0x7F:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def _pb_bytes(field: int, payload: bytes) -> bytes:
+    return _pb_varint((field << 3) | 2) + _pb_varint(len(payload)) + payload
+
+
+def _cursor_field2_blob(inner_field: int, inner_payload: bytes, call_id: str) -> bytes:
+    inner = _pb_bytes(inner_field, inner_payload) + _pb_bytes(57, call_id.encode())
+    return _pb_bytes(2, inner)
+
+
+def _cursor_ask_question_blob(call_id: str) -> bytes:
+    return _cursor_field2_blob(23, b"question-payload", call_id)
 
 
 class AttentionSignalFallbackTests(unittest.TestCase):

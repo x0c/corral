@@ -105,6 +105,79 @@ class AttentionStoreTests(unittest.TestCase):
         )
         self.assertEqual(state.kind, "unread")
 
+    def test_live_waiting_overrides_older_terminal_idle(self):
+        self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
+        self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(phase="idle", activity_token="terminal:20", observed_at=20),
+        )
+        states = self.store.reconcile(
+            [_session("cursor", "one", live=True)],
+            {
+                "cursor:one": AttentionEvidence(
+                    phase="waiting",
+                    question_token="ask-1",
+                    observed_at=10,
+                    source="history",
+                )
+            },
+        )
+        self.assertEqual(states["cursor:one"].kind, "waiting")
+
+    def test_observer_stop_does_not_clear_unanswered_waiting(self):
+        self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
+        self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="waiting",
+                question_token="ask-1",
+                observed_at=1,
+                source="history",
+            ),
+        )
+        state = self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="idle",
+                activity_token="gen:stop",
+                observed_at=2,
+                source="observer",
+            ),
+        )
+        self.assertEqual(state.kind, "waiting")
+        state = self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="idle",
+                activity_token="gen:sessionEnd",
+                observed_at=3,
+                source="observer",
+            ),
+        )
+        self.assertEqual(state.kind, "unread")
+
+    def test_live_history_clears_waiting_to_working_when_question_gone(self):
+        self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
+        self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="waiting",
+                question_token="ask-1",
+                observed_at=1,
+                source="history",
+            ),
+        )
+        states = self.store.reconcile(
+            [_session("cursor", "one", live=True)],
+            {"cursor:one": AttentionEvidence(phase="unknown", observed_at=1, source="history")},
+        )
+        self.assertEqual(states["cursor:one"].kind, "working")
+
     def test_non_live_reconcile_clears_active_phase_and_surfaces_terminal_unread(self):
         self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
         self.store.record_event(

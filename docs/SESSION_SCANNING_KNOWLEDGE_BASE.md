@@ -216,7 +216,7 @@ flowchart TD
 | Pi | `~/.pi/agent/sessions/**/*.jsonl` | JSONL | 当前活动分支 | 整个 JSONL | 首行 session header；同一文件的分叉历史只能展示叶子 `parentId` 链，不能串入旧分支；每条会话独占一个 JSONL，删除时只移除该文件 |
 | OpenCode | `~/.local/share/opencode/opencode.db` | SQLite，可能 WAL | `session`、`message`、`part` 三表的只读 SQL | 同三表、按消息与分片合并 | `OPENCODE_DATA_DIR` 或 `XDG_DATA_HOME` 可改入口；只读打开失败不能伪装为空历史；删除会话是唯一写入例外，见下方「外部数据读取原则」 |
 | Kimi Code | `~/.kimi-code/sessions/<workspace>/<session>/` | `state.json` + `agents/main/wire.jsonl` | state + wire 头尾 | 主 `wire.jsonl` | 忽略 `agents/<other>/wire.jsonl`；事件流含大系统行 |
-| Cursor Agent CLI | `~/.cursor/chats/<workspace>/<chatId>/` | `meta.json`、`prompt_history.json`、`store.db` | meta + prompt history | SQLite `blobs` JSON blob | 只扫 CLI 历史，不扫 IDE 的 agent transcripts；二进制 DAG blob 跳过 |
+| Cursor Agent CLI | `~/.cursor/chats/<workspace>/<chatId>/` | `meta.json`、`prompt_history.json`、`store.db` | meta + prompt history | SQLite `blobs` JSON blob | 只扫 CLI 历史，不扫 IDE 的 agent transcripts；预览仍跳过二进制 DAG blob。**关注圆点必须另读 AskQuestion 的 field-2 protobuf**（等用户作答时 JSON tool-call 往往还没落盘） |
 | Cursor 状态观察 | `~/.cursor/hooks.json` | 用户级 JSON 配置 + hook 标准输入事件 | 只读检查并增量维护 pickup 管理的条目 | 不读取提示词正文，只取会话标识、事件名和生成标识 | 保留其他工具条目；配置损坏或版本未知时停止写入；hook 失败不能阻断 Cursor |
 
 外部数据读取原则：
@@ -253,7 +253,8 @@ flowchart TD
 - **AI 易错点**【消歧】主界面的“运行中” vs `titles.status_tag` / 机器接口英文状态：前者只表示关联进程当前是否活着（`live`），后两者描述最后一轮对话的完成、待回复或中断语义；两者不能相互推导或互相替换。
 - **AI 易错点**【消歧】关注状态圆点是第三套面向注意力的本地状态：黄=结构化问题待回答、绿=当前轮执行、红=新结果未读。它不得覆盖或改写 `live`、`status`、`status_tag`，也不得参与会话排序。
 - **AI 易错点**【必须】等待回答只认运行时的结构化问题及其未配对结果；普通文本里有问号、询问语气或“请确认”都不能推导黄点（原因：误报会让黄点与绿点几乎重叠，失去提醒价值）。
-- **AI 易错点**【必须】历史证据的观察时间取真实事件或源文件/数据库时间；禁止每次扫描都填当前时间（原因：重复读取旧历史会被误判成刚产生的新结果，并压过更准确的观察事件）。
+- **AI 易错点**【必须】Cursor 等待回答不能只扫 `store.db` 里以 `{` 开头的 JSON blob。用户还没点选项时，AskQuestion 通常只出现在首字节 `0x12` 的 protobuf（外层 field 2，内层 field 23 题目 + field 57 调用标识）；JSON `tool-call`/`tool-result` 要等作答后才成对出现。其它工具的同类 field 2 记录没有 field 23，不能当成提问。二进制 DAG（`0x0A`）仍跳过。配对必须按 `toolCallId` 做集合差，禁止按 rowid 顺序 pop——真实历史里 tool-result 的 rowid 可以早于 tool-call，顺序 pop 会把已答问题判成仍在等待，或把当前提问漏掉。
+- **AI 易错点**【必须】历史证据的观察时间取真实事件或源文件/数据库时间；禁止用每次扫描的当前时间制造“新变化”。**唯一对称例外**：扫描确认进程已结束时强制 idle、以及仍活着且历史里仍有未配对结构化问题时强制 waiting，都必须把时间推进到已存状态之后（与「不活 → idle」同一手法）。否则一次误判不活或 `stop` hook 盖上更晚时间戳后，提问证据会永远回不来。`stop` / `afterAgentResponse` 观察事件不得清掉未作答的等待；只有用户提交（`beforeSubmitPrompt`）、会话结束（`sessionEnd`）或进程不活才能结束黄点。
 - **AI 易错点**【性能】Cursor 关注信号默认只在 live 或相关文件签名变化时打开 `store.db`；冷会话不得随每轮刷新重复打开数据库。
 - **AI 易错点**【隐私与可靠性】关注状态库只存标识、令牌、时间和状态，不存正文；Cursor hook 配置必须增量保存、先备份再原子替换，任何接收失败都故障开放。
 - **AI 易错点**【禁止】为 Claude/Codex 用父目录 mtime 实现 `scan_signature` → 保持返回 `None`，每次正常扫描（原因：深层 JSONL 写入不会可靠冒泡到祖先目录，错误缓存会让新会话或活性变化冻结）。
@@ -295,7 +296,7 @@ python3 -m unittest -v
 
 重点覆盖：JSON `null`、系统 `origin.kind` 过滤、Claude `stop_reason` 文本保留、Codex 子代理过滤、OpenCode 只读失败回退、预览 mtime 失效、Cursor blob 解析与启动延迟；`DeleteSessionScanTests` 覆盖各助手 `delete_session()`，重点断言删对了、没删多（尤其 OpenCode 共享库不能连带删掉其他会话）。
 
-涉及关注状态时还要覆盖：黄 > 绿 > 红优先级、仅结构化问题变黄、重复扫描不制造新令牌、首次历史基线不批量亮红、占位会话转正迁移、删除清理、Cursor 冷会话不打开数据库，以及 observer 安装两次不重复、`--dry-run` 零写入、卸载只移除 pickup 条目、损坏配置与 hook 写入失败均不阻断调用方。
+涉及关注状态时还要覆盖：黄 > 绿 > 红优先级、仅结构化问题变黄、重复扫描不制造新令牌、首次历史基线不批量亮红、占位会话转正迁移、删除清理、Cursor 冷会话不打开数据库、Cursor protobuf AskQuestion 在 JSON 结果出现前为 waiting、JSON tool-result 早于 tool-call 不得误判 waiting、仍活着的未配对提问能覆盖更早的 idle 时间戳、`stop` 不得清掉未作答等待，以及 observer 安装两次不重复、`--dry-run` 零写入、卸载只移除 pickup 条目、损坏配置与 hook 写入失败均不阻断调用方。
 
 ### 7.2 真实抽查 5 条会话
 

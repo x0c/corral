@@ -549,6 +549,91 @@ def _cursor_store_path(path: str) -> str:
     return os.path.join(path, "store.db") if os.path.isdir(path) else path
 
 
+def _pb_read_varint(data: bytes, index: int) -> tuple[int, int] | None:
+    shift = 0
+    value = 0
+    while index < len(data):
+        byte = data[index]
+        index += 1
+        value |= (byte & 0x7F) << shift
+        if byte & 0x80 == 0:
+            return value, index
+        shift += 7
+        if shift > 63:
+            return None
+    return None
+
+
+def _pb_fields(data: bytes) -> dict[int, list[bytes | int]]:
+    """解析一层 protobuf 字段；损坏输入返回已读到的部分，不抛错。"""
+    fields: dict[int, list[bytes | int]] = {}
+    index = 0
+    while index < len(data):
+        parsed = _pb_read_varint(data, index)
+        if parsed is None:
+            break
+        tag, index = parsed
+        field = tag >> 3
+        wire = tag & 7
+        if wire == 0:
+            parsed = _pb_read_varint(data, index)
+            if parsed is None:
+                break
+            value, index = parsed
+            fields.setdefault(field, []).append(value)
+        elif wire == 2:
+            parsed = _pb_read_varint(data, index)
+            if parsed is None:
+                break
+            length, index = parsed
+            end = index + length
+            if end > len(data):
+                break
+            fields.setdefault(field, []).append(data[index:end])
+            index = end
+        elif wire == 1:
+            index += 8
+        elif wire == 5:
+            index += 4
+        else:
+            break
+    return fields
+
+
+def _cursor_ask_question_id(data: bytes) -> str | None:
+    """从 Cursor 提问专用 protobuf 取出 toolCallId。
+
+    等待用户作答时，AskQuestion 往往只写 field 2 包裹的记录（内层 field 23 为
+    题目、field 57 为调用标识），JSON tool-call 要等用户选完才落盘。其它工具的
+    同类 field 2 记录没有 field 23，不能当成提问。二进制 DAG（首字节 0x0A）不含
+    这两字段，解析后会自然忽略。
+    """
+    if not data or data[:1] == b"{":
+        return None
+
+    def from_fields(fields: dict[int, list[bytes | int]]) -> str | None:
+        questions = fields.get(23)
+        call_ids = fields.get(57)
+        if not questions or not call_ids:
+            return None
+        raw = call_ids[-1]
+        if not isinstance(raw, bytes):
+            return None
+        call_id = raw.decode("utf-8", errors="replace").strip("\0")
+        return call_id or None
+
+    fields = _pb_fields(data)
+    found = from_fields(fields)
+    if found:
+        return found
+    for wrapped in fields.get(2, []):
+        if isinstance(wrapped, bytes):
+            found = from_fields(_pb_fields(wrapped))
+            if found:
+                return found
+    return None
+
+
 def _inspect_cursor(session: dict) -> AttentionEvidence:
     live = session.get("live") is True
     if not live and session.get("signal_probe") is not True:
@@ -564,8 +649,15 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
     if connection is None:
         return _evidence(observed_at=observed_at)
     try:
-        rows = connection.execute(
+        json_rows = connection.execute(
             "SELECT rowid, data FROM blobs WHERE substr(data, 1, 1) = X'7B' "
+            "ORDER BY rowid DESC LIMIT ?",
+            (_DB_TAIL_ROWS,),
+        ).fetchall()
+        # 提问等待态常只在 field-2 protobuf 里；与 JSON 分查，避免被大量 JSON
+        # 尾巴挤出窗口，也不去扫体积很大的 DAG 节点。
+        proto_rows = connection.execute(
+            "SELECT rowid, data FROM blobs WHERE substr(data, 1, 1) = X'12' "
             "ORDER BY rowid DESC LIMIT ?",
             (_DB_TAIL_ROWS,),
         ).fetchall()
@@ -574,9 +666,10 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
     finally:
         connection.close()
 
-    pending: dict[str, str] = {}
+    answered: set[str] = set()
+    questions: dict[str, str] = {}
     activity_token = None
-    for row in reversed(rows):
+    for row in reversed(json_rows):
         message = _json_object(row["data"])
         role = message.get("role")
         content = message.get("content")
@@ -589,10 +682,10 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
             part_type = part.get("type")
             tool_name = part.get("toolName")
             call_id = str(part.get("toolCallId") or "")
-            if part_type == "tool-call" and tool_name == "AskQuestion" and call_id:
-                pending[call_id] = _token("cursor", "question", call_id) or call_id
-            elif part_type == "tool-result" and call_id:
-                pending.pop(call_id, None)
+            if part_type == "tool-result" and call_id:
+                answered.add(call_id)
+            elif part_type == "tool-call" and tool_name == "AskQuestion" and call_id:
+                questions[call_id] = _token("cursor", "question", call_id) or call_id
             elif part_type == "text" and str(part.get("text") or "").strip():
                 has_text = True
         terminal = (
@@ -606,11 +699,22 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
             kind = "terminal" if message.get("error") or is_terminal else "assistant"
             activity_token = _token("cursor", kind, row["rowid"])
 
+    for row in reversed(proto_rows):
+        raw = row["data"]
+        if isinstance(raw, memoryview):
+            raw = bytes(raw)
+        if not isinstance(raw, (bytes, bytearray)):
+            continue
+        call_id = _cursor_ask_question_id(bytes(raw))
+        if call_id:
+            questions[call_id] = _token("cursor", "question", call_id) or call_id
+
+    pending = [token for call_id, token in questions.items() if call_id not in answered]
     if pending and live:
         return _evidence(
             "waiting",
             activity_token=activity_token,
-            question_token=next(reversed(pending.values())),
+            question_token=pending[-1],
             observed_at=observed_at,
         )
     # Cursor 的历史库没有可靠执行中标志，永远不从数据库推导 working。
