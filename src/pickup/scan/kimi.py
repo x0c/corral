@@ -29,16 +29,221 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pickup import titles
 from pickup.cache import get_cache
 from pickup.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
-from pickup.scan.common import is_ephemeral_agent_cwd, live_pids_by_process_name
+from pickup.scan.common import (
+    is_ephemeral_agent_cwd,
+    live_processes,
+    process_command_line,
+    process_environ,
+    process_start_time,
+)
 from pickup.scan.common import parse_timestamp as _parse_iso
 
 KIMI_HOME = os.path.expanduser("~/.kimi-code")
 SESSIONS_DIR = os.path.join(KIMI_HOME, "sessions")
 
+# 会话创建可能晚于进程启动一两秒；只允许「创建时间 ≥ 启动时间 - 这个余量」。
+_CREATE_AFTER_START_SLACK = 2.0
+_NON_TUI_SUBCOMMANDS = frozenset(
+    ("server", "web", "login", "logout", "auth", "version", "export", "import")
+)
+_PROMPT_FLAGS = frozenset({"-p", "--prompt"})
+_VALUE_FLAGS = frozenset(
+    {
+        "-S", "--session", "-m", "--model",
+        "--add-dir", "--working-dir", "--port", "--host",
+    }
+)
+
 # 只解析承载对话的事件行，跳过体量很大的系统提示 / 工具快照，避免整段 json.loads。
 # 用带引号的类型值（不含冒号）做子串匹配，兼容紧凑与带空格两种 JSON 写法。
 _USER_EVENT_MARKER = '"context.append_message"'
 _LOOP_EVENT_MARKER = '"context.append_loop_event"'
+
+
+def _session_id_from_cmdline(cmdline: str) -> str | None:
+    """从 ``-S`` / ``--session`` 取出会话 ID；没有精确 ID 时返回 None。"""
+    parts = str(cmdline or "").split()
+    for index, part in enumerate(parts):
+        if part.startswith("--session="):
+            value = part.split("=", 1)[1].strip()
+            return value or None
+        if part in ("-S", "--session") and index + 1 < len(parts):
+            value = parts[index + 1]
+            if value.startswith("-"):
+                return None
+            return value
+    return None
+
+
+def _is_continue_cmdline(cmdline: str) -> bool:
+    parts = set(str(cmdline or "").split())
+    return bool(parts.intersection({"-c", "--continue"}))
+
+
+def is_kimi_tui_cmdline(cmdline: str) -> bool:
+    """交互 TUI 才算会话进程；``-p`` 打印模式与 ``server`` / ``web`` 等子命令排除。"""
+    parts = str(cmdline or "").split()
+    if not parts:
+        return False
+    index = 1
+    while index < len(parts):
+        token = parts[index]
+        if token in _PROMPT_FLAGS or token.startswith("--prompt="):
+            return False
+        if token in _NON_TUI_SUBCOMMANDS:
+            return False
+        if token in _VALUE_FLAGS:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        index += 1
+    return True
+
+
+def _mark_live(session: dict, pid: int) -> bool:
+    if session.get("live"):
+        return False
+    session["live"] = True
+    session["pid"] = pid
+    return True
+
+
+def _session_for_pickup_ident(by_id: dict[str, dict], ident: str) -> dict | None:
+    """托管注入的 PICKUP_SESSION_ID 只有完整会话 ID 才绑定。
+
+    空白新建注入的是 8 位临时标识，与 ``session_…`` 无对应关系，不得前缀猜测。
+    """
+    text = str(ident or "").strip()
+    if not text:
+        return None
+    if text in by_id:
+        return by_id[text]
+    if len(text) < 16:
+        return None
+    matches = [item for item_id, item in by_id.items() if item_id.startswith(text)]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> None:
+    """给 Kimi 会话列表就地标注 live/pid。
+
+    同一工作目录常会同时跑多个 TUI。旧实现按「cwd → 最新一条」猜测，
+    会把仍在跑的会话标成已结束，多个新建还会把 pid 错绑到别人的历史上。
+
+    绑定优先级（正向证据优先，禁止「同目录只留最新一条」）：
+    1. 命令行 ``-S`` / ``--session``（原生恢复）；
+    2. 环境变量 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID``（仅完整会话 id）；
+    3. ``-c`` / ``--continue`` → 该 cwd 尚未标记的最新一条；
+    4. 其余 TUI：同一 cwd 里，按「进程启动 ≤ 会话创建」一对一认领。
+    """
+    if not sessions:
+        return
+    processes = list(live_processes("kimi-code"))
+    if not processes:
+        return
+    by_id = {str(session.get("id") or ""): session for session in sessions if session.get("id")}
+    cmdlines = {pid: process_command_line(pid) for pid, _cwd in processes}
+    tui_procs: list[tuple[int, str]] = []
+    for pid, cwd in processes:
+        cmdline = cmdlines.get(pid) or ""
+        if not is_kimi_tui_cmdline(cmdline):
+            continue
+        tui_procs.append((pid, cwd))
+    if not tui_procs:
+        return
+
+    bound_pids: set[int] = set()
+
+    def bind_exact(pid: int) -> None:
+        cmdline = cmdlines.get(pid) or ""
+        session_id = _session_id_from_cmdline(cmdline)
+        if session_id:
+            if session_id in by_id:
+                _mark_live(by_id[session_id], pid)
+            bound_pids.add(pid)
+            return
+        env = process_environ(pid)
+        ident = env.get("PICKUP_SESSION_ID") or env.get("SC_SESSION_ID") or ""
+        session = _session_for_pickup_ident(by_id, ident)
+        if session is not None:
+            _mark_live(session, pid)
+            bound_pids.add(pid)
+            return
+        if ident.startswith("session_") and len(ident) >= 16:
+            bound_pids.add(pid)
+
+    for pid, _cwd in tui_procs:
+        bind_exact(pid)
+
+    remaining = [(pid, cwd) for pid, cwd in tui_procs if pid not in bound_pids]
+    if not remaining:
+        return
+
+    continue_by_cwd: dict[str, list[int]] = {}
+    unmatched: list[tuple[int, str, float]] = []
+    for pid, cwd in remaining:
+        cmdline = cmdlines.get(pid) or ""
+        if _is_continue_cmdline(cmdline):
+            continue_by_cwd.setdefault(cwd, []).append(pid)
+            continue
+        started = process_start_time(pid)
+        if started is None:
+            continue
+        unmatched.append((pid, cwd, started))
+
+    unbound_by_cwd: dict[str, list[dict]] = {}
+    for session in sessions:
+        if session.get("live"):
+            continue
+        cwd = session.get("cwd") or ""
+        if not cwd:
+            continue
+        try:
+            real = os.path.realpath(cwd)
+        except OSError:
+            real = cwd
+        unbound_by_cwd.setdefault(real, []).append(session)
+
+    for cwd, pids in continue_by_cwd.items():
+        candidates = unbound_by_cwd.get(cwd) or []
+        candidates.sort(key=lambda item: item.get("mtime") or 0, reverse=True)
+        for pid, session in zip(pids, candidates, strict=False):
+            if _mark_live(session, pid):
+                bound_pids.add(pid)
+
+    unbound_by_cwd = {
+        cwd: [item for item in items if not item.get("live")]
+        for cwd, items in unbound_by_cwd.items()
+    }
+    procs_by_cwd: dict[str, list[tuple[int, float]]] = {}
+    for pid, cwd, started in unmatched:
+        if pid in bound_pids:
+            continue
+        procs_by_cwd.setdefault(cwd, []).append((pid, started))
+
+    for cwd, items in unbound_by_cwd.items():
+        procs = procs_by_cwd.get(cwd) or []
+        if not procs:
+            continue
+        used: set[int] = set()
+        items.sort(key=lambda item: created_ts.get(str(item.get("id") or ""), 0.0))
+        for session in items:
+            created = created_ts.get(str(session.get("id") or ""), 0.0)
+            if created <= 0:
+                continue
+            eligible = [
+                (pid, started) for pid, started in procs
+                if pid not in used and started <= created + _CREATE_AFTER_START_SLACK
+            ]
+            if not eligible:
+                continue
+            pid, _started = max(eligible, key=lambda item: item[1])
+            if _mark_live(session, pid):
+                used.add(pid)
 
 
 def _event_time(entry: dict) -> float | None:
@@ -274,6 +479,7 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         return cached
 
     results: list[dict] = []
+    created_ts: dict[str, float] = {}
     for _, session_dir, session_id in candidates:
         if len(results) >= limit:
             break
@@ -302,21 +508,14 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
             continue  # 工作目录已删除，无法原生恢复
         if cwd_filter and not info["cwd"].startswith(cwd_filter):
             continue
+        created = _parse_iso(_load_state(session_dir).get("createdAt"))
+        if created:
+            created_ts[session_id] = created
         results.append(info)
 
     results.sort(key=lambda s: s["mtime"], reverse=True)
     results = results[:limit]
-
-    if not results:
-        return results  # 无会话时跳过 pgrep 子进程，省下首屏预算里最贵的一笔
-
-    live_by_cwd = live_pids_by_process_name("kimi-code")
-    for info in results:  # 已按 mtime 降序，同 cwd 只把最新一条标记存活
-        cwd = info.get("cwd") or ""
-        pid = live_by_cwd.pop(os.path.realpath(cwd), None) if cwd else None
-        if pid is not None:
-            info["live"] = True
-            info["pid"] = pid
+    _apply_live_flags(results, created_ts)
     return results
 
 

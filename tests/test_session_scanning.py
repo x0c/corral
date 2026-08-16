@@ -2165,8 +2165,37 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
 
     def _scan(self, sessions_dir: Path, **kwargs) -> list[dict]:
         with mock.patch.object(scan_kimi, "SESSIONS_DIR", str(sessions_dir)), \
-             mock.patch.object(scan_kimi, "live_pids_by_process_name", return_value={}):
+             mock.patch.object(scan_kimi, "live_processes", return_value=[]):
             return scan_kimi.scan_sessions(**kwargs)
+
+    def _scan_with_live(
+        self,
+        sessions_dir: Path,
+        *,
+        processes: list[tuple[int, str]],
+        cmdlines: dict[int, str] | None = None,
+        environ: dict[int, dict[str, str]] | None = None,
+        starts: dict[int, float | None] | None = None,
+        limit: int = 10,
+    ) -> list:
+        cmdlines = cmdlines or {}
+        environ = environ or {}
+        starts = starts or {}
+        with mock.patch.object(scan_kimi, "SESSIONS_DIR", str(sessions_dir)), \
+             mock.patch.object(scan_kimi, "live_processes", return_value=processes), \
+             mock.patch.object(
+                 scan_kimi, "process_command_line",
+                 side_effect=lambda pid: cmdlines.get(pid, "kimi -y"),
+             ), \
+             mock.patch.object(
+                 scan_kimi, "process_environ",
+                 side_effect=lambda pid: environ.get(pid, {}),
+             ), \
+             mock.patch.object(
+                 scan_kimi, "process_start_time",
+                 side_effect=lambda pid: starts.get(pid),
+             ):
+            return scan_kimi.scan_sessions(limit=limit)
 
     def test_field_mapping_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -2327,6 +2356,172 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
             messages = scan_kimi.load_conversation(str(wire))
             self.assertEqual([m.role for m in messages], ["user", "assistant"])
             self.assertEqual(messages[0].text, "真人提问")
+
+    def test_live_flags_bind_session_flag_even_if_not_newest(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            _make_kimi_session(
+                sessions_dir, "wd", "session_old",
+                state={"title": "旧会话", "workDir": cwd,
+                       "createdAt": "2023-11-14T22:00:00.000Z",
+                       "updatedAt": "2023-11-14T22:00:00.000Z"},
+                wire_rows=[_kimi_user_event("旧问题", 1_700_000_000_000)],
+            )
+            _make_kimi_session(
+                sessions_dir, "wd", "session_new",
+                state={"title": "新会话", "workDir": cwd,
+                       "createdAt": "2023-11-14T22:10:00.000Z",
+                       "updatedAt": "2023-11-14T22:10:00.000Z"},
+                wire_rows=[_kimi_user_event("新问题", 1_700_000_600_000)],
+            )
+            sessions = self._scan_with_live(
+                sessions_dir,
+                processes=[(4242, cwd)],
+                cmdlines={4242: "kimi -y -S session_old"},
+            )
+            by_id = {s["id"]: s for s in sessions}
+            self.assertTrue(by_id["session_old"]["live"])
+            self.assertEqual(by_id["session_old"]["pid"], 4242)
+            self.assertFalse(by_id["session_new"]["live"])
+
+    def test_live_flags_bind_full_pickup_session_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            session_id = "session_ff7288ed5ffeOZOJxBKicWOzYk"
+            _make_kimi_session(
+                sessions_dir, "wd", session_id,
+                state={"title": "恢复会话", "workDir": cwd,
+                       "createdAt": "2023-11-14T22:00:00.000Z",
+                       "updatedAt": "2023-11-14T22:00:00.000Z"},
+                wire_rows=[_kimi_user_event("恢复", 1_700_000_000_000)],
+            )
+            _make_kimi_session(
+                sessions_dir, "wd", "session_newer",
+                state={"title": "更新的会话", "workDir": cwd,
+                       "createdAt": "2023-11-14T22:10:00.000Z",
+                       "updatedAt": "2023-11-14T22:10:00.000Z"},
+                wire_rows=[_kimi_user_event("更新", 1_700_000_600_000)],
+            )
+            sessions = self._scan_with_live(
+                sessions_dir,
+                processes=[(77, cwd)],
+                cmdlines={77: "kimi -y"},
+                environ={77: {"PICKUP_SESSION_ID": session_id}},
+            )
+            by_id = {s["id"]: s for s in sessions}
+            self.assertTrue(by_id[session_id]["live"])
+            self.assertEqual(by_id[session_id]["pid"], 77)
+            self.assertFalse(by_id["session_newer"]["live"])
+
+    def test_live_flags_do_not_bind_short_placeholder_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            _make_kimi_session(
+                sessions_dir, "wd", "session_ff7288ed5ffeOZOJxBKicWOzYk",
+                state={"title": "旧历史", "workDir": cwd,
+                       "createdAt": "2023-11-14T22:00:00.000Z",
+                       "updatedAt": "2023-11-14T22:00:00.000Z"},
+                wire_rows=[_kimi_user_event("旧问题", 1_700_000_000_000)],
+            )
+            sessions = self._scan_with_live(
+                sessions_dir,
+                processes=[(88, cwd)],
+                cmdlines={88: "kimi -y"},
+                environ={88: {"PICKUP_SESSION_ID": "745659f2"}},
+            )
+            self.assertFalse(sessions[0]["live"])
+
+    def test_live_flags_same_cwd_two_tuis_bind_each_created_session(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            _make_kimi_session(
+                sessions_dir, "wd", "session_first",
+                state={"title": "先开的", "workDir": cwd,
+                       "createdAt": "2023-11-14T22:15:00.000Z",
+                       "updatedAt": "2023-11-14T22:15:00.000Z"},
+                wire_rows=[_kimi_user_event("先开", 1_700_000_100_000)],
+            )
+            _make_kimi_session(
+                sessions_dir, "wd", "session_second",
+                state={"title": "后开的", "workDir": cwd,
+                       "createdAt": "2023-11-14T22:16:40.000Z",
+                       "updatedAt": "2023-11-14T22:16:40.000Z"},
+                wire_rows=[_kimi_user_event("后开", 1_700_000_200_000)],
+            )
+            sessions = self._scan_with_live(
+                sessions_dir,
+                processes=[(11, cwd), (22, cwd)],
+                cmdlines={11: "kimi -y", 22: "kimi -y"},
+                starts={11: 1_700_000_090.0, 22: 1_700_000_190.0},
+            )
+            by_id = {s["id"]: s for s in sessions}
+            self.assertTrue(by_id["session_first"]["live"])
+            self.assertEqual(by_id["session_first"]["pid"], 11)
+            self.assertTrue(by_id["session_second"]["live"])
+            self.assertEqual(by_id["session_second"]["pid"], 22)
+
+    def test_live_flags_do_not_bind_new_tui_to_older_cwd_history(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            _make_kimi_session(
+                sessions_dir, "wd", "session_old",
+                state={"title": "更早的历史", "workDir": cwd,
+                       "createdAt": "2023-11-14T22:13:20.000Z",
+                       "updatedAt": "2023-11-14T22:20:00.000Z"},
+                wire_rows=[_kimi_user_event("旧问题", 1_700_000_000_000)],
+            )
+            sessions = self._scan_with_live(
+                sessions_dir,
+                processes=[(99, cwd)],
+                cmdlines={99: "kimi -y"},
+                starts={99: 1_700_000_400.0},
+            )
+            self.assertFalse(sessions[0]["live"])
+
+    def test_live_flags_skip_prompt_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "workdir"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            _make_kimi_session(
+                sessions_dir, "wd", "session_run",
+                state={"title": "标题生成", "workDir": cwd,
+                       "createdAt": "2023-11-14T22:15:00.000Z",
+                       "updatedAt": "2023-11-14T22:15:00.000Z"},
+                wire_rows=[_kimi_user_event("请生成标题", 1_700_000_100_000)],
+            )
+            sessions = self._scan_with_live(
+                sessions_dir,
+                processes=[(55, cwd)],
+                cmdlines={55: "kimi -y -p 请生成标题"},
+                starts={55: 1_700_000_090.0},
+            )
+            self.assertFalse(sessions[0]["live"])
+
+    def test_is_kimi_tui_cmdline(self) -> None:
+        self.assertTrue(scan_kimi.is_kimi_tui_cmdline("kimi -y"))
+        self.assertTrue(scan_kimi.is_kimi_tui_cmdline("kimi -y -S session_x"))
+        self.assertTrue(scan_kimi.is_kimi_tui_cmdline("kimi --session=session_x"))
+        self.assertFalse(scan_kimi.is_kimi_tui_cmdline("kimi -p hello"))
+        self.assertFalse(scan_kimi.is_kimi_tui_cmdline("kimi --prompt=hello"))
+        self.assertFalse(scan_kimi.is_kimi_tui_cmdline("kimi server"))
+        self.assertFalse(scan_kimi.is_kimi_tui_cmdline("kimi web"))
 
 
 class ConversationPreviewTests(unittest.TestCase):

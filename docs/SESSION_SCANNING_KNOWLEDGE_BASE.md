@@ -116,7 +116,7 @@ sequenceDiagram
 | Claude | `~/.claude/sessions/<pid>.json` + `os.kill(pid, 0)` | 文件中的 `sessionId` 映射到 pid | 注册文件损坏或进程不存在则视为已结束 |
 | Codex | 活着的 `codex` 进程持有的 `rollout-*.jsonl` | 从打开的文件名提取会话 UUID | Linux 读 `/proc/<pid>/fd`；macOS 合并一次 `lsof` |
 | OpenCode | 命令行 `-s` / `--session`；完整 `PICKUP_SESSION_ID`；其余 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 禁止再按「同 cwd 仅最新一条」猜测。`run`/`serve` 等子命令不算 TUI | 无法探测时返回空映射 |
-| Kimi | `kimi-code` 进程的当前工作目录 | 同 cwd 仅最新会话标为运行中 | 无法探测时返回空映射 |
+| Kimi | 命令行 `-S` / `--session`；完整 `PICKUP_SESSION_ID`；其余 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 禁止再按「同 cwd 仅最新一条」猜测。`-p` 打印模式与 `server` / `web` 不算 TUI | 无法探测时返回空映射 |
 | Cursor | `agent` 进程；优先解析命令行 `--resume <chatId>`，其次读打开的 `store.db` 路径，再次读 `PICKUP_SESSION_ID`/`SC_SESSION_ID` | 只按上述正向证据精确绑定；禁止再按「cwd → 最新会话」猜测。空白新建的临时 8 位标识不参与匹配 | 无法探测时返回空列表 |
 
 ### 2.3 完整对话按需加载
@@ -192,11 +192,11 @@ flowchart TD
 | 修改 Codex 完整预览 | Codex 扫描器 | `scan.codex.load_conversation()` | 同时读 `event_msg` 与 `response_item`；用户/助手都按相邻正文去重 |
 | 修改 OpenCode 查询或刷新跳过 | OpenCode 扫描器 | `scan.opencode.scan_sessions()`、`_apply_live_flags()`、`scan_signature()` | 历史为 SQLite；签名需同时覆盖 DB/WAL 和 `(pid, cwd)` 全量进程快照；同 cwd 多 TUI 必须按 `-s` / 完整 `PICKUP_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`opencode run` 不算 TUI |
 | 修改 OpenCode 完整预览 | OpenCode 扫描器 | `scan.opencode.load_conversation()` | 从 `message` 与 `part` 表合并同一消息的多个 text part |
-| 修改 Kimi 事件过滤或预览 | Kimi 扫描器 | `scan.kimi._iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent |
+| 修改 Kimi 事件过滤、预览或判活 | Kimi 扫描器 | `scan.kimi.scan_sessions()`、`_apply_live_flags()`、`_iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent；同 cwd 多 TUI 必须按 `-S` / 完整 `PICKUP_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`-p`/`server`/`web` 不算 TUI |
 | 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；对话缓存签名含 `store.db-wal`；同 cwd 多 `agent` 必须按打开的 store.db / 完整 PICKUP_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底 |
 | 修改 Pi 扫描或预览 | Pi 扫描器 | `scan.pi.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | JSONL 首行必须是 session；从最新叶子沿 `parentId` 回溯；判活只认 `--session` / `--session-id` / 打开的 jsonl / 精确 `PICKUP_SESSION_ID`，禁止 cwd 猜测；`live_processes("pi")` 需 cmdline 兜底（comm 常是 `node`） |
 | 修改统一 transcript / `pickup share` | `transcript.py` | `load_events()`、`_parse_*` | 不改 `load_conversation` 的纯文本契约；按各助手原始落盘抽出 thinking 与工具调用。Cursor `store.db` 里 tool-result 的 rowid 可以早于对应 tool-call，必须按 `toolCallId` 攒着、见到 call 再按 call→result 发出 |
-| 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`process_environ()`、`process_start_time()`、`is_cursor_agent_cmdline()`、`is_pi_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`）；`pi` 同样要 cmdline 兜底（comm 常是 `node`）；OpenCode 判活禁止再按 cwd 折叠 |
+| 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`process_environ()`、`process_start_time()`、`is_cursor_agent_cmdline()`、`is_pi_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`）；`pi` 同样要 cmdline 兜底（comm 常是 `node`）；OpenCode / Kimi 判活禁止再按 cwd 折叠 |
 | 修改跨运行时并发或扫描复用 | 注册表 | `runtime.registry.RuntimeRegistry.scan_all()` | 各运行时并发、异常隔离、结果副本隔离、签名命中跳过 |
 | 修改异步首屏、列表合并或预览缓存 | 会话存储 | `pickup.SessionStore.load()`、`refresh()`、`get_conversation()` | `store.load` 在后台线程，预览缓存按 mtime 失效 |
 | 修改会话关注状态裁决或已读基线 | 关注状态存储 | `attention.AttentionStore`、`store.SessionStore` | 单圆点优先级、首升级基线、占位键迁移和删除清理收敛在此；不得改变排序或机器接口状态 |
@@ -240,7 +240,7 @@ flowchart TD
 | 共享组件 | 路径/时间/按 cwd 判活 | `scan/common.py` | 多扫描器一致的展示和活性兜底 |
 | 进程活性 | Claude 专用 pid 注册 | `scan.claude._live_session_ids()` | 会话与 Claude pid 的精确关联 |
 | 进程活性 | Codex 打开文件关联 | `scan.codex._live_session_ids()` | 会话与 rollout 文件描述符关联 |
-| 进程活性 | 全部同名进程列表 / cwd→单 pid 折叠 | `scan.common.live_processes()`、`live_pids_by_process_name()`、`process_start_time()` | Cursor / Pi / OpenCode 用前者做精确绑定；Kimi 仍用后者保守标最新一条 |
+| 进程活性 | 全部同名进程列表 / cwd→单 pid 折叠 | `scan.common.live_processes()`、`live_pids_by_process_name()`、`process_start_time()` | Cursor / Pi / OpenCode / Kimi 用前者做精确绑定；`live_pids_by_process_name` 只留给仍按 cwd 折叠的路径 |
 
 ## §6 核心业务规则与隐性约束
 
@@ -268,6 +268,7 @@ flowchart TD
 - **AI 易错点**【必须】过滤标题生成自产会话：所有运行时的用户消息、原生标题或回退标题只要包含 `titles.PROMPT_MARKER` 就丢弃（原因：OpenCode 会给请求额外加引号，若只匹配开头会让后台标题生成反向污染用户会话列表）。OpenCode 扫描的 SQL 窗口必须超额读取再滤，不能把 `LIMIT` 直接设成界面条数（原因：噪音占满最近 N 条后，真实会话会在窗口边界反复进出，侧边栏自己乱跳）。
 - **AI 易错点**【必须】OpenCode 标题生成不得写入用户的 `opencode.db`：`opencode run` 没有 `--ephemeral`，必须用临时 `OPENCODE_DATA_DIR` + `--dir`，并把 `auth.json` 拷进临时目录。否则一次性标题任务会变成侧边栏新卡、滤掉后又消失，开几个 OpenCode 会话后列表自己乱跳。
 - **AI 易错点**【禁止】OpenCode 判活按「同 cwd 最新一条」猜测 → 必须按 ① 命令行 `-s`/`--session` ② 完整 `PICKUP_SESSION_ID` ③ `-c` 才回落到该目录未标记的最新一条 ④ 其余 TUI 按「进程启动 ≤ 会话创建」一对一认领；`run`/`serve` 不算 TUI。8 位占位 ident 不得前缀去碰 `ses_…`。原因：同目录多路还在跑时，旧算法只给最新历史贴运行中，点回去就变成历史消息预览；空白新建还会把 pid 错绑到别人的会话（2026-08-16 真机：主目录同时 4 路 TUI，带 `-s` 的恢复会话被标成已结束）。
+- **AI 易错点**【禁止】Kimi 判活按「同 cwd 最新一条」猜测 → 必须按 ① 命令行 `-S`/`--session` ② 完整 `PICKUP_SESSION_ID` ③ `-c` 才回落到该目录未标记的最新一条 ④ 其余 TUI 按「进程启动 ≤ 会话创建」一对一认领；`-p`/`server`/`web` 不算 TUI。进程 comm 是 `kimi-code` 不是 `kimi`。8 位占位 ident 不得前缀去碰 `session_…`。原因：与 OpenCode 同构，同目录多开会把仍在跑的会话标成已结束，或把 pid 错绑到别人的历史上。
 - **Pi 特例**：Pi 标题生成固定使用 `--no-session --no-tools --print`，不应产生会话；扫描器仍只接受以 session header 起始的文件，忽略 thinking 和工具分片，防止非对话记录混入预览。托管新建/分叉必须带 `--session-id <占位 ident>`（`runtime.pi.bind_hosted_ident`），否则落盘 uuid 与占位卡 ident 不同，分屏组会丢成员、组外出现重复卡。判活禁止按 cwd 猜测。
 - **AI 易错点**【必须】过滤 OpenConductor 管家临时 cwd：路径任一段以 `oc-manager-` 开头（如 `/tmp/oc-manager-codex/...`）时丢弃（`is_ephemeral_agent_cwd`）。原因：这类目录会删了再建，旧会话因「cwd 不存在」被滤掉后又整批复活；若再被 `SessionStore` 当成 fresh 插最前，侧边栏会被几天前的管家会话刷屏。
 - **AI 易错点**【必须】`SessionStore` 合并 fresh 时：mtime 在约 2 天内才 prepend；更旧的 fresh 追加到 `_order` 末尾（原因：即使漏过滤的目录复活，也不能把冷会话顶到视口）。

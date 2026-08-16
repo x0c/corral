@@ -124,8 +124,9 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
 - `title`：只读已生成的标题缓存或本地兜底标题，不会触发新的标题生成（不花账号额度）。
 - `live` / `pid`：`live` 是运行中会话的进程是否真实存活（Claude 用 pid 注册表 + `os.kill`，Codex
   用 `pgrep`+`lsof` 探测持有对应会话文件的进程，OpenCode 用命令行 `-s`/`--session` 或完整托管会话
-  id 精确绑定，同一目录可同时标多条；`opencode run` 不算运行中。Kimi 用 `pgrep` 找进程后读取其工作
-  目录与会话 `workDir` 匹配，同目录下多个历史会话只有最新一条会被标记存活），不是根据文件时间猜的。
+  id 精确绑定，同一目录可同时标多条；`opencode run` 不算运行中。Kimi 用命令行 `-S`/`--session`
+  或完整托管会话 id 精确绑定，同一目录可同时标多条；`kimi -p` / `server` / `web` 不算运行中），
+  不是根据文件时间猜的。
   `pid` 只在 `live=true` 时非空，供调用方定位/给该进程发信号；pickup 本身不提供拉起/接管等副作用
   命令，`pid` 只是可见性。
 - `keepalive`：会话是否正挂在 pickup 自己的后台保活（tmux）里（人类在 `pickup` TUI 里用 Enter/`a` 启动会话时
