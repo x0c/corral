@@ -120,6 +120,50 @@ class SplitLayoutStoreTests(unittest.TestCase):
         self.assertEqual(len(names), 2)
         self.assertTrue(all(name.startswith("Group ") for name in names))
 
+    def test_group_names_keep_fruit_variety_when_pool_exhausted(self) -> None:
+        """水果名用尽后，新组名应随机挑水果加序号，而不是全部落到 Apple N。"""
+        store = split_layout.SplitLayoutStore()
+        # 先把全部水果名各占一组（每种水果两个成员）。
+        for i, _fruit in enumerate(split_layout._FRUIT_NAMES):
+            store.set_group(f"/p{i}", [f"claude:{i}a", f"codex:{i}b"])
+        self.assertEqual(len(store.groups), len(split_layout._FRUIT_NAMES))
+        store.set_group("/overflow", ["claude:oa", "codex:ob"])
+        overflow = store.get_group("claude:oa")
+        self.assertIsNotNone(overflow)
+        # 组名形如 "Group <水果> 2"，能解析出水果 emoji，且不与现有组重名。
+        fruit = overflow.name[len("Group "):].split(" ", 1)[0]
+        self.assertIn(fruit, split_layout._FRUIT_NAMES)
+        self.assertTrue(overflow.name.endswith(" 2"))
+        self.assertNotIn(split_layout.group_emoji(overflow.name), ("",))
+        used = {group.name for group in store.groups.values()}
+        self.assertEqual(len(used), len(store.groups))
+
+    def test_legacy_apple_fallback_names_are_regenerated_on_load(self) -> None:
+        """旧版 "Group Apple N" 组名读入时重新生成，不再全挂 Apple。"""
+        store = split_layout.SplitLayoutStore()
+        store.set_group("/p1", ["claude:a", "codex:b"])
+        group = store.get_group("claude:a")
+        group.name = "Group Apple 7"
+        store.set_group("/p2", ["claude:c", "codex:d"])
+        fixed = store.get_group("claude:c")
+        fixed.name = "Group Cherry"
+        split_layout._normalize_store(store)
+        self.assertNotEqual(store.get_group("claude:a").name, "Group Apple 7")
+        self.assertEqual(store.get_group("claude:c").name, "Group Cherry")
+
+    def test_legacy_name_migration_is_deterministic_across_reads(self) -> None:
+        """读路径不落盘，迁移名必须每次读取都一样，否则多窗口对不上、列表反复重建。"""
+        def build() -> list[str]:
+            store = split_layout.SplitLayoutStore()
+            for i in range(3):
+                store.set_group(f"/p{i}", [f"claude:{i}a", f"codex:{i}b"])
+                store.get_group(f"claude:{i}a").name = f"Group Apple {i + 2}"
+            split_layout._normalize_store(store)
+            return [group.name for group in store.ordered_groups()]
+
+        self.assertEqual(build(), build())
+        self.assertTrue(all(not split_layout._is_legacy_fallback_name(n) for n in build()))
+
     def test_independent_session_pin_migrates_with_provisional_key(self) -> None:
         store = split_layout.SplitLayoutStore()
         store.toggle_session_pin("claude:short")

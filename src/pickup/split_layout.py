@@ -352,7 +352,7 @@ class SplitLayoutStore:
                 del self.session_to_group[key]
 
     def _new_group_name(self) -> str:
-        """生成当前布局内不重名的水果组名。"""
+        """生成当前布局内不重名的水果组名；水果名用尽后随机挑一种水果加序号。"""
         used = {group.name for group in self.groups.values() if group.name}
         available = [
             f"Group {fruit}"
@@ -361,10 +361,19 @@ class SplitLayoutStore:
         ]
         if available:
             return random.SystemRandom().choice(available)
+        # 17 种水果全被历史组占用：随机挑一种水果配最小空闲序号，保住 emoji 辨识度
+        # 与随机性，而不是所有新组都挤在 "Group Apple N" 上。带序号的兜底不用
+        # Apple——那正是旧版遗留名 "Group Apple N" 的形状，会被迁移逻辑误判再改名。
+        fruits = tuple(fruit for fruit in _FRUIT_NAMES if fruit != "Apple")
+        return self._indexed_group_name(random.SystemRandom().choice(fruits), used)
+
+    def _indexed_group_name(self, fruit: str, used: set[str]) -> str:
+        """给定水果，返回带最小空闲序号的组名（"Group <水果> N"）。"""
+        assert fruit != "Apple", "带序号兑底名禁止 Apple，避免撞旧版遗留名形状"
         index = 2
-        while f"Group Apple {index}" in used:
+        while f"Group {fruit} {index}" in used:
             index += 1
-        return f"Group Apple {index}"
+        return f"Group {fruit} {index}"
 
     def _reindex_group(self, gid: str) -> None:
         group = self.groups.get(gid)
@@ -793,14 +802,41 @@ class SidebarLayoutDB:
                 self._report_degraded(error)
 
 
+def _is_legacy_fallback_name(name: str) -> bool:
+    """旧版兜底名 "Group Apple N"：水果池耗尽后全部挤在 Apple 上，读入时重生成。"""
+    suffix = name[len("Group Apple "):] if name.startswith("Group Apple ") else ""
+    return bool(suffix) and suffix.isdigit()
+
+
 def _normalize_store(store: SplitLayoutStore) -> None:
     """统一收敛快照里的派生约束：组名、反向索引、置顶与组的从属关系。"""
     for gid in list(store.groups):
         if len(store.groups[gid].session_keys) < 2:
             store._delete_group(gid)
-    for group in store.groups.values():
-        if not group.name:
-            group.name = store._new_group_name()
+    # 迁移旧兜底名（"Group Apple N"）时用确定性分配：读路径不落盘，随机名会让
+    # 每次读取重随一遍、多窗口名字对不上；新建组仍走 `_new_group_name` 的随机路径。
+    rename = sorted(
+        (
+            group
+            for group in store.groups.values()
+            if not group.name or _is_legacy_fallback_name(group.name)
+        ),
+        key=lambda group: (group.updated_at, group.group_id),
+    )
+    used = {group.name for group in store.groups.values() if group.name}
+    for salt, group in enumerate(rename):
+        used.discard(group.name)
+        candidates = _FRUIT_NAMES[salt % len(_FRUIT_NAMES):] + _FRUIT_NAMES[: salt % len(_FRUIT_NAMES)]
+        name = next(
+            (f"Group {fruit}" for fruit in candidates if f"Group {fruit}" not in used),
+            None,
+        )
+        if name is None:
+            # 纯水果名全被占用：带序号兑底不用 Apple，避免撞旧版遗留名形状。
+            fruit = next(f for f in candidates if f != "Apple")
+            name = store._indexed_group_name(fruit, used)
+        group.name = name
+        used.add(name)
     store.session_to_group.clear()
     for gid in store.groups:
         store._reindex_group(gid)
