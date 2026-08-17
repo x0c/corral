@@ -441,6 +441,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Could not copy session: {error}",
         "zh": "无法复制会话：{error}",
     },
+    "modal.restart_session": {
+        "en": "Restart session",
+        "zh": "重启会话",
+    },
+    "modal.restart_session_action": {
+        "en": "End the stuck process, then resume this session in place",
+        "zh": "结束卡住的进程，按原会话原地恢复（上下文保留）",
+    },
+    "modal.not_hosted": {
+        "en": "{action} (session not hosted here)",
+        "zh": "{action}［会话未托管］",
+    },
     "modal.handoff_title": {
         "en": "Advanced: choose handoff assistant",
         "zh": "高级操作：选择接力助手",
@@ -468,6 +480,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "confirm.kill_session": {
         "en": "End session “{title}”? Unsaved progress in the current task will be lost",
         "zh": "结束会话「{title}」？未保存的当前任务进度将丢失",
+    },
+    "confirm.restart_session": {
+        "en": "Restart session “{title}”? The running process will be ended, then this session is resumed in place with full context",  # noqa: E501
+        "zh": "重启会话「{title}」？将结束正在运行的进程，再按原会话原地恢复（上下文保留）",
     },
     "confirm.hint_q": {
         "en": "q confirm   any other key cancel",

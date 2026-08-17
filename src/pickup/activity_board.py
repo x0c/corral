@@ -1,7 +1,8 @@
 """活跃会话看板：自动铺当前需要盯的托管会话，不写入持久分屏组合。
 
-成员资格：pickup 自己托管、且关注态是等待回答 / 执行中 / 未读新结果。
-别的窗口里跑的会话没有实时画面，不进格子。超过一页时当前页成员冻结，
+成员资格：pickup 自己托管、且关注态是等待回答 / 执行中 / 未读新结果，或
+「刚刚」（与侧栏时间行同一条 3 分钟界）内还有真实对话活动。别的窗口里跑的
+会话没有实时画面，不进格子。超过一页时当前页成员冻结，
 新急件排到后面；格子空出来才从队列按优先级补位。正在看的那一格即使
 已经不够格，也留到用户离开这格再撤。当前页里刚不够格的格子先暂留一会儿，
 避免会话刚结束就抽走、整页跟着跳。
@@ -14,11 +15,21 @@ import time
 from dataclasses import dataclass
 
 from pickup.attention import AttentionKind, AttentionState
+from pickup.display import JUST_NOW_SECONDS
 from pickup.split_layout import MAX_PANES
 
 BOARD_KINDS: frozenset[AttentionKind] = frozenset({"waiting", "working", "unread"})
 BOARD_LINGER_SECONDS = 30.0
-_KIND_RANK: dict[AttentionKind, int] = {"waiting": 0, "working": 1, "unread": 2}
+_KIND_RANK: dict[AttentionKind, int] = {
+    "waiting": 0,
+    "working": 1,
+    "unread": 2,
+    # 「刚刚还在用」档：没有待办信号，只是最近仍在活动，排在三档待办之后。
+    "none": 3,
+}
+# 「刚刚还在活跃」与侧栏时间行「刚刚」共用同一条界（display.JUST_NOW_SECONDS）
+# 和同一时间源（会话最近真实活动时间）：侧栏显示「刚刚」的托管会话，看板也认活跃。
+RECENT_ACTIVE_SECONDS = JUST_NOW_SECONDS
 
 
 @dataclass(frozen=True)
@@ -42,11 +53,19 @@ class BoardSnapshot:
     waiting_total: int
 
 
-def collect_candidates(store) -> list[BoardCandidate]:
-    """从会话库收集够格的托管会话，按「等回话 > 干活 > 未读」再按新鲜度排。"""
+def collect_candidates(store, now: float | None = None) -> list[BoardCandidate]:
+    """从会话库收集够格的托管会话，按「等回话 > 干活 > 未读 > 刚刚活跃」排。
+
+    「刚刚活跃」档没有待办信号：会话最近真实活动（mtime，与侧栏「刚刚」文案
+    同源）还在 ``RECENT_ACTIVE_SECONDS`` 窗口内即算，覆盖用户正在正常使用、
+    但本轮既没在等回话也没未读的托管会话。未来时间 / 时钟漂移出的负差值按
+    刚刚活跃处理（与 display 的相对时间同规则）。
+    """
     import pickup
     from pickup.models import is_shell_session
 
+    if now is None:
+        now = time.time()
     candidates: list[BoardCandidate] = []
     for session in store.all_sessions():
         if is_shell_session(session):
@@ -55,10 +74,16 @@ def collect_candidates(store) -> list[BoardCandidate]:
             continue
         key = pickup.session_key(session)
         state: AttentionState = store.attention_for(key)
+        mtime = float(session.get("mtime") or 0.0)
         if state.kind not in BOARD_KINDS:
-            continue
+            if not mtime or now - mtime > RECENT_ACTIVE_SECONDS:
+                continue
         candidates.append(
-            BoardCandidate(key=key, kind=state.kind, updated_at=state.updated_at)
+            BoardCandidate(
+                key=key,
+                kind=state.kind if state.kind in BOARD_KINDS else "none",
+                updated_at=max(state.updated_at, mtime),
+            )
         )
     candidates.sort(
         key=lambda item: (_KIND_RANK.get(item.kind, 9), -item.updated_at, item.key)

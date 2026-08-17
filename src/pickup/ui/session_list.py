@@ -155,55 +155,80 @@ class _SidebarRow:
     stripe: bool = False
 
 
-def _single_identity_splice(
-    old: list[str], new: list[str]
-) -> tuple[str, int] | None:
-    """若 new 相对 old 只插入或删除一个身份，返回 ('insert'|'remove', 下标)。
+_MAX_SPLICE_REGION = 8
 
-    增删单条会话是侧栏最常见的集合变化；这时不必 clear()+extend() 整表拆挂。
-    多处变化（搜索、分组展开、一次删整组）仍走全量重建。
+
+def _region_splice(
+    old: list[str], new: list[str], *, max_region: int = _MAX_SPLICE_REGION
+) -> tuple[int, int, int] | None:
+    """new 相对 old 只在一段连续区段内变化时，返回 (起点, 旧长, 新长)。
+
+    公共前缀 + 公共后缀夹出唯一变化区段，区段外的行原样保留，DOM 只动中间。
+    单行插/删是它的特例；更重要的是「独立会话卡 -> 会话组（同一位置删 1 插 3）」
+    这类组合变化--旧版只能退回整表全量重建，200 卡量级实测约 1 秒，是
+    新开分屏卡顿的主因。变化超出一段小区段（前后缀夹不干净且超过 max_region）时
+    返回 None 仍走全量重建，与旧版搜索/展开类行为一致。区段内部可能夹着
+    未变行，它们会随区段一起重建（丢 widget 身份但不丢内容），受 max_region 约束。
     """
     if old == new:
         return None
-    if len(new) == len(old) + 1:
-        index = 0
-        while index < len(old) and old[index] == new[index]:
-            index += 1
-        if old[index:] == new[index + 1:]:
-            return ("insert", index)
+    common = min(len(old), len(new))
+    start = 0
+    while start < common and old[start] == new[start]:
+        start += 1
+    end_old, end_new = len(old), len(new)
+    while (
+        end_old > start and end_new > start and old[end_old - 1] == new[end_new - 1]
+    ):
+        end_old -= 1
+        end_new -= 1
+    old_len, new_len = end_old - start, end_new - start
+    if old_len <= 0 and new_len <= 0:
         return None
-    if len(old) == len(new) + 1:
-        index = 0
-        while index < len(new) and old[index] == new[index]:
-            index += 1
-        if old[index + 1:] == new[index:]:
-            return ("remove", index)
+    if old_len + new_len > max_region:
         return None
-    return None
+    if old and old_len == len(old) and new_len == len(new):
+        # 一行都没保留（整体换血/重排）：区段替换退化为全量重建，直接不命中。
+        return None
+    return (start, old_len, new_len)
+
+
+def _stripe_block_start(row: _SidebarRow) -> bool:
+    return row.kind == "group" or (
+        row.kind == "session" and row.tree_position is None
+    )
 
 
 def _assign_block_stripes(rows: list[_SidebarRow]) -> list[_SidebarRow]:
     """给侧边栏行打块级斑马纹相位。
 
-    一块 = 一张独立会话卡，或「组卡 + 它全部成员」。分隔线不着色、不计相位，
-    其后重置，让置顶 / today / older 各区都从无条纹起头。组内成员继承组卡相位，因此
-    展开/收起不会翻转其后块的条纹。
+    一块 = 一张独立会话卡，或「组卡 + 它全部成员」，块内共享同一相位；分隔线
+    不着色、不计相位，跨过分隔线相位重置，展开/收起不会翻转其后块的条纹。
+
+    相位锚定在段尾（从后往前分配）：新会话/新分屏总是插在段首，段内已有块的
+    「下方块数」不变、条纹不翻转——若锚在段首，顶部插一块会让下方全部块翻转，
+    每次翻转都是一次 Textual 全量样式重匹配（200 卡实测约 0.7 秒，主线程冻结）。
+    段尾变更（删最旧一条）才翻转其上方块，与高频路径错开。
     """
-    striped: list[_SidebarRow] = []
-    next_stripe = False
-    current = False
-    for row in rows:
+    striped = list(rows)
+
+    def assign_section(start: int, end: int) -> None:
+        starts = [i for i in range(start, end) if _stripe_block_start(rows[i])]
+        count = len(starts)
+        for pos, block_start in enumerate(starts):
+            # 从段尾数起：最后一个块无条纹，往前交替
+            stripe = (count - 1 - pos) % 2 == 1
+            block_end = starts[pos + 1] if pos + 1 < count else end
+            for i in range(block_start, block_end):
+                striped[i] = replace(rows[i], stripe=stripe)
+
+    section_start = 0
+    for i, row in enumerate(rows):
         if row.kind == "separator":
-            next_stripe = False
-            striped.append(replace(row, stripe=False))
-            continue
-        is_block_start = row.kind == "group" or (
-            row.kind == "session" and row.tree_position is None
-        )
-        if is_block_start:
-            current = next_stripe
-            next_stripe = not next_stripe
-        striped.append(replace(row, stripe=current))
+            assign_section(section_start, i)
+            striped[i] = replace(row, stripe=False)
+            section_start = i + 1
+    assign_section(section_start, len(rows))
     return striped
 
 
@@ -1863,37 +1888,52 @@ class SessionListView(Vertical):
             return sticky_n if new_identities else 0
         return None
 
-    async def _splice_single_row(
+    def _sticky_intact(self) -> bool:
+        """固定头（＋新建 / 活动看板）还在：不在则只能走全量重建回补它们。
+
+        clear() 会把固定头一并清掉；区段路径只动滚动区，若在此时命中，
+        会留下一张没有固定头的侧栏。"""
+        if self._sticky_list is None:
+            return False
+        ids = {item.id for item in self._sticky_list.children}
+        return _STICKY_ID_SET <= ids
+
+    async def _splice_region(
         self,
         *,
-        action: str,
-        index: int,
-        rows: list[_SidebarRow],
+        start: int,
+        old_len: int,
+        new_rows: list[_SidebarRow],
         display_titles: dict,
     ) -> bool:
-        """在滚动区插入或摘掉一行。失败返回 False，调用方改走全量重建。"""
+        """只替换滚动区里一段连续行；失败返回 False，调用方改走全量重建。
+
+        单行插/删是特例（old_len 或 new_rows 为 0）；「独立卡 -> 会话组」这类
+        同位置删 N 插 M 也走这里，避免整表 clear()+extend()（200 卡实测约 1 秒）。
+        """
         scroll = self._scroll_list
         if scroll is None:
             return False
+        new_items: list[ListItem] = []
+        for row in new_rows:
+            item = self._item_for_row(row, display_titles)
+            if item is None:
+                return False
+            new_items.append(item)
         self._syncing_index = True
         try:
             with self.app.batch_update():
-                if action == "insert":
-                    if index < 0 or index >= len(rows):
+                if old_len:
+                    nodes = list(scroll._nodes)  # noqa: SLF001  ListView 未提供区间删除
+                    if start + old_len > len(nodes):
                         return False
-                    item = self._item_for_row(rows[index], display_titles)
-                    if item is None:
-                        return False
-                    if index >= len(scroll._nodes):
-                        await scroll.append(item)
+                    for node in nodes[start : start + old_len]:
+                        await node.remove()
+                if new_items:
+                    if start >= len(scroll._nodes):
+                        await scroll.extend(new_items)
                     else:
-                        await scroll.insert(index, [item])
-                elif action == "remove":
-                    if index < 0 or index >= len(scroll._nodes):
-                        return False
-                    await scroll.pop(index)
-                else:
-                    return False
+                        await scroll.insert(start, new_items)
         finally:
             self._syncing_index = False
         return True
@@ -1973,13 +2013,16 @@ class SessionListView(Vertical):
             )
             return
 
-        splice = _single_identity_splice(current_identities, new_identities)
+        splice = None
+        if self._sticky_intact():
+            splice = _region_splice(current_identities, new_identities)
         if splice is not None:
+            start, old_len, new_len = splice
             display_titles = self.store.snapshot()
-            spliced = await self._splice_single_row(
-                action=splice[0],
-                index=splice[1],
-                rows=rows,
+            spliced = await self._splice_region(
+                start=start,
+                old_len=old_len,
+                new_rows=rows[start : start + new_len],
                 display_titles=display_titles,
             )
             if spliced:
@@ -1994,6 +2037,8 @@ class SessionListView(Vertical):
                         lambda: setattr(self, "_syncing_index", False)
                     )
                 self._apply_split_marks()
+                # 区段增删会翻转后续块的斑马纹相位，同步重贴一遍（只改 class，不动 DOM）。
+                self._apply_stripes(rows)
                 self.refresh_board_card()
                 from pickup import observe
                 observe.event(
@@ -2001,6 +2046,8 @@ class SessionListView(Vertical):
                     duration_ms=int((time.perf_counter() - t0) * 1000),
                     mode="splice",
                     card_count=len(rows),
+                    region_old=old_len,
+                    region_new=new_len,
                 )
                 return
 

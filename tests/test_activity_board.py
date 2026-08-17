@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time
 import unittest
 
 from pickup import i18n
 from pickup.activity_board import (
     BOARD_LINGER_SECONDS,
+    RECENT_ACTIVE_SECONDS,
     ActivityBoard,
     BoardCandidate,
     BoardSnapshot,
@@ -47,6 +49,61 @@ class CollectCandidatesTests(unittest.TestCase):
 
         keys = [item.key for item in collect_candidates(_Store())]
         self.assertEqual(keys, ["claude:wait", "claude:work", "claude:unread"])
+
+    def test_recently_active_hosted_session_joins_board(self) -> None:
+        """「刚刚」窗口内还在动的无信号托管会话也算活跃成员。"""
+        now = time.time()
+
+        class _Store:
+            def all_sessions(self):
+                return [
+                    {
+                        "source": "claude", "id": "fresh", "keepalive_name": "k1",
+                        "mtime": now - 60,
+                    },
+                    {
+                        "source": "claude", "id": "future", "keepalive_name": "k4",
+                        "mtime": now + 30,
+                    },
+                    {
+                        "source": "claude", "id": "stale", "keepalive_name": "k2",
+                        "mtime": now - RECENT_ACTIVE_SECONDS - 60,
+                    },
+                    {
+                        "source": "claude", "id": "nomtime", "keepalive_name": "k3",
+                    },
+                    # 刚活跃但不是本窗口托管：不进格。
+                    {"source": "claude", "id": "freshext", "mtime": now - 10},
+                ]
+
+            def attention_for(self, key: str) -> AttentionState:
+                return AttentionState(kind="none")
+
+        keys = [item.key for item in collect_candidates(_Store())]
+        self.assertEqual(keys, ["claude:future", "claude:fresh"])
+
+    def test_recent_member_ranks_after_unread(self) -> None:
+        now = time.time()
+
+        class _Store:
+            def all_sessions(self):
+                return [
+                    {
+                        "source": "claude", "id": "fresh", "keepalive_name": "k1",
+                        "mtime": now,
+                    },
+                    {"source": "claude", "id": "unread", "keepalive_name": "k2"},
+                ]
+
+            def attention_for(self, key: str) -> AttentionState:
+                kind = "unread" if key == "claude:unread" else "none"
+                return AttentionState(kind=kind)  # type: ignore[arg-type]
+
+        items = collect_candidates(_Store())
+        self.assertEqual(
+            [(item.key, item.kind) for item in items],
+            [("claude:unread", "unread"), ("claude:fresh", "none")],
+        )
 
 
 class ActivityBoardSyncTests(unittest.TestCase):

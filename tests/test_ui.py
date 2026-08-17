@@ -55,6 +55,7 @@ from pickup.ui.embed_pane import EmbedPane
 from pickup.ui.modals import (
     COPY_SESSION_CHOICE,
     EXPORT_SESSION_CHOICE,
+    RESTART_SESSION_CHOICE,
     ConfirmModal,
     NewSessionModal,
     RuntimeChoice,
@@ -2073,12 +2074,12 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
             await list_view.rebuild()
             rows = list_view._sidebar_rows()
             self.assertEqual(rows[0].kind, "group")
-            self.assertFalse(rows[0].stripe)
+            self.assertTrue(rows[0].stripe)
             members = [row for row in rows if row.kind == "session" and row.tree_position]
             self.assertEqual(len(members), 2)
-            self.assertTrue(all(not row.stripe for row in members))
+            self.assertTrue(all(row.stripe for row in members))
             independent = next(row for row in rows if row.identity == independent_key)
-            self.assertTrue(independent.stripe)
+            self.assertFalse(independent.stripe)
             self._assert_dom_matches_rows(list_view)
 
     async def test_collapse_does_not_flip_later_blocks(self) -> None:
@@ -2102,7 +2103,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
             await list_view.rebuild()
             collapsed = self._stripe_by_identity(list_view)
             self.assertEqual(expanded[independent_key], collapsed[independent_key])
-            self.assertTrue(collapsed[independent_key])
+            self.assertFalse(collapsed[independent_key])
             self.assertEqual(
                 collapsed[f"{GROUP_ID_PREFIX}{group_id}"],
                 expanded[f"{GROUP_ID_PREFIX}{group_id}"],
@@ -2127,9 +2128,10 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(rows[0].stripe)
             self.assertFalse(rows[1].stripe)
             self.assertEqual(rows[2].identity, unpinned[0])
-            self.assertFalse(rows[2].stripe)
+            # 相位锚定在段尾（顶部插块零翻转）：段内交替，段末块无条纹
+            self.assertTrue(rows[2].stripe)
             self.assertEqual(rows[3].identity, unpinned[1])
-            self.assertTrue(rows[3].stripe)
+            self.assertFalse(rows[3].stripe)
             self._assert_dom_matches_rows(list_view)
 
     async def test_stripes_survive_in_place_and_full_rebuild(self) -> None:
@@ -2151,8 +2153,9 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
             remaining = [
                 pickup.session_key(session) for session in store.all_sessions()
             ]
-            self.assertEqual(after[remaining[0]], False)
-            self.assertEqual(after[remaining[1]], True)
+            # 段尾锚定：段末块无条纹，倒数第二块有条纹
+            self.assertEqual(after[remaining[0]], True)
+            self.assertEqual(after[remaining[1]], False)
             self._assert_dom_matches_rows(list_view)
 
     async def test_stripe_background_is_translucent(self) -> None:
@@ -4095,8 +4098,16 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 t0 = time.perf_counter()
                 await list_view.rebuild()
                 full_ms = (time.perf_counter() - t0) * 1000
-                full_replace.assert_called()
-            print(f"\n[列表增一条] splice {splice_ms:.1f}ms；一次加两条 full {full_ms:.1f}ms")
+                # 区段 splice 已能处理连续多插（新旧两格入组/一次扫出两条新会话），
+                # 不再退回 clear()+extend()；旧卡实例必须保留。
+                full_replace.assert_not_called()
+            cards = list_view._session_cards()
+            self.assertEqual(len(cards), 6)
+            for card in cards:
+                key = pickup.session_key(card.session)
+                if key in before_ids:
+                    self.assertEqual(id(card), before_ids[key])
+            print(f"\n[列表增一条] splice {splice_ms:.1f}ms；一次加两条 splice {full_ms:.1f}ms")
 
     async def test_rebuild_splices_single_deleted_session(self) -> None:
         """删一条会话同样只摘那一行，其余卡片实例保持。"""
@@ -4125,21 +4136,35 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(remaining[keep_key], keep_id)
             print(f"\n[列表删一条] splice {splice_ms:.1f}ms")
 
-    def test_single_identity_splice_only_matches_one_insert_or_remove(self) -> None:
-        from pickup.ui.session_list import _single_identity_splice
+    def test_region_splice_matches_single_and_local_region_changes(self) -> None:
+        from pickup.ui.session_list import _region_splice
 
+        # 单行插入 / 删除是区段替换的特例
+        self.assertEqual(_region_splice(["a", "b"], ["x", "a", "b"]), (0, 0, 1))
+        self.assertEqual(_region_splice(["a", "b"], ["a", "b", "x"]), (2, 0, 1))
+        self.assertEqual(_region_splice(["a", "b", "c"], ["a", "c"]), (1, 1, 0))
+        # 独立卡 -> 会话组：同一位置删 1 插 3，必须命中区段路径而非全量重建
         self.assertEqual(
-            _single_identity_splice(["a", "b"], ["x", "a", "b"]), ("insert", 0)
+            _region_splice(["a", "s1", "b"], ["a", "g", "m1", "m2", "b"]),
+            (1, 1, 3),
         )
+        # 区段内替换（同位换行）
         self.assertEqual(
-            _single_identity_splice(["a", "b"], ["a", "b", "x"]), ("insert", 2)
+            _region_splice(["a", "x", "b"], ["a", "y", "z", "b"]), (1, 1, 2)
         )
+        # 两处离散替换但前后缀夹出单一小区段（区段内夹着未变行 "b"）：
+        # 按一个区段整体替换，仍然命中（受 max_region 约束）
         self.assertEqual(
-            _single_identity_splice(["a", "b", "c"], ["a", "c"]), ("remove", 1)
+            _region_splice(["a", "x", "b", "y"], ["a", "m", "b", "n"]), (1, 3, 3)
         )
-        self.assertIsNone(_single_identity_splice(["a", "b"], ["b", "a"]))
-        self.assertIsNone(_single_identity_splice(["a"], ["b", "c"]))
-        self.assertIsNone(_single_identity_splice(["a", "b"], ["a", "b"]))
+        # 整体换血 / 重排：一行都没保留，不命中
+        self.assertIsNone(_region_splice(["a", "b"], ["b", "a"]))
+        self.assertIsNone(_region_splice(["a"], ["b", "c"]))
+        self.assertIsNone(_region_splice(["a", "b"], ["a", "b"]))
+        # 变化区段超阈值：不命中，走全量重建
+        self.assertIsNone(
+            _region_splice(["a"] + [f"x{i}" for i in range(10)], ["a"] + [f"y{i}" for i in range(10)])
+        )
 
     async def test_screen_serializes_concurrent_list_rebuilds(self) -> None:
         """后台重扫和交互刷新同时到达时，列表重建必须串行，不能重复挂载条目。"""
@@ -4879,7 +4904,8 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("a")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
-                # 默认高亮在接力项；上移一次落到「复制会话」（它上面是导出会话）
+                # 默认高亮在接力项；上移两次落到「复制会话」（上面依次是重启、导出）
+                await pilot.press("up")
                 await pilot.press("up")
                 await pilot.press("enter")
                 await _wait_until(lambda: host_mock.call_count == 1)
@@ -4932,6 +4958,84 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(envelope["data"]["schema"], "pickup.share/v1")
             self.assertIn("events", envelope["data"])
             self.assertEqual(type(app.screen).__name__, "MainScreen")
+
+    async def test_restart_session_advanced_action_kills_and_resumes_in_place(self) -> None:
+        """高级操作选「重启会话」：杀掉托管进程后按原会话原地恢复，上下文保留。"""
+        store, registry = _make_store()
+        captured: list = []
+
+        def capture_plan(request):
+            captured.append(request)
+            return LaunchPlan(
+                ("claude", "--dangerously-skip-permissions", "--resume", "s0"), "/tmp",
+            )
+
+        registry.build_launch_plan = capture_plan
+        app = PickupApp(store, embed_ok=True)
+
+        with (
+            mock.patch(
+                "pickup.embed.host_session", return_value="pickup-claude-s0"
+            ) as host_mock,
+            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("pickup.keepalive.kill", return_value=True) as kill_mock,
+            mock.patch("pickup.embed.close_channel") as close_mock,
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                source = list_view.selected_session()
+                self.assertIsNotNone(source)
+                source_key = pickup.session_key(source)
+                store.mark_hosted(source_key, "pickup-claude-s0")
+                await pilot.pause()
+
+                await pilot.press("a")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, RuntimePickerModal)
+                choices = app.screen._choices
+                self.assertEqual(choices[2].id, RESTART_SESSION_CHOICE)
+                self.assertTrue(choices[2].available)
+                # 默认高亮在接力项（最后一项）；上移一次落到「重启会话」
+                await pilot.press("up")
+                await pilot.press("enter")
+                await pilot.pause(delay=0.3)  # 跨过 ConfirmModal 的武装窗口
+                self.assertIsInstance(app.screen, ConfirmModal)
+                await pilot.press("r")
+                await _wait_until(lambda: kill_mock.call_count == 1)
+                await _wait_until(lambda: host_mock.call_count == 1)
+                await _wait_until(lambda: app.screen._host_pending == 0)
+
+                kill_mock.assert_called_once_with("pickup-claude-s0")
+                close_mock.assert_called_once_with("pickup-claude-s0")
+                self.assertEqual(len(captured), 1)
+                self.assertFalse(captured[0].force_new)
+                self.assertFalse(captured[0].copy_session)
+                self.assertEqual(captured[0].target_runtime_id, "claude")
+                # 重启后仍是同一条会话，且重新登记为托管
+                current = store.find_session(source_key)
+                self.assertIsNotNone(current)
+                self.assertEqual(current.get("keepalive_name"), "pickup-claude-s0")
+
+    async def test_restart_session_unavailable_for_unhosted_session(self) -> None:
+        """未托管的普通会话：重启项置灰，回车响铃不启动。"""
+        store, _ = _make_store()
+        app = PickupApp(store, embed_ok=True)
+        with mock.patch("pickup.embed.host_session") as host_mock:
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                await pilot.press("a")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, RuntimePickerModal)
+                choices = app.screen._choices
+                self.assertEqual(choices[2].id, RESTART_SESSION_CHOICE)
+                self.assertFalse(choices[2].available)
+                app.screen.query_one(ListView).index = 2
+                await pilot.press("enter")
+                await pilot.pause()
+                # 置灰项回车只响铃，弹窗不关、不启动任何会话
+                self.assertIsInstance(app.screen, RuntimePickerModal)
+                host_mock.assert_not_called()
 
 
 class PaneCellHeaderSyncTests(unittest.TestCase):

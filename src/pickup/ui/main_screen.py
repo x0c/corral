@@ -42,6 +42,7 @@ from pickup.ui.footer import PickupFooter
 from pickup.ui.modals import (
     COPY_SESSION_CHOICE,
     EXPORT_SESSION_CHOICE,
+    RESTART_SESSION_CHOICE,
     ConfirmModal,
     choose_target_runtime,
     new_session_flow,
@@ -1561,14 +1562,24 @@ class MainScreen(
             self.app.bell()
             return
         source = str(session.get("source") or self.nav.source)
+        from pickup.models import is_shell_session
         from pickup.runtime.base import LaunchError
 
+        restart_available = bool(
+            session.get("keepalive_name")
+            and not is_shell_session(session)
+            and not session.get("provisional")
+        )
         target = await choose_target_runtime(
-            self.app, self.store, source
+            self.app, self.store, source, restart_available=restart_available,
         )
         if target is None:
             return
         import pickup
+
+        if target == RESTART_SESSION_CHOICE:
+            await self._restart_hosted_session(session)
+            return
 
         if target == EXPORT_SESSION_CHOICE:
             from pickup.agent_api import ApiError, export_share_to_cache
@@ -1604,6 +1615,45 @@ class MainScreen(
         if self.embed_ok:
             self._prepare_handoff_split(session)
         await self._open_or_exit(request, add_pane=self.embed_ok)
+
+    async def _restart_hosted_session(self, session: dict) -> None:
+        """高级操作「重启会话」：结束托管进程后按原会话原地恢复（上下文保留）。
+
+        面向「进程还活着但已卡住/跑飞」的场景：一步完成结束 + 恢复，替代先 q 再
+        回车的两步操作。与右栏已结束格上回车的 `_restart_session_from_pane` 走同一条
+        启动路径；区别只是这里要先亲手杀掉还活着的托管进程。分屏格不摘除，
+        重新托管后经 `_show_session_group` 原位换回实时画面，不拆用户的分屏组合。
+        """
+        import pickup
+        from pickup import embed, keepalive
+        from pickup.models import is_shell_session
+
+        keepalive_name = session.get("keepalive_name")
+        if (
+            not keepalive_name
+            or is_shell_session(session)
+            or session.get("provisional")
+        ):
+            # 弹窗置灰拦不住程序化调用；这里再守一道，不能对没托管的会话硬杀。
+            self.app.bell()
+            return
+        title = self.store.get_title(session)
+        confirmed = await self.app.push_screen_wait(
+            ConfirmModal(t("confirm.restart_session", title=title), confirm_key="r")
+        )
+        if not confirmed:
+            return
+        key = pickup.session_key(session)
+        keepalive.kill(str(keepalive_name))
+        embed.close_channel(str(keepalive_name))
+        current = self.store.mark_hosted(key, None) or session
+        # mark 未命中时落到原 session，里面还带着旧 keepalive 名；不搞掉的话
+        # `_embed_open` 会误判「已托管」而只聚焦旧格，重启实际没发生。
+        current.pop("keepalive_name", None)
+        request = pickup.LaunchRequest(
+            current, str(current.get("source") or self.nav.source), title,
+        )
+        await self._open_or_exit(request)
 
     @work
     async def action_kill_keepalive(self) -> None:

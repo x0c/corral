@@ -426,6 +426,10 @@ class SidebarLayoutDB:
         # 库打不开时的进程内兜底状态：界面照常工作，只是本次不落盘。
         self._memory: SplitLayoutStore | None = None
         self._memory_sidebar_visible: bool | None = None
+        # 常驻连接：读写都持 self._lock，跨线程只在这个实例内部串行使用。
+        # 之前每次读写都 connect+PRAGMA+建表+迁移探测再 close，单次写实测 8~18ms
+        # 且全压在界面线程上；read_revision 还是每秒轮询路径，一直在白付这笔钱。
+        self._conn: sqlite3.Connection | None = None
 
     @property
     def path(self) -> Path:
@@ -440,11 +444,13 @@ class SidebarLayoutDB:
         logger.warning("侧边栏记忆不可用，本次改动不会保存：%s", error)
 
     def _open(self) -> sqlite3.Connection | None:
+        if self._conn is not None:
+            return self._conn
         conn: sqlite3.Connection | None = None
         try:
             path = self.path
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            conn = sqlite3.connect(path, timeout=1.0)
+            conn = sqlite3.connect(path, timeout=1.0, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=1000")
             conn.execute("PRAGMA journal_mode=WAL")
@@ -455,12 +461,22 @@ class SidebarLayoutDB:
             except OSError:
                 pass
             self._import_legacy(conn)
+            self._conn = conn
             return conn
         except (OSError, sqlite3.Error) as error:
             if conn is not None:
                 conn.close()
             self._report_degraded(error)
             return None
+
+    def _discard_conn(self, conn: sqlite3.Connection) -> None:
+        """连接出错时丢弃缓存，下次调用自动重开（自愈，不中断界面）。"""
+        if self._conn is conn:
+            self._conn = None
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
 
     @staticmethod
     def _init_schema(conn: sqlite3.Connection) -> None:
@@ -646,10 +662,9 @@ class SidebarLayoutDB:
             try:
                 return self._read_conn(conn)
             except (OSError, sqlite3.Error) as error:
+                self._discard_conn(conn)
                 self._report_degraded(error)
                 return self._fallback()
-            finally:
-                conn.close()
 
     def read_revision(self) -> int:
         """只取版本号：界面每秒轮询用，别在这条路径上读整份快照。"""
@@ -660,10 +675,9 @@ class SidebarLayoutDB:
             try:
                 return int(self._get_meta(conn, "revision") or 0)
             except (OSError, sqlite3.Error, TypeError, ValueError) as error:
+                self._discard_conn(conn)
                 self._report_degraded(error)
                 return self._fallback().revision
-            finally:
-                conn.close()
 
     # ---- 写 ----
 
@@ -693,13 +707,12 @@ class SidebarLayoutDB:
                     conn.rollback()
                 except sqlite3.Error:
                     pass
+                self._discard_conn(conn)
                 self._report_degraded(error)
                 store = self._fallback()
                 apply(store)
                 _normalize_store(store)
                 return store
-            finally:
-                conn.close()
 
     def apply(self, mutate: Callable[[SplitLayoutStore], object]) -> SplitLayoutStore:
         """在事务里对最新快照重放一次任意改动，返回改完后的最新快照。
@@ -758,10 +771,9 @@ class SidebarLayoutDB:
                     return default
                 return raw == "1"
             except (OSError, sqlite3.Error) as error:
+                self._discard_conn(conn)
                 self._report_degraded(error)
                 return default
-            finally:
-                conn.close()
 
     def set_sidebar_visible(self, visible: bool) -> None:
         with self._lock:
@@ -777,9 +789,8 @@ class SidebarLayoutDB:
                     conn.rollback()
                 except sqlite3.Error:
                     pass
+                self._discard_conn(conn)
                 self._report_degraded(error)
-            finally:
-                conn.close()
 
 
 def _normalize_store(store: SplitLayoutStore) -> None:

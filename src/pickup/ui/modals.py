@@ -93,6 +93,9 @@ class RuntimeChoice:
     label: str
     action_text: str
     available: bool
+    # 不可用时的提示文案；默认用「未安装」，但不可用原因不是没装（如重启会话
+    # 需要会话正被 pickup 托管）时得换说法，不能误导用户去装东西。
+    unavailable_text: str | None = None
 
 
 class RuntimePickerModal(OutsideClickDismiss, ModalScreen[str | None]):
@@ -111,11 +114,12 @@ class RuntimePickerModal(OutsideClickDismiss, ModalScreen[str | None]):
             yield Label(f" {self._title} ", classes="title")
             items = []
             for choice in self._choices:
-                action = (
-                    choice.action_text
-                    if choice.available
-                    else t("modal.not_installed", action=choice.action_text)
-                )
+                if choice.available:
+                    action = choice.action_text
+                else:
+                    action = choice.unavailable_text or t(
+                        "modal.not_installed", action=choice.action_text
+                    )
                 items.append(NoSelectListItem(_ChoiceItem(f"{choice.label:<10}", action, choice.available)))
             yield ListView(*items, initial_index=self._default_index)
             yield Label(t("modal.menu_hint"), classes="hint")
@@ -518,7 +522,10 @@ class ConfirmModal(OutsideClickDismiss, ModalScreen[bool]):
 # 高级操作里非运行时选项的哨兵 id。
 EXPORT_SESSION_CHOICE = "__export_session__"
 COPY_SESSION_CHOICE = "__copy_session__"
-_ADVANCED_SENTINELS = frozenset({EXPORT_SESSION_CHOICE, COPY_SESSION_CHOICE})
+RESTART_SESSION_CHOICE = "__restart_session__"
+_ADVANCED_SENTINELS = frozenset(
+    {EXPORT_SESSION_CHOICE, COPY_SESSION_CHOICE, RESTART_SESSION_CHOICE}
+)
 
 
 def _handoff_default_index(choices: list[RuntimeChoice], source: str) -> int:
@@ -536,17 +543,19 @@ def _handoff_default_index(choices: list[RuntimeChoice], source: str) -> int:
     return 0 if same is None else same
 
 
-async def choose_target_runtime(app, store, source: str) -> str | None:
-    """高级操作：导出会话、复制会话，或选择接力目标运行时。
+async def choose_target_runtime(app, store, source: str, restart_available: bool = False) -> str | None:
+    """高级操作：导出会话、复制会话、重启会话，或选择接力目标运行时。
 
     列表第一项是「导出会话」（写 share transcript 并把路径复制到剪贴板，不启动）；
-    第二项是「复制会话」（同助手完整克隆）；其后每一个助手（含来源自身）
-    都是「读取源历史后新建会话」——同助手另起用于原会话卡住 / 出 bug 时；真正的
-    原生恢复走侧边栏回车，不走本入口。
+    第二项是「复制会话」（同助手完整克隆）；第三项是「重启会话」（结束托管进程后
+    按原会话原地恢复，仅对 pickup 正托管、非占位的会话可用）；其后每一个助手
+    （含来源自身）都是「读取源历史后新建会话」--同助手另起用于原会话卡住 / 出 bug 时；
+    真正的原生恢复走侧边栏回车，不走本入口。
     """
     runtimes = list(store.registry)
     source_runtime = store.registry.get(source)
     source_name = source_runtime.display_name
+    restart_action = t("modal.restart_session_action")
     choices = [
         RuntimeChoice(
             EXPORT_SESSION_CHOICE,
@@ -559,6 +568,13 @@ async def choose_target_runtime(app, store, source: str) -> str | None:
             t("modal.copy_session"),
             t("modal.copy_session_action"),
             source_runtime.is_available(),
+        ),
+        RuntimeChoice(
+            RESTART_SESSION_CHOICE,
+            t("modal.restart_session"),
+            restart_action,
+            restart_available,
+            unavailable_text=t("modal.not_hosted", action=restart_action),
         ),
     ]
     for runtime in runtimes:
