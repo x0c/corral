@@ -100,6 +100,26 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 
 回归：`test_browsing_existing_groups_persists_focus_not_composition`、`test_pane_count_change_reuses_pool_without_remount`、`test_pane_count_change_resizes_once_at_final_layout_size`、`test_two_to_one_discards_half_width_screen_before_first_frame`、`test_cold_hosted_switch_skips_markdown_fallback`。
 
+### 新开分屏（加格）链路（2026-08-17 本轮实测与修复，200 卡规模）
+
+用 Pilot 驱动真实事件循环 + 真实 tmux 托管会话分段计时，加一格的主线程构成与修复后数值：
+
+| 环节 | 修复前 | 修复后 | 手段 |
+|---|---|---|---|
+| 改绑/开通道 `_apply_pane_bindings` | 12~43ms | 12~20ms（真实终端更低：新格通道由后台 `host_session` 预开，主线程是池命中 ~0ms） | 未动；勿把 `open_channel` 搬主线程外（测试同步断言多、真实收益小） |
+| 记忆库写 `persist_split_composition` | 8~18ms | ~1ms | `SidebarLayoutDB` 常驻连接（见下） |
+| 列表重建（第 2 格：独立卡→两人组） | **全量重建 951~1079ms，主线程冻结** | splice 27~45ms | 区段 splice（见下） |
+| 列表重建（首格/新独立卡置顶） | 360~766ms | 13~45ms | 条纹相位锚定改段尾（见下） |
+| 端到端（点击→新格首帧） | 43~155ms（第 2 格另计上面 1 秒冻结） | 57~134ms | 合计 |
+
+三条硬约束（写反了都不报错，只是回到秒级卡顿）：
+
+1. **区段 splice**（`session_list._region_splice` + `_splice_region`）：公共前后缀夹出唯一变化区段，区段外行原样保留，只删/插中间；单行插删是特例，「独立卡→会话组（同位置删 1 插 3）」必须命中它而不是退回全量重建。超过 `_MAX_SPLICE_REGION`（当前 8）或整体换血/重排（一行没保留）仍走全量。固定头（＋新建/看板）不在时（clear() 之后）禁止走 splice，只能全量回补。回归：`test_region_splice_matches_single_and_local_region_changes`、`test_rebuild_falls_back_to_full_rebuild_when_session_set_changes`。
+2. **条纹相位锚段尾**（`_assign_block_stripes`）：每次类变更（`set_class`）都触发一次 Textual 全量样式重匹配，200 卡全翻 ≈ 0.7 秒。锚段尾后段首插块零翻转；改动条纹相关代码前先想清楚哪些操作会翻转多少块。区段 splice 后必须 `_apply_stripes(rows)`（奇偶可能翻转）。
+3. **`SidebarLayoutDB` 常驻连接**：读写都持实例锁，连接缓存出错就丢弃重开（自愈）；禁止改回每次 `connect+PRAGMA+建表+迁移探测+close`（单次写 8~18ms，且 `read_revision` 是每秒轮询路径）。多窗口互斥仍由 `BEGIN IMMEDIATE` 保证。
+
+遗留（未动，有记录）：启动首建 200 卡全量重建仍 ~0.6s（属启动预算，另议）；`_rebuild_list` 后台重扫路径未专项测量。
+
 ## 全文搜索索引
 
 `search.ConversationIndex` 是全文搜索弹窗（`Ctrl+F`）的内存索引。它**不自己读历史文件**，一律经 `SessionStore.get_conversation()` 拿正文，因此天然复用进程内 dict 缓存和 SQLite 派生缓存里的对话；新增的磁盘读取量为零。

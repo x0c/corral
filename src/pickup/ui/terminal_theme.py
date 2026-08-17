@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from collections.abc import Iterable
 
+from textual import events
 from textual.message import Message
 
 from pickup.ui.pointer_shape import (
@@ -31,6 +33,13 @@ _THEME_MARKERS = (_OSC_BACKGROUND_MARKER, _MODE_MARKER)
 # iTerm2 不支持 DEC 2031 主动通知，只能定期查询 OSC 11。两秒足够贴近日落切换，
 # 同时查询只是很短的终端控制序列，不起进程、不访问网络。
 BACKGROUND_POLL_INTERVAL = 2.0
+
+# 未确认的主题前缀最多扣这么久（秒）：真实的应答拆包会在下一个驱动 tick
+#（约 0.1s，且余下字节早已在 pty 缓冲里）内补齐；超过这个窗龄还没等到余下
+# 字节，基本可以断定它是用户的独立按键（首当其冲就是单独的 Esc 键），
+# 必须放行给原解析器/直接生成 Esc 键，否则真实终端上 Esc 要等下一个按键
+# 才生效（清空搜索/退出都得按两次；Pilot 注入按键绕过字节解析，测不出来）。
+_PENDING_FLUSH_AGE = 0.05
 
 
 class TerminalBackgroundReport(Message):
@@ -58,6 +67,10 @@ if os.name != "nt":
         def __init__(self, debug: bool = False) -> None:
             super().__init__(debug)
             self._theme_pending = ""
+            self._theme_pending_at = 0.0
+            # 已确认是主题应答开头的暂存（如 \x1b]11;rgb: 缺终结符）不参与超时
+            # 放行：那不是用户能敲出来的输入，等下一次读取补齐即可。
+            self._theme_pending_confirmed = False
 
         @staticmethod
         def _trailing_marker_prefix(data: str) -> str:
@@ -67,6 +80,36 @@ if os.name != "nt":
                 if any(marker.startswith(suffix) for marker in _THEME_MARKERS):
                     return suffix
             return ""
+
+        def _hold_pending(self, pending: str, *, confirmed: bool) -> None:
+            self._theme_pending = pending
+            self._theme_pending_at = time.monotonic()
+            self._theme_pending_confirmed = confirmed
+
+        def tick(self) -> Iterable[Message]:
+            """驱动每轮 select 后调用；顺带放行扣得太久的未确认前缀。
+
+            孤立 Esc 键会被 `_trailing_marker_prefix` 当成可能的应答开头扣住，
+            而原解析器的 ESCAPE_DELAY 超时根本看不到这个字节——不放行的话，
+            真实终端上 Esc 要等下一个按键才生效。真实的应答拆包余下字节早就
+            在 pty 缓冲里，下一个 tick（约 0.1s）就会经 feed 补齐；超过
+            `_PENDING_FLUSH_AGE` 还没等到，就断定它是用户按键：单独的 Esc
+            直接生成 Esc 键事件（免去再等一轮 ESCAPE_DELAY），其余交给
+            原解析器按序列超时自行处理。
+            """
+            pending = self._theme_pending
+            if (
+                pending
+                and not self._theme_pending_confirmed
+                and time.monotonic() - self._theme_pending_at >= _PENDING_FLUSH_AGE
+            ):
+                self._theme_pending = ""
+                if pending == "\x1b":
+                    yield events.Key("escape", "\x1b")
+                    yield from super().tick()
+                    return
+                yield from super().feed(pending)
+            yield from super().tick()
 
         def feed(self, data: str) -> Iterable[Message]:
             # 驱动关闭时会用空串让原解析器收尾；未完整的主题应答也交回去，
@@ -93,7 +136,7 @@ if os.name != "nt":
                         body = pending[:-len(prefix)]
                         if body:
                             yield from super().feed(body)
-                        self._theme_pending = prefix
+                        self._hold_pending(prefix, confirmed=False)
                         return
                     yield from super().feed(pending)
                     return
@@ -114,7 +157,7 @@ if os.name != "nt":
                             yield from super().feed(pending)
                             return
                         # 已确认是 OSC 11 应答开头，但结尾可能在下一次 read 才到。
-                        self._theme_pending = pending
+                        self._hold_pending(pending, confirmed=True)
                         return
                     raw = match.group(0)
                     yield TerminalBackgroundReport(osc_report=raw.encode("ascii"))
@@ -126,7 +169,7 @@ if os.name != "nt":
                     if len(pending) >= len(_MODE_MARKER) + 2:
                         yield from super().feed(pending)
                         return
-                    self._theme_pending = pending
+                    self._hold_pending(pending, confirmed=True)
                     return
                 yield TerminalBackgroundReport(is_light=match.group(1) == "2")
                 pending = pending[match.end():]

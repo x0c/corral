@@ -5254,6 +5254,12 @@ class DeleteSessionScanTests(unittest.TestCase):
 
 
 class PiScanTests(unittest.TestCase):
+    def setUp(self) -> None:
+        scan_pi.reset_live_session_overrides()
+
+    def tearDown(self) -> None:
+        scan_pi.reset_live_session_overrides()
+
     def test_scan_and_preview_only_follow_current_branch(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             session = Path(td) / "2026-01-01T00-00-00-000Z_demo.jsonl"
@@ -5337,6 +5343,67 @@ class PiScanTests(unittest.TestCase):
             self.assertEqual(by_id[resumed_id]["pid"], 11)
             self.assertTrue(by_id[hosted_id]["live"])
             self.assertEqual(by_id[hosted_id]["pid"], 22)
+
+    def test_live_flags_open_jsonl_wins_over_hosted_session_id(self) -> None:
+        """进程内 /new 换了 jsonl 后，不能继续把 live 钉在启动时的 --session-id 上。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd = str(Path(td) / "proj")
+            Path(cwd).mkdir()
+            hosted_id = "74cd9122"
+            switched_id = "01a00dcc-d48e-7e7b-a7ad-1f524a3e13db"
+            self._write_pi_session(
+                Path(td), hosted_id, cwd, "2026-08-17T02:49:20.902Z", "开发机CPU内存优化",
+            )
+            switched = self._write_pi_session(
+                Path(td), switched_id, cwd, "2026-08-17T03:38:42.702Z", "多Agent并行防重复发布",
+            )
+            sessions = self._scan_with_live(
+                td,
+                processes=[(1988097, os.path.realpath(cwd))],
+                cmdlines={1988097: f"pi --approve --session-id {hosted_id}"},
+                environ={1988097: {"PICKUP_SESSION_ID": hosted_id}},
+                open_paths={1988097: [str(switched)]},
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertTrue(by_id[switched_id]["live"])
+            self.assertEqual(by_id[switched_id]["pid"], 1988097)
+            self.assertFalse(by_id[hosted_id]["live"])
+            self.assertIsNone(by_id[hosted_id]["pid"])
+
+    def test_live_flags_remember_in_process_session_switch_after_jsonl_closes(self) -> None:
+        """Pi 写完即关 jsonl；TUI 必须记住 /new 之后的当前会话，不能弹回旧 ident。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd = str(Path(td) / "proj")
+            Path(cwd).mkdir()
+            hosted_id = "74cd9122"
+            switched_id = "01a00dcc-d48e-7e7b-a7ad-1f524a3e13db"
+            self._write_pi_session(
+                Path(td), hosted_id, cwd, "2026-08-17T02:49:20.902Z", "开发机CPU内存优化",
+            )
+            switched = self._write_pi_session(
+                Path(td), switched_id, cwd, "2026-08-17T03:38:42.702Z", "多Agent并行防重复发布",
+            )
+            first = self._scan_with_live(
+                td,
+                processes=[(1988097, os.path.realpath(cwd))],
+                cmdlines={1988097: "pi"},
+                environ={1988097: {"PICKUP_SESSION_ID": hosted_id}},
+                open_paths={1988097: [str(switched)]},
+            )
+            by_id = {item["id"]: item for item in first}
+            self.assertTrue(by_id[switched_id]["live"])
+            self.assertFalse(by_id[hosted_id]["live"])
+            second = self._scan_with_live(
+                td,
+                processes=[(1988097, os.path.realpath(cwd))],
+                cmdlines={1988097: "pi"},
+                environ={1988097: {"PICKUP_SESSION_ID": hosted_id}},
+                open_paths={1988097: []},
+            )
+            by_id = {item["id"]: item for item in second}
+            self.assertTrue(by_id[switched_id]["live"])
+            self.assertEqual(by_id[switched_id]["pid"], 1988097)
+            self.assertFalse(by_id[hosted_id]["live"])
 
     def test_live_flags_do_not_bind_short_env_to_uuid_history(self) -> None:
         """8 位托管 ident 不得拿去前缀碰 uuidv7 历史，否则同分屏两格会串台。"""

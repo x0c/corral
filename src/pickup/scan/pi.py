@@ -307,6 +307,23 @@ def _mark_live(session: dict, pid: int) -> bool:
     return True
 
 
+# 进程内 ``/new`` / ``/resume`` / ``/fork`` 会换一份 jsonl，但启动时的
+# ``--session-id`` 与 ``PICKUP_SESSION_ID`` 仍指向旧 ident。Pi 用
+# ``appendFileSync`` 写完即关，扫描经常赶不上打开瞬间；TUI 长驻时把「上次
+# 看到这个 pid 在写哪条会话」记住，避免侧栏标题停在旧卡、新历史被标成 Ended。
+_pid_session_override: dict[int, str] = {}
+
+
+def _remember_live_session(pid: int, session_id: str) -> None:
+    if session_id:
+        _pid_session_override[pid] = session_id
+
+
+def reset_live_session_overrides() -> None:
+    """单测隔离：清掉进程内记住的 Pi 会话切换。"""
+    _pid_session_override.clear()
+
+
 def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> None:
     """给 Pi 会话列表就地标注 live/pid。
 
@@ -315,17 +332,19 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
     多个 TUI，禁止再按「cwd → 最新一条」猜测。
 
     绑定优先级（正向证据优先，禁止「同目录只留最新一条」）：
-    1. ``--session <path|id>``（原生恢复）；
-    2. ``--session-id <id>``（托管新建/分叉钉死的占位 ident）；
-    3. 进程正打开的 ``*.jsonl``；
-    4. 环境变量 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID`` **精确**等于会话 id；
-    5. ``-c`` / ``--continue`` → 该 cwd 尚未标记的最新一条；
-    6. 其余 TUI：同一 cwd 里，按「进程启动 ≤ 会话创建」一对一认领。
+    1. 进程正打开的 ``*.jsonl``（进程内 ``/new`` 后的当前文件）；
+    2. 本进程先前观察到该 pid 打开过的会话（文件已关上仍跟上切换）；
+    3. ``--session <path|id>``（原生恢复）；
+    4. ``--session-id <id>``（托管新建/分叉钉死的占位 ident）；
+    5. 环境变量 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID`` **精确**等于会话 id；
+    6. ``-c`` / ``--continue`` → 该 cwd 尚未标记的最新一条；
+    7. 其余 TUI：同一 cwd 里，按「进程启动 ≤ 会话创建」一对一认领。
     """
-    if not sessions:
-        return
     processes = list(live_processes("pi"))
-    if not processes:
+    live_pid_set = {pid for pid, _cwd in processes}
+    for stale in [pid for pid in _pid_session_override if pid not in live_pid_set]:
+        _pid_session_override.pop(stale, None)
+    if not sessions or not processes:
         return
     by_id = {str(session.get("id") or ""): session for session in sessions if session.get("id")}
     by_path: dict[str, dict] = {}
@@ -350,49 +369,77 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
 
     bound_pids: set[int] = set()
 
-    def bind_by_id_or_path(pid: int, value: str) -> bool:
+    def bind_by_id_or_path(pid: int, value: str) -> dict | None:
         text = str(value or "").strip()
         if not text:
-            return False
+            return None
+        session = None
         if text in by_id:
-            return _mark_live(by_id[text], pid)
-        try:
-            real = os.path.realpath(os.path.expanduser(text))
-        except OSError:
-            real = text
-        session = by_path.get(real)
-        if session is not None:
-            return _mark_live(session, pid)
-        file_id = _session_id_from_path(text)
-        if file_id and file_id in by_id:
-            return _mark_live(by_id[file_id], pid)
-        matches = [item for item_id, item in by_id.items() if item_id.startswith(text)]
-        if len(matches) == 1:
-            return _mark_live(matches[0], pid)
+            session = by_id[text]
+        else:
+            try:
+                real = os.path.realpath(os.path.expanduser(text))
+            except OSError:
+                real = text
+            session = by_path.get(real)
+            if session is None:
+                file_id = _session_id_from_path(text)
+                if file_id and file_id in by_id:
+                    session = by_id[file_id]
+            if session is None:
+                matches = [item for item_id, item in by_id.items() if item_id.startswith(text)]
+                if len(matches) == 1:
+                    session = matches[0]
+        if session is None:
+            return None
+        if session.get("live") and session.get("pid") != pid:
+            return None
+        _mark_live(session, pid)
+        return session
+
+    def bind_and_stop(pid: int, session: dict | None, *, remember: bool = False) -> None:
+        if remember and session is not None:
+            _remember_live_session(pid, str(session.get("id") or ""))
+        bound_pids.add(pid)
+
+    def bind_open_jsonl(pid: int) -> bool:
+        for path in open_paths.get(pid) or []:
+            session = bind_by_id_or_path(pid, path)
+            if session is not None:
+                bind_and_stop(pid, session, remember=True)
+                return True
         return False
 
     def bind_exact(pid: int) -> None:
+        if bind_open_jsonl(pid):
+            return
+        override_id = _pid_session_override.get(pid)
+        if override_id and override_id in by_id:
+            session = by_id[override_id]
+            if session.get("live") and session.get("pid") != pid:
+                _pid_session_override.pop(pid, None)
+            else:
+                _mark_live(session, pid)
+                bind_and_stop(pid, session)
+                return
         cmdline = cmdlines.get(pid) or ""
         session_arg = _flag_value(cmdline, ("--session",))
         if session_arg:
-            bind_by_id_or_path(pid, session_arg)
-            bound_pids.add(pid)
+            bind_and_stop(pid, bind_by_id_or_path(pid, session_arg))
             return
         session_id_arg = _flag_value(cmdline, ("--session-id",))
         if session_id_arg:
-            if session_id_arg in by_id:
-                _mark_live(by_id[session_id_arg], pid)
-            bound_pids.add(pid)
+            session = by_id.get(session_id_arg)
+            if session is not None:
+                _mark_live(session, pid)
+            bind_and_stop(pid, session)
             return
-        for path in open_paths.get(pid) or []:
-            if bind_by_id_or_path(pid, path):
-                bound_pids.add(pid)
-                return
         env = process_environ(pid)
         ident = env.get("PICKUP_SESSION_ID") or env.get("SC_SESSION_ID") or ""
         if ident in by_id:
-            _mark_live(by_id[ident], pid)
-            bound_pids.add(pid)
+            session = by_id[ident]
+            _mark_live(session, pid)
+            bind_and_stop(pid, session)
             return
         if ident:
             # 托管占位 ident 尚未落盘、或不在本轮扫描窗口：不要回落到 cwd 配对。

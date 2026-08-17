@@ -445,6 +445,43 @@ class RuntimeThemeParserTests(unittest.TestCase):
             self.assertIsInstance(parsed[0], TerminalBackgroundReport)
             self.assertTrue(parsed[0].is_light)
 
+    def test_lone_escape_is_released_by_tick_not_held_forever(self) -> None:
+        """孤立 Esc 键不能被无限期扣在暂存里（真实终端 Esc 失效的真因）。
+
+        真机：清空搜索/退出都要按两次 Esc 才生效；根因是结尾单独的 ESC 被
+        `_trailing_marker_prefix` 当成可能的应答开头扣住，而 XTermParser 的
+        ESCAPE_DELAY 超时看不到这个字节。修复后驱动 tick 会把扣超过短窗的
+        未确认前缀放行：单独的 Esc 直接变成 Esc 键事件。
+        Pilot 注入按键绕过字节解析，只能用这种字节级测试守住。
+        """
+        import time as _time
+
+        parser = TerminalThemeParser()
+        self.assertEqual(list(parser.feed("\x1b")), [])
+        self.assertEqual(parser._theme_pending, "\x1b")
+        _time.sleep(0.06)
+        flushed = list(parser.tick())
+        keys = [getattr(event, "key", None) for event in flushed]
+        self.assertIn("escape", keys)
+        self.assertEqual(parser._theme_pending, "")
+
+    def test_stale_unconfirmed_prefix_flushes_to_original_parser(self) -> None:
+        """超过短窗的 ≥2 字节未确认前缀也要放行，不能永久吞掉后续输入。"""
+        import time as _time
+
+        parser = TerminalThemeParser()
+        events_out = list(parser.feed("abc\x1b[?9"))
+        self.assertEqual([getattr(e, "key", None) for e in events_out], ["a", "b", "c"])
+        self.assertEqual(parser._theme_pending, "\x1b[?9")
+        _time.sleep(0.06)
+        list(parser.tick())  # 超时放行，不应抛异常
+        self.assertEqual(parser._theme_pending, "")
+        # 放行后的残留序列交给原生解析器按自身超时处理；这里只需确认
+        # 不再无限期扣住后续输入（后续 tick 能继续推进，无异常）。
+        _time.sleep(0.15)
+        list(parser.tick())
+        self.assertEqual(parser._theme_pending, "")
+
     def test_pickup_app_uses_runtime_theme_driver_on_unix(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)
