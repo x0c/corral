@@ -147,6 +147,7 @@ env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py
 涉及界面时还要运行一次真实终端冒烟。标题后台生成会调用本机 agent CLI、消耗对应账号额度；只验证界面时，在临时目录把 `claude`、`codex` 指向本机 `true`，放到 `PATH` 最前面，再启动 `python3 -m pickup --limit 5`（或已安装的 `pickup --limit 5`），确认：
 
 - 底部 Textual `Footer` 显示 `a Advanced`（中文环境下为 `a 高级操作`；`ui/main_screen.py` 的 `MainScreen.BINDINGS`，不再是 curses 手绘的底部帮助行）。
+- **按键无响应时先查焦点**：启动时若选中的是别处托管的实时会话，右栏实时格会持有输入焦点，Footer 变成「`Ctrl+\` 返回列表」——此时 `a`/`q` 等会被转发进助手的真实输入行（可能污染正在跑的会话，务必避免盲发鼠标序列）。先按 `Ctrl+\` 把焦点切回侧栏再操作（真机冒烟踩坑：2026-08-17）。
 - 高级操作弹窗（`ui/modals.py` 的 `choose_target_runtime`）第一项是导出会话、第二项是复制会话、第三项是重启会话（结束卡住的托管进程后按原会话原地恢复，上下文保留；仅对 pickup 正托管且非占位的会话可用，其余置灰），其后动态列出注册表中的运行时。
 - 默认选中第一个已安装的其他运行时。
 - `Esc` 先关闭弹窗，再退出主界面。

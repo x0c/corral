@@ -22,6 +22,9 @@
 # 可选环境变量：
 #   PICKUP_SKIP_WHEELS=1   跳过构建/上传安装包
 #   PICKUP_SKIP_TAP=1      跳过更新 Homebrew 配方
+# 中断恢复：若在「计算源码归档校验和」一步因境外网络超时中断（附件已传好、
+# 只差配方），直接 `PICKUP_SKIP_WHEELS=1 bash scripts/publish-release.sh` 补跑即可
+# （2026-08-17 v0.24.131 实踩）。
 #   PICKUP_SKIP_CI_GATE=1  跳过发版前完整 ci-test（仅应急；默认必须过）
 #   HOMEBREW_TAP_TOKEN     写 tap 仓库用的令牌（默认取 `gh auth token`）
 set -euo pipefail
