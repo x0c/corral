@@ -465,6 +465,13 @@ def main() -> None:
 
     store = SessionStore(limit=args.limit, registry=registry)
     store._title_spawn_fn = _spawn_title_daemon
+    # 先同步读上次退出前的侧边栏快照（几十毫秒），首帧直接带卡；必须在下面的
+    # 后台加载线程启动前完成，否则会被真扫描的合并覆盖。真扫描照常跑，完成后经
+    # 原地更新/区段 splice 收敛到最新状态（运行状态/标题可能滞后一两秒，可接受）。
+    from pickup.cache import enabled as _cache_enabled
+
+    if _cache_enabled():
+        store.hydrate_from_snapshot()
     # store.load()（磁盘扫描 + JSON 解析）和下面的 _probe_osc_colours()（终端 OSC
     # 10/11 探测，最长阻塞 1.2s）互不依赖，串行执行会把两者耗时直接相加、白白
     # 拖长首屏。这里提前在后台线程里开始扫描，让它跟随后的 OSC 探测重叠执行；

@@ -2,7 +2,7 @@
 
 ## 什么时候读
 
-改、评审、优化或排查启动、会话扫描、对话预览、内嵌终端渲染、缓存、原生扩展、安装包或发布流水线时先读本文；**排查「电脑忙时 pickup 卡、自身占用却不高」「同类会话管理 / 内嵌终端 TUI 的性能坑」时也读**（见「系统高负载下的调度优先级」与「同类应用踩坑地图」）。各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。
+改、评审、优化或排查启动、会话扫描、对话预览、内嵌终端渲染、**侧边栏列表重建与分屏加格**、缓存、原生扩展、安装包或发布流水线时先读本文；**排查「电脑忙时 pickup 卡、自身占用却不高」「同类会话管理 / 内嵌终端 TUI 的性能坑」时也读**（见「系统高负载下的调度优先级」与「同类应用踩坑地图」）。**性能优化动手前先做一轮外部调研**（同类 TUI / 终端工具的公开优化经验），再结合本地计时拆解，不要只靠本地 profile 闭门造车（机主 2026-08-17 纠正；本地计时的做法见「新开分屏（加格）链路」节）。各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。
 
 ## 系统高负载下的调度优先级（为什么「自己不重却卡」）
 
@@ -118,7 +118,23 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 2. **条纹相位锚段尾**（`_assign_block_stripes`）：每次类变更（`set_class`）都触发一次 Textual 全量样式重匹配，200 卡全翻 ≈ 0.7 秒。锚段尾后段首插块零翻转；改动条纹相关代码前先想清楚哪些操作会翻转多少块。区段 splice 后必须 `_apply_stripes(rows)`（奇偶可能翻转）。
 3. **`SidebarLayoutDB` 常驻连接**：读写都持实例锁，连接缓存出错就丢弃重开（自愈）；禁止改回每次 `connect+PRAGMA+建表+迁移探测+close`（单次写 8~18ms，且 `read_revision` 是每秒轮询路径）。多窗口互斥仍由 `BEGIN IMMEDIATE` 保证。
 
-遗留（未动，有记录）：启动首建 200 卡全量重建仍 ~0.6s（属启动预算，另议）；`_rebuild_list` 后台重扫路径未专项测量。
+## 开屏首卡响应（2026-08-17 第二轮修复：快照秒开 + 首铺分片）
+
+用户可感：启动白屏停在「Pick a session or tap a runtime above」约 2 秒。真实拆解（218 卡规模、真机实测）：
+
+| 阶段 | 修复前 | 修复后 | 手段 |
+|---|---|---|---|
+| 首帧内容 | 空骨架+提示，卡片要等扫描 | 首帧直接带卡（快照秒开） | `SessionStore._save_sidebar_snapshot` / `hydrate_from_snapshot`（SWR） |
+| 首次铺表 | 全量一次性挂载 218 卡，主线程冻结 0.8~1.9 秒 | rebuild 返回时只挂首批 40 行（~几十 ms），尾部空闲帧分批补齐 | `_MOUNT_CHUNK` / `_begin_tail_mount` / `_mount_tail_batch` |
+| 扫描完成后的收敛 | （旧版即在此刻全量铺表） | 原地更新 5~20ms | 复用已有 in_place/splice 路径 |
+
+机制与硬约束：
+
+1. **快照（stale-while-revalidate）**：扫描完成后把合并后的会话桶与 `_order` 写进 `~/.cache/pickup/sidebar-snapshot.json`（遵循 `PICKUP_CACHE_DIR`，`PICKUP_CACHE=0` 全禁用，原子写）；启动时同步读快照填入 store（~几十 ms，218 卡约 270KB），标记 `hydrated`（≠ `loaded`）。**必须在后台加载线程启动前 hydrate**，否则会被真扫描的合并覆盖。快照只存展示元数据与顺序，不存 hosted/占位等进程内运行时态；运行状态/标题可能滞后一两秒，真扫描经原地更新收敛（实测 10~20ms）。`loaded` 语义不变：空态提示、启动分屏恢复仍等真扫描。
+2. **首铺分片**：全量重建同步只挂前 `_MOUNT_CHUNK`（40）行，尾部每 `_TAIL_MOUNT_INTERVAL`（10ms，**必须 > 0**，Textual Timer 间隔做除法）挂一批，批次间可交互。作废机制：`_rebuild_seq` 递增即作废旧尾（rebuild 入口已递增；`clear()` 不走 rebuild，自己手动作废）。分片批必须持 `_rebuild_lock`（与 rebuild 同闸门，防两条消息泵交错），持锁后再验 token。批后幂等重贴分屏标与斑马纹。分片中途身份比对只看已挂前缀，新重建自然走全量再分片，正确性不变。
+3. 回归：`SidebarSnapshotTests`（roundtrip/收敛/幂等/损坏降级）、`MainScreenNavigationTests.test_full_rebuild_mounts_first_chunk_and_fills_tail_in_frames`（首批/作废/补齐/条纹一致）。observe `list_rebuild` 新增 `chunked` 字段。
+
+边界（未做，已评估）：敲命令到首帧之间还有 ~0.5s（Python 导入）+ OSC 探测 ≤0.25s，与提示窗口无关；直启子命令路径是同步全扫后进 TUI（另一条流）。Textual 官方 `Reveal` 每 20ms 只挂 1 个（218 卡要 4 秒+），节奏不可用，故自实现按批分片。启动首建 200 卡全量重建的 ~0.6 秒冻结已由本轮分片挂载消除（observe `chunked=True`，首帧只挂首批）。
 
 ## 全文搜索索引
 

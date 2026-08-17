@@ -223,7 +223,7 @@ stateDiagram-v2
 
 | 目录（相对项目根） | 内容 | 关键文件 |
 |---|---|---|
-| `ui/` | Textual 终端界面组件、状态、终端主题监听与弹窗 | `main_screen.py`、`app.py`、`terminal_theme.py`、`session_list.py`、`nav.py`、`modals.py`、`embed_pane.py`、`split_pane_area.py`、`runtime_top_bar.py`、`dragon_easter_egg.py`、`ui/assets/dragon-grid.json` |
+| `ui/` | Textual 终端界面组件、状态、终端主题监听与弹窗 | `main_screen.py`、`app.py`、`terminal_theme.py`、`session_list.py`、`nav.py`、`modals.py`、`embed_pane.py`、`split_pane_area.py`、`runtime_top_bar.py`、`dragon_easter_egg.py`、`dragon_splash.py`、`ui/assets/dragon-grid.json` |
 | `ui/controllers/` | `MainScreen` 按领域拆出的方法容器（mixin，状态仍挂在 MainScreen 实例上；`MainScreen.<method>` 经继承仍全部可解析，文档锚点不失效） | `layout_controller.py`（分屏布局/会话组）、`attention_reader.py`（关注已读）、`host_controller.py`（内嵌托管）、`hud_controller.py`（会话小窗）、`update_controller.py`（更新浮层） |
 | 项目根 | 侧边栏记忆（会话组 / 置顶 / 折叠 / 上次焦点 / 侧栏显隐） | `split_layout.py`、`ui_prefs.py` → `~/.cache/pickup/sidebar-layout.sqlite3` |
 | `docs/screenshots/` | 虚构演示数据的截图验收脚本与产物位置 | `capture.py` |
@@ -241,6 +241,7 @@ stateDiagram-v2
 | 鼠标指针形状 | `ui/pointer_shape.py`、`ui/app.py`、`ui/terminal_theme.py` | `sequence()`、`PickupApp._set_pointer_shape()`、驱动 start/stop 钩子 | OSC 22；tmux 下带 DCS 穿透并开关 pane 级 `allow-passthrough`；可点区域手型、内嵌终端 I 型；回归 `PointerShapeSequenceTests` / `PointerShapeUiTests` |
 | 主屏布局与 Footer | `ui/main_screen.py`、`ui/footer.py` | `MainScreen.compose()`、`PickupFooter`、`_main_bindings()` | 左栏搜索和列表、右栏、Footer 的唯一组合处；底栏右端常驻 `vX.Y.Z`；`ENABLE_COMMAND_PALETTE = False`，`Ctrl+P` 走置顶 |
 | 首屏异步加载与后台刷新 | `ui/main_screen.py` | `_await_initial_load()`、`_background_refresh_worker()`、`_poll_cache()` | 等首次扫描、按退避间隔重扫、轮询标题缓存 |
+| 启动加载占位屏与右栏空态龙屏 | `ui/dragon_splash.py`、`ui/main_screen.py`、`ui/split_pane_area.py` | `DragonSplash`、`splash_layout()`、`compose_splash_line()`、`MainScreen.compose()`（`#boot-splash`）、`_rebuild_after_boot_splash()` | 与彩蛋共用 `ui/assets/dragon-grid.json` 点阵：整条龙 cover 铺满后压进浅灰灰度带（#A8~#E4，背景索引透出底色），pickup 紧凑厚块 Logo（toilet pagga 体）居中叠色、用龙身原色红 `#BA1F14`。两个形态：① 启动加载占位屏 `fullscreen=True`——首扫未完成且无秒开快照（`not loaded and not hydrated`）时整屏铺龙，扫描完成后在 `_rebuild_after_boot_splash()` 里先摘屏再重建列表；直启子命令（`direct`）不铺。② 右栏空态——无格时替换旧「Pick a session…」纯文案 `Static`，提示文案挪到底部居中 dim。面板 <24 列或 <10 行时退化为纯提示文案；单测 `test_dragon_splash.py`（用 `unittest discover -s tests` 方式跑，无 `tests.` 前缀） |
 | 选中会话后决定右栏 | `ui/main_screen.py` | `_follow_current_selection()`、`_render_detail()`、`_warm_conversation()` | 非进行中显示完整对话；托管会话挂到右栏实时画面；「运行中(其他窗口)」也只有完整对话，详情头额外写明拿不到实时画面的原因（`_status_key()` / `is_external_running()`）；后台补全内容只能刷新仍在右栏的同一会话，旧结果不得覆盖后来选中的会话 |
 | 侧边栏筛选项目 | `ui/main_screen.py`、`ui/nav.py`、`ui/app.py`、`display.py`、`ui/session_list.py` | `on_input_changed()`、`NavState.project_query`、`_update_header()`、`#project-search.-active`、`_filter_sessions_by_query()`、`_sidebar_rows()` | 查询只有一份状态；按组名、项目名、路径、标题进行大小写无关模糊匹配；命中组名时展示整组；关键字非空时筛选框贴 `-active`（`$warning` 字 + `$primary-muted` 底），失焦也保持高亮 |
 | 全文搜索对话正文 | `ui/search_modal.py`、`search.py`、`ui/main_screen.py` | `FullTextSearchModal`、`ConversationIndex`、`action_search_content()`、`_warm_search_index()`、`_reveal_session()` | `Ctrl+F` 打开；索引在首屏扫描完成后由后台线程预热，弹窗打开时未就绪则自己再建一次并显示进度；结果按会话时间由新到旧排，选中后跳回侧边栏定位 |
@@ -351,6 +352,8 @@ stateDiagram-v2
 - **AI 易错点**【中国龙彩蛋：纵向采样除数是终端行数】▀ 两行合一终端行时，源图 row 映射用 `(y*2+0.5)/(render_height*2)`，**除数用 `render_height`（终端行）而非 `logical_height`**；用后者只会采样源图上半段，表现为「上半屏空白、只有龙上半身」。
 - **AI 易错点**【中国龙彩蛋单测 import】`scripts/ci-test.py` 用 `loader.discover(start_dir="tests")`，跨测试夹具必须 `from test_ui import _make_store`，**禁止** `from tests.test_ui`（CI 报 `ModuleNotFoundError: No module named 'tests'`）。
 - **AI 易错点**【中国龙点阵资源须进 wheel】`dragon-grid.json` 在 `pickup/ui/assets/`；`pyproject.toml` 的 `[tool.maturin] include = ["pickup/ui/assets/*.json"]` 必须保留，否则 pip 安装后运行时读不到 JSON。
+- **AI 易错点】【龙屏 cover 采样除数是缩放后的龙宽/龙高，不是源图尺寸】`dragon_splash.compose_splash_line()` 把终端列/行换回源图坐标时，除数用 `grid.width * scale * HORIZONTAL_CORRECTION` / `grid.height * scale`（缩放后的龙宽高），分子用 `offset + 坐标`（cover 居中裁切时 offset 是负的）。拿源图宽高当除数或把 offset 忘在分子外，龙会整体偏移/只裁到一角。每终端行仍是龙点阵两行（▀ 上/▄ 下），与彩蛋同款半块渲染。
+- **AI 易错点】【加载占位屏只能靠「未加载且无快照」判定，不能永久挂】`#boot-splash` 挂载条件是 `direct is None and not store.loaded and not store.hydrated`；有秒开快照时侧边栏已有卡片，铺屏反而盖掉秒开价值。摘除必须发生在 `_on_initial_load_done` → `_rebuild_after_boot_splash()` 里、列表重建之前，否则首帧正常界面残留占位屏。单测里模拟「未加载」要先 `store.load()` 再重置 `loaded/_load_event/hydrated`，不要造真扫描线程。
 - **AI 易错点**【SSH 真彩失真】TUI 颜色变脏/退化到 256 或 16 色，通常是远端缺 `COLORTERM=truecolor`（sshd 未 `AcceptEnv COLORTERM`），不是 pickup 为省带宽降色。见 `docs/MAINTAINER_GUIDE.md` 对应踩坑。
 - **AI 易错点**【点击选择】会动态增删的会话卡、新建项和弹窗菜单项必须关闭 Textual 文本拖选；它们的点击语义是选择/确认。右栏内嵌实时终端保留文本选择（划词抬起自动 OSC 52 复制；Ctrl+C 可再复制），不能全局关闭。
 - **AI 易错点**【窗口缩放必须防抖 + 冻结重排】拖动期禁止每次 Resize 都 `resize-window`/抓帧；停稳后再改托管窗。改窗后助手常会整屏重排数秒，**禁止把重排中间帧刷到右栏**——已有 live 画面时开启 capture hold，稳定或超时后再一次跳到最新（见 `EmbedPane._begin_resize_capture_hold`）。

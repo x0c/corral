@@ -38,6 +38,7 @@ from pickup.ui.controllers.hud_controller import HUD_POLL_INTERVAL, HudControlle
 from pickup.ui.controllers.layout_controller import LayoutControllerMixin
 from pickup.ui.controllers.update_controller import UpdateControllerMixin
 from pickup.ui.dragon_easter_egg import DragonOverlay
+from pickup.ui.dragon_splash import DragonSplash
 from pickup.ui.footer import PickupFooter
 from pickup.ui.modals import (
     COPY_SESSION_CHOICE,
@@ -326,6 +327,11 @@ class MainScreen(
         )
         yield DragonOverlay(id="dragon-overlay")
         yield PickupFooter()
+        # 启动加载占位屏：首扫未完成且没有秒开快照时，整屏铺灰度龙 + 居中
+        # Logo，遮住还没内容的骨架 UI；扫描完成由 _on_initial_load_done 摘除。
+        # 直启子命令不铺：用户就是冲着新会话来的，尽快进入托管流程。
+        if self.direct is None and not self.store.loaded and not self.store.hydrated:
+            yield DragonSplash(t("split.empty_hint"), fullscreen=True, id="boot-splash")
 
     def on_mount(self) -> None:
         self._app_focused = bool(self.app.app_focus)
@@ -546,6 +552,14 @@ class MainScreen(
                 return
 
     def _on_initial_load_done(self) -> None:
+        # 加载占位屏退场：先摘全屏龙屏，再重建列表，保证用户看到的第一帧
+        # 正常界面不带占位残留。
+        self.call_next(self._rebuild_after_boot_splash)
+
+    async def _rebuild_after_boot_splash(self) -> None:
+        splash = self.query("#boot-splash")
+        if splash:
+            await splash.remove()
         # __init__ 时 store 还没扫完，默认来源只能先假定成 registry 里的第一个；
         # 扫完后如果它其实没有会话而别的运行时有，重新选一次，跟 __init__ 里
         # "挑第一个有会话的运行时"这条默认选择逻辑保持一致。
@@ -555,7 +569,7 @@ class MainScreen(
             )
             if alt is not None:
                 self.nav.source = alt
-        self.call_next(self._rebuild_and_follow)
+        await self._rebuild_and_follow()
         self._start_background_refresh()
 
     async def _rebuild_and_follow(self) -> None:

@@ -15,6 +15,7 @@ from textual.widgets import Static
 from pickup.i18n import t
 from pickup.models import session_key as make_session_key
 from pickup.split_layout import MAX_PANES
+from pickup.ui.dragon_splash import DragonSplash
 from pickup.ui.embed_pane import EmbedPane, ModeChanged
 from pickup.ui.runtime_top_bar import RuntimeTopBar
 from pickup.ui.session_hud import SessionHud
@@ -574,7 +575,7 @@ class SplitPaneArea(Vertical):
             id="runtime-top-bar",
         )
         with Horizontal(id="pane-row"):
-            yield Static(t("split.empty_hint"), id="pane-row-empty")
+            yield DragonSplash(t("split.empty_hint"), id="pane-row-empty")
 
     def pane_count(self) -> int:
         return len(self._panes)
@@ -1066,7 +1067,7 @@ class SplitPaneArea(Vertical):
             if row.query("#pane-row-empty"):
                 pass
             else:
-                await row.mount(Static(t("split.empty_hint"), id="pane-row-empty"))
+                await row.mount(DragonSplash(t("split.empty_hint"), id="pane-row-empty"))
             self.call_after_refresh(self._on_focus_list)
             return
         empty = row.query("#pane-row-empty")
@@ -1258,7 +1259,7 @@ class SplitPaneArea(Vertical):
                 for child in list(row.children):
                     if not isinstance(child, PaneCell):
                         await child.remove()
-                await row.mount(Static(t("split.empty_hint"), id="pane-row-empty"))
+                await row.mount(DragonSplash(t("split.empty_hint"), id="pane-row-empty"))
             self._panes = []
             self._focus_intent_key = None
             self._input_claim_key = None

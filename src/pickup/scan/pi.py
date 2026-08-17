@@ -309,19 +309,298 @@ def _mark_live(session: dict, pid: int) -> bool:
 
 # 进程内 ``/new`` / ``/resume`` / ``/fork`` 会换一份 jsonl，但启动时的
 # ``--session-id`` 与 ``PICKUP_SESSION_ID`` 仍指向旧 ident。Pi 用
-# ``appendFileSync`` 写完即关，扫描经常赶不上打开瞬间；TUI 长驻时把「上次
-# 看到这个 pid 在写哪条会话」记住，避免侧栏标题停在旧卡、新历史被标成 Ended。
+# ``appendFileSync`` 写完即关，扫描经常赶不上打开瞬间。记忆必须落到磁盘：
+# pickup 一重启内存表是空的，否则侧栏标题停在旧卡、新历史被标成 Ended。
 _pid_session_override: dict[int, str] = {}
+_pid_override_started: dict[int, float] = {}
+_prev_write_bytes: dict[int, int] = {}
+_prev_cpu_ticks: dict[int, int] = {}
+_prev_file_mtimes: dict[str, float] = {}
+_LIVE_MAP_NAME = "pi-live-pids.json"
+# 空闲进程认领 /new：新文件创建距旧 ident 最后活动不超过这个间隔。
+_IDLE_NEW_MAX_GAP = 90 * 60
+# CPU 仍在跑、但绑着的旧 ident 已明显比另一条未绑定历史更旧，才跟过去。
+_STALE_NEWER_SLACK = 60.0
 
 
-def _remember_live_session(pid: int, session_id: str) -> None:
-    if session_id:
-        _pid_session_override[pid] = session_id
+def _live_map_path() -> str:
+    override = os.environ.get("PICKUP_CACHE_DIR")
+    if override:
+        return os.path.join(os.path.expanduser(override), _LIVE_MAP_NAME)
+    root = os.environ.get("XDG_CACHE_HOME")
+    base = os.path.expanduser(root) if root else os.path.expanduser("~/.cache")
+    return os.path.join(base, "pickup", _LIVE_MAP_NAME)
+
+
+def _read_live_map() -> dict[str, str]:
+    path = _live_map_path()
+    try:
+        with open(path, encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): str(value) for key, value in data.items() if key and value}
+
+
+def _write_live_map(data: dict[str, str]) -> None:
+    path = _live_map_path()
+    directory = os.path.dirname(path)
+    try:
+        os.makedirs(directory, exist_ok=True)
+        tmp = f"{path}.tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=0)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _persist_key(pid: int, started: float) -> str:
+    return f"{pid}:{int(started)}"
+
+
+def _lookup_persisted_id(data: dict[str, str], pid: int, started: float) -> str | None:
+    exact = data.get(_persist_key(pid, started))
+    if exact:
+        return exact
+    prefix = f"{pid}:"
+    best: str | None = None
+    best_gap = 3.0
+    for key, value in data.items():
+        if not key.startswith(prefix):
+            continue
+        try:
+            stored = int(key.split(":", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        gap = abs(float(stored) - started)
+        if gap < best_gap:
+            best_gap = gap
+            best = value
+    return best
+
+
+def _pid_write_bytes(pid: int) -> int | None:
+    try:
+        with open(f"/proc/{pid}/io", encoding="utf-8") as file:
+            for line in file:
+                if line.startswith("write_bytes:"):
+                    return int(line.split(":", 1)[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _pid_cpu_ticks(pid: int) -> int | None:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as file:
+            parts = file.read().split()
+        return int(parts[13]) + int(parts[14])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _session_last_ts(session: dict) -> float:
+    for key in ("event_time", "file_mtime", "mtime"):
+        value = session.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return 0.0
+
+
+def _session_cwd(session: dict) -> str:
+    cwd = str(session.get("cwd") or "")
+    if not cwd:
+        return ""
+    try:
+        return os.path.realpath(cwd)
+    except OSError:
+        return cwd
+
+
+def _remember_live_session(pid: int, session_id: str, started: float | None = None) -> None:
+    if not session_id:
+        return
+    _pid_session_override[pid] = session_id
+    if started is None:
+        started = _pid_override_started.get(pid)
+    if started is None:
+        started = process_start_time(pid)
+    if started is None:
+        return
+    _pid_override_started[pid] = started
+    data = _read_live_map()
+    prefix = f"{pid}:"
+    data = {key: value for key, value in data.items() if not key.startswith(prefix)}
+    data[_persist_key(pid, started)] = session_id
+    _write_live_map(data)
+
+
+def _load_persisted_overrides(pids: list[int], starts: dict[int, float]) -> None:
+    data = _read_live_map()
+    if not data:
+        return
+    live = set(pids)
+    keep: dict[str, str] = {}
+    for pid in pids:
+        started = starts.get(pid)
+        if started is None:
+            continue
+        session_id = _lookup_persisted_id(data, pid, started)
+        if not session_id:
+            continue
+        _pid_session_override.setdefault(pid, session_id)
+        _pid_override_started[pid] = started
+        keep[_persist_key(pid, started)] = session_id
+    stale_keys = [
+        key for key in data
+        if key.split(":", 1)[0].isdigit() and int(key.split(":", 1)[0]) not in live
+    ]
+    if stale_keys:
+        for key in stale_keys:
+            data.pop(key, None)
+        data.update(keep)
+        _write_live_map(data)
 
 
 def reset_live_session_overrides() -> None:
-    """单测隔离：清掉进程内记住的 Pi 会话切换。"""
+    """单测隔离：清掉进程内记住的 Pi 会话切换与跨轮 IO 快照。"""
     _pid_session_override.clear()
+    _pid_override_started.clear()
+    _prev_write_bytes.clear()
+    _prev_cpu_ticks.clear()
+    _prev_file_mtimes.clear()
+
+
+def _follow_switched_sessions(
+    sessions: list[dict],
+    tui_procs: list[tuple[int, str]],
+    created_ts: dict[str, float],
+    starts: dict[int, float],
+    bound_source: dict[int, str],
+    rebind_to,
+) -> None:
+    """启动 ident 绑上之后，把进程内 /new 换出来的新文件认领回来。
+
+    appendFileSync 太短，单轮经常看不到打开的 jsonl；pickup 重启后内存表也是
+    空的。用三层不靠猜「同目录最新一条」的证据：跨轮写字节对上刚更新的文件、
+    仍在跑 CPU 且旧 ident 已明显更旧、空闲进程在 90 分钟窗口内一对一认领。
+    """
+    file_mtimes = {
+        str(session.get("id") or ""): float(session.get("file_mtime") or session.get("mtime") or 0)
+        for session in sessions
+        if session.get("id")
+    }
+    write_now = {pid: _pid_write_bytes(pid) for pid, _cwd in tui_procs}
+    cpu_now = {pid: _pid_cpu_ticks(pid) for pid, _cwd in tui_procs}
+
+    grown_pids = [
+        pid for pid, _cwd in tui_procs
+        if write_now.get(pid) is not None
+        and pid in _prev_write_bytes
+        and int(write_now[pid] or 0) > _prev_write_bytes[pid]
+    ]
+    grown_sessions = [
+        session for session in sessions
+        if str(session.get("id") or "")
+        and file_mtimes.get(str(session.get("id") or ""), 0)
+        > _prev_file_mtimes.get(str(session.get("id") or ""), 0)
+    ]
+    if len(grown_pids) == 1 and len(grown_sessions) == 1:
+        pid = grown_pids[0]
+        session = grown_sessions[0]
+        current = next((item for item in sessions if item.get("pid") == pid), None)
+        if current is not session:
+            rebind_to(pid, session)
+
+    _prev_write_bytes.clear()
+    _prev_write_bytes.update(
+        {pid: value for pid, value in write_now.items() if value is not None}
+    )
+    _prev_file_mtimes.clear()
+    _prev_file_mtimes.update(file_mtimes)
+
+    live_by_pid = {item.get("pid"): item for item in sessions if item.get("pid")}
+    cpu_active = [
+        pid for pid, _cwd in tui_procs
+        if cpu_now.get(pid) is not None
+        and pid in _prev_cpu_ticks
+        and int(cpu_now[pid] or 0) > _prev_cpu_ticks[pid]
+    ]
+    _prev_cpu_ticks.clear()
+    _prev_cpu_ticks.update(
+        {pid: value for pid, value in cpu_now.items() if value is not None}
+    )
+
+    def unbound_in_cwd(cwd: str) -> list[dict]:
+        return [
+            session for session in sessions
+            if not session.get("live") and _session_cwd(session) == cwd
+        ]
+
+    for pid, cwd in tui_procs:
+        if pid not in cpu_active:
+            continue
+        current = live_by_pid.get(pid)
+        if current is None:
+            continue
+        bound_last = _session_last_ts(current)
+        started = starts.get(pid) or 0.0
+        candidates = []
+        for session in unbound_in_cwd(cwd):
+            created = created_ts.get(str(session.get("id") or ""), 0.0)
+            if created > 0 and started and created + _CREATE_AFTER_START_SLACK < started:
+                continue
+            last_ts = _session_last_ts(session)
+            if last_ts > bound_last + _STALE_NEWER_SLACK:
+                candidates.append(session)
+        if len(candidates) != 1 and candidates:
+            candidates = [max(candidates, key=_session_last_ts)]
+        if len(candidates) == 1:
+            rebind_to(pid, candidates[0])
+            live_by_pid[pid] = candidates[0]
+
+    claimed: set[int] = set()
+    newcomers = [
+        session for session in sessions
+        if not session.get("live")
+    ]
+    newcomers.sort(key=lambda item: created_ts.get(str(item.get("id") or ""), 0.0))
+    for session in newcomers:
+        created = created_ts.get(str(session.get("id") or ""), 0.0)
+        if created <= 0:
+            continue
+        cwd = _session_cwd(session)
+        eligible: list[tuple[int, float]] = []
+        for pid, proc_cwd in tui_procs:
+            if pid in claimed:
+                continue
+            if proc_cwd != cwd:
+                continue
+            started = starts.get(pid)
+            if started is None or created + _CREATE_AFTER_START_SLACK < started:
+                continue
+            current = live_by_pid.get(pid)
+            if current is None:
+                continue
+            bound_last = _session_last_ts(current)
+            if bound_last <= 0 or created <= bound_last:
+                continue
+            gap = created - bound_last
+            if gap > _IDLE_NEW_MAX_GAP:
+                continue
+            eligible.append((pid, gap))
+        if not eligible:
+            continue
+        pid, _gap = min(eligible, key=lambda item: item[1])
+        rebind_to(pid, session)
+        live_by_pid[pid] = session
+        claimed.add(pid)
 
 
 def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> None:
@@ -333,17 +612,19 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
 
     绑定优先级（正向证据优先，禁止「同目录只留最新一条」）：
     1. 进程正打开的 ``*.jsonl``（进程内 ``/new`` 后的当前文件）；
-    2. 本进程先前观察到该 pid 打开过的会话（文件已关上仍跟上切换）；
+    2. 本进程或磁盘记住的「该 pid 上次在写哪条」（pickup 重启后仍跟上）；
     3. ``--session <path|id>``（原生恢复）；
     4. ``--session-id <id>``（托管新建/分叉钉死的占位 ident）；
     5. 环境变量 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID`` **精确**等于会话 id；
-    6. ``-c`` / ``--continue`` → 该 cwd 尚未标记的最新一条；
-    7. 其余 TUI：同一 cwd 里，按「进程启动 ≤ 会话创建」一对一认领。
+    6. 仍绑在启动 ident 上时，用跨轮写字节/CPU 与空闲窗口把 /new 后的新文件认领回来；
+    7. ``-c`` / ``--continue`` → 该 cwd 尚未标记的最新一条；
+    8. 其余 TUI：同一 cwd 里，按「进程启动 ≤ 会话创建」一对一认领。
     """
     processes = list(live_processes("pi"))
     live_pid_set = {pid for pid, _cwd in processes}
     for stale in [pid for pid in _pid_session_override if pid not in live_pid_set]:
         _pid_session_override.pop(stale, None)
+        _pid_override_started.pop(stale, None)
     if not sessions or not processes:
         return
     by_id = {str(session.get("id") or ""): session for session in sessions if session.get("id")}
@@ -365,9 +646,16 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
         tui_procs.append((pid, cwd))
     if not tui_procs:
         return
+    starts = {
+        pid: started
+        for pid, started in ((pid, process_start_time(pid)) for pid, _cwd in tui_procs)
+        if started is not None
+    }
+    _load_persisted_overrides([pid for pid, _cwd in tui_procs], starts)
     open_paths = open_file_paths([pid for pid, _cwd in tui_procs])
 
     bound_pids: set[int] = set()
+    bound_source: dict[int, str] = {}
 
     def bind_by_id_or_path(pid: int, value: str) -> dict | None:
         text = str(value or "").strip()
@@ -397,16 +685,29 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
         _mark_live(session, pid)
         return session
 
-    def bind_and_stop(pid: int, session: dict | None, *, remember: bool = False) -> None:
+    def bind_and_stop(
+        pid: int, session: dict | None, *, remember: bool = False, source: str = "",
+    ) -> None:
         if remember and session is not None:
-            _remember_live_session(pid, str(session.get("id") or ""))
+            _remember_live_session(pid, str(session.get("id") or ""), starts.get(pid))
         bound_pids.add(pid)
+        if source:
+            bound_source[pid] = source
+
+    def rebind_to(pid: int, session: dict) -> None:
+        for item in sessions:
+            if item.get("pid") == pid and item is not session:
+                item["live"] = False
+                item["pid"] = None
+        session["live"] = True
+        session["pid"] = pid
+        bind_and_stop(pid, session, remember=True, source="follow")
 
     def bind_open_jsonl(pid: int) -> bool:
         for path in open_paths.get(pid) or []:
             session = bind_by_id_or_path(pid, path)
             if session is not None:
-                bind_and_stop(pid, session, remember=True)
+                bind_and_stop(pid, session, remember=True, source="open")
                 return True
         return False
 
@@ -420,26 +721,26 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
                 _pid_session_override.pop(pid, None)
             else:
                 _mark_live(session, pid)
-                bind_and_stop(pid, session)
+                bind_and_stop(pid, session, source="override")
                 return
         cmdline = cmdlines.get(pid) or ""
         session_arg = _flag_value(cmdline, ("--session",))
         if session_arg:
-            bind_and_stop(pid, bind_by_id_or_path(pid, session_arg))
+            bind_and_stop(pid, bind_by_id_or_path(pid, session_arg), source="session")
             return
         session_id_arg = _flag_value(cmdline, ("--session-id",))
         if session_id_arg:
             session = by_id.get(session_id_arg)
             if session is not None:
                 _mark_live(session, pid)
-            bind_and_stop(pid, session)
+            bind_and_stop(pid, session, source="session-id")
             return
         env = process_environ(pid)
         ident = env.get("PICKUP_SESSION_ID") or env.get("SC_SESSION_ID") or ""
         if ident in by_id:
             session = by_id[ident]
             _mark_live(session, pid)
-            bind_and_stop(pid, session)
+            bind_and_stop(pid, session, source="env")
             return
         if ident:
             # 托管占位 ident 尚未落盘、或不在本轮扫描窗口：不要回落到 cwd 配对。
@@ -447,6 +748,10 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
 
     for pid, _cwd in tui_procs:
         bind_exact(pid)
+
+    _follow_switched_sessions(
+        sessions, tui_procs, created_ts, starts, bound_source, rebind_to,
+    )
 
     remaining = [(pid, cwd) for pid, cwd in tui_procs if pid not in bound_pids]
     if not remaining:
@@ -459,7 +764,7 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
         if _is_continue_cmdline(cmdline):
             continue_by_cwd.setdefault(cwd, []).append(pid)
             continue
-        started = process_start_time(pid)
+        started = starts.get(pid)
         if started is None:
             continue
         unmatched.append((pid, cwd, started))

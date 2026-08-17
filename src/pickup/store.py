@@ -9,7 +9,8 @@ import time
 from pickup import liveness, titles
 from pickup.attention import AttentionEvidence, AttentionState, AttentionStore
 from pickup.attention_signals import inspect_session
-from pickup.cache import get_cache
+from pickup.cache import cache_dir, get_cache
+from pickup.cache import enabled as cache_enabled
 from pickup.display import (
     _filter_sessions_by_query,
 )
@@ -93,8 +94,91 @@ class SessionStore:
         # 挂一个 worker 等它完成。_load_event 供 UI 线程阻塞等待，避免和 main()
         # 里预先起的加载线程重复扫描一次。
         self.loaded = False
+        # 启动时是否已从磁盘快照秒开了会话列表（真扫描仍会照常跑并收敛）。
+        # 与 `loaded` 互不影响：快照态下列表先田旧数据渲染，「没有会话」空态、
+        # 启动分屏恢复等仍等真扫描完成。
+        self.hydrated = False
         self._load_event = threading.Event()
         self.load_error: str | None = None
+
+    # ---- 侧边栏快照：启动秒开（stale-while-revalidate） ----
+
+    @staticmethod
+    def _snapshot_path():
+        return cache_dir() / "sidebar-snapshot.json"
+
+    _SNAPSHOT_VERSION = 1
+
+    def _save_sidebar_snapshot(self) -> None:
+        """把当前合并后的会话列表落盘，供下次启动秒开（后台线程内调用）。
+
+        只存展示元数据与稳定顺序，不存 hosted/占位这类进程内运行时态。
+        任何失败都静默：快照只是加速，不能影响扫描与合并本身。
+        `PICKUP_CACHE=0` 时禁用（与派生缓存同一开关）。
+        """
+        import json
+
+        if not cache_enabled():
+            return
+        try:
+            with self.lock:
+                payload = {
+                    "version": self._SNAPSHOT_VERSION,
+                    "order": list(self._order),
+                    "sessions": {
+                        rid: [dict(session) for session in bucket]
+                        for rid, bucket in self.sessions.items()
+                    },
+                }
+            path = self._snapshot_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            os.replace(tmp, path)
+        except Exception:  # noqa: BLE001 快照失败不影响扫描
+            pass
+
+    def hydrate_from_snapshot(self) -> bool:
+        """启动时同步读快照立即填入会话列表（必须在 load 线程启动前调用）。
+
+        填入的是上次退出前的列表：运行状态/标题可能滞后，后台真扫描完成时
+        经现有原地更新/区段 splice 收敛。失败静默返回 False。调用方在
+        `PICKUP_CACHE=0` 时不应调用。
+        """
+        import json
+
+        if self.loaded or self.hydrated:
+            return False
+        try:
+            path = self._snapshot_path()
+            try:
+                with open(path, encoding="utf-8") as f:
+                    payload = json.load(f)
+            except OSError:
+                return False
+            if not isinstance(payload, dict) or payload.get("version") != self._SNAPSHOT_VERSION:
+                return False
+            sessions = payload.get("sessions")
+            order = payload.get("order")
+            if not isinstance(sessions, dict) or not isinstance(order, list):
+                return False
+            with self.lock:
+                known = set()
+                for rid in self.sessions:
+                    bucket = sessions.get(rid)
+                    if not isinstance(bucket, list):
+                        continue
+                    clean = [dict(s) for s in bucket if isinstance(s, dict)]
+                    self.sessions[rid] = clean
+                    known.update(session_key(s) for s in clean)
+                # 只保留快照顺序里仍存在的键；未知运行时的桶忽略
+                self._order = [key for key in order if key in known]
+                self._rebuild_order_and_titles()
+                self.hydrated = True
+            return True
+        except Exception:  # noqa: BLE001 快照只是加速，坏了就当没有
+            return False
 
     @staticmethod
     def _cache_file_mtime() -> float:
@@ -113,6 +197,7 @@ class SessionStore:
             session_count = sum(len(items) for items in scanned.values())
             observe.event("scan_all", duration_ms=duration_ms, session_count=session_count, reason="load")
             self._merge_scanned(scanned)
+            self._save_sidebar_snapshot()
             with self.lock:
                 self.load_error = None
         except Exception as exc:
@@ -159,6 +244,8 @@ class SessionStore:
             before = self._sessions_signature()
             self._merge_scanned(scanned)
             changed = self._sessions_signature() != before
+            if changed:
+                self._save_sidebar_snapshot()
         except Exception as exc:
             with self.lock:
                 from pickup.i18n import t

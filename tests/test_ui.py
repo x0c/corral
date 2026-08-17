@@ -2959,6 +2959,51 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_full_rebuild_mounts_first_chunk_and_fills_tail_in_frames(self) -> None:
+        """大列表全量重建分片挂载：首帧只挂首批，尾部空闲帧补齐，期间可交互。
+
+        一次性挂载 200+ 卡实测冻结主线程约 1 秒（开屏白屏等 2 秒的主因之一）；
+        分片后 rebuild 返回时只挂首批，clear/新重建让旧尾部立即作废。
+        """
+        sessions = [
+            {
+                "source": "claude", "id": f"chunk-{i}", "short_id": f"chunk-{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"分片会话{i}",
+                "cwd": f"/tmp/p{i % 5}", "live": False,
+            }
+            for i in range(30)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=False)
+        with mock.patch("pickup.ui.session_list._MOUNT_CHUNK", 10):
+            async with app.run_test(size=(100, 40)) as pilot:
+                list_view = app.screen.query_one(SessionListView)
+                await list_view.clear()
+                await list_view.rebuild()
+                self.assertEqual(len(list_view._session_items()), 10)
+                self.assertEqual(len(list_view._tail_items), 20)
+                # clear 不走 rebuild 的 seq 递增，必须自己作废尾部
+                await list_view.clear()
+                self.assertEqual(list_view._tail_items, [])
+                await list_view.rebuild()
+                await pilot.pause(delay=0.5)
+                self.assertEqual(len(list_view._session_items()), 30)
+                self.assertEqual(list_view._tail_items, [])
+                # 补齐后条纹/选中态与目标 rows 一致
+                rows = list_view._sidebar_rows()
+                widgets = [
+                    c.children[0] for c in list_view.list_children
+                    if c.id not in STICKY_IDS and c.children
+                ]
+                self.assertEqual(len(widgets), len(rows))
+                for widget, row in zip(widgets, rows, strict=False):
+                    if isinstance(widget, (SessionCard, SessionGroupCard)):
+                        self.assertEqual(
+                            widget.has_class("-stripe"), row.stripe,
+                            f"{row.identity} 分片补齐后条纹与 rows 不一致",
+                        )
+
     async def test_initial_selection_and_project_search_filter(self) -> None:
         """侧边栏顶部搜索框：大小写无关模糊匹配项目名，并同步过滤会话列表。"""
         sessions = [
@@ -8902,6 +8947,79 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
                     rendered = row.render().plain
                     self.assertNotIn("LaunchError", rendered)
                 await pilot.press("escape")
+
+
+@unittest.skipIf(TerminalThemeParser is None, "Windows 无 Unix 终端主题解析器")
+class SidebarSnapshotTests(unittest.TestCase):
+    """侧边栏快照（SWR 秒开）：save/hydrate roundtrip、真扫描收敛、开关与降级。"""
+
+    def _store_with(self, sessions):
+        claude = mock.Mock()
+        claude.id = "claude"
+        claude.display_name = "Claude"
+        claude.is_available.return_value = True
+        claude.scan_sessions.return_value = sessions
+        claude.load_conversation.return_value = []
+        registry = pickup.RuntimeRegistry((claude,))
+        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+            store = pickup.SessionStore(limit=50, registry=registry)
+            store.load()
+        return store
+
+    def _sessions(self, count, prefix="s"):
+        return [
+            {
+                "source": "claude", "id": f"{prefix}{i}", "short_id": f"{prefix}{i}",
+                "mtime": 1755400000 - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"快照会话{i}",
+                "cwd": "/tmp", "live": False,
+            }
+            for i in range(count)
+        ]
+
+    def test_snapshot_roundtrip_and_scan_convergence(self) -> None:
+        """快照秒开 + 真扫描收敛：hydrated 态列表立即有卡，扫描后与全新扫描一致。"""
+        store = self._store_with(self._sessions(5))
+        fresh = pickup.SessionStore(
+            limit=50, registry=store.registry,
+        )
+        # 模拟新进程：hydrate 后再跑真扫描（load 会被调用方阻塞到完成）
+        self.assertTrue(fresh.hydrate_from_snapshot())
+        self.assertTrue(fresh.hydrated)
+        self.assertFalse(fresh.loaded)
+        hydrate_keys = list(fresh._order)
+        self.assertEqual(len(hydrate_keys), 5)
+        fresh.load()
+        self.assertEqual(fresh._order, store._order, "真扫描后顺序与全新扫描一致")
+        self.assertEqual(
+            [pickup.session_key(s) for b in fresh.sessions.values() for s in b],
+            [pickup.session_key(s) for b in store.sessions.values() for s in b],
+        )
+
+    def test_hydrate_is_noop_after_load_or_repeated(self) -> None:
+        """已 loaded 或已 hydrated 时不再覆盖（防真扫描后被旧快照冲掉）。"""
+        store = self._store_with(self._sessions(3))
+        self.assertFalse(store.hydrate_from_snapshot())
+        fresh = pickup.SessionStore(limit=50, registry=store.registry)
+        self.assertTrue(fresh.hydrate_from_snapshot())
+        self.assertFalse(fresh.hydrate_from_snapshot())
+
+    def test_corrupt_snapshot_degrades_silently(self) -> None:
+        """快照损坏/不存在时不报错，返回 False，界面照常走空骨架路径。"""
+        from pickup.store import SessionStore
+
+        claude = mock.Mock()
+        claude.id = "claude"
+        claude.is_available.return_value = True
+        claude.scan_sessions.return_value = []
+        registry = pickup.RuntimeRegistry((claude,))
+        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+            fresh = pickup.SessionStore(limit=50, registry=registry)
+        path = SessionStore._snapshot_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not-json", encoding="utf-8")
+        self.assertFalse(fresh.hydrate_from_snapshot())
+        self.assertFalse(fresh.hydrated)
 
 
 if __name__ == "__main__":

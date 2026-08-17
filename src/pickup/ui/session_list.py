@@ -157,6 +157,13 @@ class _SidebarRow:
 
 _MAX_SPLICE_REGION = 8
 
+# 首铺分片：一次全量重建同步只挂这么多行（可视区+缓冲），剩余行每批间隔
+# _TAIL_MOUNT_INTERVAL 秒补齐。218 卡规模的一次性挂载实测主线程冻结约 0.8~1 秒，
+# 分片后首帧只需挂首批（几十毫秒），期间可交互。批间间隔必须 > 0（Textual
+# Timer 用间隔做除法，0 会在停表时抛 ZeroDivisionError）。
+_MOUNT_CHUNK = 40
+_TAIL_MOUNT_INTERVAL = 0.01
+
 
 def _region_splice(
     old: list[str], new: list[str], *, max_region: int = _MAX_SPLICE_REGION
@@ -981,6 +988,11 @@ class SessionListView(Vertical):
         self._selected_by_key = False
         self._rebuild_lock = asyncio.Lock()
         self._rebuild_seq = 0
+        # 首铺分片：全量重建只同步挂首批（可视区+缓冲），剩余行按空闲帧分批补齐。
+        # 批次间界面可交互；新重建请求靠 _rebuild_seq 递增让旧批次立即作废。
+        self._tail_items: list[ListItem] = []
+        self._tail_rows: list[_SidebarRow] | None = None
+        self._tail_token = -1
         self.board_snapshot: BoardSnapshot | None = None
 
     def compose(self) -> ComposeResult:
@@ -1193,6 +1205,11 @@ class SessionListView(Vertical):
 
     async def clear(self) -> None:
         """清空两段列表，兼容调用方要求在重建前重置侧栏。"""
+        # clear 不走 rebuild 的 seq 递增，这里手动作废分片尾部，防止空闲帧
+        # 又把刚清掉的行挂回来。
+        self._rebuild_seq += 1
+        self._tail_items = []
+        self._tail_rows = None
         await self._replace_list_items([], [])
         self._index = None
         self._selected_by_key = False
@@ -2063,9 +2080,17 @@ class SessionListView(Vertical):
 
         # batch_update() 抑制 clear()+extend() 中间那次多余重绘；两步都要 await
         # 完成（DOM 真正更新），批量 API 本身已经把"多次 mount"合成一轮。
+        # 首铺分片：只同步挂首批（可视区+缓冲），剩余行空闲帧补齐--一次性挂
+        # 200+ 卡实测冻结主线程约 1 秒，分片后首帧几十毫秒、期间可交互。
         sticky_items, scroll_items = self._partition_items(items)
+        first_batch, tail_items = (
+            scroll_items[:_MOUNT_CHUNK],
+            scroll_items[_MOUNT_CHUNK:],
+        )
         with self.app.batch_update():
-            await self._replace_list_items(sticky_items, scroll_items)
+            await self._replace_list_items(sticky_items, first_batch)
+        if tail_items:
+            self._begin_tail_mount(tail_items, rows, self._rebuild_seq)
 
         target_index = self._target_index_after_rows(
             previous_identity, new_identities, had_rows=had_rows
@@ -2092,4 +2117,49 @@ class SessionListView(Vertical):
             duration_ms=int((time.perf_counter() - t0) * 1000),
             mode="full",
             card_count=len(rows),
+            chunked=bool(tail_items),
         )
+
+    def _begin_tail_mount(
+        self, items: list[ListItem], rows: list[_SidebarRow], token: int,
+    ) -> None:
+        """登记分片尾部并排第一批补齐定时器（复用 _rebuild_seq 作废旧批次）。"""
+        self._tail_items = items
+        self._tail_rows = rows
+        self._tail_token = token
+        self.set_timer(_TAIL_MOUNT_INTERVAL, self._mount_tail_batch)
+
+    async def _mount_tail_batch(self) -> None:
+        """空闲帧补挂一批尾部行；任何新重建请求（seq 变化）立即让位。
+
+        DOM 变更必须持 `_rebuild_lock`（与 rebuild 同一把闸门，防两条消息泵
+        交错）；持锁后还要再验一次 token，排队期间可能已进来新重建。
+        """
+        token = self._tail_token
+        if token != self._rebuild_seq or self._sticky_list is None:
+            self._tail_items = []
+            return
+        rows = self._tail_rows
+        async with self._rebuild_lock:
+            if token != self._rebuild_seq or self._sticky_list is None:
+                self._tail_items = []
+                return
+            scroll = self._scroll_list
+            if scroll is None:
+                self._tail_items = []
+                return
+            batch, self._tail_items = (
+                self._tail_items[:_MOUNT_CHUNK],
+                self._tail_items[_MOUNT_CHUNK:],
+            )
+            try:
+                await scroll.extend(batch)
+            except Exception:  # noqa: BLE001 中间态异常就放弃尾部，下一轮重建兑底
+                self._tail_items = []
+                return
+            # 新挂的行补贴分屏标与斑马纹（幂等；已挂前缀是 set_class no-op）。
+            self._apply_split_marks()
+            if rows is not None:
+                self._apply_stripes(rows)
+        if self._tail_items:
+            self.set_timer(_TAIL_MOUNT_INTERVAL, self._mount_tail_batch)
