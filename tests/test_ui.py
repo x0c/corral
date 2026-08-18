@@ -1751,6 +1751,22 @@ class SessionCardVisualTests(unittest.TestCase):
 
 
 class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_store_still_mounts_sticky_header(self) -> None:
+        """全新环境（零会话）首次重建不能走原地刷新捷径：固定头必须挂出来。
+
+        2026-08-18 空 HOME 启动真机复现：前后会话集合都是空列表，重建误判
+        「没变化」直接返回，「＋ 新建」与活动看板永远不出现。
+        """
+        store, _ = _make_store(sessions=[])
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            sticky = list_view.query_one("#sidebar-sticky")
+            sticky_ids = [child.id for child in sticky.children]
+            self.assertEqual(sticky_ids, [NEW_SESSION_ID, ACTIVITY_BOARD_ID])
+            self.assertIsNotNone(app.screen.query_one(NewSessionCard))
+
     async def test_search_and_card_spacing_are_explicit(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=False)

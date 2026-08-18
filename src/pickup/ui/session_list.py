@@ -2010,7 +2010,10 @@ class SessionListView(Vertical):
         current_identities = self._current_row_identities()
         had_rows = bool(current_identities)
 
-        if new_identities == current_identities:
+        # 固定头（＋新建/看板）还没挂过或被 clear() 清掉时，即便会话集合没变
+        # （全新环境首次重建前后都是空列表）也不能走原地刷新捷径直接返回，
+        # 否则「＋ 新建」永远不会出现（2026-08-18 空 HOME 启动真机复现）。
+        if new_identities == current_identities and self._sticky_intact():
             self._update_rows_in_place(rows)
             self.refresh_board_card()
             if select_key is not None:
