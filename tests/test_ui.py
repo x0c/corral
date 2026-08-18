@@ -3730,6 +3730,57 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(area.allow_cross_project)
                 self.assertEqual(app.screen._split_store.groups, {})
 
+    async def test_activity_board_holds_panes_while_hosted_during_viewing(self) -> None:
+        """观看期间不撤格：会话跑完但仍托管时钉在原格，真正结束（不再托管）才撤。"""
+        from pickup.activity_board import BoardCandidate
+
+        sessions = [
+            {
+                "source": "claude", "id": "s0", "short_id": "s0",
+                "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "会话0",
+                "cwd": "/tmp", "live": True, "keepalive_name": "pickup-s0",
+            },
+            {
+                "source": "claude", "id": "s1", "short_id": "s1",
+                "mtime": time.time() - 1, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "会话1",
+                "cwd": "/tmp", "live": True, "keepalive_name": "pickup-s1",
+            },
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=True)
+        both = [
+            BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
+            BoardCandidate(key="claude:s1", kind="working", updated_at=1),
+        ]
+        only_s0 = [BoardCandidate(key="claude:s0", kind="waiting", updated_at=2)]
+        with mock.patch(
+            "pickup.ui.controllers.board_controller.collect_candidates",
+            return_value=both,
+        ) as candidates_mock:
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                list_view = app.screen.query_one(SessionListView)
+                list_view.index = 1
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                await _wait_until(
+                    lambda: area.ordered_session_keys() == ["claude:s0", "claude:s1"]
+                )
+                # s1 跑完（不再够格）但 tmux 仍托管：重扫后格子钉在原地。
+                candidates_mock.return_value = only_s0
+                app.screen._sync_activity_board_entry()
+                await pilot.pause(delay=0.2)
+                self.assertEqual(area.ordered_session_keys(), ["claude:s0", "claude:s1"])
+                # 会话真正结束（不再托管）：格子才撤。
+                for session in store.all_sessions():
+                    if session.get("id") == "s1":
+                        session["keepalive_name"] = ""
+                app.screen._sync_activity_board_entry()
+                await pilot.pause(delay=0.2)
+                self.assertEqual(area.ordered_session_keys(), ["claude:s0"])
+
     async def test_activity_board_full_does_not_block_top_bar_new_session(self) -> None:
         """看板铺满时顶栏加助手进队列，不报分屏已满。"""
         from pickup.activity_board import BoardCandidate

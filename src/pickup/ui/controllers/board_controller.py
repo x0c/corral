@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from pickup.activity_board import ActivityBoard, collect_candidates
+from pickup.activity_board import ActivityBoard, collect_candidates, collect_hosted_keys
 from pickup.ui.session_list import (
     STICKY_IDS,
     SessionListView,
@@ -25,7 +25,6 @@ class BoardControllerMixin:
             return
         self._activity_board_active = False
         self._activity_board.reset()
-        self._cancel_board_linger_timer()
         try:
             area = self._split_area()
         except Exception:
@@ -75,9 +74,13 @@ class BoardControllerMixin:
         area = self._split_area()
         typing = _focused_board_session_key(getattr(self.app, "focused", None))
         self._activity_board.set_typing_key(typing)
-        snapshot = self._activity_board.sync(collect_candidates(self.store))
+        # 观看期间不撤格：仍被托管的成员即使已跑完 / 已读也钉在当前页，
+        # 撤格只发生在离开看板、关格、会话结束（不再托管）或显式翻页时。
+        snapshot = self._activity_board.sync(
+            collect_candidates(self.store),
+            hosted_keys=collect_hosted_keys(self.store),
+        )
         session_list.set_board_snapshot(snapshot)
-        self._arm_board_linger_timer()
         if not snapshot.keys:
             if area.ordered_session_keys() == ["__board_empty__"]:
                 return
@@ -123,28 +126,4 @@ class BoardControllerMixin:
     def _dismiss_board_pane(self, session_key: str) -> None:
         """看板里关格：本轮不再展示这一格，不改持久会话组。"""
         self._activity_board.dismiss(session_key)
-        self._show_activity_board(focus_pane=False)
-
-    def _cancel_board_linger_timer(self) -> None:
-        timer = getattr(self, "_board_linger_timer", None)
-        if timer is None:
-            return
-        timer.stop()
-        self._board_linger_timer = None
-
-    def _arm_board_linger_timer(self) -> None:
-        """暂留到期后必须再铺一次，否则后台重扫没变化时格子会一直占着。"""
-        import time as time_mod
-
-        self._cancel_board_linger_timer()
-        deadline = self._activity_board.next_linger_deadline()
-        if deadline is None:
-            return
-        delay = max(0.05, deadline - time_mod.monotonic())
-        self._board_linger_timer = self.set_timer(delay, self._on_board_linger_expired)
-
-    def _on_board_linger_expired(self) -> None:
-        self._board_linger_timer = None
-        if not getattr(self, "_activity_board_active", False):
-            return
         self._show_activity_board(focus_pane=False)

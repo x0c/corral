@@ -7,12 +7,12 @@ import unittest
 
 from pickup import i18n
 from pickup.activity_board import (
-    BOARD_LINGER_SECONDS,
     RECENT_ACTIVE_SECONDS,
     ActivityBoard,
     BoardCandidate,
     BoardSnapshot,
     collect_candidates,
+    collect_hosted_keys,
 )
 from pickup.attention import AttentionState
 from pickup.split_layout import MAX_PANES
@@ -106,6 +106,25 @@ class CollectCandidatesTests(unittest.TestCase):
         )
 
 
+class CollectHostedKeysTests(unittest.TestCase):
+    def test_hosted_keys_cover_only_hosted_non_shell_sessions(self) -> None:
+        class _Store:
+            def all_sessions(self):
+                return [
+                    {"source": "claude", "id": "a", "keepalive_name": "k1"},
+                    {"source": "claude", "id": "ended"},
+                    {"source": "codex", "id": "b", "keepalive_name": "k2"},
+                    {"source": "shell", "id": "term", "keepalive_name": "k3"},
+                ]
+
+            def attention_for(self, key: str) -> AttentionState:
+                return AttentionState(kind="none")
+
+        self.assertEqual(
+            collect_hosted_keys(_Store()), {"claude:a", "codex:b"}
+        )
+
+
 class ActivityBoardSyncTests(unittest.TestCase):
     def test_first_sync_takes_priority_prefix(self) -> None:
         board = ActivityBoard()
@@ -130,19 +149,21 @@ class ActivityBoardSyncTests(unittest.TestCase):
         self.assertEqual(snap.total, MAX_PANES + 1)
         self.assertEqual(snap.page_count, 2)
 
-    def test_empty_slot_fills_from_overflow_after_linger(self) -> None:
+    def test_empty_slot_fills_after_member_no_longer_hosted(self) -> None:
+        """不够格但仍托管：钉住；会话结束（不再托管）后让位补意件。"""
         board = ActivityBoard()
         first = [_cand(f"s{i}", "working", 10 - i) for i in range(MAX_PANES)]
-        board.sync(first, now=0)
+        hosted = {f"s{i}" for i in range(MAX_PANES)}
+        board.sync(first, hosted_keys=hosted)
         remaining = first[1:]
         overflow = [_cand("urgent", "waiting", 99), *remaining]
-        still = board.sync(overflow, now=0)
+        still = board.sync(overflow, hosted_keys=hosted)
         self.assertIn("s0", still.keys)
         self.assertNotIn("urgent", still.keys)
-        snap = board.sync(overflow, now=BOARD_LINGER_SECONDS)
-        self.assertIn("urgent", snap.keys)
-        self.assertNotIn("s0", snap.keys)
-        self.assertEqual(len(snap.keys), MAX_PANES)
+        gone = board.sync(overflow, hosted_keys=hosted - {"s0"})
+        self.assertIn("urgent", gone.keys)
+        self.assertNotIn("s0", gone.keys)
+        self.assertEqual(len(gone.keys), MAX_PANES)
 
     def test_typing_pane_stays_when_no_longer_eligible(self) -> None:
         board = ActivityBoard()
@@ -261,19 +282,20 @@ class ActivityBoardComboTests(unittest.TestCase):
         self.assertEqual(snap.keys, ("b", "c", "a"))
         self.assertEqual(snap.total, 2)
 
-    def test_queue_shrink_pulls_page_back_in_range_after_linger(self) -> None:
-        """翻到末页后队列整体收缩：暂留到期后 page 回退，keys 不越界。"""
+    def test_queue_shrink_pulls_page_back_after_held_members_leave(self) -> None:
+        """翻到末页后队列整体收缩：钉住成员仍在时页码不动，托管结束后回退。"""
         board = ActivityBoard()
         items = [_cand(f"s{i}", "working", 20 - i) for i in range(MAX_PANES + 2)]
-        board.sync(items, now=0)
+        hosted = {f"s{i}" for i in range(MAX_PANES + 2)}
+        board.sync(items, hosted_keys=hosted)
         board.turn_page(1)
-        self.assertEqual(board.sync(items, now=0).page, 1)
+        self.assertEqual(board.sync(items, hosted_keys=hosted).page, 1)
         shrunk = [_cand("s0", "working", 20)]
-        lingering = board.sync(shrunk, now=0)
+        lingering = board.sync(shrunk, hosted_keys=hosted)
         self.assertEqual(lingering.page, 1)
         for i in range(MAX_PANES, MAX_PANES + 2):
             self.assertIn(f"s{i}", lingering.keys)
-        snap = board.sync(shrunk, now=BOARD_LINGER_SECONDS)
+        snap = board.sync(shrunk, hosted_keys=set())
         self.assertEqual(snap.page, 0)
         self.assertEqual(snap.page_count, 1)
         self.assertEqual(snap.keys, ("s0",))
@@ -282,53 +304,67 @@ class ActivityBoardComboTests(unittest.TestCase):
         self.assertLess(snap.page, snap.page_count)
 
 
-class ActivityBoardLingerTests(unittest.TestCase):
-    """刚结束的当前页成员先暂留，避免看板整页抖动。"""
+class ActivityBoardHoldTests(unittest.TestCase):
+    """观看期间不主动撤格：仍托管即钉住，直到离开 / 关格 / 不再托管。"""
 
-    def test_just_ended_stays_on_current_page(self) -> None:
+    def test_finished_member_stays_while_still_hosted(self) -> None:
         board = ActivityBoard()
-        board.sync([_cand("a", "working"), _cand("b", "working")], now=0)
-        snap = board.sync([_cand("b", "working")], now=1)
+        board.sync([_cand("a", "working"), _cand("b", "working")], hosted_keys={"a", "b"})
+        snap = board.sync([_cand("b", "working")], hosted_keys={"a", "b"})
         self.assertEqual(snap.keys, ("a", "b"))
         self.assertEqual(snap.total, 2)
-        self.assertIsNotNone(board.next_linger_deadline())
 
-    def test_eligible_again_during_linger_does_not_drop_later(self) -> None:
+    def test_held_member_drops_once_no_longer_hosted(self) -> None:
         board = ActivityBoard()
-        board.sync([_cand("a", "working"), _cand("b", "working")], now=0)
-        board.sync([_cand("b", "working")], now=1)
-        board.sync([_cand("a", "working"), _cand("b", "working")], now=2)
-        snap = board.sync(
-            [_cand("a", "working"), _cand("b", "working")],
-            now=BOARD_LINGER_SECONDS + 5,
-        )
-        self.assertEqual(snap.keys, ("a", "b"))
-        self.assertIsNone(board.next_linger_deadline())
+        board.sync([_cand("a", "working"), _cand("b", "working")], hosted_keys={"a", "b"})
+        snap = board.sync([_cand("b", "working")], hosted_keys={"b"})
+        self.assertEqual(snap.keys, ("b",))
+        self.assertEqual(snap.total, 1)
 
-    def test_dismiss_skips_linger(self) -> None:
+    def test_held_member_keeps_page_when_queue_shrinks(self) -> None:
+        """被钉住的末页成员让页码不越界回退，不因够格队列缩短被打回第 1 页。"""
         board = ActivityBoard()
-        board.sync([_cand("a", "waiting"), _cand("b", "working")], now=0)
+        items = [_cand(f"s{i}", "working", 20 - i) for i in range(MAX_PANES + 1)]
+        hosted = {f"s{i}" for i in range(MAX_PANES + 1)}
+        board.sync(items, hosted_keys=hosted)
+        board.turn_page(1)
+        snap = board.sync([_cand("s0", "working", 20)], hosted_keys=hosted)
+        self.assertEqual(snap.page, 1)
+        self.assertIn(f"s{MAX_PANES}", snap.keys)
+
+    def test_dismiss_skips_hold(self) -> None:
+        board = ActivityBoard()
+        board.sync([_cand("a", "waiting"), _cand("b", "working")], hosted_keys={"a", "b"})
         board.dismiss("a")
-        snap = board.sync([_cand("b", "working")], now=1)
+        snap = board.sync([_cand("b", "working")], hosted_keys={"a", "b"})
         self.assertEqual(snap.keys, ("b",))
         self.assertNotIn("a", snap.keys)
 
-    def test_typing_pin_outlives_linger_then_starts_fresh_linger(self) -> None:
+    def test_typing_pin_survives_after_session_unhosted(self) -> None:
+        """正在打字的那格即使会话已结束也钉住，直到焦点离开这一格。"""
         board = ActivityBoard()
-        board.sync([_cand("a", "working"), _cand("b", "working")], now=0)
+        board.sync([_cand("a", "working"), _cand("b", "working")], hosted_keys={"a", "b"})
         board.set_typing_key("a")
-        board.sync([_cand("b", "working")], now=1)
-        still = board.sync([_cand("b", "working")], now=BOARD_LINGER_SECONDS + 5)
+        still = board.sync([_cand("b", "working")], hosted_keys={"b"})
         self.assertIn("a", still.keys)
         board.set_typing_key(None)
-        held = board.sync([_cand("b", "working")], now=BOARD_LINGER_SECONDS + 6)
-        self.assertIn("a", held.keys)
-        gone = board.sync(
-            [_cand("b", "working")],
-            now=BOARD_LINGER_SECONDS + 6 + BOARD_LINGER_SECONDS,
-        )
+        gone = board.sync([_cand("b", "working")], hosted_keys={"b"})
         self.assertNotIn("a", gone.keys)
         self.assertEqual(gone.keys, ("b",))
+
+    def test_turn_page_releases_held_members(self) -> None:
+        """显式翻页按当时队列重切：被钉住但已不在队列里的成员随之让位。"""
+        board = ActivityBoard()
+        board.sync([_cand("a", "working"), _cand("b", "working")], hosted_keys={"a", "b"})
+        held = board.sync([_cand("b", "working"), _cand("c", "waiting")], hosted_keys={"a", "b", "c"})
+        self.assertEqual(held.keys, ("a", "b", "c"))
+        board.turn_page(1)
+        snap = board.sync(
+            [_cand("b", "working"), _cand("c", "waiting")],
+            hosted_keys={"a", "b", "c"},
+        )
+        self.assertNotIn("a", snap.keys)
+        self.assertEqual(snap.keys, ("b", "c"))
 
 
 class FocusedBoardSessionKeyTests(unittest.TestCase):

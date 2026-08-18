@@ -3,9 +3,10 @@
 成员资格：pickup 自己托管、且关注态是等待回答 / 执行中 / 未读新结果，或
 「刚刚」（与侧栏时间行同一条 3 分钟界）内还有真实对话活动。别的窗口里跑的
 会话没有实时画面，不进格子。超过一页时当前页成员冻结，
-新急件排到后面；格子空出来才从队列按优先级补位。正在看的那一格即使
-已经不够格，也留到用户离开这格再撤。当前页里刚不够格的格子先暂留一会儿，
-避免会话刚结束就抽走、整页跟着跳。
+新急件排到后面；格子空出来才从队列按优先级补位。**正在看看板期间
+当前页成员不主动撤**：只要会话仍被 pickup 托管，跑完、已读、不再
+活跃都继续钉在原格，直到离开看板、显式关格或会话不再托管；
+显式翻页按当时的队列重切，不在队列里的成员随之让位。
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from pickup.display import JUST_NOW_SECONDS
 from pickup.split_layout import MAX_PANES
 
 BOARD_KINDS: frozenset[AttentionKind] = frozenset({"waiting", "working", "unread"})
-BOARD_LINGER_SECONDS = 30.0
 _KIND_RANK: dict[AttentionKind, int] = {
     "waiting": 0,
     "working": 1,
@@ -91,6 +91,25 @@ def collect_candidates(store, now: float | None = None) -> list[BoardCandidate]:
     return candidates
 
 
+def collect_hosted_keys(store) -> set[str]:
+    """当前仍被 pickup 托管的会话键集合：观看期间「不撤格」的底线。
+
+    会话结束、保活回收后 ``keepalive_name`` 会消失，此时格子已没有实时
+    画面可铺，必须允许撤掉；仍被托管但关注态已消退的会话则由调用方
+    据此钉在当前页，不再因跑完 / 已读被抽走。
+    """
+    import pickup
+    from pickup.models import is_shell_session
+
+    keys: set[str] = set()
+    for session in store.all_sessions():
+        if is_shell_session(session):
+            continue
+        if session.get("keepalive_name"):
+            keys.add(pickup.session_key(session))
+    return keys
+
+
 class ActivityBoard:
     """一次进入看板期间的稳定分页状态。离开看板时 ``reset()``。"""
 
@@ -100,16 +119,14 @@ class ActivityBoard:
         self._skipped: set[str] = set()
         self._typing_key: str | None = None
         self._eligible: list[str] = []
-        self._linger_until: dict[str, float] = {}
 
     def reset(self) -> None:
-        """离开看板：丢掉本轮冻结页、跳过名单、打字钉住和暂留。"""
+        """离开看板：丢掉本轮冻结页、跳过名单和打字钉住。"""
         self._page = 0
         self._locked = []
         self._skipped.clear()
         self._typing_key = None
         self._eligible = []
-        self._linger_until.clear()
 
     def set_typing_key(self, key: str | None) -> None:
         """正在看的那一格：不够格也不撤，直到焦点离开。
@@ -127,76 +144,40 @@ class ActivityBoard:
             return
         self._skipped.add(key)
         self._locked = [item for item in self._locked if item != key]
-        self._linger_until.pop(key, None)
         if self._typing_key == key:
             self._typing_key = None
 
-    def next_linger_deadline(self) -> float | None:
-        """当前页最早一条暂留到期时间；没有暂留则返回 None。"""
-        if not self._linger_until:
-            return None
-        return min(self._linger_until.values())
-
-    def _refresh_linger(
-        self,
-        eligible_set: set[str],
-        typing: str | None,
-        now: float,
-    ) -> set[str]:
-        """当前页刚不够格的成员暂留到到期；重新够格、关掉、翻走或到期则清掉。
-
-        到期的条目必须拿掉，不能因为还在当前页就再续一轮——否则格子永远不撤。
-        """
-        previous = self._linger_until
-        still: dict[str, float] = {}
-        for key, deadline in previous.items():
-            if key in self._skipped or key in eligible_set or key == typing:
-                continue
-            if key not in self._locked:
-                continue
-            if deadline > now:
-                still[key] = deadline
-        for key in self._locked:
-            if key in self._skipped or key in eligible_set or key == typing:
-                continue
-            if key in still or key in previous:
-                continue
-            still[key] = now + BOARD_LINGER_SECONDS
-        self._linger_until = still
-        return set(still)
-
     def turn_page(self, delta: int) -> None:
-        """显式翻页：按当前队列重新切片。打字中不要调。"""
+        """显式翻页：按当前队列重新切片。打字中不要调。
+
+        翻页是用户的主动导航：被钉住但已不在队列里的成员（跑完、已读）
+        随重切让位，不再跨页钉住。
+        """
         eligible = [key for key in self._eligible if key not in self._skipped]
         if not eligible:
             self._page = 0
             self._locked = []
-            self._linger_until.clear()
             return
         page_count = max(1, math.ceil(len(eligible) / MAX_PANES))
         self._page = max(0, min(self._page + delta, page_count - 1))
         start = self._page * MAX_PANES
         self._locked = eligible[start:start + MAX_PANES]
-        locked = set(self._locked)
-        self._linger_until = {
-            key: deadline
-            for key, deadline in self._linger_until.items()
-            if key in locked
-        }
 
     def sync(
         self,
         candidates: list[BoardCandidate],
-        now: float | None = None,
+        hosted_keys: set[str] | None = None,
     ) -> BoardSnapshot:
         """按「当前页不插队、空位才补」更新锁定成员，返回这一帧快照。
 
+        正在看看板期间不主动撤格：当前页成员只要仍在 ``hosted_keys`` 里
+        就保留，即使关注态已经消退（跑完、已读、不再活跃）。撤格只发生在
+        离开看板（``reset``）、显式关格（``dismiss``）、会话不再被托管，
+        或显式翻页按当前队列重切时。
+
         补位不得把更前页的人拉进本页：队头新插进来的急件算前页，
-        翻到后页后空位只从本页已有成员之后的队列取。当前页刚不够格的
-        成员先暂留，到期或显式关格后再让位。
+        翻到后页后空位只从本页已有成员之后的队列取。
         """
-        if now is None:
-            now = time.monotonic()
         eligible = [
             item.key
             for item in candidates
@@ -204,8 +185,8 @@ class ActivityBoard:
         ]
         self._eligible = list(eligible)
         eligible_set = set(eligible)
+        hosted_set = hosted_keys or set()
         typing = self._typing_key
-        lingering = self._refresh_linger(eligible_set, typing, now)
 
         if not self._locked:
             self._locked = eligible[:MAX_PANES]
@@ -215,7 +196,7 @@ class ActivityBoard:
             for key in self._locked:
                 if key in self._skipped:
                     continue
-                if key == typing or key in eligible_set or key in lingering:
+                if key == typing or key in eligible_set or key in hosted_set:
                     kept.append(key)
             # 后页空位不得用「当前队列下标」去切：新急件插到队头后，前页成员
             # 会整体后移，看起来像被补进本页。page>0 时，排在本页已有成员前面
@@ -236,7 +217,7 @@ class ActivityBoard:
                     if key_pos is not None and key_pos < min_locked_pos:
                         continue
                 elif self._page > 0:
-                    # 本页成员已全部不够格：不要用会错位的 start 下标，留给下面整页重切。
+                    # 本页成员已全部不在队列里：不要用会错位的 start 下标，留给下面整页重切。
                     continue
                 kept.append(key)
             if typing and typing not in kept and typing not in self._skipped:
@@ -251,12 +232,17 @@ class ActivityBoard:
             self._locked = kept
 
         visible = tuple(self._locked)
-        extra = sum(1 for key in visible if key in self._linger_until)
-        total = len(eligible) + extra
+        # 被钉住的「已不够格但仍托管」成员也计入角标总数，否则侧栏会话数
+        # 与右栏实际格子数对不上；打字钉住的格子沿用旧口径不计入。
+        held = [
+            key for key in visible
+            if key not in eligible_set and key != typing
+        ]
+        total = len(eligible) + len(held)
         page_count = max(1, math.ceil(total / MAX_PANES)) if total else 1
         if self._page >= page_count:
-            if lingering:
-                # 后页成员还在暂留：页码跟着当前页走，不要因为够格队列缩短就把人打回第 1 页。
+            if held:
+                # 本页还有被钉住的成员：页码跟着当前页走，不要因为够格队列缩短就把人打回第 1 页。
                 page_count = self._page + 1
             else:
                 self._page = page_count - 1

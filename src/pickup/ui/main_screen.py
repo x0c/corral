@@ -289,7 +289,6 @@ class MainScreen(
         self._preview_warm_at: dict[str, float] = {}
         self._activity_board = ActivityBoard()
         self._activity_board_active = False
-        self._board_linger_timer = None
         self._shell_after_board = False
 
     def compose(self) -> ComposeResult:
