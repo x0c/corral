@@ -7,6 +7,7 @@ import unittest
 from pickup.ui.dragon_easter_egg import load_dragon_grid
 from pickup.ui.dragon_splash import (
     LOGO_LINES,
+    LOGO_SCALE,
     LOGO_WIDTH,
     DragonSplash,
     compose_splash_line,
@@ -56,10 +57,21 @@ class SplashLayoutTests(unittest.TestCase):
             self.assertGreaterEqual(dragon_w, cols)
             self.assertGreaterEqual(dragon_h, rows * 2)
 
-    def test_logo_centered(self) -> None:
+    def test_logo_centered_and_scaled_up(self) -> None:
         layout = splash_layout(100, 40)
-        self.assertEqual(layout.logo_x, (100 - LOGO_WIDTH) // 2)
-        self.assertEqual(layout.logo_y, (40 - len(LOGO_LINES)) // 2)
+        # 宽高都放得下目标倍数 Logo：24*4=96 宽、3*4=12 高，居中摆放。
+        self.assertEqual(layout.logo_scale, LOGO_SCALE)
+        self.assertEqual(layout.logo_w, LOGO_WIDTH * 4)
+        self.assertEqual(layout.logo_h, len(LOGO_LINES) * 4)
+        self.assertEqual(layout.logo_x, (100 - layout.logo_w) // 2)
+        self.assertEqual(layout.logo_y, (40 - layout.logo_h) // 2)
+
+    def test_narrow_pane_reduces_scale_instead_of_clipping(self) -> None:
+        # 60 列只能容纳 23*2：降到 2 倍而不是裁掉两侧字符。
+        layout = splash_layout(60, 24)
+        self.assertEqual(layout.logo_scale, 2)
+        self.assertLessEqual(layout.logo_w, 60)
+        self.assertGreaterEqual(layout.logo_x, 0)
 
     def test_small_pane_degrades_to_hint_only(self) -> None:
         layout = splash_layout(20, 6)
@@ -78,19 +90,19 @@ class ComposeLineTests(unittest.TestCase):
 
     def test_logo_row_carries_dragon_red(self) -> None:
         layout = splash_layout(100, 40)
-        y = layout.logo_y
-        strip = self._render(100, 40, y)
-        red_segments = [
-            seg
-            for seg in strip
-            if seg.style is not None
-            and seg.style.color is not None
-            and "ba1f14" in str(seg.style.color)
-        ]
-        self.assertTrue(red_segments)
-        # 红色字符应位于正中一带，且个数明显多于零星杂点。
-        red_text = "".join(seg.text for seg in red_segments)
-        self.assertGreater(len(red_text), 8)
+        red_count = 0
+        for y in range(layout.logo_y, layout.logo_y + layout.logo_h):
+            strip = self._render(100, 40, y)
+            red_segments = [
+                seg
+                for seg in strip
+                if seg.style is not None
+                and seg.style.color is not None
+                and "ba1f14" in str(seg.style.color)
+            ]
+            red_count += sum(len(seg.text) for seg in red_segments)
+        # 4 倍 Logo 的落墨量应远大于点景级别。
+        self.assertGreater(red_count, 100)
 
     def test_hint_at_bottom_center(self) -> None:
         layout = splash_layout(100, 40)
@@ -109,6 +121,17 @@ class ComposeLineTests(unittest.TestCase):
         # 龙身行：应有大量半块字符（灰度色块）。
         strip = self._render(100, 40, 5)
         text = "".join(seg.text for seg in strip)
+        self.assertIn("▀", text)
+
+    def test_logo_scale_renders_full_block_chars(self) -> None:
+        # 放大后字符画由 ▀/▄ 组合出 █（上下半块都落墨）。
+        layout = splash_layout(100, 40)
+        text = "".join(
+            seg.text
+            for y in range(layout.logo_y, layout.logo_y + layout.logo_h)
+            for seg in self._render(100, 40, y)
+        )
+        self.assertIn("█", text)
         self.assertIn("▀", text)
 
     def test_small_pane_hint_centered_no_dragon(self) -> None:

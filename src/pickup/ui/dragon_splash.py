@@ -3,7 +3,7 @@
 与横飞彩蛋（dragon_easter_egg）共用同一份龙点阵与 ▀/▄ 半块渲染思路：
 - 整条龙按「铺满面板（cover）」缩放并居中裁切，所有非背景色压进
   浅灰灰度带（暗色 → 深灰、亮色 → 浅灰），形成浅灰底纹；
-- pickup 紧凑厚块 Logo 叠在画面正中，用龙身原色红（#BA1F14）；
+- pickup 厚块 Logo 叠在画面正中（默认线性放大 4 倍，窄面板自动降倍），用龙身原色红（#BA1F14）；
 - 原空态提示文案（split.empty_hint）挪到底部居中，保持 dim。
 """
 
@@ -26,13 +26,16 @@ _GRAY_LIGHTEST = 0xE4
 # Logo 用龙身原色红（点阵 palette 中的 #BA1F14 一系）。
 LOGO_COLOR = "#BA1F14"
 
-# toilet -f pagga 的输出；宽 23、高 3。
+# toilet -f pagga 的输出；宽 24、高 3。渲染时按整数倍放大（见 _logo_pixels）。
 LOGO_LINES = (
     "░█▀█░▀█▀░█▀▀░█░█░█░█░█▀█",
     "░█▀▀░░█░░█░░░█▀▄░█░█░█▀▀",
     "░▀░░░▀▀▀░▀▀▀░▀░▀░▀▀▀░▀░░",
 )
 LOGO_WIDTH = max(len(line) for line in LOGO_LINES)
+
+# Logo 目标放大倍数（每个维度线性 ×4）；面板放不下时自动降到最大可行整数倍。
+LOGO_SCALE = 4
 
 # 面板小于该尺寸时不铺龙、只居中提示文案（与旧 Static 空态等价）。
 _MIN_COLS = 24
@@ -44,6 +47,45 @@ _LOWER_HALF = "▄"
 _GRAY_STYLES: dict[str, Style] = {}
 _LOGO_STYLE = Style(color=LOGO_COLOR, bold=True)
 _HINT_STYLE = Style(dim=True)
+
+# 放大后的 Logo 位图缓存：scale -> 每个平方像素行的是否落墨。
+# 终端字符格约为 1:2（宽:高），一个字符 = 1 宽 × 2 高共 2 个平方像素；
+# ░ 浅阴影用 25% 斜向点阵抖动近似。
+_LOGO_PIXEL_CACHE: dict[int, tuple[tuple[bool, ...], ...]] = {}
+
+
+def _logo_pixels(scale: int) -> tuple[tuple[bool, ...], ...]:
+    """把字符画 Logo 栅格化并放大到 scale 倍（每个平方像素 -> scale×scale）。
+
+    保留原字符画里 ░ 的点阵质感：放大后按平方像素坐标做 25% 斜向点阵抖动
+（(r+c) 每 4 取 1），避免浅阴影被放大成实心色块。
+    """
+    cached = _LOGO_PIXEL_CACHE.get(scale)
+    if cached is not None:
+        return cached
+    rows: list[tuple[bool, ...]] = []
+    for r in range(len(LOGO_LINES) * 2 * scale):
+        src_r = r // scale
+        cy, half = divmod(src_r, 2)
+        line = LOGO_LINES[cy]
+        row: list[bool] = []
+        for c in range(LOGO_WIDTH * scale):
+            src_c = c // scale
+            ch = line[src_c] if src_c < len(line) else " "
+            if ch == "█":
+                on = True
+            elif ch == "▀":
+                on = half == 0
+            elif ch == "▄":
+                on = half == 1
+            elif ch == "░":
+                on = (r + c) % 4 == 0
+            else:
+                on = False
+            row.append(on)
+        rows.append(tuple(row))
+    _LOGO_PIXEL_CACHE[scale] = tuple(rows)
+    return _LOGO_PIXEL_CACHE[scale]
 
 
 def _luminance(color: str) -> float:
@@ -86,6 +128,9 @@ class SplashLayout:
     scale: float
     offset_x: float
     offset_y: float
+    logo_scale: int
+    logo_w: int
+    logo_h: int
     logo_x: int
     logo_y: int
     hint_y: int
@@ -107,8 +152,13 @@ def splash_layout(cols: int, rows: int) -> SplashLayout:
         offset_y = (dragon_h - rows * 2) / 2
     else:
         scale, offset_x, offset_y = 1.0, 0.0, 0.0
-    logo_x = (cols - LOGO_WIDTH) // 2
-    logo_y = (rows - len(LOGO_LINES)) // 2
+    logo_scale = max(
+        1, min(LOGO_SCALE, cols // LOGO_WIDTH, rows // len(LOGO_LINES))
+    )
+    logo_w = LOGO_WIDTH * logo_scale
+    logo_h = len(LOGO_LINES) * logo_scale
+    logo_x = (cols - logo_w) // 2
+    logo_y = (rows - logo_h) // 2
     return SplashLayout(
         cols=cols,
         rows=rows,
@@ -117,6 +167,9 @@ def splash_layout(cols: int, rows: int) -> SplashLayout:
         offset_y=offset_y,
         logo_x=logo_x,
         logo_y=logo_y,
+        logo_scale=logo_scale,
+        logo_w=logo_w,
+        logo_h=logo_h,
         hint_y=rows - 2,
         show_dragon=show_dragon,
     )
@@ -170,16 +223,22 @@ def compose_splash_line(
             else:
                 columns[x] = Segment(_LOWER_HALF, _gray_style(bottom_gray))
 
-    # Logo 叠加：非空字符以红色覆盖龙纹；面板过窄时两侧等量裁掉。
+    # Logo 叠加：放大后的位图以红色覆盖龙纹；面板过窄时两侧等量裁掉。
     logo_row = y - layout.logo_y
-    if 0 <= logo_row < len(LOGO_LINES):
-        line = LOGO_LINES[logo_row]
+    pixels = _logo_pixels(layout.logo_scale)
+    if 0 <= logo_row < layout.logo_h:
+        top_row = pixels[logo_row * 2]
+        bottom_row = pixels[logo_row * 2 + 1]
         start = max(0, -layout.logo_x)
-        end = min(len(line), cols - layout.logo_x)
+        end = min(layout.logo_w, cols - layout.logo_x)
         for j in range(start, end):
-            ch = line[j]
-            if ch != " ":
-                columns[layout.logo_x + j] = Segment(ch, _LOGO_STYLE)
+            top_on, bottom_on = top_row[j], bottom_row[j]
+            if top_on and bottom_on:
+                columns[layout.logo_x + j] = Segment("█", _LOGO_STYLE)
+            elif top_on:
+                columns[layout.logo_x + j] = Segment(_UPPER_HALF, _LOGO_STYLE)
+            elif bottom_on:
+                columns[layout.logo_x + j] = Segment(_LOWER_HALF, _LOGO_STYLE)
 
     # 底部提示：居中、dim；沿用旧空态文案，不再单独占据中央。
     if y == layout.hint_y and hint:
