@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pickup"
-version = "0.24.137"
+version = "0.24.138"
 description = "Terminal session picker and handoff tool for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi."
 readme = "README.md"
 requires-python = ">=3.10"

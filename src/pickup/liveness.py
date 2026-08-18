@@ -125,7 +125,13 @@ def _is_descendant(pid: int, ancestor_pid: int, ppid_map: dict[int, int]) -> boo
 
 
 def annotate(sessions) -> None:
-    """给命中保活的会话就地加上 `keepalive_name` 字段；不生成新列表，不改变顺序。"""
+    """给命中保活的会话就地加上 `keepalive_name` 字段；不生成新列表，不改变顺序。
+
+    同一时刻一个进程只属于一个 pane：已经对上某个 pane 的 pid 不再参与后续
+    pane 的匹配（否则进程树嵌套时后通到的 pane 会把名字改写成别人的）；同
+    一 pane 有多个候选时优先「pid 恰好就是 pane 顶层进程」的精确命中，再考
+    虑祖先链。
+    """
     candidates = {s.get("pid"): s for s in sessions if s.get("pid")}
     if not candidates:
         return  # 没有任何会话带存活 pid，不值得为此打一次 tmux/ps 子进程
@@ -135,6 +141,23 @@ def annotate(sessions) -> None:
         return
 
     ppid_map = _build_ppid_map()
+    assigned: set[int] = set()
+
+    def _claim(name: str, pane_pid: int, *, exact_only: bool) -> None:
+        matches = [
+            (pid, session)
+            for pid, session in candidates.items()
+            if pid not in assigned
+            and (pid == pane_pid or (not exact_only and _is_descendant(pid, pane_pid, ppid_map)))
+        ]
+        if not matches:
+            return
+        pid, session = matches[0]
+        session["keepalive_name"] = name
+        assigned.add(pid)
+
+    # 第一遍只认「pid 恰好就是 pane 顶层进程」的精确命中（进程树嵌套时，深祖
+    # 先链命中的可能是外层 pane，精确命中才是进程真正性所在的那个 pane）。
     for row in tmux_sessions:
         if len(row) < 2:
             continue
@@ -143,10 +166,17 @@ def annotate(sessions) -> None:
             pane_pid = int(pane_pid_text)
         except ValueError:
             continue
-        for pid, session in candidates.items():
-            if _is_descendant(pid, pane_pid, ppid_map):
-                session["keepalive_name"] = name
-                break
+        _claim(name, pane_pid, exact_only=True)
+    # 第二遍祖先链兜底；已对上 pane 的 pid 不再改绑，保证一个进程只挂一个名字。
+    for row in tmux_sessions:
+        if len(row) < 2:
+            continue
+        name, pane_pid_text = row[0], row[1]
+        try:
+            pane_pid = int(pane_pid_text)
+        except ValueError:
+            continue
+        _claim(name, pane_pid, exact_only=False)
 
 
 # 在 liveness 加载完成后绑定，避免与 keepalive 顶层互相 import 形成环。

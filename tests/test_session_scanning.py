@@ -5550,6 +5550,121 @@ class PiScanTests(unittest.TestCase):
             self.assertEqual(by_id["pi-newer"]["pid"], 44)
             self.assertFalse(by_id["pi-older"]["live"])
 
+    def test_live_flags_reject_override_pointing_to_session_created_before_process(self) -> None:
+        """磁盘/内存里写坏的「pid -> 会话」记忆：目标会话比进程还早创建，不可能是
+        进程内 /new 切换的结果，必须剔掉并回落到启动旗标/环境变量的硬证据。
+        真实事故：同项目两条分屏，B 进程的记忆被写成 A 会话，处理顺序颠倒时
+        A 抢走 B 的 pid、B 丢 live，两个分屏串台显示同一份终端。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            first_created = "2023-11-14T22:15:00.000Z"
+            second_created = "2023-11-14T22:16:40.000Z"
+            self._write_pi_session(sessions_dir, "pi-first", cwd, first_created, "读取Claude历史")
+            self._write_pi_session(sessions_dir, "pi-second", cwd, second_created, "快速MVP")
+            first_ts = datetime(2023, 11, 14, 22, 15, 0, tzinfo=timezone.utc).timestamp()
+            second_ts = datetime(2023, 11, 14, 22, 16, 40, tzinfo=timezone.utc).timestamp()
+            scan_pi._pid_session_override[22] = "pi-first"  # 坏记忆：目标比进程早 100 秒创建
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(22, cwd), (11, cwd)],  # 坏记忆的 pid 先处理，才能暴露优先级问题
+                cmdlines={11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
+                environ={11: {"PICKUP_SESSION_ID": "pi-first"}, 22: {"PICKUP_SESSION_ID": "pi-second"}},
+                starts={11: first_ts - 10, 22: second_ts - 10},
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertEqual(by_id["pi-first"]["pid"], 11)
+            self.assertEqual(by_id["pi-second"]["pid"], 22)
+            self.assertNotIn(22, scan_pi._pid_session_override)
+
+    def test_disk_live_map_prunes_impossible_override(self) -> None:
+        """pi-live-pids.json 里已落盘的坏记忆，重新加载时必须剔除并回写磁盘，
+        否则每次重启 pickup 都会再次串台。
+        """
+        with tempfile.TemporaryDirectory() as cache_dir, tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            first_created = "2023-11-14T22:15:00.000Z"
+            second_created = "2023-11-14T22:16:40.000Z"
+            self._write_pi_session(sessions_dir, "pi-first", cwd, first_created, "读取Claude历史")
+            self._write_pi_session(sessions_dir, "pi-second", cwd, second_created, "快速MVP")
+            first_ts = datetime(2023, 11, 14, 22, 15, 0, tzinfo=timezone.utc).timestamp()
+            second_ts = datetime(2023, 11, 14, 22, 16, 40, tzinfo=timezone.utc).timestamp()
+            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+                scan_pi._write_live_map({scan_pi._persist_key(22, second_ts - 10): "pi-first"})
+                self._scan_with_live(
+                    str(sessions_dir),
+                    processes=[(22, cwd), (11, cwd)],
+                    cmdlines={11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
+                    environ={11: {"PICKUP_SESSION_ID": "pi-first"}, 22: {"PICKUP_SESSION_ID": "pi-second"}},
+                    starts={11: first_ts - 10, 22: second_ts - 10},
+                )
+                self.assertEqual(scan_pi._read_live_map(), {})
+                # 合法记忆（目标在进程启动后创建，/new 场景）必须保留。
+                good = {scan_pi._persist_key(11, first_ts - 10): "pi-second"}
+                scan_pi._write_live_map(good)
+                scan_pi.reset_live_session_overrides()
+                sessions = self._scan_with_live(
+                    str(sessions_dir),
+                    processes=[(11, cwd), (22, cwd)],
+                    cmdlines={11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
+                    environ={11: {"PICKUP_SESSION_ID": "pi-first"}, 22: {"PICKUP_SESSION_ID": "pi-second"}},
+                    starts={11: first_ts - 10, 22: second_ts - 10},
+                )
+                by_id = {item["id"]: item for item in sessions}
+                self.assertEqual(by_id["pi-second"]["pid"], 11)  # /new 后的记忆胜过日 ident
+                self.assertEqual(scan_pi._read_live_map(), good)
+
+    def test_follow_switch_correlation_does_not_steal_bound_session(self) -> None:
+        """写字节增长与文件 mtime 增长是两次独立采样：同目录两条会话同时活跃时
+        可能错位对上，不能把已绑在别的活进程上的会话抢过来。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            first_created = "2023-11-14T22:15:00.000Z"
+            second_created = "2023-11-14T22:16:40.000Z"
+            first_path = self._write_pi_session(sessions_dir, "pi-first", cwd, first_created, "A")
+            self._write_pi_session(sessions_dir, "pi-second", cwd, second_created, "B")
+            first_ts = datetime(2023, 11, 14, 22, 15, 0, tzinfo=timezone.utc).timestamp()
+            starts = {11: first_ts - 10, 22: first_ts - 5}
+            base_env = {
+                "cmdlines": {11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
+                "environ": {11: {"PICKUP_SESSION_ID": "pi-first"}, 22: {"PICKUP_SESSION_ID": "pi-second"}},
+            }
+            # 预热轮：记住两份采样基线（写字节/mtime），保证下一轮错位信号能触发。
+            os.utime(first_path, (time.time() + 50, time.time() + 50))
+            with mock.patch.object(scan_pi, "_pid_write_bytes", side_effect=lambda pid: {11: 100, 22: 100}[pid]), \
+                 mock.patch.object(scan_pi, "_pid_cpu_ticks", side_effect=lambda pid: {11: 5, 22: 5}[pid]):
+                scan1 = self._scan_with_live(
+                    str(sessions_dir), processes=[(11, cwd), (22, cwd)],
+                    cmdlines=base_env["cmdlines"], environ=base_env["environ"], starts=starts,
+                )
+            by_id = {item["id"]: item for item in scan1}
+            self.assertEqual(by_id["pi-first"]["pid"], 11)
+            self.assertEqual(by_id["pi-second"]["pid"], 22)
+            # 第二轮：只有 A 的文件在长，写字节却长在 22 身上（采样错位）。
+            os.utime(first_path, (time.time() + 200, time.time() + 200))
+            with mock.patch.object(scan_pi, "_pid_write_bytes", side_effect=lambda pid: {11: 100, 22: 200}[pid]), \
+                 mock.patch.object(scan_pi, "_pid_cpu_ticks", side_effect=lambda pid: {11: 5, 22: 5}[pid]):
+                scan2 = self._scan_with_live(
+                    str(sessions_dir), processes=[(11, cwd), (22, cwd)],
+                    cmdlines=base_env["cmdlines"], environ=base_env["environ"], starts=starts,
+                )
+            by_id = {item["id"]: item for item in scan2}
+            self.assertEqual(by_id["pi-first"]["pid"], 11, "A 不能被 22 抢走")
+            self.assertEqual(by_id["pi-second"]["pid"], 22)
+
     def test_live_flags_skip_print_mode(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cwd_dir = Path(td) / "proj"

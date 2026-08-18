@@ -364,6 +364,23 @@ def _persist_key(pid: int, started: float) -> str:
     return f"{pid}:{int(started)}"
 
 
+def _switch_target_possible(
+    pid: int, session_id: str, created_ts: dict[str, float], starts: dict[int, float],
+) -> bool:
+    """该 pid 是否可能「切换到」这条会话（/new、/fork 后的认领目标）。
+
+    切换目标必然在进程启动之后才落盘：目标会话的创建时间早于进程启动，说明
+    这条绑定是写错的记忆（真实事故：同目录两条分屏会话，扫描把 A 会话记到了
+    B 进程名下，而 A 比 B 的进程早创建了十几分钟）。创建时间缺失时无法判定，
+    保持旧行为信任它。
+    """
+    created = created_ts.get(str(session_id), 0.0)
+    started = starts.get(pid)
+    if created <= 0 or started is None:
+        return True
+    return created + _CREATE_AFTER_START_SLACK >= started
+
+
 def _lookup_persisted_id(data: dict[str, str], pid: int, started: float) -> str | None:
     exact = data.get(_persist_key(pid, started))
     if exact:
@@ -441,18 +458,25 @@ def _remember_live_session(pid: int, session_id: str, started: float | None = No
     _write_live_map(data)
 
 
-def _load_persisted_overrides(pids: list[int], starts: dict[int, float]) -> None:
+def _load_persisted_overrides(
+    pids: list[int], starts: dict[int, float], created_ts: dict[str, float],
+) -> None:
     data = _read_live_map()
     if not data:
         return
     live = set(pids)
     keep: dict[str, str] = {}
+    invalid_keys: list[str] = []
     for pid in pids:
         started = starts.get(pid)
         if started is None:
             continue
         session_id = _lookup_persisted_id(data, pid, started)
         if not session_id:
+            continue
+        if not _switch_target_possible(pid, session_id, created_ts, starts):
+            # 目标会话比进程还早创建，不可能是 /new 切换结果：坏记忆直接剔掉。
+            invalid_keys.append(_persist_key(pid, started))
             continue
         _pid_session_override.setdefault(pid, session_id)
         _pid_override_started[pid] = started
@@ -461,8 +485,10 @@ def _load_persisted_overrides(pids: list[int], starts: dict[int, float]) -> None
         key for key in data
         if key.split(":", 1)[0].isdigit() and int(key.split(":", 1)[0]) not in live
     ]
-    if stale_keys:
+    if stale_keys or invalid_keys:
         for key in stale_keys:
+            data.pop(key, None)
+        for key in invalid_keys:
             data.pop(key, None)
         data.update(keep)
         _write_live_map(data)
@@ -515,7 +541,16 @@ def _follow_switched_sessions(
         pid = grown_pids[0]
         session = grown_sessions[0]
         current = next((item for item in sessions if item.get("pid") == pid), None)
-        if current is not session:
+        target_id = str(session.get("id") or "")
+        if (
+            current is not session
+            # 目标已绑在别的活进程上时不抢：写字节增长与文件 mtime 增长是两次
+            # 独立采样，同目录多条会话同时活跃时可能错位对上（真实事故：同项目
+            # 两条分屏，A 的文件增长被记到 B 进程名下）。
+            and not (session.get("live") and session.get("pid") != pid)
+            # 切换目标必须晚于进程启动才落盘，早于进程创建的会话不可能是 /new 结果。
+            and _switch_target_possible(pid, target_id, created_ts, starts)
+        ):
             rebind_to(pid, session)
 
     _prev_write_bytes.clear()
@@ -651,7 +686,7 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
         for pid, started in ((pid, process_start_time(pid)) for pid, _cwd in tui_procs)
         if started is not None
     }
-    _load_persisted_overrides([pid for pid, _cwd in tui_procs], starts)
+    _load_persisted_overrides([pid for pid, _cwd in tui_procs], starts, created_ts)
     open_paths = open_file_paths([pid for pid, _cwd in tui_procs])
 
     bound_pids: set[int] = set()
@@ -716,13 +751,18 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
             return
         override_id = _pid_session_override.get(pid)
         if override_id and override_id in by_id:
-            session = by_id[override_id]
-            if session.get("live") and session.get("pid") != pid:
+            if not _switch_target_possible(pid, override_id, created_ts, starts):
+                # 目标会话比进程还早创建，不可能是进程内切换：坏记忆剔除后走
+                # 启动旗标 / 环境变量等更硬的证据。
                 _pid_session_override.pop(pid, None)
             else:
-                _mark_live(session, pid)
-                bind_and_stop(pid, session, source="override")
-                return
+                session = by_id[override_id]
+                if session.get("live") and session.get("pid") != pid:
+                    _pid_session_override.pop(pid, None)
+                else:
+                    _mark_live(session, pid)
+                    bind_and_stop(pid, session, source="override")
+                    return
         cmdline = cmdlines.get(pid) or ""
         session_arg = _flag_value(cmdline, ("--session",))
         if session_arg:

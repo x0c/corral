@@ -33,14 +33,24 @@ class LayoutControllerMixin:
         import pickup
 
         key_by_keepalive: dict[str, str] = {}
+        owners: dict[str, str] = {}
+        ambiguous: set[str] = set()
         for bucket in self.store.sessions.values():
             for session in bucket:
                 kname = session.get("keepalive_name")
-                if kname:
-                    key_by_keepalive[str(kname)] = pickup.session_key(session)
+                if not kname:
+                    continue
+                key = pickup.session_key(session)
+                key_by_keepalive[str(kname)] = key
+                if owners.setdefault(str(kname), key) != key:
+                    # 两条会话挂了同一个托管名（扫描串台时真实发生过）：谁都不
+                    # 迁，否则会把分屏格改绑到错的会话上，把会话组拆掉。
+                    ambiguous.add(str(kname))
         for key, kname in self.store.hosted.items():
-            if kname:
+            if kname and str(kname) not in ambiguous:
                 key_by_keepalive.setdefault(str(kname), key)
+        for kname in ambiguous:
+            key_by_keepalive.pop(kname, None)
         area = self._split_area()
         migrated: dict[str, str] = {}
         for spec in area.pane_specs():

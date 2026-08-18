@@ -160,6 +160,35 @@ class AnnotateTests(unittest.TestCase):
 
         self.assertEqual(sessions[0]["keepalive_name"], "sc-claude-abcd1234")
 
+    def test_exact_pane_pid_match_wins_over_earlier_ancestor_match(self) -> None:
+        # 进程树嵌套：pid 102 既是外层 pane(顶层100)的后代，又恰好是内层 pane
+        # (pickup-pi-second) 的顶层进程。精确命中（它自己就是某 pane 顶层）必须
+        # 赢过先遍历到的祖先命中，否则名字会被外层 pane 抢走。
+        sessions = [{"id": "s1", "pid": 102}]
+        list_sessions_out = "pickup-pi-second|102\npickup-pi-first|100\n"
+        ps_out = "  PID  PPID\n  100     1\n  101   100\n  102   101\n"
+
+        with mock.patch("pickup.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("pickup.liveness.subprocess.check_output",
+                         side_effect=_fake_check_output(list_sessions_out, ps_out)):
+            keepalive.annotate(sessions)
+
+        self.assertEqual(sessions[0]["keepalive_name"], "pickup-pi-second")
+
+    def test_annotated_pid_is_not_renamed_by_later_pane(self) -> None:
+        # 同一个 pid 是两个 pane 顶层进程的后代（伪进程树）时，先对上的 pane 名字
+        # 不能被后遍历到的 pane 改写：一个进程只挂一个名字。
+        sessions = [{"id": "s1", "pid": 305}]
+        list_sessions_out = "pickup-pi-a|300\npickup-pi-b|301\n"
+        ps_out = "  PID  PPID\n  300     1\n  301     1\n  305   301\n  301   300\n"
+
+        with mock.patch("pickup.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("pickup.liveness.subprocess.check_output",
+                         side_effect=_fake_check_output(list_sessions_out, ps_out)):
+            keepalive.annotate(sessions)
+
+        self.assertEqual(sessions[0]["keepalive_name"], "pickup-pi-a")
+
     def test_no_tmux_server_running_is_a_noop(self) -> None:
         sessions = [{"id": "s1", "pid": 100}]
 

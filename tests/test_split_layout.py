@@ -356,5 +356,97 @@ class SidebarLayoutDBTests(_TempLayoutDB):
             self.assertGreater(db.read_revision(), 0)
 
 
+class ReconcileSplitKeysTests(unittest.TestCase):
+    """分屏格按 keepalive 名对齐 session_key：同名歧义时谁都不迁（真实事故：
+    扫描串台后两条会话挂了同一个托管名，后写的那条把分屏格改绑到错的会话，
+    会话组被拆掉）。
+    """
+
+    def test_ambiguous_keepalive_name_is_not_used_for_migration(self) -> None:
+        from pickup.ui.controllers.layout_controller import LayoutControllerMixin
+
+        class _Spec:
+            def __init__(self, key: str, name: str) -> None:
+                self.session_key = key
+                self.keepalive_name = name
+
+        class _Area:
+            def __init__(self) -> None:
+                self._specs = [_Spec("pi:aaa", "pickup-pi-bbb"), _Spec("pi:bbb", "pickup-pi-bbb")]
+                self.reconciled: dict[str, str] | None = None
+
+            def pane_specs(self):
+                return list(self._specs)
+
+            def reconcile_session_keys(self, mapping):
+                self.reconciled = dict(mapping)
+
+        class _Store:
+            sessions = {
+                "pi": [
+                    {"source": "pi", "id": "aaa", "keepalive_name": "pickup-pi-bbb"},
+                    {"source": "pi", "id": "bbb", "keepalive_name": "pickup-pi-bbb"},
+                ],
+            }
+            hosted = {"pi:bbb": "pickup-pi-bbb"}
+
+        class _Host(LayoutControllerMixin):
+            def __init__(self) -> None:
+                self.store = _Store()
+                self._area = _Area()
+
+            def _split_area(self):
+                return self._area
+
+            def _apply_layout_change(self, mutate):
+                raise AssertionError("歧义名不得触发任何迁移写入")
+
+        host = _Host()
+        migrated = host._reconcile_split_session_keys()
+        self.assertEqual(migrated, {})
+        self.assertNotIn("pickup-pi-bbb", host._area.reconciled)
+
+    def test_unique_keepalive_name_still_migrates(self) -> None:
+        from pickup.ui.controllers.layout_controller import LayoutControllerMixin
+
+        class _Spec:
+            def __init__(self, key: str, name: str) -> None:
+                self.session_key = key
+                self.keepalive_name = name
+
+        class _Area:
+            def __init__(self) -> None:
+                self._specs = [_Spec("pi:placeholder", "pickup-pi-ccc")]
+                self.reconciled: dict[str, str] | None = None
+
+            def pane_specs(self):
+                return list(self._specs)
+
+            def reconcile_session_keys(self, mapping):
+                self.reconciled = dict(mapping)
+
+        class _Store:
+            sessions = {
+                "pi": [{"source": "pi", "id": "ccc", "keepalive_name": "pickup-pi-ccc"}],
+            }
+            hosted = {}
+
+        class _Host(LayoutControllerMixin):
+            def __init__(self) -> None:
+                self.store = _Store()
+                self._area = _Area()
+
+            def _split_area(self):
+                return self._area
+
+            def _apply_layout_change(self, mutate):
+                return None
+
+        host = _Host()
+        migrated = host._reconcile_split_session_keys()
+        self.assertEqual(migrated, {"pi:placeholder": "pi:ccc"})
+        self.assertEqual(host._area.reconciled.get("pickup-pi-ccc"), "pi:ccc")
+
+
 if __name__ == "__main__":
     unittest.main()
