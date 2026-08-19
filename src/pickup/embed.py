@@ -96,10 +96,13 @@ def host_session(
     查询之间，仍然存在无法从时序上完全消灭的竞态窗口——这是 tmux 控制协议本
     身的限制，不是可以单靠调整 pickup 这边调用顺序解决的。
     """
+    session_dir = ""
     if runtime_id == "pi":
-        from pickup.runtime.pi import bind_hosted_ident
+        from pickup.runtime.pi import bind_hosted_ident, hosted_session_dir_from_plan
+        from pickup.scan.pi import PI_SESSION_DIR_ENV
 
         plan = bind_hosted_ident(plan, ident)
+        session_dir = hosted_session_dir_from_plan(plan)
     name = keepalive._session_name(runtime_id, ident)
     argv = [
         *keepalive._BASE_ARGV, "-f", keepalive._ensure_config_file(),
@@ -114,9 +117,10 @@ def host_session(
         # 旧变量名继续注入，与 keepalive.wrap_plan 保持一致
         "-e", f"SC_RUNTIME={runtime_id}",
         "-e", f"SC_SESSION_ID={ident}",
-        "--",
-        *plan.argv,
     ]
+    if session_dir:
+        argv += ["-e", f"{PI_SESSION_DIR_ENV}={session_dir}"]
+    argv += ["--", *plan.argv]
     try:
         proc = subprocess.run(argv, check=True, stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL, timeout=_CREATE_TIMEOUT)

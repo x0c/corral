@@ -521,9 +521,9 @@ class SessionStore:
     ) -> dict | None:
         """Pi 等「真实 id 与占位 ident 不同、annotate 又没贴上 keepalive」时的兜底。
 
-        仅当「这个 cwd 里活着的占位卡恰好一张，且本轮新出现、尚未托管的真实会话
-        也恰好一条」才认领。同目录两个新建 Pi 分屏会同时冒出两张新卡，对不上就
-        放弃，避免串台；那种情况靠启动时 `--session-id` 让键根本不变。
+        优先按托管 ``pickup-<ident>/`` 目录一对一认领（同 cwd 两个分屏不再放弃）。
+        匹配不到时仍仅当「这个 cwd 里活着的占位卡恰好一张，且本轮新出现、尚未
+        托管的真实会话也恰好一条」才认领，避免无 path 的旧卡串台。
         """
         runtime_id = str(provisional.get("source") or "")
         if not runtime_id:
@@ -541,6 +541,29 @@ class SessionStore:
             and not session.get("keepalive_name")
             and normalize_cwd(session.get("cwd")) == cwd
         ]
+        if runtime_id == "pi":
+            from pickup.scan.pi import hosted_session_dir, normalize_session_dir, session_file_dir
+
+            ident = str(provisional.get("id") or "")
+            expected_dir = (
+                normalize_session_dir(hosted_session_dir(cwd, ident))
+                if ident and cwd else ""
+            )
+            if expected_dir:
+                matches = [
+                    session
+                    for session in newcomers
+                    if session_file_dir(str(session.get("path") or "")) == expected_dir
+                ]
+                if len(matches) == 1:
+                    return matches[0]
+                if len(matches) > 1:
+                    return max(
+                        matches,
+                        key=lambda item: float(
+                            item.get("file_mtime") or item.get("mtime") or 0
+                        ),
+                    )
         sibling_provisionals = 0
         for other_key, other in self._provisional.items():
             if other_key == key:

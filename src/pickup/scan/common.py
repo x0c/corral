@@ -337,7 +337,8 @@ def process_command_line(pid: int) -> str:
 def process_environ(pid: int) -> dict[str, str]:
     """读取进程环境变量；失败返回空字典。
 
-    供扫描器从托管注入的 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID`` 精确绑会话。
+    供扫描器从托管注入的 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID`` /
+    ``PI_CODING_AGENT_SESSION_DIR`` 精确绑会话。
     Linux 读 ``/proc/<pid>/environ``；macOS 用 ``ps eww``（输出混在命令行尾部）。
     """
     try:
@@ -366,6 +367,7 @@ def process_environ(pid: int) -> dict[str, str]:
         "SC_SESSION_ID",
         "PICKUP_RUNTIME",
         "SC_RUNTIME",
+        "PI_CODING_AGENT_SESSION_DIR",
     ):
         marker = f"{key}="
         start = out.find(marker)

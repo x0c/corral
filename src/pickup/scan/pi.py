@@ -19,6 +19,9 @@ from pickup.scan.common import (
 
 PI_HOME = os.path.expanduser("~/.pi/agent")
 SESSIONS_DIR = os.path.join(PI_HOME, "sessions")
+# Pi 官方环境变量，覆盖会话落盘目录；进程标题改写成「pi」后 cmdline 里看不到
+# `--session-dir`，判活只能靠这份初始 environ（与 PICKUP_SESSION_ID 同一条路）。
+PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR"
 # `{ISO时间戳把 :. 换成 -}_{sessionId}.jsonl`
 _SESSION_BASENAME_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_(.+)\.jsonl$",
@@ -259,6 +262,50 @@ def _flag_value(cmdline: str, names: tuple[str, ...]) -> str | None:
     return None
 
 
+def encode_pi_session_cwd(cwd: str) -> str:
+    """Pi 把 cwd 编成 ``~/.pi/agent/sessions/`` 下的子目录名。
+
+    与官方 ``getDefaultSessionDirPath`` 一致：realpath 后去掉打头 ``/`` ``\\``，
+    再把 ``/`` ``\\`` ``:`` 换成 ``-``，外包 ``--…--``。
+    """
+    resolved = os.path.realpath(os.path.expanduser(str(cwd or "")))
+    stripped = resolved.lstrip("/\\")
+    safe = re.sub(r"[/\\:]", "-", stripped)
+    return f"--{safe}--"
+
+
+def hosted_session_dir(cwd: str, ident: str) -> str:
+    """托管新建/接力专用目录：同 cwd 各 pane 各写各的 jsonl，不再挤进默认堆。"""
+    return os.path.join(SESSIONS_DIR, encode_pi_session_cwd(cwd), f"pickup-{ident}")
+
+
+def is_hosted_isolation_dir(directory: str) -> bool:
+    """是否为 pickup 注入的 ``pickup-<ident>/`` 隔离目录（不是 Pi 默认的 cwd 堆）。"""
+    return os.path.basename(str(directory or "").rstrip("/")).startswith("pickup-")
+
+
+def session_file_dir(path: str) -> str:
+    """会话 jsonl 所在目录的 realpath；空路径返回空串。"""
+    text = str(path or "")
+    if not text:
+        return ""
+    try:
+        return os.path.realpath(os.path.dirname(os.path.expanduser(text)))
+    except OSError:
+        return os.path.dirname(text)
+
+
+def normalize_session_dir(path: str) -> str:
+    """把 ``--session-dir`` / 环境变量里的目录收成 realpath。"""
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    try:
+        return os.path.realpath(os.path.expanduser(text))
+    except OSError:
+        return os.path.expanduser(text)
+
+
 def _session_id_from_path(path: str) -> str | None:
     """从 Pi JSONL 文件名取出 session id；认不出返回 None。"""
     match = _SESSION_BASENAME_RE.match(os.path.basename(path.replace("\\", "/")))
@@ -267,6 +314,18 @@ def _session_id_from_path(path: str) -> str | None:
 
 def _is_continue_cmdline(cmdline: str) -> bool:
     return bool(set(_cmdline_parts_before_prompt(cmdline)).intersection({"-c", "--continue"}))
+
+
+# 命令行里把进程钉在某条会话上的旗标：pickup 托管启动（--session-id / --session）
+# 与用户手动恢复（-c / --resume / --fork）都算；裸 `pi` 一个都没有。
+_SESSION_PIN_FLAGS = frozenset({
+    "--session", "--session-id", "--session-dir", "--continue", "-c", "--resume", "-r", "--fork",
+})
+
+
+def _cmdline_pins_session(cmdline: str) -> bool:
+    """该进程命令行是否钉住了会话（pickup 托管或手动恢复都会带）。"""
+    return bool(_SESSION_PIN_FLAGS.intersection(_cmdline_parts_before_prompt(cmdline)))
 
 
 def is_pi_tui_cmdline(cmdline: str) -> bool:
@@ -440,6 +499,21 @@ def _session_cwd(session: dict) -> str:
         return cwd
 
 
+def _forget_live_session(pid: int) -> None:
+    """彻底剔掉某进程的「正在写哪条会话」记忆（内存 + 磁盘两份）。
+
+    只 pop 内存表的话，下一轮 `_load_persisted_overrides` 会把磁盘上的坏记忆
+    灌回来，坏绑定每轮重演一次。
+    """
+    _pid_session_override.pop(pid, None)
+    _pid_override_started.pop(pid, None)
+    data = _read_live_map()
+    prefix = f"{pid}:"
+    if any(key.startswith(prefix) for key in data):
+        data = {key: value for key, value in data.items() if not key.startswith(prefix)}
+        _write_live_map(data)
+
+
 def _remember_live_session(pid: int, session_id: str, started: float | None = None) -> None:
     if not session_id:
         return
@@ -503,20 +577,60 @@ def reset_live_session_overrides() -> None:
     _prev_file_mtimes.clear()
 
 
+def _pending_owner_exists(
+    session: dict,
+    tui_procs: list[tuple[int, str]],
+    starts: dict[int, float],
+    created_ts: dict[str, float],
+    free_procs: set[int],
+    live_pids: set[int],
+) -> bool:
+    """这条未绑定会话是否还有更可能的属主：一个没被任何启动证据钉住的裸 TUI 进程。
+
+    真实事故：同目录先开了 pickup 托管的 Pi 会话 A（空闲），用户又在别的终端裸
+    `pi` 开了会话 B。B 的文件一出现，「空闲认领 / 相关性认领」就把 B 当成 A 进程
+    /new 的结果抢走，A 被摘掉 live、B 挂上 A 的 pid；随后 annotate 把 A 那格的
+    托管名贴到 B 头上，右栏 A 格的 Your prompts 小窗显示成 B 的提问。判定：一个
+    存活 TUI 进程若命令行不带任何会话旗标、也没有托管注入的环境 ident、还没被
+    记成在写别的会话，且早于该会话落盘启动，这条会话大概率是它自己的新会话。
+    """
+    created = created_ts.get(str(session.get("id") or ""), 0.0)
+    if created <= 0:
+        return False
+    cwd = _session_cwd(session)
+    for pid, proc_cwd in tui_procs:
+        if pid not in free_procs or pid in live_pids:
+            continue
+        started = starts.get(pid)
+        if started is None:
+            continue
+        if proc_cwd == cwd and started <= created + _CREATE_AFTER_START_SLACK:
+            return True
+    return False
+
+
 def _follow_switched_sessions(
     sessions: list[dict],
     tui_procs: list[tuple[int, str]],
     created_ts: dict[str, float],
     starts: dict[int, float],
-    bound_source: dict[int, str],
+    free_procs: set[int],
     rebind_to,
+    session_dir_pids: set[int] | None = None,
+    owned_dirs: set[str] | None = None,
 ) -> None:
     """启动 ident 绑上之后，把进程内 /new 换出来的新文件认领回来。
 
     appendFileSync 太短，单轮经常看不到打开的 jsonl；pickup 重启后内存表也是
     空的。用三层不靠猜「同目录最新一条」的证据：跨轮写字节对上刚更新的文件、
     仍在跑 CPU 且旧 ident 已明显更旧、空闲进程在 90 分钟窗口内一对一认领。
+
+    带 ``pickup-<ident>/`` 隔离目录的托管进程不走这里：它们的 /new 已经
+    由「该目录最新 jsonl」钉死，再认领会把别人默认目录里的新文件抢走。
     """
+    session_dir_pids = session_dir_pids or set()
+    owned_dirs = owned_dirs or set()
+    live_pids = {item.get("pid") for item in sessions if item.get("pid")}
     file_mtimes = {
         str(session.get("id") or ""): float(session.get("file_mtime") or session.get("mtime") or 0)
         for session in sessions
@@ -542,14 +656,21 @@ def _follow_switched_sessions(
         session = grown_sessions[0]
         current = next((item for item in sessions if item.get("pid") == pid), None)
         target_id = str(session.get("id") or "")
+        target_dir = session_file_dir(str(session.get("path") or ""))
         if (
-            current is not session
+            pid not in session_dir_pids
+            and not (target_dir and target_dir in owned_dirs)
+            and current is not session
             # 目标已绑在别的活进程上时不抢：写字节增长与文件 mtime 增长是两次
             # 独立采样，同目录多条会话同时活跃时可能错位对上（真实事故：同项目
             # 两条分屏，A 的文件增长被记到 B 进程名下）。
             and not (session.get("live") and session.get("pid") != pid)
             # 切换目标必须晚于进程启动才落盘，早于进程创建的会话不可能是 /new 结果。
             and _switch_target_possible(pid, target_id, created_ts, starts)
+            # 同目录还有裸 pi 进程早于目标落盘时，目标是它的新会话，不是本进程的 /new。
+            and not _pending_owner_exists(
+                session, tui_procs, starts, created_ts, free_procs, live_pids,
+            )
         ):
             rebind_to(pid, session)
 
@@ -579,7 +700,7 @@ def _follow_switched_sessions(
         ]
 
     for pid, cwd in tui_procs:
-        if pid not in cpu_active:
+        if pid not in cpu_active or pid in session_dir_pids:
             continue
         current = live_by_pid.get(pid)
         if current is None:
@@ -590,6 +711,13 @@ def _follow_switched_sessions(
         for session in unbound_in_cwd(cwd):
             created = created_ts.get(str(session.get("id") or ""), 0.0)
             if created > 0 and started and created + _CREATE_AFTER_START_SLACK < started:
+                continue
+            target_dir = session_file_dir(str(session.get("path") or ""))
+            if target_dir and target_dir in owned_dirs:
+                continue
+            if _pending_owner_exists(
+                session, tui_procs, starts, created_ts, free_procs, live_pids,
+            ):
                 continue
             last_ts = _session_last_ts(session)
             if last_ts > bound_last + _STALE_NEWER_SLACK:
@@ -610,10 +738,18 @@ def _follow_switched_sessions(
         created = created_ts.get(str(session.get("id") or ""), 0.0)
         if created <= 0:
             continue
+        target_dir = session_file_dir(str(session.get("path") or ""))
+        if target_dir and target_dir in owned_dirs:
+            continue
+        # 同目录有裸 pi 进程早于本会话落盘：它才是属主，不空闲认领。
+        if _pending_owner_exists(
+            session, tui_procs, starts, created_ts, free_procs, live_pids,
+        ):
+            continue
         cwd = _session_cwd(session)
         eligible: list[tuple[int, float]] = []
         for pid, proc_cwd in tui_procs:
-            if pid in claimed:
+            if pid in claimed or pid in session_dir_pids:
                 continue
             if proc_cwd != cwd:
                 continue
@@ -646,14 +782,18 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
     多个 TUI，禁止再按「cwd → 最新一条」猜测。
 
     绑定优先级（正向证据优先，禁止「同目录只留最新一条」）：
-    1. 进程正打开的 ``*.jsonl``（进程内 ``/new`` 后的当前文件）；
-    2. 本进程或磁盘记住的「该 pid 上次在写哪条」（pickup 重启后仍跟上）；
-    3. ``--session <path|id>``（原生恢复）；
-    4. ``--session-id <id>``（托管新建/分叉钉死的占位 ident）；
-    5. 环境变量 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID`` **精确**等于会话 id；
-    6. 仍绑在启动 ident 上时，用跨轮写字节/CPU 与空闲窗口把 /new 后的新文件认领回来；
-    7. ``-c`` / ``--continue`` → 该 cwd 尚未标记的最新一条；
-    8. 其余 TUI：同一 cwd 里，按「进程启动 ≤ 会话创建」一对一认领。
+    1. 进程正打开的 ``*.jsonl``（若该进程有 session-dir，打开的文件还须在该目录内）；
+    2. ``pickup-<ident>/`` 隔离目录（``PI_CODING_AGENT_SESSION_DIR`` /
+       ``--session-dir``）：该目录里 mtime 最新的一条（托管 /new 的属主，
+       不再靠空闲认领）。指向 Pi 默认 cwd 堆的 session-dir 不算隔离，以免
+       把 ``--session`` 恢复改绑到堆里别人的新文件；
+    3. 本进程或磁盘记住的「该 pid 上次在写哪条」（目标须晚于进程启动才落盘）；
+    4. ``--session <path|id>``（原生恢复）；
+    5. ``--session-id <id>``（托管新建/分叉钉死的占位 ident）；
+    6. 环境变量 ``PICKUP_SESSION_ID`` / ``SC_SESSION_ID`` **精确**等于会话 id；
+    7. 无 session-dir 的进程才用跨轮写字节/CPU 与空闲窗口跟 /new；
+    8. ``-c`` / ``--continue`` → 该 cwd 尚未标记的最新一条；
+    9. 其余裸 TUI：同一 cwd 里，按「进程启动 ≤ 会话创建」一对一认领。
     """
     processes = list(live_processes("pi"))
     live_pid_set = {pid for pid, _cwd in processes}
@@ -688,9 +828,39 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
     }
     _load_persisted_overrides([pid for pid, _cwd in tui_procs], starts, created_ts)
     open_paths = open_file_paths([pid for pid, _cwd in tui_procs])
+    envs = {pid: process_environ(pid) for pid, _cwd in tui_procs}
+
+    def _proc_session_dir(pid: int) -> str:
+        env = envs.get(pid) or {}
+        raw = env.get(PI_SESSION_DIR_ENV) or _flag_value(cmdlines.get(pid) or "", ("--session-dir",))
+        return normalize_session_dir(raw or "")
+
+    session_dirs = {
+        pid: directory
+        for pid, directory in ((_pid, _proc_session_dir(_pid)) for _pid, _cwd in tui_procs)
+        if directory
+    }
+    # 只有 pickup-<ident> 隔离目录是一对一属主；恢复旧文件时 --session-dir 可能
+    # 指向 Pi 默认 cwd 堆，那里挤着别人的 jsonl，不能按「目录最新一条」绑。
+    exclusive_dirs = {
+        pid: directory
+        for pid, directory in session_dirs.items()
+        if is_hosted_isolation_dir(directory)
+    }
+    owned_dirs = set(exclusive_dirs.values())
+    session_dir_pids = set(exclusive_dirs)
 
     bound_pids: set[int] = set()
-    bound_source: dict[int, str] = {}
+    # 没被任何启动证据钉住的裸 TUI 进程：它们的新会话只能靠 cwd 配对（规则 7/8）
+    # 绑定，是同目录新落盘会话的天然属主；相关性/空闲认领不得抢它们的目标。
+    free_procs = {
+        pid for pid, _cwd in tui_procs
+        if pid not in _pid_session_override
+        and pid not in session_dirs
+        and not _cmdline_pins_session(cmdlines.get(pid) or "")
+        and not (envs.get(pid) or {}).get("PICKUP_SESSION_ID")
+        and not (envs.get(pid) or {}).get("SC_SESSION_ID")
+    }
 
     def bind_by_id_or_path(pid: int, value: str) -> dict | None:
         text = str(value or "").strip()
@@ -726,8 +896,6 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
         if remember and session is not None:
             _remember_live_session(pid, str(session.get("id") or ""), starts.get(pid))
         bound_pids.add(pid)
-        if source:
-            bound_source[pid] = source
 
     def rebind_to(pid: int, session: dict) -> None:
         for item in sessions:
@@ -739,15 +907,47 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
         bind_and_stop(pid, session, remember=True, source="follow")
 
     def bind_open_jsonl(pid: int) -> bool:
+        directory = session_dirs.get(pid)
         for path in open_paths.get(pid) or []:
+            if directory:
+                opened_dir = session_file_dir(path)
+                if opened_dir != directory:
+                    continue
             session = bind_by_id_or_path(pid, path)
             if session is not None:
                 bind_and_stop(pid, session, remember=True, source="open")
                 return True
         return False
 
+    def bind_session_dir(pid: int) -> bool:
+        """托管隔离目录：这个进程只能认该目录里的 jsonl，live 钉最新一条。"""
+        directory = exclusive_dirs.get(pid)
+        if not directory:
+            return False
+        candidates = [
+            session for session in sessions
+            if session_file_dir(str(session.get("path") or "")) == directory
+            and not (session.get("live") and session.get("pid") not in (None, pid))
+        ]
+        bound_pids.add(pid)
+        if not candidates:
+            return True
+        session = max(
+            candidates,
+            key=lambda item: float(item.get("file_mtime") or item.get("mtime") or 0),
+        )
+        for item in sessions:
+            if item.get("pid") == pid and item is not session:
+                item["live"] = False
+                item["pid"] = None
+        session["live"] = True
+        session["pid"] = pid
+        return True
+
     def bind_exact(pid: int) -> None:
         if bind_open_jsonl(pid):
+            return
+        if bind_session_dir(pid):
             return
         override_id = _pid_session_override.get(pid)
         if override_id and override_id in by_id:
@@ -759,6 +959,20 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
                 session = by_id[override_id]
                 if session.get("live") and session.get("pid") != pid:
                     _pid_session_override.pop(pid, None)
+                elif (
+                    (_cmdline_pins_session(cmdlines.get(pid) or "")
+                     or (envs.get(pid) or {}).get("PICKUP_SESSION_ID")
+                     or (envs.get(pid) or {}).get("SC_SESSION_ID"))
+                    and _pending_owner_exists(
+                        session, tui_procs, starts, created_ts, free_procs,
+                        {item.get("pid") for item in sessions if item.get("pid")},
+                    )
+                ):
+                    # 本进程带着 --session / --session-id / 托管 env 硬证据，而记忆
+                    # 指向的会话另有更可能的属主（还在跑、未被任何启动证据钉住的
+                    # 裸 pi）：这份记忆多半是相关性/空闲认领抢来的，剔除（含磁盘）
+                    # 后走硬证据。
+                    _forget_live_session(pid)
                 else:
                     _mark_live(session, pid)
                     bind_and_stop(pid, session, source="override")
@@ -775,8 +989,7 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
                 _mark_live(session, pid)
             bind_and_stop(pid, session, source="session-id")
             return
-        env = process_environ(pid)
-        ident = env.get("PICKUP_SESSION_ID") or env.get("SC_SESSION_ID") or ""
+        ident = (envs.get(pid) or {}).get("PICKUP_SESSION_ID") or (envs.get(pid) or {}).get("SC_SESSION_ID") or ""
         if ident in by_id:
             session = by_id[ident]
             _mark_live(session, pid)
@@ -790,7 +1003,9 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
         bind_exact(pid)
 
     _follow_switched_sessions(
-        sessions, tui_procs, created_ts, starts, bound_source, rebind_to,
+        sessions, tui_procs, created_ts, starts, free_procs, rebind_to,
+        session_dir_pids=session_dir_pids,
+        owned_dirs=owned_dirs,
     )
 
     remaining = [(pid, cwd) for pid, cwd in tui_procs if pid not in bound_pids]

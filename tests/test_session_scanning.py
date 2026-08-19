@@ -3809,6 +3809,64 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertIsNone(store.find_session("pi:uuid-a").get("keepalive_name"))
         self.assertIsNone(store.find_session("pi:uuid-b").get("keepalive_name"))
 
+    def test_pi_session_dir_newcomers_claim_without_crossing(self) -> None:
+        """同 cwd 两个占位卡按 pickup-<ident> 目录各领各的真实卡，不再因两条新卡放弃。"""
+        from pickup.scan.pi import hosted_session_dir
+
+        pi_runtime = mock.Mock()
+        pi_runtime.id = "pi"
+        pi_runtime.display_name = "Pi"
+        pi_runtime.scan_signature.return_value = None
+        pi_runtime.scan_sessions.return_value = []
+        registry = pickup.RuntimeRegistry((pi_runtime,))
+        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
+            store = pickup.SessionStore(limit=20, registry=registry)
+            store.load()
+
+        first = store.register_hosted_session(
+            runtime_id="pi",
+            keepalive_name="pickup-pi-aaa11111",
+            title="Pi A",
+            cwd="/tmp/proj",
+            ident="aaa11111",
+        )
+        second = store.register_hosted_session(
+            runtime_id="pi",
+            keepalive_name="pickup-pi-bbb22222",
+            title="Pi B",
+            cwd="/tmp/proj",
+            ident="bbb22222",
+        )
+        path_a = os.path.join(
+            hosted_session_dir("/tmp/proj", "aaa11111"),
+            "2026-08-19T00-00-00-000Z_uuid-a.jsonl",
+        )
+        path_b = os.path.join(
+            hosted_session_dir("/tmp/proj", "bbb22222"),
+            "2026-08-19T00-00-00-000Z_uuid-b.jsonl",
+        )
+        real_a = {
+            "source": "pi", "id": "uuid-a", "short_id": "uuid-a", "mtime": 9.0,
+            "size_bytes": 1, "size_kb": 1, "native_title": "A", "fallback_title": "A",
+            "cwd": "/tmp/proj", "live": False, "path": path_a,
+        }
+        real_b = {
+            "source": "pi", "id": "uuid-b", "short_id": "uuid-b", "mtime": 8.0,
+            "size_bytes": 1, "size_kb": 1, "native_title": "B", "fallback_title": "B",
+            "cwd": "/tmp/proj", "live": False, "path": path_b,
+        }
+        pi_runtime.scan_sessions.return_value = [real_a, real_b]
+        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
+            pickup.liveness, "is_alive", return_value=True
+        ):
+            store.refresh()
+        self.assertIsNone(store.find_session(pickup.session_key(first)))
+        self.assertIsNone(store.find_session(pickup.session_key(second)))
+        claimed_a = store.find_session("pi:uuid-a")
+        claimed_b = store.find_session("pi:uuid-b")
+        self.assertEqual(claimed_a.get("keepalive_name"), "pickup-pi-aaa11111")
+        self.assertEqual(claimed_b.get("keepalive_name"), "pickup-pi-bbb22222")
+
     def test_pi_same_ident_after_session_id_does_not_duplicate(self) -> None:
         """`--session-id` 让落盘 id 与占位 ident 相同时，只留一张卡。"""
         pi_runtime = mock.Mock()
@@ -5664,6 +5722,254 @@ class PiScanTests(unittest.TestCase):
             by_id = {item["id"]: item for item in scan2}
             self.assertEqual(by_id["pi-first"]["pid"], 11, "A 不能被 22 抢走")
             self.assertEqual(by_id["pi-second"]["pid"], 22)
+
+    def test_follow_idle_claim_yields_to_free_process_in_same_cwd(self) -> None:
+        """同目录裸 pi 新开的会话不能被空闲的托管进程认领成自己的 /new 结果。
+
+        真实事故：pickup 托管的 Pi 会话 A 空闲者，用户在另一终端裸 `pi` 开了会
+        话 B；空闲认领把 B 抢给 A 的进程并写入持久记忆，随后 annotate 把 A 那
+        格的托管名贴到 B 头上，右栏 A 格的 Your prompts 小窗串台成 B 的提问。
+        """
+        with tempfile.TemporaryDirectory() as cache_dir, tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            self._write_pi_session(sessions_dir, "aaaa1111", cwd, "2023-11-14T22:15:00.000Z", "A 的提问")
+            self._write_pi_session(sessions_dir, "bbbb2222", cwd, "2023-11-14T22:40:00.000Z", "B 的提问")
+            hosted_start = datetime(2023, 11, 14, 22, 14, 50, tzinfo=timezone.utc).timestamp()
+            free_start = datetime(2023, 11, 14, 22, 39, 50, tzinfo=timezone.utc).timestamp()
+            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+                sessions = self._scan_with_live(
+                    str(sessions_dir),
+                    processes=[(11, cwd), (22, cwd)],
+                    cmdlines={11: "pi --approve --session-id aaaa1111", 22: "pi"},
+                    starts={11: hosted_start, 22: free_start},
+                )
+                by_id = {item["id"]: item for item in sessions}
+                self.assertTrue(by_id["aaaa1111"]["live"])
+                self.assertEqual(by_id["aaaa1111"]["pid"], 11)
+                self.assertTrue(by_id["bbbb2222"]["live"])
+                self.assertEqual(by_id["bbbb2222"]["pid"], 22)
+                self.assertNotIn(11, scan_pi._pid_session_override)
+
+    def test_follow_idle_claim_still_works_without_free_process(self) -> None:
+        """控制组：同目录没有裸进程时，/new 后的新会话仍要被空闲认领跟上。"""
+        with tempfile.TemporaryDirectory() as cache_dir, tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            self._write_pi_session(sessions_dir, "aaaa1111", cwd, "2023-11-14T22:15:00.000Z", "旧会话提问")
+            self._write_pi_session(sessions_dir, "01a0new1", cwd, "2023-11-14T22:40:00.000Z", "/new 后提问")
+            started = datetime(2023, 11, 14, 22, 14, 50, tzinfo=timezone.utc).timestamp()
+            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+                sessions = self._scan_with_live(
+                    str(sessions_dir),
+                    processes=[(11, cwd)],
+                    cmdlines={11: "pi --approve --session-id aaaa1111"},
+                    starts={11: started},
+                )
+                by_id = {item["id"]: item for item in sessions}
+                self.assertTrue(by_id["01a0new1"]["live"])
+                self.assertEqual(by_id["01a0new1"]["pid"], 11)
+                self.assertFalse(by_id["aaaa1111"]["live"])
+                self.assertEqual(scan_pi._pid_session_override.get(11), "01a0new1")
+
+    def test_poisoned_override_yields_to_free_owner_with_hard_evidence(self) -> None:
+        """被污染的 pid 记忆（含磁盘）在有硬启动证据且目标另有属主时必须让位。
+
+        否则升级修复后，已经写进 pi-live-pids.json 的坏记忆会每轮重演串台。
+        """
+        with tempfile.TemporaryDirectory() as cache_dir, tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            self._write_pi_session(sessions_dir, "aaaa1111", cwd, "2023-11-14T22:15:00.000Z", "A 的提问")
+            self._write_pi_session(sessions_dir, "bbbb2222", cwd, "2023-11-14T22:40:00.000Z", "B 的提问")
+            hosted_start = datetime(2023, 11, 14, 22, 14, 50, tzinfo=timezone.utc).timestamp()
+            free_start = datetime(2023, 11, 14, 22, 39, 50, tzinfo=timezone.utc).timestamp()
+            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+                scan_pi._write_live_map({scan_pi._persist_key(11, hosted_start): "bbbb2222"})
+                sessions = self._scan_with_live(
+                    str(sessions_dir),
+                    processes=[(11, cwd), (22, cwd)],
+                    cmdlines={11: "pi --approve --session-id aaaa1111", 22: "pi"},
+                    starts={11: hosted_start, 22: free_start},
+                )
+                by_id = {item["id"]: item for item in sessions}
+                self.assertEqual(by_id["aaaa1111"].get("pid"), 11, "硬证据应胜过被污染的记忆")
+                self.assertEqual(by_id["bbbb2222"].get("pid"), 22)
+                self.assertEqual(scan_pi._read_live_map(), {}, "磁盘上的坏记忆也要一并剔掉")
+
+    def test_encode_pi_session_cwd_and_isolation_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            encoded = scan_pi.encode_pi_session_cwd(td)
+            stripped = os.path.realpath(td).lstrip("/\\")
+            safe = stripped.replace("/", "-").replace("\\", "-").replace(":", "-")
+            self.assertEqual(encoded, f"--{safe}--")
+            hosted = scan_pi.hosted_session_dir(td, "abcd1234")
+            self.assertTrue(hosted.endswith(os.path.join(encoded, "pickup-abcd1234")))
+            self.assertTrue(scan_pi.is_hosted_isolation_dir(hosted))
+            self.assertFalse(scan_pi.is_hosted_isolation_dir(td))
+
+    def test_live_flags_session_dir_isolates_two_hosted_panes(self) -> None:
+        """同 cwd 两个托管 pane，cmdline 都是 pi，只靠隔离目录绑各自 jsonl。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            dir_a = sessions_dir / "pickup-aaaa1111"
+            dir_b = sessions_dir / "pickup-bbbb2222"
+            dir_a.mkdir(parents=True)
+            dir_b.mkdir()
+            self._write_pi_session(dir_a, "sess-a", cwd, "2023-11-14T22:15:00.000Z", "A 的提问")
+            self._write_pi_session(dir_b, "sess-b", cwd, "2023-11-14T22:16:00.000Z", "B 的提问")
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(11, cwd), (22, cwd)],
+                cmdlines={11: "pi", 22: "pi"},
+                environ={
+                    11: {scan_pi.PI_SESSION_DIR_ENV: os.path.realpath(str(dir_a))},
+                    22: {scan_pi.PI_SESSION_DIR_ENV: os.path.realpath(str(dir_b))},
+                },
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertEqual(by_id["sess-a"]["pid"], 11)
+            self.assertEqual(by_id["sess-b"]["pid"], 22)
+
+    def test_live_flags_session_dir_host_does_not_claim_default_dir_newcomer(self) -> None:
+        """隔离目录里的空闲托管进程不得把默认堆里裸 pi 的新文件认成自己的 /new。"""
+        with tempfile.TemporaryDirectory() as cache_dir, tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            dir_a = sessions_dir / "pickup-aaaa1111"
+            dir_a.mkdir(parents=True)
+            self._write_pi_session(dir_a, "aaaa1111", cwd, "2023-11-14T22:15:00.000Z", "A 的提问")
+            self._write_pi_session(sessions_dir, "bbbb2222", cwd, "2023-11-14T22:40:00.000Z", "B 的提问")
+            hosted_start = datetime(2023, 11, 14, 22, 14, 50, tzinfo=timezone.utc).timestamp()
+            free_start = datetime(2023, 11, 14, 22, 39, 50, tzinfo=timezone.utc).timestamp()
+            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+                sessions = self._scan_with_live(
+                    str(sessions_dir),
+                    processes=[(11, cwd), (22, cwd)],
+                    cmdlines={11: "pi", 22: "pi"},
+                    environ={
+                        11: {
+                            scan_pi.PI_SESSION_DIR_ENV: os.path.realpath(str(dir_a)),
+                            "PICKUP_SESSION_ID": "aaaa1111",
+                        },
+                    },
+                    starts={11: hosted_start, 22: free_start},
+                )
+                by_id = {item["id"]: item for item in sessions}
+                self.assertEqual(by_id["aaaa1111"]["pid"], 11)
+                self.assertEqual(by_id["bbbb2222"]["pid"], 22)
+
+    def test_live_flags_empty_session_dir_does_not_pair_default_dir_file(self) -> None:
+        """隔离目录还空时也要把进程钉住，禁止回落到 cwd 配对抢走默认堆新文件。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            dir_a = sessions_dir / "pickup-aaaa1111"
+            dir_a.mkdir(parents=True)
+            self._write_pi_session(sessions_dir, "bbbb2222", cwd, "2023-11-14T22:40:00.000Z", "B 的提问")
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(11, cwd)],
+                cmdlines={11: "pi"},
+                environ={11: {scan_pi.PI_SESSION_DIR_ENV: os.path.realpath(str(dir_a))}},
+            )
+            self.assertEqual(len(sessions), 1)
+            self.assertFalse(sessions[0]["live"])
+            self.assertIsNone(sessions[0]["pid"])
+
+    def test_live_flags_session_dir_follows_new_file_in_same_dir(self) -> None:
+        """同隔离目录 /new 后 live 跟最新 jsonl，旧 ident 标结束。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            hosted = sessions_dir / "pickup-aaaa1111"
+            hosted.mkdir(parents=True)
+            old = self._write_pi_session(
+                hosted, "aaaa1111", cwd, "2023-11-14T22:15:00.000Z", "旧提问",
+            )
+            new = self._write_pi_session(
+                hosted, "01a0new1", cwd, "2023-11-14T22:40:00.000Z", "/new 后提问",
+            )
+            os.utime(old, (1_000_000_000, 1_000_000_000))
+            os.utime(new, (1_000_000_100, 1_000_000_100))
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(11, cwd)],
+                cmdlines={11: "pi"},
+                environ={11: {scan_pi.PI_SESSION_DIR_ENV: os.path.realpath(str(hosted))}},
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertEqual(by_id["01a0new1"]["pid"], 11)
+            self.assertTrue(by_id["01a0new1"]["live"])
+            self.assertFalse(by_id["aaaa1111"]["live"])
+            self.assertIsNone(by_id["aaaa1111"]["pid"])
+
+    def test_live_flags_resume_keeps_session_file_in_its_dir(self) -> None:
+        """恢复 --session path 时 session-dir 是该文件所在目录，live 仍是这份。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            hosted = sessions_dir / "pickup-oldident"
+            hosted.mkdir(parents=True)
+            path = self._write_pi_session(
+                hosted, "uuid-resume", cwd, "2023-11-14T22:15:00.000Z", "恢复这份",
+            )
+            directory = os.path.realpath(str(hosted))
+            sessions = self._scan_with_live(
+                str(sessions_dir),
+                processes=[(11, cwd)],
+                cmdlines={11: f"pi --approve --session {path}"},
+                environ={11: {scan_pi.PI_SESSION_DIR_ENV: directory}},
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertEqual(by_id["uuid-resume"]["pid"], 11)
+
+    def test_live_flags_resume_in_default_dir_does_not_bind_newer_sibling(self) -> None:
+        """恢复默认堆里的旧文件时，不得因 --session-dir 指向该堆而改绑到更新的另一条。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd_dir = Path(td) / "proj"
+            cwd_dir.mkdir()
+            cwd = os.path.realpath(str(cwd_dir))
+            sessions_dir = Path(td) / "sessions"
+            sessions_dir.mkdir()
+            older = self._write_pi_session(
+                sessions_dir, "uuid-old", cwd, "2023-11-14T22:15:00.000Z", "要恢复的旧会话",
+            )
+            newer = self._write_pi_session(
+                sessions_dir, "uuid-new", cwd, "2023-11-14T22:40:00.000Z", "堆里更新的会话",
+            )
+            os.utime(older, (1_000_000_000, 1_000_000_000))
+            os.utime(newer, (1_000_000_100, 1_000_000_100))
+            dump = os.path.realpath(str(sessions_dir))
+            sessions = self._scan_with_live(
+                dump,
+                processes=[(11, cwd)],
+                cmdlines={11: f"pi --approve --session {older} --session-dir {dump}"},
+                environ={11: {scan_pi.PI_SESSION_DIR_ENV: dump}},
+            )
+            by_id = {item["id"]: item for item in sessions}
+            self.assertEqual(by_id["uuid-old"]["pid"], 11)
+            self.assertFalse(by_id["uuid-new"]["live"])
 
     def test_live_flags_skip_print_mode(self) -> None:
         with tempfile.TemporaryDirectory() as td:

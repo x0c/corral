@@ -149,14 +149,21 @@ class RuntimeTests(unittest.TestCase):
             )
             self.assertEqual(forked.argv, ("pi", "--approve", "--fork", str(history)))
             stamped = runtime_pi.bind_hosted_ident(forked, "abcd1234")
+            fork_dir = runtime_pi.scan_pi.hosted_session_dir(td, "abcd1234")
             self.assertEqual(
                 stamped.argv,
-                ("pi", "--approve", "--session-id", "abcd1234", "--fork", str(history)),
+                (
+                    "pi", "--approve", "--session-dir", fork_dir,
+                    "--session-id", "abcd1234", "--fork", str(history),
+                ),
             )
+            resumed_bound = runtime_pi.bind_hosted_ident(resumed, "abcd1234")
+            resume_dir = runtime_pi.scan_pi.session_file_dir(str(history))
             self.assertEqual(
-                runtime_pi.bind_hosted_ident(resumed, "abcd1234").argv,
-                resumed.argv,
+                resumed_bound.argv,
+                ("pi", "--approve", "--session-dir", resume_dir, "--session", str(history)),
             )
+            self.assertNotIn("--session-id", resumed_bound.argv)
             handoff = registry.build_launch_plan(
                 LaunchRequest(session, "claude", "交给 Claude", force_new=True)
             )

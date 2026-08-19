@@ -86,16 +86,29 @@ class WrapPlanTests(unittest.TestCase):
         self.assertNotIn("-c", wrapped.argv)
 
     def test_wrap_plan_pins_pi_session_id_for_new_sessions(self) -> None:
+        from pickup.scan.pi import PI_SESSION_DIR_ENV, hosted_session_dir, session_file_dir
+
         plan = LaunchPlan(("pi", "--approve"), "/tmp/proj")
 
         wrapped = keepalive.wrap_plan(plan, "pi", "abcd1234")
 
+        expected_dir = hosted_session_dir("/tmp/proj", "abcd1234")
         tail = wrapped.argv[wrapped.argv.index("--") + 1:]
-        self.assertEqual(tail, ("pi", "--approve", "--session-id", "abcd1234"))
+        self.assertEqual(
+            tail,
+            ("pi", "--approve", "--session-dir", expected_dir, "--session-id", "abcd1234"),
+        )
+        self.assertIn(f"{PI_SESSION_DIR_ENV}={expected_dir}", wrapped.argv)
         resume = LaunchPlan(("pi", "--approve", "--session", "/tmp/a.jsonl"), "/tmp/proj")
         resume_wrapped = keepalive.wrap_plan(resume, "pi", "abcd1234")
         resume_tail = resume_wrapped.argv[resume_wrapped.argv.index("--") + 1:]
-        self.assertEqual(resume_tail, resume.argv)
+        resume_dir = session_file_dir("/tmp/a.jsonl")
+        self.assertEqual(
+            resume_tail,
+            ("pi", "--approve", "--session-dir", resume_dir, "--session", "/tmp/a.jsonl"),
+        )
+        self.assertNotIn("--session-id", resume_tail)
+        self.assertIn(f"{PI_SESSION_DIR_ENV}={resume_dir}", resume_wrapped.argv)
 
     def test_session_name_truncates_long_ident(self) -> None:
         plan = LaunchPlan(("claude",), None)

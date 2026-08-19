@@ -147,14 +147,21 @@ class HostSessionTests(unittest.TestCase):
         self.assertEqual(argv[-2:], ["--resume", "abc"])
 
     def test_pi_new_session_argv_includes_session_id(self):
+        from pickup.scan.pi import PI_SESSION_DIR_ENV, hosted_session_dir
+
         plan = LaunchPlan(argv=("pi", "--approve"), cwd="/tmp/work")
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok) as run, \
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
             embed.host_session(plan, "pi", "abcd1234", 120, 40)
         argv = run.call_args.args[0]
+        expected_dir = hosted_session_dir("/tmp/work", "abcd1234")
         tail = argv[argv.index("--") + 1:]
-        self.assertEqual(tail, ["pi", "--approve", "--session-id", "abcd1234"])
+        self.assertEqual(
+            tail,
+            ["pi", "--approve", "--session-dir", expected_dir, "--session-id", "abcd1234"],
+        )
+        self.assertIn(f"{PI_SESSION_DIR_ENV}={expected_dir}", argv)
 
     def test_duplicate_session_falls_back_to_reuse(self):
         plan = LaunchPlan(argv=("claude",), cwd=None)

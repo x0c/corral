@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from pickup.models import ConversationMessage, Handoff, LaunchPlan, SessionInfo
 from pickup.runtime.base import BaseRuntime, usable_cwd
 from pickup.scan import pi as scan_pi
@@ -10,22 +12,64 @@ from pickup.scan import pi as scan_pi
 _SESSION_ID_BLOCKING = {"--session", "--continue", "-c", "--resume", "-r", "--no-session"}
 
 
-def bind_hosted_ident(plan: LaunchPlan, ident: str) -> LaunchPlan:
-    """把托管临时 ident 钉成 Pi 的 `--session-id`，让落盘会话 id 与占位卡相同。
-
-    Pi 新建时自己分配 uuidv7，占位卡却用 `keepalive.new_session_ident()` 的 8 位
-    ident。历史一落盘，扫描键从 `pi:<ident>` 变成 `pi:<uuid>`：分屏组还记着旧键，
-    真实卡出现在组外，侧边栏就变成「组里跑丢 + 组外重复」。`--session-id` 是 Pi
-    官方支持的精确 id（可与 `--fork` 并用，不能与 `--session` 并用）。
-    """
-    if not ident or not plan.argv or plan.argv[0] != "pi":
-        return plan
-    if "--session-id" in plan.argv or _SESSION_ID_BLOCKING.intersection(plan.argv):
-        return plan
+def _insert_after_approve(argv: tuple[str, ...], *items: str) -> tuple[str, ...]:
     insert_at = 1
-    if len(plan.argv) > 1 and plan.argv[1] in ("--approve", "-a"):
+    if len(argv) > 1 and argv[1] in ("--approve", "-a"):
         insert_at = 2
-    argv = (*plan.argv[:insert_at], "--session-id", ident, *plan.argv[insert_at:])
+    return (*argv[:insert_at], *items, *argv[insert_at:])
+
+
+def _argv_option(argv: tuple[str, ...] | list[str], flag: str) -> str | None:
+    args = list(argv)
+    try:
+        index = args.index(flag)
+    except ValueError:
+        return None
+    if index + 1 >= len(args) or str(args[index + 1]).startswith("-"):
+        return None
+    return str(args[index + 1])
+
+
+def resolve_hosted_session_dir(argv: tuple[str, ...], cwd: str | None, ident: str) -> str | None:
+    """托管 Pi 应写入的 session-dir：恢复用历史文件所在目录，新建用 pickup-<ident>。"""
+    if not argv or argv[0] != "pi" or "--no-session" in argv:
+        return None
+    existing = _argv_option(argv, "--session-dir")
+    if existing:
+        return os.path.expanduser(existing)
+    session_path = _argv_option(argv, "--session")
+    if session_path:
+        directory = scan_pi.session_file_dir(session_path)
+        if directory:
+            return directory
+        return os.path.dirname(os.path.abspath(os.path.expanduser(session_path))) or None
+    if ident and cwd:
+        return scan_pi.hosted_session_dir(cwd, ident)
+    return None
+
+
+def hosted_session_dir_from_plan(plan: LaunchPlan) -> str:
+    """从已绑定的启动计划取出 ``--session-dir``，供 tmux 注入环境变量。"""
+    return _argv_option(plan.argv, "--session-dir") or ""
+
+
+def bind_hosted_ident(plan: LaunchPlan, ident: str) -> LaunchPlan:
+    """钉托管 ident，并隔离这份进程能写出的 jsonl 目录。
+
+    ``--session-id`` 让首份落盘 id 与占位卡相同（与 ``--session`` 互斥，可与
+    ``--fork`` 并用）。``--session-dir`` 是 Pi 官方开关：新建/接力写到
+    ``pickup-<ident>/``，恢复则沿用历史文件所在目录，避免同 cwd 多 pane 挤进
+    默认堆后被空闲认领串台。
+    """
+    if not plan.argv or plan.argv[0] != "pi":
+        return plan
+    argv = plan.argv
+    if ident and "--session-id" not in argv and not _SESSION_ID_BLOCKING.intersection(argv):
+        argv = _insert_after_approve(argv, "--session-id", ident)
+    if "--session-dir" not in argv:
+        session_dir = resolve_hosted_session_dir(argv, plan.cwd, ident)
+        if session_dir:
+            argv = _insert_after_approve(argv, "--session-dir", session_dir)
     return LaunchPlan(argv, plan.cwd)
 
 

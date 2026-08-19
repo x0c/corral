@@ -110,10 +110,13 @@ def new_session_ident() -> str:
 
 def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
     """把原始启动计划包进 tmux `new-session -A`：会话不存在则创建，已存在则直接接入。"""
+    session_dir = ""
     if runtime_id == "pi":
-        from pickup.runtime.pi import bind_hosted_ident
+        from pickup.runtime.pi import bind_hosted_ident, hosted_session_dir_from_plan
+        from pickup.scan.pi import PI_SESSION_DIR_ENV
 
         plan = bind_hosted_ident(plan, ident)
+        session_dir = hosted_session_dir_from_plan(plan)
     name = _session_name(runtime_id, ident)
     argv = [*_BASE_ARGV, "-f", _ensure_config_file(), "new-session", "-A", "-s", name]
     if plan.cwd:
@@ -124,9 +127,10 @@ def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
         # 旧变量名继续注入，兼容改名前外部可能的读取方
         "-e", f"SC_RUNTIME={runtime_id}",
         "-e", f"SC_SESSION_ID={ident}",
-        "--",
-        *plan.argv,
     ]
+    if session_dir:
+        argv += ["-e", f"{PI_SESSION_DIR_ENV}={session_dir}"]
+    argv += ["--", *plan.argv]
     return LaunchPlan(argv=tuple(argv), cwd=None)
 
 
