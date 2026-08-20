@@ -303,15 +303,26 @@ class LayoutControllerMixin:
         self, keys: list[str],
     ) -> list[tuple[dict, str | None, object]]:
         entries: list[tuple[dict, str | None, object]] = []
+        seen_names: set[str] = set()
         for key in keys:
             session = self.store.find_session(key)
             if session is None:
                 continue
             kname = session.get("keepalive_name")
             if kname:
+                name = str(kname)
+                if name in seen_names:
+                    # 扫描串台后两条会话会挂同一个托管名。第二格若再抓同一份
+                    # tmux 画面，分屏就会看起来一模一样；改走这份会话自己的
+                    # 静态预览，实时画面只留给先占到这个名字的那一格。
+                    entries.append((session, None, self._detail_renderer_for(session)))
+                    if session.get("live"):
+                        self._warm_conversation(session, self._preview_gen)
+                    continue
+                seen_names.add(name)
                 # 托管会话的首帧只能是实时画面或空白运行时底色。预览渲染器一旦
                 # 跟着这条数据流进入右栏，就可能在抓帧重排的空档闪现。
-                entries.append((session, str(kname), None))
+                entries.append((session, name, None))
                 continue
             entries.append((session, None, self._detail_renderer_for(session)))
             if session.get("live"):

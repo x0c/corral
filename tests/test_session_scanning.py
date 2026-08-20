@@ -5353,6 +5353,83 @@ class PiScanTests(unittest.TestCase):
             self.assertEqual(sessions[0]["last_agent_msg"], "当前分支")
             self.assertEqual([item.text for item in scan_pi.load_conversation(str(session))], ["首个需求", "当前分支"])
 
+    def test_v1_session_without_parent_ids_still_lists_and_previews(self) -> None:
+        """Pi v1 jsonl 没有 id/parentId；不得当成空会话丢掉。"""
+        with tempfile.TemporaryDirectory() as td:
+            session = Path(td) / "2026-01-01T00-00-00-000Z_legacy.jsonl"
+            _write_jsonl(session, [
+                {
+                    "type": "session", "id": "legacy-v1", "version": 1,
+                    "timestamp": "2026-01-01T00:00:00Z", "cwd": td,
+                },
+                {
+                    "type": "message",
+                    "timestamp": "2026-01-01T00:00:02Z",
+                    "message": {"role": "user", "content": "旧版提问"},
+                },
+                {
+                    "type": "message",
+                    "timestamp": "2026-01-01T00:00:03Z",
+                    "message": {"role": "assistant", "content": [
+                        {"type": "text", "text": "旧版回复"},
+                    ]},
+                },
+            ])
+            with mock.patch.object(scan_pi, "SESSIONS_DIR", td):
+                sessions = scan_pi.scan_sessions(limit=10)
+            self.assertEqual([item["id"] for item in sessions], ["legacy-v1"])
+            self.assertEqual(sessions[0]["first_user_msg"], "旧版提问")
+            self.assertEqual(sessions[0]["last_agent_msg"], "旧版回复")
+            self.assertEqual(
+                [item.text for item in scan_pi.load_conversation(str(session))],
+                ["旧版提问", "旧版回复"],
+            )
+
+    def test_isolation_dir_sessions_do_not_starve_heap_history(self) -> None:
+        """托管隔离目录的新 jsonl 不得占满 limit，把默认堆里的历史挤掉。"""
+        with tempfile.TemporaryDirectory() as td:
+            heap_dir = Path(td) / "--proj--"
+            old_ids = [f"old{index}" for index in range(4)]
+            for index, session_id in enumerate(old_ids):
+                path = heap_dir / f"2026-01-0{index + 1}T00-00-00-000Z_{session_id}.jsonl"
+                _write_jsonl(path, [
+                    {
+                        "type": "session", "id": session_id,
+                        "timestamp": f"2026-01-0{index + 1}T00:00:00Z", "cwd": "/proj",
+                    },
+                    {
+                        "type": "message", "id": f"u-{session_id}", "parentId": None,
+                        "timestamp": f"2026-01-0{index + 1}T00:00:01Z",
+                        "message": {"role": "user", "content": [{"type": "text", "text": f"历史{index}"}]},
+                    },
+                ])
+                os.utime(path, (1_000_000 + index, 1_000_000 + index))
+            new_ids = [f"new{index}" for index in range(4)]
+            for index, session_id in enumerate(new_ids):
+                path = (
+                    heap_dir / f"pickup-aaa{index}"
+                    / f"2026-08-2{index}T00-00-00-000Z_{session_id}.jsonl"
+                )
+                _write_jsonl(path, [
+                    {
+                        "type": "session", "id": session_id,
+                        "timestamp": f"2026-08-2{index}T00:00:00Z", "cwd": "/proj",
+                    },
+                    {
+                        "type": "message", "id": f"u-{session_id}", "parentId": None,
+                        "timestamp": f"2026-08-2{index}T00:00:01Z",
+                        "message": {"role": "user", "content": [{"type": "text", "text": f"隔离{index}"}]},
+                    },
+                ])
+                os.utime(path, (2_000_000 + index, 2_000_000 + index))
+            with mock.patch.object(scan_pi, "SESSIONS_DIR", td):
+                sessions = scan_pi.scan_sessions(limit=3)
+            ids = {item["id"] for item in sessions}
+            self.assertTrue({"old1", "old2", "old3"}.issubset(ids), ids)
+            self.assertTrue({"new1", "new2", "new3"}.issubset(ids), ids)
+            self.assertNotIn("old0", ids)
+            self.assertNotIn("new0", ids)
+
     def test_live_flags_bind_session_flag_and_session_id(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cwd = str(Path(td) / "proj")

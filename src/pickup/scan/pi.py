@@ -78,12 +78,25 @@ def read_entries(path: str) -> list[dict]:
 
 
 def active_messages(entries: list[dict]) -> list[dict]:
-    """从当前叶子沿 parentId 回溯，避免预览已分叉出去的旧分支。"""
+    """从当前叶子沿 parentId 回溯，避免预览已分叉出去的旧分支。
+
+    Pi v1 jsonl 的 message 没有 ``id`` / ``parentId``（官方加载时才 migrate 成
+    v2 树）。只读扫描不能等那次迁移落盘：没有 id 的 message 按文件顺序平铺，
+    否则整段历史会被当成「没有活动分支」丢掉。
+    """
+    messages = [
+        item for item in entries
+        if item.get("type") == "message" and isinstance(item.get("message"), dict)
+    ]
+    if not messages:
+        return []
+    if any(not isinstance(item.get("id"), str) for item in messages):
+        return messages
     by_id = {str(item["id"]): item for item in entries if isinstance(item.get("id"), str)}
     parents = {str(item["parentId"]) for item in entries if isinstance(item.get("parentId"), str)}
     leaves = [item for item in by_id.values() if str(item.get("id")) not in parents]
     if not leaves:
-        return []
+        return messages
     leaf = max(leaves, key=lambda item: str(item.get("timestamp") or ""))
     path: list[dict] = []
     while isinstance(leaf, dict):
@@ -171,7 +184,15 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
                 continue
     results: list[SessionInfo] = []
     created_ts: dict[str, float] = {}
+    heap_kept = 0
+    isolated_kept = 0
     for _mtime, path in sorted(candidates, reverse=True):
+        isolated = is_hosted_isolation_dir(os.path.dirname(path))
+        if isolated:
+            if isolated_kept >= limit:
+                continue
+        elif heap_kept >= limit:
+            continue
         built = _build_session_info(path)
         if built is None:
             continue
@@ -181,7 +202,11 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
         if created > 0:
             created_ts[str(info["id"])] = created
         results.append(info)
-        if len(results) >= limit:
+        if isolated:
+            isolated_kept += 1
+        else:
+            heap_kept += 1
+        if heap_kept >= limit and isolated_kept >= limit:
             break
     _apply_live_flags(results, created_ts)
     return results

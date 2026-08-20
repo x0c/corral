@@ -448,5 +448,56 @@ class ReconcileSplitKeysTests(unittest.TestCase):
         self.assertEqual(host._area.reconciled.get("pickup-pi-ccc"), "pi:ccc")
 
 
+class DedupeKeepaliveNameTests(unittest.TestCase):
+    def test_store_keeps_hosted_owner_when_two_sessions_share_a_name(self) -> None:
+        from pickup.store import SessionStore
+
+        store = SessionStore(limit=5)
+        store.hosted = {"pi:aaa": "pickup-pi-aaa"}
+        owner = {"source": "pi", "id": "aaa", "keepalive_name": "pickup-pi-aaa"}
+        other = {"source": "pi", "id": "bbb", "keepalive_name": "pickup-pi-aaa"}
+        by_key = {"pi:aaa": owner, "pi:bbb": other}
+        store._dedupe_keepalive_names(by_key)
+        self.assertEqual(owner.get("keepalive_name"), "pickup-pi-aaa")
+        self.assertNotIn("keepalive_name", other)
+        self.assertNotIn("pi:bbb", store.hosted)
+
+    def test_duplicate_keepalive_only_embeds_once(self) -> None:
+        from pickup.ui.controllers.layout_controller import LayoutControllerMixin
+
+        owner = {
+            "source": "pi", "id": "aaa", "keepalive_name": "pickup-pi-aaa", "live": True,
+        }
+        other = {
+            "source": "pi", "id": "bbb", "keepalive_name": "pickup-pi-aaa", "live": True,
+        }
+
+        class _Store:
+            def find_session(self, key):
+                return {"pi:aaa": owner, "pi:bbb": other}.get(key)
+
+        class _Host(LayoutControllerMixin):
+            def __init__(self) -> None:
+                self.store = _Store()
+                self._preview_gen = 0
+                self.warmed: list[str] = []
+
+            def _detail_renderer_for(self, session):
+                return lambda: session["id"]
+
+            def _warm_conversation(self, session, _gen):
+                self.warmed.append(session["id"])
+
+        host = _Host()
+        entries = host._build_hosted_entries(["pi:aaa", "pi:bbb"])
+        self.assertEqual(entries[0][0]["id"], "aaa")
+        self.assertEqual(entries[0][1], "pickup-pi-aaa")
+        self.assertIsNone(entries[0][2])
+        self.assertEqual(entries[1][0]["id"], "bbb")
+        self.assertIsNone(entries[1][1])
+        self.assertIsNotNone(entries[1][2])
+        self.assertEqual(host.warmed, ["bbb"])
+
+
 if __name__ == "__main__":
     unittest.main()

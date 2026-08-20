@@ -128,9 +128,10 @@ def annotate(sessions) -> None:
     """给命中保活的会话就地加上 `keepalive_name` 字段；不生成新列表，不改变顺序。
 
     同一时刻一个进程只属于一个 pane：已经对上某个 pane 的 pid 不再参与后续
-    pane 的匹配（否则进程树嵌套时后通到的 pane 会把名字改写成别人的）；同
-    一 pane 有多个候选时优先「pid 恰好就是 pane 顶层进程」的精确命中，再考
-    虑祖先链。
+    pane 的匹配（否则进程树嵌套时后通到的 pane 会把名字改写成别人的）。同
+    一 pane 也只挂一条会话：扫描若把父进程和子进程绑到两张卡上，祖先链会让
+    两张卡都命中同一份 tmux 画面，分屏两格就会一模一样。同一 pane 有多个
+    候选时优先「pid 恰好就是 pane 顶层进程」的精确命中，再考虑祖先链。
     """
     candidates = {s.get("pid"): s for s in sessions if s.get("pid")}
     if not candidates:
@@ -141,20 +142,24 @@ def annotate(sessions) -> None:
         return
 
     ppid_map = _build_ppid_map()
-    assigned: set[int] = set()
+    assigned_pids: set[int] = set()
+    assigned_names: set[str] = set()
 
     def _claim(name: str, pane_pid: int, *, exact_only: bool) -> None:
+        if name in assigned_names:
+            return
         matches = [
             (pid, session)
             for pid, session in candidates.items()
-            if pid not in assigned
+            if pid not in assigned_pids
             and (pid == pane_pid or (not exact_only and _is_descendant(pid, pane_pid, ppid_map)))
         ]
         if not matches:
             return
         pid, session = matches[0]
         session["keepalive_name"] = name
-        assigned.add(pid)
+        assigned_pids.add(pid)
+        assigned_names.add(name)
 
     # 第一遍只认「pid 恰好就是 pane 顶层进程」的精确命中（进程树嵌套时，深祖
     # 先链命中的可能是外层 pane，精确命中才是进程真正性所在的那个 pane）。
@@ -167,7 +172,8 @@ def annotate(sessions) -> None:
         except ValueError:
             continue
         _claim(name, pane_pid, exact_only=True)
-    # 第二遍祖先链兜底；已对上 pane 的 pid 不再改绑，保证一个进程只挂一个名字。
+    # 第二遍祖先链兜底；已对上 pane 的 pid / 名字不再改绑：一个进程只挂一个
+    # 名字，一个 pane 也只挂一条会话。
     for row in tmux_sessions:
         if len(row) < 2:
             continue

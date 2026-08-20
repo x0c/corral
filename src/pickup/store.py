@@ -27,6 +27,18 @@ _TITLE_SPAWN_DEBOUNCE_SECONDS = 3.0
 _TITLE_STALE_SPAWN_SECONDS = 30.0
 
 
+def _session_matches_keepalive_ident(session: dict, name: str) -> bool:
+    """托管名末段 ident 是否对得上这条会话 id（占位 8 位或完整 id）。"""
+    ident = str(name or "").rsplit("-", 1)[-1]
+    sid = str(session.get("id") or "")
+    if not ident or not sid:
+        return False
+    if sid == ident or sid.startswith(ident):
+        return True
+    compact = sid.replace("-", "")
+    return compact.startswith(ident) or ident.startswith(compact[:8])
+
+
 class SessionStore:
     """持有所有已注册运行时的会话列表与标题缓存。
 
@@ -642,6 +654,7 @@ class SessionStore:
                 self.generating.add(key)
             else:
                 self.generating.discard(key)
+        self._dedupe_keepalive_names(by_key)
         self._projects = None
 
         return [
@@ -649,6 +662,47 @@ class SessionStore:
             for bucket in self.sessions.values()
             for session in bucket
         ]
+
+    def _dedupe_keepalive_names(self, by_key: dict[str, dict]) -> None:
+        """同一托管名只能挂一条会话，否则两个分屏会抓同一份 tmux 画面。
+
+        扫描串台或 ``annotate`` 把父/子进程贴到两张卡时，两条会话会带上同一个
+        ``keepalive_name``。布局层虽然拒绝按歧义名迁移分屏键，右栏仍会按这个
+        名字各开一格内嵌终端。调用方必须已持有 ``self.lock``。
+        """
+        owners: dict[str, list[str]] = {}
+        for key, session in by_key.items():
+            name = session.get("keepalive_name")
+            if not name:
+                continue
+            owners.setdefault(str(name), []).append(key)
+        for name, keys in owners.items():
+            if len(keys) < 2:
+                continue
+            winner = self._preferred_keepalive_owner(name, keys, by_key)
+            for key in keys:
+                if key == winner:
+                    continue
+                by_key[key].pop("keepalive_name", None)
+                if self.hosted.get(key) == name:
+                    self.hosted.pop(key, None)
+
+    def _preferred_keepalive_owner(
+        self, name: str, keys: list[str], by_key: dict[str, dict],
+    ) -> str:
+        hosted_hits = [key for key in keys if self.hosted.get(key) == name]
+        if len(hosted_hits) == 1:
+            return hosted_hits[0]
+        ident_hits = [
+            key for key in keys
+            if _session_matches_keepalive_ident(by_key[key], name)
+        ]
+        if len(ident_hits) == 1:
+            return ident_hits[0]
+        real = [key for key in keys if not by_key[key].get("provisional")]
+        if len(real) == 1:
+            return real[0]
+        return keys[0]
 
     def _migrate_provisional_attention(
         self, attention_migrations: list[tuple[str, str, str]],

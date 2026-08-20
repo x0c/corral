@@ -221,6 +221,23 @@ class AnnotateTests(unittest.TestCase):
 
         mocked.assert_not_called()
 
+    def test_one_pane_is_not_assigned_to_two_sessions(self) -> None:
+        """父进程和子进程被扫成两张卡时，祖先链不得把同一份 tmux 画面贴给两张卡。
+
+        真机：分屏两格内容一模一样——两条会话都挂了同一个 keepalive_name。
+        """
+        sessions = [{"id": "s-parent", "pid": 100}, {"id": "s-child", "pid": 102}]
+        list_sessions_out = "pickup-pi-aaaa1111|100\n"
+        ps_out = "  PID  PPID\n  100     1\n  101   100\n  102   101\n"
+
+        with mock.patch("pickup.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("pickup.liveness.subprocess.check_output",
+                         side_effect=_fake_check_output(list_sessions_out, ps_out)):
+            keepalive.annotate(sessions)
+
+        self.assertEqual(sessions[0]["keepalive_name"], "pickup-pi-aaaa1111")
+        self.assertNotIn("keepalive_name", sessions[1])
+
 
 class ReapIdleTests(unittest.TestCase):
     def test_kills_sessions_past_idle_threshold(self) -> None:
