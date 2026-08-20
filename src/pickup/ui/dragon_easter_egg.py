@@ -4,7 +4,7 @@
 
 透明实现：Textual overlay 无法可靠「透看到」同屏下层 widget，因此在触发时
 用 compositor 抓取一帧 pickup 画面；动画期间每行把龙像素叠在快照上（背景格
-不绘制），形成抠图效果。动画约 3 秒内底层 TUI 不再刷新，结束后恢复正常。
+不绘制），形成抠图效果。动画约 1.5 秒内底层 TUI 不再刷新，结束后恢复正常。
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ if TYPE_CHECKING:
     from textual.screen import Screen
 
 HORIZONTAL_CORRECTION = 1.25
-_TICK_INTERVAL = 0.05  # 秒，≈20fps
-_MAX_DURATION = 3.0  # 秒，龙从进入到离开屏幕的上限
+_TICK_INTERVAL = 0.1  # 秒，≈10fps。全屏快照合成每帧较重，20fps 会让 timer 落后、龙看起来飘得慢
+_MAX_DURATION = 1.5  # 秒，龙从进入到离开屏幕的上限（相对旧 3s 横移约两倍速）
 _UPPER_HALF = "▀"
 _LOWER_HALF = "▄"
 

@@ -125,12 +125,13 @@ class DragonGridTests(unittest.TestCase):
             bottom_y_max = max(bottom_y_max, bottom_y)
         self.assertGreater(bottom_y_max, grid.height * 3 // 4)
 
-    def test_animation_duration_capped_at_three_seconds(self) -> None:
+    def test_animation_duration_capped_at_1_5_seconds(self) -> None:
         grid = load_dragon_grid()
         for term_cols in (80, 120, 200, 300):
             width = dragon_render_width(30, grid)
             duration = dragon_animation_duration(term_cols=term_cols, render_width=width)
-            self.assertLessEqual(duration, 3.0)
+            self.assertLessEqual(duration, 1.5)
+            self.assertGreater(duration, 0.8)
             self.assertGreaterEqual(
                 dragon_pixels_per_tick(term_cols=term_cols, render_width=width),
                 1,

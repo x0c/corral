@@ -10,7 +10,7 @@
 
 > 以下文档在涉及对应领域的开发、评审或排查时先读取。领域知识库与验证细则见组件内说明。
 
-- [cli/AGENTS.md](cli/AGENTS.md)：改、评审或发布 pickup CLI 工具前必读（含领域知识库、截图验收，以及**排查「GitHub 持续发单测失败邮件 / 流水线作业排队十几小时 / macOS 作业挂死」「敲原命令没进托管」「本机与开发机版本对不上」「助手还在跑、侧栏却显示已结束」**的入口）。**用 pickup 导出的会话数据写周报 / 日报 / 工作总结，或排查「导出内容不够写总结」时，从这里进 `cli/docs/SKILL.md` 的「拿会话数据做总结 / 周报时的边界」节。** Remote：`ssh://git@10.10.10.2:2222/Max/pickup.git`
+- [cli/AGENTS.md](cli/AGENTS.md)：改、评审或发布 pickup CLI 工具前必读（含领域知识库、截图验收，以及**排查「GitHub 持续发单测失败邮件 / 流水线作业排队十几小时 / macOS 作业挂死」「敲原命令没进托管」「启动 Pi 出现 No project session found with id」「本机与开发机版本对不上」「助手还在跑、侧栏却显示已结束」**的入口）。**用 pickup 导出的会话数据写周报 / 日报 / 工作总结，或排查「导出内容不够写总结」时，从这里进 `cli/docs/SKILL.md` 的「拿会话数据做总结 / 周报时的边界」节。** Remote：`ssh://git@10.10.10.2:2222/Max/pickup.git`
 - [ios/AGENTS.md](ios/AGENTS.md)：改、评审、构建或真机验收手机客户端前必读（含签名推送、钥匙串共享、禁止 resize、模拟器/真机脚本）。界面视觉与两端状态色见 [ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md](ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md)。
 - [cli/docs/REMOTE_KNOWLEDGE_BASE.md](cli/docs/REMOTE_KNOWLEDGE_BASE.md)：改、评审或排查手机 ↔ 开发机远程接力协议、配对、推送密文、画面差分、**换网连不上 / 中继开关与默认地址、任意网络可达策略**前必读。个人中继部署拓扑见 agentsync 基础设施知识库 `pickup-relay.caozc.top` 节。
 
@@ -70,7 +70,7 @@
 - `docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md`：跨助手接力、高级操作、原生恢复、空白新建、启动计划与接力提示词；**改接力说明或排查「刚派生的 OpenCode/Pi 会话被标成已结束」时也读**（提问会进 `--prompt` / 位置参数，不要为了判活去改说明词）
 - `docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md`：新增、修改、评审或排查一种 AI 助手（含 Pi）的扫描、预览、恢复、接力、空白新建、命令托管或标题生成前必读，避免出现半接入状态；**给新助手设计「带初始提问启动」时也读**（先分清交互窗口还是打印模式，提问正文不能当命令行扫）
 - `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：事件日志、诊断、F12 截图观测、界面异常排查
-- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、会话关注状态与 Cursor 观察器、会话保活、直启、Agent 只读接口、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、要不要上 PyPI）、**CI 工作流（改 `.github/workflows/` / `scripts/ci-test.py` / 推送门禁与 `install-git-hooks.sh`、排查「GitHub 天天发单测失败邮件 / 作业排队十几小时 / macOS 作业挂死 / 本机漏跑 ruff / 多 Agent 脏树挡发版 / 推 tag 后要用 ls-remote 核对远端」前必读「CI 工作流」节）**、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）
+- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、会话关注状态与 Cursor 观察器、会话保活、直启、Agent 只读接口、**启动 Pi 每次都打出「Warning: No project session found with id …」（进「Pi 扫描与启动」节；无害，禁止为消警告拆掉 `--session-id`）**、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、要不要上 PyPI）、**CI 工作流（改 `.github/workflows/` / `scripts/ci-test.py` / 推送门禁与 `install-git-hooks.sh`、排查「GitHub 天天发单测失败邮件 / 作业排队十几小时 / macOS 作业挂死 / 本机漏跑 ruff / 多 Agent 脏树挡发版 / 推 tag 后要用 ls-remote 核对远端」前必读「CI 工作流」节）**、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）
 - `docs/REMOTE_KNOWLEDGE_BASE.md`：改、评审或排查 `pickup remote`、手机配对、推送密文、画面差分、禁止手机 resize、可选依赖 `[remote]`、**换网不可用 / 中继默认与 `--no-relay` 禁区、任意网络可达**前必读；客户端工程见 `../ios/AGENTS.md`；个人中继部署见 agentsync 基础设施知识库 `pickup-relay.caozc.top`
 - `docs/SKILL.md`：修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）；这是 Agent 侧唯一的使用文档，改命令行为必须同步这里。**用 `show`/`export` 的会话数据做周报、日报、工作总结、活动统计，或排查「导出的内容不够写总结 / 看不出到底改了什么」时，必读「拿会话数据做总结 / 周报时的边界」节**——那 5 条（对话不含工具调用与改码证据、标题只能当索引、`last_agent` 常为空、user 侧混着系统注入文本、没有成果字段）是不会改的产品边界，得在调用方侧校正
 - `PRIVACY.md`：修改、评审或排查历史文件读取、会话关注状态库、Cursor 用户级观察配置、缓存写入、标题生成、跨运行时接力和开源隐私边界
