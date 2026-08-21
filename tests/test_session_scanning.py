@@ -4249,7 +4249,7 @@ class HandoffDigestTests(unittest.TestCase):
         def __init__(self, messages) -> None:
             self._messages = messages
 
-        def scan_sessions(self, limit):
+        def scan_sessions(self, limit, keep_ids=None):
             return []
 
         def load_conversation(self, session):
@@ -5429,6 +5429,32 @@ class PiScanTests(unittest.TestCase):
             self.assertTrue({"new1", "new2", "new3"}.issubset(ids), ids)
             self.assertNotIn("old0", ids)
             self.assertNotIn("new0", ids)
+
+    def test_keep_ids_survive_scan_limit(self) -> None:
+        """置顶/分组记住的 Pi 会话即使落在 mtime 配额外也必须扫回来。"""
+        with tempfile.TemporaryDirectory() as td:
+            heap_dir = Path(td) / "--proj--"
+            for index, session_id in enumerate(["old0", "old1", "old2", "old3"]):
+                path = heap_dir / f"2026-01-0{index + 1}T00-00-00-000Z_{session_id}.jsonl"
+                _write_jsonl(path, [
+                    {
+                        "type": "session", "id": session_id,
+                        "timestamp": f"2026-01-0{index + 1}T00:00:00Z", "cwd": "/proj",
+                    },
+                    {
+                        "type": "message", "id": f"u-{session_id}", "parentId": None,
+                        "timestamp": f"2026-01-0{index + 1}T00:00:01Z",
+                        "message": {"role": "user", "content": [{"type": "text", "text": f"历史{index}"}]},
+                    },
+                ])
+                os.utime(path, (1_000_000 + index, 1_000_000 + index))
+            with mock.patch.object(scan_pi, "SESSIONS_DIR", td):
+                sessions = scan_pi.scan_sessions(limit=2, keep_ids={"old0"})
+            ids = [item["id"] for item in sessions]
+            self.assertIn("old0", ids)
+            self.assertIn("old3", ids)
+            self.assertIn("old2", ids)
+            self.assertNotIn("old1", ids)
 
     def test_live_flags_bind_session_flag_and_session_id(self) -> None:
         with tempfile.TemporaryDirectory() as td:

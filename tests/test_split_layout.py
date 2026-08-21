@@ -171,6 +171,18 @@ class SplitLayoutStoreTests(unittest.TestCase):
         self.assertNotIn("claude:short", store.pinned_session_keys)
         self.assertIn("claude:full", store.pinned_session_keys)
 
+    def test_grouping_keeps_independent_pin_and_promotes_group(self) -> None:
+        """进组不再毁掉独立置顶；组可见时提升为整组置顶，解散后原键还在。"""
+        store = split_layout.SplitLayoutStore()
+        store.toggle_session_pin("claude:a")
+        store.set_group("/p", ["claude:a", "codex:b"])
+        self.assertIn("claude:a", store.pinned_session_keys)
+        gid = store.get_group("claude:a").group_id
+        self.assertIn(gid, store.pinned_group_ids)
+        store.remove_session("codex:b")
+        self.assertIsNone(store.get_group("claude:a"))
+        self.assertIn("claude:a", store.pinned_session_keys)
+
     def test_sidebar_fingerprint_ignores_focus_only_changes(self) -> None:
         """焦点变化不该触发别的窗口重建列表（全量重建是秒级重活）。"""
         store = split_layout.SplitLayoutStore()
@@ -198,14 +210,25 @@ class SidebarLayoutDBTests(_TempLayoutDB):
         snapshot = db.toggle_session_pin("claude:a")
         self.assertIn("claude:a", snapshot.pinned_session_keys)
         snapshot = db.set_group("/p", ["claude:a", "codex:b"])
-        # 进了会话组就只能整组置顶，旧的单会话置顶不再生效。
-        self.assertNotIn("claude:a", snapshot.pinned_session_keys)
+        # 独立置顶键保留；组可见时同时整组置顶。
+        self.assertIn("claude:a", snapshot.pinned_session_keys)
         gid = snapshot.get_group("claude:a").group_id
-        db.toggle_group_pin(gid)
+        self.assertIn(gid, snapshot.pinned_group_ids)
         db.set_collapsed(gid, True)
         loaded = self.db().read()
         self.assertIn(gid, loaded.pinned_group_ids)
+        self.assertIn("claude:a", loaded.pinned_session_keys)
         self.assertTrue(loaded.groups[gid].collapsed)
+
+    def test_remembered_ids_include_pins_and_group_members(self) -> None:
+        """扫描 limit 豁免必须覆盖独立置顶和分组成员，不能只看当前可见列表。"""
+        db = self.db()
+        db.toggle_session_pin("pi:old0")
+        db.set_group("/p", ["claude:a", "pi:old1"])
+        split_layout.reset_default_layout_db()
+        remembered = split_layout.remembered_ids_by_runtime()
+        self.assertEqual(remembered["pi"], {"old0", "old1"})
+        self.assertEqual(remembered["claude"], {"a"})
 
     def test_interleaved_windows_do_not_clobber_each_other(self) -> None:
         """当初的真实缺陷：A 置顶 → B 建组 → A 再置顶，三样改动必须都在。

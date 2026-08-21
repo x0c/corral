@@ -81,7 +81,11 @@ class RuntimeRegistry:
                 return runtime.id
         return None
 
-    def scan_all(self, limit: int) -> dict[str, list[SessionInfo]]:
+    def scan_all(
+        self,
+        limit: int,
+        keep_ids_by_runtime: dict[str, set[str]] | None = None,
+    ) -> dict[str, list[SessionInfo]]:
         """并发扫描各运行时。各适配器只读各自独立的历史目录，互不干扰，
         用线程池重叠磁盘 I/O 等待时间即可，不需要多进程。
 
@@ -94,31 +98,36 @@ class RuntimeRegistry:
         `scan_sessions()`；没实现（返回 `None`）的运行时不受影响，行为与优化前
         完全一致。见 `BaseRuntime.scan_signature` 文档里为什么 Claude/Codex 故意
         不接入这个机制。
+
+        ``keep_ids_by_runtime`` 把侧边栏置顶/分组成员的会话 id 交给各扫描器，
+        避免 mtime 配额把仍被钉住的历史挤出列表。
         """
         runtimes = list(self)
+        keep_ids_by_runtime = keep_ids_by_runtime or {}
 
         def _copy_sessions(sessions: list[SessionInfo]) -> list[SessionInfo]:
             """缓存与调用方之间隔离可变会话字典，避免界面注入字段反向污染缓存。"""
             return [dict(session) for session in sessions]
 
         def _scan_one(runtime: BaseRuntime) -> list[SessionInfo]:
+            keep_ids = keep_ids_by_runtime.get(runtime.id)
             try:
                 signature = runtime.scan_signature()
             except Exception:
                 signature = None
             if signature is not None:
-                cache_key = (limit, signature)
+                cache_key = (limit, signature, tuple(sorted(keep_ids or ())))
                 if self._scan_cache.get(runtime.id) == cache_key:
                     return _copy_sessions(self._scan_cache_result.get(runtime.id, []))
             try:
-                result = runtime.scan_sessions(limit)
+                result = runtime.scan_sessions(limit, keep_ids=keep_ids)
             except Exception:
                 # 瞬时读取失败不能把一份空结果写进新签名、覆盖最后一次成功缓存；
                 # 有旧数据时继续展示旧快照，首次扫描就失败才降级为空列表。
                 cached = self._scan_cache_result.get(runtime.id)
                 return _copy_sessions(cached[:limit]) if cached is not None else []
             if signature is not None:
-                self._scan_cache[runtime.id] = (limit, signature)
+                self._scan_cache[runtime.id] = (limit, signature, tuple(sorted(keep_ids or ())))
                 # 保存一份、返回另一份：SessionStore/keepalive 会就地给调用方拿到的
                 # dict 注入 keepalive_name 等展示状态，不能让这些字段进入扫描缓存。
                 self._scan_cache_result[runtime.id] = _copy_sessions(result)

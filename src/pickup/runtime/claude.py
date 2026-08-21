@@ -38,7 +38,7 @@ class ClaudeRuntime(BaseRuntime):
             return self._AUTO_APPROVE_ARGS
         return ()
 
-    def scan_sessions(self, limit: int) -> list[SessionInfo]:
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
         return scan_claude.scan_sessions(limit=limit)
 
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:

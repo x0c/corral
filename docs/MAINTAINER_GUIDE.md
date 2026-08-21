@@ -79,7 +79,7 @@ helper，不要先照抄再改。这个模块只放无状态纯函数，运行�
 ## Pi 扫描与启动
 
 - Pi 历史位于 `~/.pi/agent/sessions/` 的 JSONL。首行必须是 session header；其后的 message entry 可以形成分叉树。v2+ 扫描和预览都只能从最新叶子沿 `parentId` 回溯后再正向展示，禁止平铺文件里全部 message，否则已经分叉出去的旧对话会重新出现在用户当前会话里。**v1 jsonl 的 message 没有 `id`/`parentId`**：按文件顺序读取，不能当成空会话丢掉（Pi 自己加载时才 migrate 成 v2，pickup 只读看不到那次落盘）。
-- **AI 易错点**【必须】`scan_sessions` 的 `limit` 对默认 cwd 堆和 `pickup-<ident>/` 隔离目录各算一份。v0.24.139 起托管写入隔离目录，mtime 最新；若仍按全树凑满 `limit` 就停，侧栏会只剩最近的 Pi、历史堆被挤掉（2026-08-20 工作电脑）。不要为了「返回条数严格等于 limit」把两套目录混在一个配额里。
+- **AI 易错点**【必须】`scan_sessions` 的 `limit` 对默认 cwd 堆和 `pickup-<ident>/` 隔离目录各算一份。v0.24.139 起托管写入隔离目录，mtime 最新；若仍按全树凑满 `limit` 就停，侧栏会只剩最近的 Pi、历史堆被挤掉（2026-08-20 工作电脑）。不要为了「返回条数严格等于 limit」把两套目录混在一个配额里。**置顶/分组成员经 `keep_ids` 再豁免**：侧边栏记忆里的会话即使 mtime 排在配额外也必须出现在列表；项目筛选救不回没扫到的卡。列表身份 = jsonl header `id`。回归：`test_isolation_dir_sessions_do_not_starve_heap_history`、`test_keep_ids_survive_scan_limit`。
 - Pi 的可展示正文只取 user/assistant 的 text 分片；thinking 与工具分片一律不进入标题摘录、状态判定和对话预览。最后可展示角色是 user 时为待回复，是 assistant 时为已完成；没有真实 user 文本的记录不进列表。
 - Pi 同运行时恢复用 `pi --approve --session <历史文件>`，复制会话用 `pi --approve --fork <历史文件>`；跨助手接力和空白新建同样带 `--approve`。接力只能读取原始 JSONL，不得修改原会话或把其内容重写成新文件。
 - **托管新建/分叉必须钉 `--session-id <ident>`，并注入官方 `--session-dir` + `PI_CODING_AGENT_SESSION_DIR`**（`embed.host_session` / `keepalive.wrap_plan` 经 `bind_hosted_ident` 注入；`--session-id` 与 `--session` 互斥，可与 `--fork` 并用）。`--session-id` 让落盘 id 与占位卡相同；`--session-dir` 把 jsonl 写到 `~/.pi/agent/sessions/--<cwd>--/pickup-<ident>/`，避免同 cwd 多 pane 挤进 Pi 默认堆后被空闲认领串台。原生恢复已有 `--session`，不要再加 `--session-id`，session-dir 用该历史文件所在目录。

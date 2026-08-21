@@ -169,9 +169,14 @@ def _build_session_info(path: str) -> tuple[SessionInfo, float] | None:
     return info, created
 
 
-def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:
+def scan_sessions(
+    cwd_filter: str | None = None,
+    limit: int = 50,
+    keep_ids: set[str] | None = None,
+) -> list[SessionInfo]:
     if not os.path.isdir(SESSIONS_DIR):
         return []
+    keep_ids = {str(item) for item in (keep_ids or ()) if item}
     candidates: list[tuple[float, str]] = []
     for root, _dirs, names in os.walk(SESSIONS_DIR):
         for name in names:
@@ -186,27 +191,37 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
     created_ts: dict[str, float] = {}
     heap_kept = 0
     isolated_kept = 0
+    seen_ids: set[str] = set()
     for _mtime, path in sorted(candidates, reverse=True):
         isolated = is_hosted_isolation_dir(os.path.dirname(path))
-        if isolated:
-            if isolated_kept >= limit:
-                continue
-        elif heap_kept >= limit:
+        over_quota = isolated_kept >= limit if isolated else heap_kept >= limit
+        file_id = _session_id_from_path(path) or ""
+        if over_quota and file_id not in keep_ids:
+            if heap_kept >= limit and isolated_kept >= limit and not keep_ids:
+                break
             continue
         built = _build_session_info(path)
         if built is None:
             continue
         info, created = built
+        session_id = str(info["id"])
+        if session_id in seen_ids:
+            continue
+        if over_quota and session_id not in keep_ids:
+            continue
         if cwd_filter and not info["cwd"].startswith(cwd_filter):
             continue
         if created > 0:
-            created_ts[str(info["id"])] = created
+            created_ts[session_id] = created
+        seen_ids.add(session_id)
         results.append(info)
+        if over_quota:
+            continue
         if isolated:
             isolated_kept += 1
         else:
             heap_kept += 1
-        if heap_kept >= limit and isolated_kept >= limit:
+        if heap_kept >= limit and isolated_kept >= limit and not keep_ids:
             break
     _apply_live_flags(results, created_ts)
     return results

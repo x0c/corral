@@ -19,7 +19,7 @@ class CodexRuntime(BaseRuntime):
     )
     auto_approve_args = ("--dangerously-bypass-approvals-and-sandbox",)
 
-    def scan_sessions(self, limit: int) -> list[SessionInfo]:
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
         return scan_codex.scan_sessions(limit=limit)
 
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:

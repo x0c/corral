@@ -1387,10 +1387,6 @@ class SessionListView(Vertical):
                 # 历史记录缺失或会话已被明确删除后，侧边栏不显示空壳组。
                 if len(all_members) < 2:
                     continue
-                for session in all_members:
-                    key = pickup.session_key(session)
-                    grouped_keys.add(key)
-                    group_for_key[key] = group
                 group_matches = bool(query and query in group.name.casefold())
                 members = (
                     all_members
@@ -1403,11 +1399,19 @@ class SessionListView(Vertical):
                 )
                 if query and not members:
                     continue
+                # 当前筛选下看得见的成员不足 2：解散为独立会话，好让单会话置顶
+                # 重新生效（跨项目组分屏 + 按项目名筛选时的真实事故）。
+                if len(members) < 2:
+                    continue
+                for session in members:
+                    key = pickup.session_key(session)
+                    grouped_keys.add(key)
+                    group_for_key[key] = group
                 group_row = _SidebarRow(
                     kind="group",
                     identity=f"{GROUP_ID_PREFIX}{group.group_id}",
                     group=group,
-                    member_sessions=all_members,
+                    member_sessions=members,
                     pinned=group.group_id in self.group_store.pinned_group_ids,
                 )
                 child_rows: list[_SidebarRow] = []

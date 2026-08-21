@@ -80,8 +80,8 @@ class PiRuntime(BaseRuntime):
     history_reading_hint = "Pi coding agent JSONL；首行 session header，沿 message entry 的 parentId 回溯当前活动分支。"
     auto_approve_args = ("--approve",)
 
-    def scan_sessions(self, limit: int) -> list[SessionInfo]:
-        return scan_pi.scan_sessions(limit=limit)
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
+        return scan_pi.scan_sessions(limit=limit, keep_ids=keep_ids)
 
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:
         return scan_pi.load_conversation(str(session.get("path") or ""))

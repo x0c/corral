@@ -43,7 +43,7 @@ class OpenCodeRuntime(BaseRuntime):
     def scan_signature(self) -> object | None:
         return scan_opencode.scan_signature()
 
-    def scan_sessions(self, limit: int) -> list[SessionInfo]:
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
         return scan_opencode.scan_sessions(limit=limit)
 
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:

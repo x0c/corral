@@ -28,6 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pickup.models import parse_session_key
 from pickup.projects import normalize_cwd
 from pickup.titles import CACHE_DIR
 
@@ -232,9 +233,6 @@ class SplitLayoutStore:
         )
         existing = self.groups.get(existing_gid) if existing_gid else None
         self._drop_sessions_from_other_groups(keys, keep_gid=existing_gid)
-        for key in keys:
-            # 进入会话组后只能整体置顶，旧的单会话置顶状态不再生效。
-            self.pinned_session_keys.pop(key, None)
         gid = existing_gid or str(uuid.uuid4())
         if existing is None:
             existing = SplitGroup(
@@ -255,6 +253,7 @@ class SplitLayoutStore:
         self.last_project = project_cwd
         self.last_focus_key = focus or ""
         self._reindex_group(gid)
+        self._promote_member_pins_to_group(gid)
 
     def set_focus(self, project_cwd: str, session_key: str) -> None:
         """只记录当前焦点，不新建、不复活、不重排会话组。
@@ -384,6 +383,24 @@ class SplitLayoutStore:
                 del self.session_to_group[key]
         for key in group.session_keys:
             self.session_to_group[key] = gid
+
+    def _promote_member_pins_to_group(self, gid: str) -> None:
+        """成员上的独立置顶在组可见时提升为整组置顶，但 sqlite 里仍保留原键。
+
+        进组不再毁掉独立置顶：组后来不足两名可见成员时（筛选、对端电脑的
+        另一成员没被扫到），独立置顶还能回到 pinned 区。组正在展示时用组
+        置顶，避免同一会话既在组里又单独钉一份。
+        """
+        group = self.groups.get(gid)
+        if group is None or gid in self.pinned_group_ids:
+            return
+        times = [
+            self.pinned_session_keys[key]
+            for key in group.session_keys
+            if key in self.pinned_session_keys
+        ]
+        if times:
+            self.pinned_group_ids[gid] = max(times)
 
 
 def sidebar_fingerprint(store: SplitLayoutStore) -> tuple:
@@ -845,10 +862,8 @@ def _normalize_store(store: SplitLayoutStore) -> None:
         for gid, pinned_at in store.pinned_group_ids.items()
         if gid in store.groups
     }
-    # 进了会话组就只能整组置顶，旧的单会话置顶不再生效。
-    for key in list(store.pinned_session_keys):
-        if key in store.session_to_group:
-            del store.pinned_session_keys[key]
+    for gid in store.groups:
+        store._promote_member_pins_to_group(gid)
 
 
 def _load_legacy_layout(path: str) -> SplitLayoutStore | None:
@@ -925,6 +940,21 @@ def default_layout_db() -> SidebarLayoutDB:
         if _DEFAULT_DB is None:
             _DEFAULT_DB = SidebarLayoutDB()
         return _DEFAULT_DB
+
+
+def remembered_ids_by_runtime() -> dict[str, set[str]]:
+    """置顶与分组成员的会话 id，按运行时分组，供扫描 limit 豁免。"""
+    store = default_layout_db().read()
+    out: dict[str, set[str]] = {}
+    keys = set(store.pinned_session_keys)
+    for group in store.groups.values():
+        keys.update(group.session_keys)
+    for key in keys:
+        runtime_id, session_id = parse_session_key(key)
+        if runtime_id == "unknown" or not session_id:
+            continue
+        out.setdefault(runtime_id, set()).add(session_id)
+    return out
 
 
 def reset_default_layout_db() -> None:

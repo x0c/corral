@@ -29,7 +29,7 @@ class FakeRuntime(BaseRuntime):
         self._sessions = sessions
         self._conversations = conversations
 
-    def scan_sessions(self, limit: int) -> list[dict]:
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[dict]:
         return self._sessions[:limit]
 
     def load_conversation(self, session: dict) -> list[ConversationMessage]:
@@ -56,7 +56,7 @@ class BrokenRuntime(BaseRuntime):
     executable = "true"
     history_reading_hint = "测试格式"
 
-    def scan_sessions(self, limit: int) -> list[dict]:
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[dict]:
         raise RuntimeError("模拟某条真实会话记录触发的未预料解析异常")
 
     def load_conversation(self, session: dict) -> list:

@@ -47,7 +47,7 @@ class FakeRuntime(BaseRuntime):
     executable = "gemini"
     history_reading_hint = "测试格式"
 
-    def scan_sessions(self, limit: int) -> list[dict]:
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[dict]:
         return []
 
     def load_conversation(self, session: dict) -> list:
@@ -71,7 +71,7 @@ class BrokenRuntime(BaseRuntime):
     executable = "broken"
     history_reading_hint = "测试格式"
 
-    def scan_sessions(self, limit: int) -> list[dict]:
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[dict]:
         raise RuntimeError("模拟某条真实会话记录触发的未预料解析异常")
 
     def load_conversation(self, session: dict) -> list:
@@ -106,7 +106,7 @@ class CachedRuntime(FakeRuntime):
     def scan_signature(self) -> object:
         return self.signature
 
-    def scan_sessions(self, limit: int) -> list[dict]:
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[dict]:
         self.calls += 1
         if self.fail:
             raise RuntimeError("模拟瞬时扫描失败")

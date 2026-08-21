@@ -34,7 +34,7 @@ classDiagram
       +display_name
       +executable
       +auto_approve_args
-      +scan_sessions(limit)
+      +scan_sessions(limit, keep_ids)
       +load_conversation(session)
       +build_resume_plan(session)
       +build_new_plan(handoff)
@@ -124,7 +124,7 @@ sequenceDiagram
 | 场景 | 入口 | 类/方法/配置 | 说明 |
 |---|---|---|---|
 | 定义新助手最小能力 | `runtime/base.py` | `BaseRuntime` | 必须实现扫描、预览、原生恢复、跨助手目标新建、空白新建 |
-| 新助手扫描历史 | `scan/<助手>.py` | `scan_sessions(limit)` | 返回按时间倒序的统一会话；单条异常不应使其他助手不可用 |
+| 新助手扫描历史 | `scan/<助手>.py` | `scan_sessions(limit, keep_ids=None)` | 返回按时间倒序的统一会话；单条异常不应使其他助手不可用；`keep_ids` 是侧栏置顶/分组成员，超 limit 也必须保留（目前仅 Pi 真正使用，签名仍须接住以免 registry 关键字参数炸） |
 | 新助手读取完整预览 | `scan/<助手>.py` | `load_conversation(...)` | 只保留真人用户与助手可读文本，按时间正序返回 |
 | 新助手的 share transcript | `transcript.py` | `_parse_<id>(session)` | 不走 `load_conversation`；按文件序发出 user/assistant/thinking/tool_call/tool_result；Cursor 的 tool-result blob 可能比对应 tool-call 更早出现在 rowid 序里，必须先攒再配对 |
 | 同助手恢复 | `runtime/<助手>.py` | `build_resume_plan(session)` | 使用新助手已验证的原生命令和会话 ID |

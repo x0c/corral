@@ -199,12 +199,23 @@ class SessionStore:
         except OSError:
             return 0.0
 
+    def _remembered_scan_ids(self) -> dict[str, set[str]]:
+        """侧边栏置顶/分组成员，扫描 limit 不得把它们挤出列表。"""
+        from pickup.split_layout import remembered_ids_by_runtime
+
+        try:
+            return remembered_ids_by_runtime()
+        except Exception:
+            return {}
+
     def load(self) -> None:
         from pickup import observe
 
         try:
             t0 = time.perf_counter()
-            scanned = self.registry.scan_all(self.limit)
+            scanned = self.registry.scan_all(
+                self.limit, keep_ids_by_runtime=self._remembered_scan_ids(),
+            )
             duration_ms = int((time.perf_counter() - t0) * 1000)
             session_count = sum(len(items) for items in scanned.values())
             observe.event("scan_all", duration_ms=duration_ms, session_count=session_count, reason="load")
@@ -249,7 +260,9 @@ class SessionStore:
 
         try:
             t0 = time.perf_counter()
-            scanned = self.registry.scan_all(self.limit)
+            scanned = self.registry.scan_all(
+                self.limit, keep_ids_by_runtime=self._remembered_scan_ids(),
+            )
             duration_ms = int((time.perf_counter() - t0) * 1000)
             session_count = sum(len(items) for items in scanned.values())
             observe.event("scan_all", duration_ms=duration_ms, session_count=session_count, reason="refresh")

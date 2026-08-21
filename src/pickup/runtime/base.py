@@ -63,8 +63,12 @@ class BaseRuntime(ABC):
         return None
 
     @abstractmethod
-    def scan_sessions(self, limit: int) -> list[SessionInfo]:
-        """扫描并返回该运行时的本地会话。"""
+    def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
+        """扫描并返回该运行时的本地会话。
+
+        ``keep_ids`` 是侧边栏记忆里置顶/分组成员的会话 id，即使超过 ``limit``
+        也必须保留在结果里，否则 pinned 区会凭空少卡。
+        """
 
     @abstractmethod
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:

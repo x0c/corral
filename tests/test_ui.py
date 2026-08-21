@@ -2373,6 +2373,51 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(list(list_view.query(SessionGroupCard))), 1)
             self.assertEqual(len(list(list_view.query(SessionCard))), 2)
 
+    async def test_project_filter_restores_independent_pin_when_group_collapses(self) -> None:
+        """跨项目分屏组在按项目名筛选后只剩一名成员时，独立置顶要回到 pinned 区。"""
+        sessions = [
+            {
+                "source": "claude", "id": "alpha", "short_id": "alpha",
+                "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "Alpha 会话",
+                "cwd": "/work/alpha", "cwd_display": "alpha", "live": False,
+            },
+            {
+                "source": "claude", "id": "beta", "short_id": "beta",
+                "mtime": time.time() - 10, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "Beta 会话",
+                "cwd": "/work/beta", "cwd_display": "beta", "live": False,
+            },
+            {
+                "source": "claude", "id": "other", "short_id": "other",
+                "mtime": time.time() - 20, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "Other 会话",
+                "cwd": "/work/other", "cwd_display": "other", "live": False,
+            },
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = PickupApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            alpha = pickup.session_key(sessions[0])
+            beta = pickup.session_key(sessions[1])
+            list_view.on_layout_change(lambda s: s.toggle_session_pin(alpha))
+            list_view.on_layout_change(
+                lambda s: s.set_group("/work/alpha", [alpha, beta], focus_key=alpha)
+            )
+            await list_view.rebuild()
+            identities = [row.identity for row in list_view._sidebar_rows() if row.kind != "separator"]
+            self.assertTrue(identities[0].startswith(GROUP_ID_PREFIX))
+            self.assertIn(alpha, identities)
+
+            list_view.nav.project_query = "alpha"
+            await list_view.rebuild()
+            rows = list_view._sidebar_rows()
+            pinned = [row for row in rows if row.kind == "session" and row.pinned]
+            self.assertEqual([row.identity for row in pinned], [alpha])
+            self.assertEqual(len(list(list_view.query(SessionGroupCard))), 0)
+
     async def test_refresh_keeps_ended_sessions_in_the_group(self) -> None:
         store, _ = _make_store()
         app = PickupApp(store, embed_ok=True)

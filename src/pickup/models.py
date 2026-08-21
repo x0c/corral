@@ -159,6 +159,14 @@ def session_key(session: SessionInfo | dict) -> str:
     return f"{runtime_id}:{session['id']}"
 
 
+def parse_session_key(key: str) -> tuple[str, str]:
+    """拆出 ``runtime:id``；没有冒号时 runtime 视为 unknown。"""
+    runtime_id, sep, session_id = str(key or "").partition(":")
+    if not sep:
+        return "unknown", runtime_id
+    return runtime_id, session_id
+
+
 @dataclass(frozen=True)
 class ConversationMessage:
     """从运行时私有历史中提取出的单条用户消息或最终答复。
