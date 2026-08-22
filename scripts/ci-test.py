@@ -39,7 +39,7 @@ import unittest
 
 # 单个作业的硬上限（秒）。取值要明显小于 CI 作业自身的 timeout-minutes，
 # 才能保证「先由我们打出栈」而不是「先被平台静默杀掉」。
-HANG_DUMP_SECONDS = int(os.environ.get("PICKUP_TEST_HANG_SECONDS", "1500"))
+HANG_DUMP_SECONDS = int(os.environ.get("CORRAL_TEST_HANG_SECONDS", "1500"))
 # 与 `.github/workflows/test.yml` 的 Lint 步保持同一版本，避免规则集漂移。
 RUFF_VERSION = "0.16.1"
 

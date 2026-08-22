@@ -3,13 +3,13 @@ requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [project]
-name = "pickup"
-version = "0.24.142"
-description = "Terminal session picker and handoff tool for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi."
+name = "corral"
+version = "0.24.143"
+description = "Corral: terminal session handoff for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "pickup contributors" }]
+authors = [{ name = "Corral contributors" }]
 keywords = [
   "claude-code",
   "codex-cli",
@@ -38,7 +38,7 @@ classifiers = [
 ]
 dependencies = ["textual>=8.0"]
 
-# 手机端接力（pickup remote）需要的额外组件。刻意不进主依赖：只在终端里用 pickup
+# 手机端接力（corral remote）需要的额外组件。刻意不进主依赖：只在终端里用 corral
 # 的人不该为一个用不上的功能付出安装体积和导入时间。
 [project.optional-dependencies]
 remote = [
@@ -48,17 +48,17 @@ remote = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/x0c/pickup"
-Issues = "https://github.com/x0c/pickup/issues"
+Homepage = "https://github.com/x0c/corral"
+Issues = "https://github.com/x0c/corral/issues"
 
 [project.scripts]
-pickup = "pickup.bootstrap:main"
+corral = "corral.bootstrap:main"
 
 [tool.maturin]
 python-source = "src"
-module-name = "pickup._native"
+module-name = "corral._native"
 features = ["pyo3/abi3-py310"]
-include = ["pickup/ui/assets/*.json"]
+include = ["corral/ui/assets/*.json"]
 
 [tool.ruff]
 line-length = 120
@@ -70,6 +70,6 @@ target-version = "py310"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
-# 测试夹具要求 import 前先设环境变量 / 隔离目录（如 PICKUP_CACHE_DIR、
+# 测试夹具要求 import 前先设环境变量 / 隔离目录（如 CORRAL_CACHE_DIR、
 # sidebar 状态目录），模块级 import 不放在顶部是刻意为之，不是疏忽。
 "tests/*.py" = ["E402"]

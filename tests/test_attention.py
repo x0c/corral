@@ -7,7 +7,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from pickup.attention import AttentionEvidence, AttentionStore
+from corral.attention import AttentionEvidence, AttentionStore
 
 
 def _session(runtime: str, session_id: str, *, live: bool = False) -> dict:

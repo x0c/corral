@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup.attention_signals import _DB_TAIL_ROWS, inspect_session
+from corral.attention_signals import _DB_TAIL_ROWS, inspect_session
 
 
 def _write_jsonl(path: Path, entries: list[dict]) -> None:
@@ -511,7 +511,7 @@ class CursorAttentionSignalTests(unittest.TestCase):
         connection.close()
 
     def test_default_non_live_cursor_does_not_open_database(self) -> None:
-        with mock.patch("pickup.attention_signals.sqlite3.connect") as connect:
+        with mock.patch("corral.attention_signals.sqlite3.connect") as connect:
             evidence = inspect_session(
                 {"source": "cursor", "path": "/无需存在/store.db", "live": False}
             )

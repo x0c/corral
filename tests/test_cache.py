@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup.cache import PerformanceCache, history_signature
-from pickup.models import ConversationMessage
+from corral.cache import PerformanceCache, history_signature
+from corral.models import ConversationMessage
 
 
 class PerformanceCacheTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class PerformanceCacheTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / "cache.sqlite3"
         self.cache = PerformanceCache(self.path)
-        self.env = mock.patch.dict(os.environ, {"PICKUP_CACHE": "1"}, clear=False)
+        self.env = mock.patch.dict(os.environ, {"CORRAL_CACHE": "1"}, clear=False)
         self.env.start()
 
     def tearDown(self):
@@ -89,9 +89,9 @@ class PerformanceCacheTests(unittest.TestCase):
 class CacheCliTests(unittest.TestCase):
     def _run(self, *args: str):
         env = dict(os.environ)
-        env["PICKUP_CACHE_DIR"] = self.temp.name
+        env["CORRAL_CACHE_DIR"] = self.temp.name
         return subprocess.run(
-            [sys.executable, "-m", "pickup", "cache", *args],
+            [sys.executable, "-m", "corral", "cache", *args],
             text=True,
             capture_output=True,
             env=env,

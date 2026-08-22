@@ -11,10 +11,10 @@ import time
 import unittest
 from unittest import mock
 
-import pickup
-from pickup import i18n, updater
-from pickup.ui.app import PickupApp
-from pickup.ui.update_toast import UpdateToast
+import corral
+from corral import i18n, updater
+from corral.ui.app import CorralApp
+from corral.ui.update_toast import UpdateToast
 
 i18n.set_lang("en")
 
@@ -33,9 +33,9 @@ def _make_store():
     claude.display_name = "Claude"
     claude.is_available.return_value = True
     claude.scan_sessions.return_value = sessions
-    registry = pickup.RuntimeRegistry((claude,))
-    with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-        store = pickup.SessionStore(limit=20, registry=registry)
+    registry = corral.RuntimeRegistry((claude,))
+    with mock.patch.object(corral.titles, "load_cache", return_value={}):
+        store = corral.SessionStore(limit=20, registry=registry)
         store.load()
     return store
 
@@ -51,7 +51,7 @@ async def _wait_until(predicate, *, tries: int = 100, interval: float = 0.02) ->
 class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_updatable_channel_with_newer_version_reveals_toast(self) -> None:
         store = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         with mock.patch.object(updater, "detect_channel", return_value="pip"), \
              mock.patch.object(updater, "is_updatable", return_value=True), \
              mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
@@ -64,7 +64,7 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dev_channel_never_shows_toast(self) -> None:
         store = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         with mock.patch.object(updater, "detect_channel", return_value="dev"), \
              mock.patch.object(updater, "fetch_latest") as fetch:
             async with app.run_test(size=(100, 30)) as pilot:
@@ -76,7 +76,7 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_not_newer_version_never_shows_toast(self) -> None:
         store = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         with mock.patch.object(updater, "detect_channel", return_value="pip"), \
              mock.patch.object(updater, "is_updatable", return_value=True), \
              mock.patch.object(updater, "fetch_latest", return_value="0.1.0"), \
@@ -89,7 +89,7 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_click_update_exits_before_installation_starts(self) -> None:
         store = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         with mock.patch.object(updater, "detect_channel", return_value="pip"), \
              mock.patch.object(updater, "is_updatable", return_value=True), \
              mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \
@@ -107,7 +107,7 @@ class UpdateCheckWorkerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dismiss_calls_mark_dismissed_and_hides_toast(self) -> None:
         store = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         with mock.patch.object(updater, "detect_channel", return_value="pip"), \
              mock.patch.object(updater, "is_updatable", return_value=True), \
              mock.patch.object(updater, "fetch_latest", return_value="9.9.9"), \

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 一键安装 pickup（不使用 Homebrew 的场景，例如 Linux 或未装 Homebrew 的 macOS）。
-# 用法：curl -fsSL https://raw.githubusercontent.com/x0c/pickup/main/install.sh | bash
+# 一键安装 corral（不使用 Homebrew 的场景，例如 Linux 或未装 Homebrew 的 macOS）。
+# 用法：curl -fsSL https://raw.githubusercontent.com/x0c/corral/main/install.sh | bash
 set -euo pipefail
 
-REPO="${PICKUP_REPO:-x0c/pickup}"
+REPO="${CORRAL_REPO:-x0c/corral}"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "错误：未找到 python3，请先安装 Python 3.10 及以上版本" >&2
@@ -24,20 +24,20 @@ fi
 
 # tmux 是硬依赖（会话托管、内嵌面板、断线保活全部建立在 tmux 之上），装之前先拦住
 if ! command -v tmux >/dev/null 2>&1; then
-  echo "错误：pickup 需要 tmux 才能运行，请先安装" >&2
+  echo "错误：corral 需要 tmux 才能运行，请先安装" >&2
   echo "  macOS:          brew install tmux" >&2
   echo "  Debian/Ubuntu:  sudo apt install tmux" >&2
   echo "  Fedora:         sudo dnf install tmux" >&2
   exit 1
 fi
 
-VERSION="${PICKUP_VERSION:-}"
+VERSION="${CORRAL_VERSION:-}"
 if [ -z "$VERSION" ]; then
   VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
 fi
 
-echo "正在安装 pickup ${VERSION} ..."
+echo "正在安装 corral ${VERSION} ..."
 VERSION_NUMBER="${VERSION#v}"
 MACHINE=$(uname -m)
 case "$MACHINE" in
@@ -49,7 +49,7 @@ esac
 SYSTEM=$(uname -s)
 case "$SYSTEM" in
   Darwin)
-    WHEEL_PATTERN="^pickup-${VERSION_NUMBER}-cp310-abi3-macosx_.*_universal2\\.whl$"
+    WHEEL_PATTERN="^corral-${VERSION_NUMBER}-cp310-abi3-macosx_.*_universal2\\.whl$"
     ;;
   Linux)
     if ldd --version 2>&1 | grep -qi musl; then
@@ -60,18 +60,18 @@ case "$SYSTEM" in
     if [ "$PLATFORM" = "manylinux_2_17" ]; then
       # auditwheel 同时附加新旧兼容标签，例如
       # manylinux_2_17_x86_64.manylinux2014_x86_64。
-      WHEEL_PATTERN="^pickup-${VERSION_NUMBER}-cp310-abi3-${PLATFORM}_${ARCH}(\\.manylinux2014_${ARCH})?\\.whl$"
+      WHEEL_PATTERN="^corral-${VERSION_NUMBER}-cp310-abi3-${PLATFORM}_${ARCH}(\\.manylinux2014_${ARCH})?\\.whl$"
     else
-      WHEEL_PATTERN="^pickup-${VERSION_NUMBER}-cp310-abi3-${PLATFORM}_${ARCH}\\.whl$"
+      WHEEL_PATTERN="^corral-${VERSION_NUMBER}-cp310-abi3-${PLATFORM}_${ARCH}\\.whl$"
     fi
     ;;
   *)
-    echo "错误：pickup 当前只支持 macOS 与 Linux" >&2
+    echo "错误：corral 当前只支持 macOS 与 Linux" >&2
     exit 1
     ;;
 esac
 
-WHEEL_URL="${PICKUP_WHEEL_URL:-}"
+WHEEL_URL="${CORRAL_WHEEL_URL:-}"
 if [ -z "$WHEEL_URL" ]; then
   WHEEL_URL=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/${VERSION}" \
     | WHEEL_PATTERN="$WHEEL_PATTERN" python3 -c '
@@ -92,13 +92,13 @@ else
 fi
 
 # 安装完成后立即补齐交互终端拦截。没有已安装的 Agent、未知 shell 或配置不可写时不影响安装成功；
-# 用户以后首次在交互终端运行 pickup 时还会再自动尝试一次。
-python3 -m pickup shim install >/dev/null 2>&1 || true
+# 用户以后首次在交互终端运行 corral 时还会再自动尝试一次。
+python3 -m corral shim install >/dev/null 2>&1 || true
 
 SCRIPTS_DIR="$(python3 -m site --user-base)/bin"
 case ":${PATH}:" in
   *":${SCRIPTS_DIR}:"*)
-    echo "安装完成，运行 pickup 开始使用。"
+    echo "安装完成，运行 corral 开始使用。"
     ;;
   *)
     echo ""

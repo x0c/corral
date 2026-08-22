@@ -16,7 +16,7 @@
 壳里另写绕过路径。
 
 真机运行中的 TUI 请用 **F12**（`MainScreen.action_save_screenshot`）导出到
-`~/.cache/pickup/screenshots/`；勿把含真实对话的截图提交进仓库。
+`~/.cache/corral/screenshots/`；勿把含真实对话的截图提交进仓库。
 """
 
 from __future__ import annotations
@@ -31,25 +31,25 @@ from pathlib import Path
 from unittest import mock
 
 # Textual 在 App.__init__ 里若见到 NO_COLOR 会启用 Monochrome；必须在创建
-# PickupApp 之前清掉。setdefault 不覆盖调用方已显式设置的真彩 / 语言。
+# CorralApp 之前清掉。setdefault 不覆盖调用方已显式设置的真彩 / 语言。
 os.environ.pop("NO_COLOR", None)
 os.environ.setdefault("COLORTERM", "truecolor")
-os.environ.setdefault("PICKUP_LANG", "en")
-# 侧边栏记忆（会话组/置顶/显隐）只读临时库，绝不读写机主真实 ~/.cache/pickup。
-# 库路径认 PICKUP_CACHE_DIR > XDG > ~/.cache，且设了该变量时旧 JSON 迁移也只在
+os.environ.setdefault("CORRAL_LANG", "en")
+# 侧边栏记忆（会话组/置顶/显隐）只读临时库，绝不读写机主真实 ~/.cache/corral。
+# 库路径认 CORRAL_CACHE_DIR > XDG > ~/.cache，且设了该变量时旧 JSON 迁移也只在
 # 这个目录里找，正好顺带隔离。
-_CAPTURE_CACHE_DIR = tempfile.mkdtemp(prefix="pickup-capture-cache-")
-os.environ["PICKUP_CACHE_DIR"] = _CAPTURE_CACHE_DIR
+_CAPTURE_CACHE_DIR = tempfile.mkdtemp(prefix="corral-capture-cache-")
+os.environ["CORRAL_CACHE_DIR"] = _CAPTURE_CACHE_DIR
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
-import pickup
-from pickup.models import ConversationMessage
-from pickup import session_key
-from pickup.split_layout import _FRUIT_EMOJI
-from pickup.ui.app import PickupApp
+import corral
+from corral.models import ConversationMessage
+from corral import session_key
+from corral.split_layout import _FRUIT_EMOJI
+from corral.ui.app import CorralApp
 
 
 OUT_DIR = Path(__file__).resolve().parent
@@ -75,7 +75,7 @@ _EMOJI_FONT = "'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-s
 _FRUIT_EMOJI_GLYPHS = "".join(sorted(set(_FRUIT_EMOJI.values())))
 
 # 演示用外层终端底色：对齐左栏列表空区实测色 (#1e242b)，避免右栏垫成
-# pickup-dark $background (#0d1117) 后出现「半边深半边浅」的割裂感。
+# corral-dark $background (#0d1117) 后出现「半边深半边浅」的割裂感。
 # osc_report=None 时 EmbedPane 不设 styles.background，空白格会透成纯黑。
 _DEMO_BG_HEX = "#1e242b"
 _DEMO_OSC_REPORT = b"\x1b]11;rgb:1e1e/2424/2b2b\x07"
@@ -118,8 +118,8 @@ def _demo_store():
             "size_kb": 2.0,
             "native_title": "Add Cursor runtime",
             "fallback_title": "Add Cursor runtime",
-            "cwd": "/Users/demo/Codes/pickup",
-            "cwd_display": "~/Codes/pickup",
+            "cwd": "/Users/demo/Codes/corral",
+            "cwd_display": "~/Codes/corral",
             "live": True,
             "path": "/tmp/demo-cursor-1",
             "first_user_msg": "帮我加上 cursor-cli 支持",
@@ -135,8 +135,8 @@ def _demo_store():
             "size_kb": 1.0,
             "native_title": "Tighten handoff prompt",
             "fallback_title": "Tighten handoff prompt",
-            "cwd": "/Users/demo/Codes/pickup",
-            "cwd_display": "~/Codes/pickup",
+            "cwd": "/Users/demo/Codes/corral",
+            "cwd_display": "~/Codes/corral",
             "live": False,
             "path": "/tmp/demo-codex-1.jsonl",
             "first_user_msg": "接力提示词太散",
@@ -187,8 +187,8 @@ def _demo_store():
     }
 
     from unittest import mock
-    from pickup.attention import AttentionState
-    from pickup.runtime import RuntimeRegistry
+    from corral.attention import AttentionState
+    from corral.runtime import RuntimeRegistry
 
     runtimes = []
     for rid, name in (("claude", "Claude"), ("cursor", "Cursor"), ("codex", "Codex")):
@@ -208,8 +208,8 @@ def _demo_store():
     # 截图夹具不得读写真实用户的关注状态库；用内存 mock 固定三种演示状态。
     attention_store = mock.Mock()
     attention_store.reconcile.return_value = {}
-    with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-        store = pickup.SessionStore(
+    with mock.patch.object(corral.titles, "load_cache", return_value={}):
+        store = corral.SessionStore(
             limit=20,
             registry=registry,
             attention_store=attention_store,
@@ -246,7 +246,7 @@ def _demo_store():
 
 
 def _terminal_background_hex(svg_text: str) -> str:
-    """终端底色：优先演示 OSC / pickup-dark，否则用 SVG 里已出现的同系深色。
+    """终端底色：优先演示 OSC / corral-dark，否则用 SVG 里已出现的同系深色。
 
     Rich 只给「有内容的格子」画背景 rect；空白格透明。去掉假窗口铬后若不再
     垫一层底，cairosvg 会把透明渲成纯黑，右栏大片空洞 vs 左栏石板色——半边黑。
@@ -276,7 +276,7 @@ def _strip_window_chrome(svg_text: str) -> str:
         svg_text,
         flags=re.S,
     )
-    # 标题「pickup」
+    # 标题「corral」
     svg_text = re.sub(
         r'<text class="[^"]*-title"[^>]*>.*?</text>\s*',
         "",
@@ -420,17 +420,17 @@ _CAIRO_SNIPPET = (
 )
 
 async def _capture() -> None:
-    from pickup import split_layout
+    from corral import split_layout
 
     store = _demo_store()
     with tempfile.TemporaryDirectory() as layout_td:
         with mock.patch.dict(
-            os.environ, {"PICKUP_CACHE_DIR": str(layout_td)}, clear=False,
+            os.environ, {"CORRAL_CACHE_DIR": str(layout_td)}, clear=False,
         ):
             split_layout.reset_default_layout_db()
             keys = ["cursor:demo-cursor-1", "codex:demo-codex-1"]
             seed = split_layout.default_layout_db().set_group(
-                "/Users/demo/Codes/pickup", keys, focus_key=keys[0]
+                "/Users/demo/Codes/corral", keys, focus_key=keys[0]
             )
             group_id = seed.get_group(keys[0]).group_id
             split_layout.default_layout_db().apply(
@@ -441,10 +441,10 @@ async def _capture() -> None:
             )
             split_layout.reset_default_layout_db()
 
-            app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
+            app = CorralApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
             if app.no_color:
                 raise RuntimeError(
-                    "PickupApp.no_color 仍为 True：NO_COLOR 未在创建 App 前清除，截图会灰阶"
+                    "CorralApp.no_color 仍为 True：NO_COLOR 未在创建 App 前清除，截图会灰阶"
                 )
             async with app.run_test(size=(140, 36)) as pilot:
                 await pilot.pause(delay=0.4)
@@ -493,18 +493,18 @@ def _assert_png_sane(png_path: Path) -> None:
 
 async def _capture_search() -> None:
     """全文搜索弹窗（Ctrl+F）：命中行 + 关键词高亮。"""
-    from pickup.ui.search_modal import FullTextSearchModal
+    from corral.ui.search_modal import FullTextSearchModal
 
-    from pickup import split_layout
+    from corral import split_layout
 
     store = _demo_store()
     with tempfile.TemporaryDirectory() as layout_td:
         with mock.patch.dict(
-            os.environ, {"PICKUP_CACHE_DIR": str(layout_td)}, clear=False,
+            os.environ, {"CORRAL_CACHE_DIR": str(layout_td)}, clear=False,
         ):
             split_layout.reset_default_layout_db()
             try:
-                app = PickupApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
+                app = CorralApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
                 async with app.run_test(size=(140, 36)) as pilot:
                     await pilot.pause(delay=0.4)
                     await pilot.press("ctrl+f")

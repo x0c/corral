@@ -3,14 +3,33 @@
 from __future__ import annotations
 
 import io
+import os
+import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from pickup.i18n import t
-from pickup.remote import cli as remote_cli
-from pickup.remote import config as remote_config
+from corral.i18n import t
+from corral.remote import cli as remote_cli
+from corral.remote import config as remote_config
+
+
+class RemoteConfigEmptyDirTests(unittest.TestCase):
+    def test_load_state_on_empty_dir_does_not_deadlock(self) -> None:
+        # load_state 持锁时会再写 identity.key / host.key；普通 Lock 会在空目录死锁。
+        previous = os.environ.get("CORRAL_CACHE_DIR")
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["CORRAL_CACHE_DIR"] = tmp
+            try:
+                state = remote_config.load_state()
+            finally:
+                if previous is None:
+                    os.environ.pop("CORRAL_CACHE_DIR", None)
+                else:
+                    os.environ["CORRAL_CACHE_DIR"] = previous
+        self.assertTrue(state.host_id)
+        self.assertEqual(len(state.host_id), 26)
 
 
 class RemoteStatusRelayOnlineTests(unittest.TestCase):
@@ -18,8 +37,7 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
         state = remote_config.RemoteState(
             host_id="h1",
             host_name="suzhou",
-            host_token="tok",
-            relay_url="wss://pickup-relay.caozc.top",
+            relay_url="wss://corral-relay.caozc.top",
             relay_enabled=True,
             local_enabled=True,
             local_port=8737,
@@ -53,19 +71,18 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
         self.assertIn(
             t(
                 "remote.status.relay_online",
-                label="wss://pickup-relay.caozc.top",
+                label="wss://corral-relay.caozc.top",
                 since=since,
             ),
             text,
         )
-        self.assertIn("pickup-relay.caozc.top", text)
+        self.assertIn("corral-relay.caozc.top", text)
 
     def test_status_json_includes_relay_online_fields(self) -> None:
         state = remote_config.RemoteState(
             host_id="h1",
             host_name="suzhou",
-            host_token="tok",
-            relay_url="wss://pickup-relay.caozc.top",
+            relay_url="wss://corral-relay.caozc.top",
             relay_enabled=True,
             local_enabled=True,
             local_port=8737,

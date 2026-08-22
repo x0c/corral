@@ -3,7 +3,7 @@
 #
 # 本机若配置了全局 core.hooksPath（如 ~/.git-hooks），Git 会忽略各仓 .git/hooks。
 # 此时绝不能把「只服务本仓」的脚本直接盖到全局 hooks 上——否则其它仓库推送也会跑
-# pickup 的检查。做法：在 hooksPath 放一个通用分发器，仅当当前仓库有
+# corral 的检查。做法：在 hooksPath 放一个通用分发器，仅当当前仓库有
 # `.githooks/pre-push` 时才转调。
 set -euo pipefail
 
@@ -28,7 +28,7 @@ case "$HOOKS_ABS" in
   *) is_shared=1 ;;
 esac
 
-# 通用分发器：任意带 .githooks/pre-push 的仓库都能用，不绑死 pickup 路径
+# 通用分发器：任意带 .githooks/pre-push 的仓库都能用，不绑死 corral 路径
 write_dispatcher() {
   local dest="$1"
   # 若 dest 是指向本仓脚本的软链，cat > 会顺着链把真脚本盖掉——先拆链再写
@@ -37,7 +37,7 @@ write_dispatcher() {
   fi
   cat >"$dest" <<'EOF'
 #!/usr/bin/env bash
-# 由 pickup scripts/install-git-hooks.sh 安装的通用 pre-push 分发器。
+# 由 corral scripts/install-git-hooks.sh 安装的通用 pre-push 分发器。
 # 仅当当前仓库存在可执行的 .githooks/pre-push 时转调；其它仓库直接放行。
 set -euo pipefail
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
@@ -56,7 +56,7 @@ if [ "$is_shared" -eq 1 ]; then
   dest="$HOOKS_ABS/pre-push"
   if [ -e "$dest" ] && [ ! -L "$dest" ]; then
     # 已有实体文件：若已是我们的分发器则覆盖更新；否则备份后写入
-    if ! grep -q '由 pickup scripts/install-git-hooks.sh 安装的通用 pre-push 分发器' "$dest" 2>/dev/null; then
+    if ! grep -q '由 corral scripts/install-git-hooks.sh 安装的通用 pre-push 分发器' "$dest" 2>/dev/null; then
       bak="$dest.backup-$(date +%Y%m%d%H%M%S)"
       cp -p "$dest" "$bak"
       echo "已备份原有 $dest → $bak"

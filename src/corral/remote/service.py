@@ -1,0 +1,646 @@
+"""方法路由与订阅管理：把手机发来的消息翻译成对会话中枢的调用。
+
+这一层**与传输方式无关**——中继长连接和局域网直连共用同一个实例，各自把已经
+解密好的消息喂进来。这样做的直接好处是：加一种连接方式不需要复制一遍全部业务
+逻辑，也不会出现「中继能用、直连不能用」的功能漂移。
+
+订阅的记账放在这里而不是会话中枢里：中枢只知道「有几个人在看这条会话」，
+不知道这些人分别连在哪条线上；断线时由这一层负责把该连接的订阅全部退掉，
+避免没人看了还在后台抓帧。
+
+安全边界（2026-08-08 审查后）：
+- 设备清单以磁盘为准，感知另一进程的 unpair，并主动踢掉已解绑连接
+- 只读配对只能调查询/订阅类方法
+- 删除 / 结束会话必须带 confirm=true（手机端确认框之后再发）
+- 配对失败、输入、新建会话走滑动窗口限流
+"""
+
+from __future__ import annotations
+
+import re
+import threading
+import time
+
+from corral import __version__, observe
+from corral.i18n import t
+from corral.remote import config as remote_config
+from corral.remote import crypto, protocol, ratelimit
+from corral.remote.sessions import ActionError, SessionHub
+
+_PAIRING_TTL = 10 * 60  # 配对码有效期：够扫码，又不至于长期挂着一个可用凭据
+
+# 只读配对允许的方法（看会话 / 画面 / 搜索；不能输入、不能改布局、不能启停）
+_READONLY_METHODS = frozenset(
+    {
+        protocol.M_HELLO,
+        protocol.M_SESSIONS_LIST,
+        protocol.M_SESSIONS_WATCH,
+        protocol.M_SESSIONS_UNWATCH,
+        protocol.M_SESSION_GET,
+        protocol.M_SESSION_MESSAGES,
+        protocol.M_SESSION_PROMPTS,
+        protocol.M_SESSION_WATCH,
+        protocol.M_SESSION_UNWATCH,
+        protocol.M_SCREEN_WATCH,
+        protocol.M_SCREEN_UNWATCH,
+        protocol.M_SCREEN_SCROLL,
+        protocol.M_PROJECTS_LIST,
+        protocol.M_RUNTIMES_LIST,
+        protocol.M_SEARCH,
+        protocol.M_PUSH_REGISTER,
+        protocol.M_SESSION_MARK_READ,
+    }
+)
+
+# 需要二次确认的破坏性操作
+_CONFIRM_METHODS = frozenset(
+    {
+        protocol.M_SESSION_DELETE,
+        protocol.M_SESSION_STOP,
+    }
+)
+
+# tmux 键名白名单：字母数字、修饰前缀（含 C-_ / S-Up / C-S-minus）、具名特殊键。
+# 与桌面内嵌「其余一律放行」对齐，避免手机侧合法控制键被误拒。
+_TMUX_KEY_RE = re.compile(
+    r"^(?:"
+    r"[A-Za-z0-9]"
+    r"|(?:[CMS]-)+[A-Za-z0-9_\\^[\]@/-]+"
+    r"|C-Space|M-Space"
+    r"|Enter|Escape|Space|Tab|BSpace|BTab|DC|IC"
+    r"|Up|Down|Left|Right|Home|End|PageUp|PageDown|PPage|NPage"
+    r"|F(?:[1-9]|1[0-2])"
+    r"|KP/\d|KPEnter"
+    r")$"
+)
+
+_PUSH_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+class Connection:
+    """一条已完成加密握手的连接。``send`` 必须是线程安全的。"""
+
+    def __init__(self, device_public_key: str, send, *, address: str = "") -> None:
+        self.device_public_key = device_public_key
+        self.send = send
+        self.address = address
+        self.paired = False
+        self.device_name = ""
+        self.device_id = ""
+        self.access = "full"
+        self.channels: set[str] = set()
+        self.closed = False
+        self.close_hook = None  # 可选：() -> None，用于踢掉底层传输
+
+
+class RemoteService:
+    def __init__(self, hub: SessionHub | None = None) -> None:
+        self.hub = hub or SessionHub(on_event=self._dispatch_event)
+        if hub is not None:
+            hub._on_event = self._dispatch_event
+        self.state = remote_config.load_state()
+        # 服务自持「上次加载」mtime：模块全局会被同进程的 remove_device 写脏，
+        # 不能用来判断「磁盘是否相对我这份快照变了」。
+        self._state_mtime = remote_config.state_mtime()
+        self._lock = threading.Lock()
+        self._connections: set[Connection] = set()
+        self._subscribers: dict[str, set[Connection]] = {}
+        self._audit: list[dict] = []  # 最近远程操作，供 status 展示
+
+    # -- 状态同步 ---------------------------------------------------------
+
+    def refresh_state(self) -> remote_config.RemoteState:
+        """从磁盘重载；另一进程的 unpair / 轮换 token 靠这个被看见。"""
+        self.state = remote_config.reload_state_if_changed(
+            self.state, known_mtime=self._state_mtime
+        )
+        self._state_mtime = remote_config.state_mtime()
+        return self.state
+
+    def _sync_state_mtime(self) -> None:
+        """本服务刚写过盘（配对 / touch）后对齐自持 mtime。"""
+        self._state_mtime = remote_config.state_mtime()
+
+    def reconcile_devices(self) -> int:
+        """踢掉已不在磁盘清单里的连接。返回被踢数量。"""
+        self.refresh_state()
+        known = {d.public_key for d in self.state.devices}
+        kicked = 0
+        with self._lock:
+            targets = [c for c in self._connections if c.paired and c.device_public_key not in known]
+        for connection in targets:
+            observe.event("remote_device_revoked", device=connection.device_name or connection.device_id)
+            self._kick(connection)
+            kicked += 1
+        return kicked
+
+    def _kick(self, connection: Connection) -> None:
+        connection.paired = False
+        connection.closed = True
+        hook = connection.close_hook
+        self.detach(connection)
+        if hook is not None:
+            try:
+                hook()
+            except Exception:
+                pass
+
+    def kick_device(self, device_id: str = "", *, public_key: str = "") -> int:
+        """按设备 id 或公钥断开在线连接。unpair 后由 daemon 对账即可，此方法供测试。"""
+        with self._lock:
+            targets = [
+                c
+                for c in self._connections
+                if (device_id and c.device_id == device_id)
+                or (public_key and c.device_public_key == public_key)
+            ]
+        for connection in targets:
+            self._kick(connection)
+        return len(targets)
+
+    def online_devices(self) -> list[dict]:
+        self.refresh_state()
+        with self._lock:
+            connections = list(self._connections)
+        result = []
+        for connection in connections:
+            if connection.closed or not connection.paired:
+                continue
+            result.append(
+                {
+                    "id": connection.device_id,
+                    "name": connection.device_name,
+                    "access": connection.access,
+                    "address": connection.address,
+                    "public_key": connection.device_public_key[:16] + "…",
+                }
+            )
+        return result
+
+    def recent_audit(self, limit: int = 20) -> list[dict]:
+        with self._lock:
+            return list(self._audit[-limit:])
+
+    def _audit_event(self, connection: Connection, method: str) -> None:
+        entry = {
+            "ts": time.time(),
+            "method": method,
+            "device": connection.device_name or connection.device_id or "?",
+            "access": connection.access,
+        }
+        with self._lock:
+            self._audit.append(entry)
+            if len(self._audit) > 100:
+                self._audit = self._audit[-100:]
+
+    # -- 配对 -------------------------------------------------------------
+
+    def begin_pairing(self, ttl: float = _PAIRING_TTL, *, mode: str = "full") -> str:
+        code = crypto.new_pairing_code()
+        remote_config.write_pairing(code, ttl, mode=mode)
+        return code
+
+    def pairing_open(self) -> bool:
+        return remote_config.read_pairing() is not None
+
+    def is_known_device(self, device_public_key: str) -> bool:
+        self.refresh_state()
+        return remote_config.find_device(self.state, device_public_key) is not None
+
+    def device_access(self, device_public_key: str) -> str:
+        self.refresh_state()
+        device = remote_config.find_device(self.state, device_public_key)
+        return device.access if device is not None else "full"
+
+    def accepts(self, device_public_key: str) -> bool:
+        """握手阶段的准入判断：已配对设备随时可进，陌生设备只在配对窗口内放行。"""
+        return self.is_known_device(device_public_key) or self.pairing_open()
+
+    # -- 连接生命周期 -----------------------------------------------------
+
+    def attach(self, connection: Connection) -> None:
+        self.refresh_state()
+        device = remote_config.find_device(self.state, connection.device_public_key)
+        connection.paired = device is not None
+        if device is not None:
+            connection.device_name = device.name
+            connection.device_id = device.id
+            connection.access = device.access
+            remote_config.touch_device(self.state, connection.device_public_key)
+            self._sync_state_mtime()
+        with self._lock:
+            self._connections.add(connection)
+
+    def detach(self, connection: Connection) -> None:
+        connection.closed = True
+        with self._lock:
+            self._connections.discard(connection)
+            channels = list(connection.channels)
+            for channel in channels:
+                subscribers = self._subscribers.get(channel)
+                if subscribers is not None:
+                    subscribers.discard(connection)
+                    if not subscribers:
+                        self._subscribers.pop(channel, None)
+            connection.channels.clear()
+        for channel in channels:
+            self._release_channel(channel)
+
+    def _subscribe(self, connection: Connection, channel: str) -> bool:
+        with self._lock:
+            if channel in connection.channels:
+                return False
+            connection.channels.add(channel)
+            self._subscribers.setdefault(channel, set()).add(connection)
+        return True
+
+    def _unsubscribe(self, connection: Connection, channel: str) -> bool:
+        with self._lock:
+            if channel not in connection.channels:
+                return False
+            connection.channels.discard(channel)
+            subscribers = self._subscribers.get(channel)
+            if subscribers is not None:
+                subscribers.discard(connection)
+                if not subscribers:
+                    self._subscribers.pop(channel, None)
+        return True
+
+    def _release_channel(self, channel: str) -> None:
+        """连接断开时把中枢侧的订阅计数减回去，别让后台白抓帧。"""
+        if channel == protocol.CH_SESSIONS:
+            self.hub.unwatch_sessions()
+        elif channel.startswith("screen:"):
+            self.hub.unwatch_screen(channel[len("screen:") :])
+        elif channel.startswith("session:"):
+            self.hub.unwatch_conversation(channel[len("session:") :])
+
+    def _dispatch_event(self, channel: str, data) -> None:
+        # 事件推送前顺手对账一次，避免已解绑设备还在收画面
+        self.reconcile_devices()
+        with self._lock:
+            targets = list(self._subscribers.get(channel, ()))
+        if not targets:
+            return
+        message = protocol.event(channel, data)
+        for connection in targets:
+            if connection.closed:
+                continue
+            try:
+                connection.send(message)
+            except Exception:
+                continue
+
+    # -- 消息处理 ---------------------------------------------------------
+
+    def handle(self, connection: Connection, message: dict) -> None:
+        if message.get("t") != "req":
+            return
+        req_id = int(message.get("id") or 0)
+        method = str(message.get("m") or "")
+        params = message.get("p") if isinstance(message.get("p"), dict) else {}
+        try:
+            data = self._invoke(connection, method, params)
+        except ActionError as exc:
+            connection.send(protocol.error(req_id, exc.code, exc.message))
+            return
+        except NotImplementedError:
+            connection.send(protocol.error(req_id, protocol.E_USAGE, t("remote.err.unsupported_method", method=method)))
+            return
+        except Exception as exc:
+            observe.event("remote_method_failed", method=method, error=str(exc))
+            connection.send(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+            return
+        connection.send(protocol.response(req_id, data))
+
+    def _invoke(self, connection: Connection, method: str, params: dict):
+        # 每次请求都以磁盘为准：解绑立刻生效
+        if connection.paired and not self.is_known_device(connection.device_public_key):
+            self._kick(connection)
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_unpaired"))
+        if connection.paired:
+            connection.access = self.device_access(connection.device_public_key)
+
+        if method == protocol.M_PAIR:
+            return self._pair(connection, params)
+        if method == protocol.M_HELLO:
+            return self._hello(connection, params)
+        if not connection.paired:
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_not_paired"))
+        if connection.access == "readonly" and method not in _READONLY_METHODS:
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.readonly"))
+        if method in _CONFIRM_METHODS and not bool(params.get("confirm")):
+            raise ActionError(
+                protocol.E_USAGE,
+                t("remote.err.need_confirm"),
+            )
+        handler = _HANDLERS.get(method)
+        if handler is None:
+            raise NotImplementedError(method)
+        self._audit_event(connection, method)
+        return handler(self, connection, params)
+
+    # -- 具体方法 ---------------------------------------------------------
+
+    def _pair(self, connection: Connection, params: dict):
+        key = connection.device_public_key or "anon"
+        pairing = remote_config.read_pairing()
+        if pairing is None:
+            self._note_pair_failure(key)
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.pairing_expired"))
+        if not crypto.codes_equal(str(params.get("code") or ""), pairing[0]):
+            self._note_pair_failure(key)
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.pairing_wrong"))
+        # 必须在 clear 之前读模式，否则窗口文件没了就永远当成 full
+        pairing_mode = remote_config.read_pairing_mode()
+        remote_config.clear_pairing()  # 一次性凭据，用掉立刻作废
+        access = str(params.get("access") or "").strip().lower()
+        # 开发机 `pair --readonly` 写入的窗口模式优先，防止手机端自行申请 full
+        if pairing_mode == "readonly":
+            access = "readonly"
+        elif access not in ("full", "readonly"):
+            access = "full"
+        device = remote_config.PairedDevice(
+            id=crypto.random_id(8),
+            name=remote_config.sanitize_display_name(str(params.get("name") or "iPhone")),
+            public_key=connection.device_public_key,
+            paired_at=time.time(),
+            last_seen_at=time.time(),
+            platform=remote_config.sanitize_display_name(
+                str(params.get("platform") or "ios"), max_len=20, fallback="ios"
+            ),
+            access=access,
+        )
+        remote_config.add_device(self.state, device)
+        self._sync_state_mtime()
+        connection.paired = True
+        connection.device_name = device.name
+        connection.device_id = device.id
+        connection.access = device.access
+        observe.event("remote_paired", device=device.name, access=device.access)
+        return {
+            "device_id": device.id,
+            "host_name": self.state.host_name,
+            "access": device.access,
+        }
+
+    @staticmethod
+    def _note_pair_failure(key: str) -> None:
+        """只对失败的配对尝试计数；成功配对不占配额。"""
+        if not ratelimit.PAIR_ATTEMPTS.allow_request(key) or not ratelimit.PAIR_ATTEMPTS_HOURLY.allow_request(
+            key
+        ):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.pairing_rate_limited"))
+
+    def _hello(self, connection: Connection, params: dict):
+        connection.device_name = remote_config.sanitize_display_name(
+            str(params.get("name") or ""), fallback=connection.device_name or ""
+        )
+        self.refresh_state()
+        # 未配对也返回中继/局域网开关，便于旧配对手机补上中继地址、不必重新扫码。
+        return {
+            "protocol": protocol_version(),
+            "corral_version": __version__,
+            "host_id": self.state.host_id,
+            "host_name": self.state.host_name,
+            "paired": connection.paired,
+            "pairing_open": self.pairing_open(),
+            "access": connection.access if connection.paired else "",
+            "runtimes": self.hub.runtimes() if connection.paired else [],
+            "relay_url": self.state.relay_url if self.state.relay_enabled else "",
+            "relay_enabled": self.state.relay_enabled,
+            "local_enabled": self.state.local_enabled,
+        }
+
+    def _sessions_list(self, connection: Connection, params: dict):
+        return {
+            "sessions": self.hub.list_sessions(
+                query=str(params.get("q") or ""), limit=_int_param(params, "limit", 0)
+            )
+        }
+
+    def _sessions_watch(self, connection: Connection, params: dict):
+        if self._subscribe(connection, protocol.CH_SESSIONS):
+            self.hub.watch_sessions()
+        return {"sessions": self.hub.list_sessions()}
+
+    def _sessions_unwatch(self, connection: Connection, params: dict):
+        if self._unsubscribe(connection, protocol.CH_SESSIONS):
+            self.hub.unwatch_sessions()
+        return {"ok": True}
+
+    def _session_get(self, connection: Connection, params: dict):
+        return self.hub.session_detail(_key(params))
+
+    def _session_messages(self, connection: Connection, params: dict):
+        return {"messages": self.hub.messages(_key(params), _int_param(params, "limit", 400))}
+
+    def _session_prompts(self, connection: Connection, params: dict):
+        return {"prompts": self.hub.prompts(_key(params))}
+
+    def _session_watch(self, connection: Connection, params: dict):
+        key = _key(params)
+        channel = protocol.session_channel(key)
+        if self._subscribe(connection, channel):
+            history = self.hub.watch_conversation(key)
+        else:
+            history = self.hub.conversation_snapshot(key)
+        return {"messages": history}
+
+    def _session_unwatch(self, connection: Connection, params: dict):
+        key = _key(params)
+        if self._unsubscribe(connection, protocol.session_channel(key)):
+            self.hub.unwatch_conversation(key)
+        return {"ok": True}
+
+    def _screen_watch(self, connection: Connection, params: dict):
+        key = _key(params)
+        channel = protocol.screen_channel(key)
+        if self._subscribe(connection, channel):
+            frame = self.hub.watch_screen(key)
+        else:
+            frame = self.hub.resync_screen(key)
+        return {"frame": frame}
+
+    def _screen_unwatch(self, connection: Connection, params: dict):
+        key = _key(params)
+        if self._unsubscribe(connection, protocol.screen_channel(key)):
+            self.hub.unwatch_screen(key)
+        return {"ok": True}
+
+    def _screen_scroll(self, connection: Connection, params: dict):
+        return {"frame": self.hub.scroll_screen(_key(params), _int_param(params, "offset", 0))}
+
+    def _input_text(self, connection: Connection, params: dict):
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
+        text = str(params.get("text") or "")
+        submit = bool(params.get("submit", True))
+        if not text and not submit:
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
+        self.hub.send_text(_key(params), text, submit)
+        return {"ok": True}
+
+    def _input_keys(self, connection: Connection, params: dict):
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
+        keys = params.get("keys")
+        if not isinstance(keys, list):
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_keys"))
+        cleaned = []
+        for raw in keys:
+            key = str(raw).strip()
+            if not key:
+                continue
+            if not _TMUX_KEY_RE.match(key):
+                raise ActionError(
+                    protocol.E_USAGE,
+                    t("remote.err.unsupported_key").format(key=key[:32]),
+                )
+            cleaned.append(key)
+        if not cleaned:
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_keys"))
+        self.hub.send_keys(_key(params), cleaned)
+        return {"ok": True}
+
+    def _input_image(self, connection: Connection, params: dict):
+        if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.send_rate_limited"))
+        import base64
+        import binascii
+
+        encoded = str(params.get("data") or "").strip()
+        if not encoded:
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_image"))
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ActionError(protocol.E_USAGE, t("remote.err.image_incomplete")) from exc
+        if not raw:
+            raise ActionError(protocol.E_USAGE, t("remote.err.no_image"))
+        return {"path": self.hub.send_image(_key(params), raw)}
+
+    def _screen_resize(self, connection: Connection, params: dict):
+        # 手机与桌面共享同一保活窗格：即使误发也不改桌面窗口尺寸。
+        raise ActionError(protocol.E_USAGE, t("remote.err.resize_forbidden"))
+
+    def _session_mark_read(self, connection: Connection, params: dict):
+        return {"attention": self.hub.mark_read(_key(params))}
+
+    def _session_pin(self, connection: Connection, params: dict):
+        return {"pinned": self.hub.toggle_pin(_key(params))}
+
+    def _session_stop(self, connection: Connection, params: dict):
+        self.hub.stop_session(_key(params))
+        return {"ok": True}
+
+    def _session_delete(self, connection: Connection, params: dict):
+        self.hub.delete_session(_key(params))
+        return {"ok": True}
+
+    def _session_new(self, connection: Connection, params: dict):
+        if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.new_session_rate_limited"))
+        runtime = str(params.get("runtime") or "").strip()
+        if not runtime:
+            raise ActionError(protocol.E_USAGE, t("remote.err.pick_assistant"))
+        cwd = params.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            raise ActionError(protocol.E_USAGE, t("remote.err.bad_project_path"))
+        return {"session": self.hub.new_session(runtime, cwd, whitelist=self.state.cwd_whitelist)}
+
+    def _session_resume(self, connection: Connection, params: dict):
+        if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
+        return {"session": self.hub.resume_session(_key(params))}
+
+    def _session_handoff(self, connection: Connection, params: dict):
+        if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
+        return {"session": self.hub.handoff_session(_key(params), str(params.get("runtime") or ""))}
+
+    def _projects_list(self, connection: Connection, params: dict):
+        return {"projects": self.hub.projects()}
+
+    def _runtimes_list(self, connection: Connection, params: dict):
+        return {"runtimes": self.hub.runtimes()}
+
+    def _search(self, connection: Connection, params: dict):
+        return {"sessions": self.hub.list_sessions(query=str(params.get("q") or ""), limit=100)}
+
+    def _push_register(self, connection: Connection, params: dict):
+        if not ratelimit.PUSH_REGISTER.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.push_rate_limited"))
+        token = str(params.get("token") or "").strip()
+        if token and not _PUSH_TOKEN_RE.match(token):
+            raise ActionError(protocol.E_USAGE, t("remote.err.bad_push_token"))
+        env = str(params.get("env") or "").strip().lower()
+        if env and env not in ("sandbox", "production"):
+            raise ActionError(protocol.E_USAGE, t("remote.err.bad_push_env"))
+        device = remote_config.touch_device(
+            self.state,
+            connection.device_public_key,
+            push_token=token,
+            push_env=env,
+        )
+        self._sync_state_mtime()
+        if device is None:
+            raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.device_not_paired"))
+        return {"ok": True}
+
+
+def _key(params: dict) -> str:
+    key = str(params.get("key") or "").strip()
+    if not key:
+        raise ActionError(protocol.E_USAGE, t("remote.err.missing_session_key"))
+    return key
+
+
+def _int_param(params: dict, name: str, default: int, *, max_value: int = 10_000) -> int:
+    """把请求参数收成非负整数；坏值按 usage_error，避免 int() 把整条请求打成 500。"""
+    raw = params.get(name, default)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ActionError(protocol.E_USAGE, t("remote.err.param_not_int", name=name)) from exc
+    if value < 0:
+        return 0
+    return min(value, max_value)
+
+
+def protocol_version() -> int:
+    from corral.remote import REMOTE_PROTOCOL_VERSION
+
+    return REMOTE_PROTOCOL_VERSION
+
+
+_HANDLERS = {
+    protocol.M_SESSIONS_LIST: RemoteService._sessions_list,
+    protocol.M_SESSIONS_WATCH: RemoteService._sessions_watch,
+    protocol.M_SESSIONS_UNWATCH: RemoteService._sessions_unwatch,
+    protocol.M_SESSION_GET: RemoteService._session_get,
+    protocol.M_SESSION_MESSAGES: RemoteService._session_messages,
+    protocol.M_SESSION_PROMPTS: RemoteService._session_prompts,
+    protocol.M_SESSION_WATCH: RemoteService._session_watch,
+    protocol.M_SESSION_UNWATCH: RemoteService._session_unwatch,
+    protocol.M_SESSION_MARK_READ: RemoteService._session_mark_read,
+    protocol.M_SCREEN_WATCH: RemoteService._screen_watch,
+    protocol.M_SCREEN_UNWATCH: RemoteService._screen_unwatch,
+    protocol.M_SCREEN_SCROLL: RemoteService._screen_scroll,
+    protocol.M_SCREEN_RESIZE: RemoteService._screen_resize,
+    protocol.M_INPUT_TEXT: RemoteService._input_text,
+    protocol.M_INPUT_KEYS: RemoteService._input_keys,
+    protocol.M_INPUT_IMAGE: RemoteService._input_image,
+    protocol.M_SESSION_NEW: RemoteService._session_new,
+    protocol.M_SESSION_RESUME: RemoteService._session_resume,
+    protocol.M_SESSION_HANDOFF: RemoteService._session_handoff,
+    protocol.M_SESSION_STOP: RemoteService._session_stop,
+    protocol.M_SESSION_DELETE: RemoteService._session_delete,
+    protocol.M_SESSION_PIN: RemoteService._session_pin,
+    protocol.M_PROJECTS_LIST: RemoteService._projects_list,
+    protocol.M_RUNTIMES_LIST: RemoteService._runtimes_list,
+    protocol.M_SEARCH: RemoteService._search,
+    protocol.M_PUSH_REGISTER: RemoteService._push_register,
+}

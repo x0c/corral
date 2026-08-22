@@ -24,21 +24,21 @@ import time
 import unittest
 from unittest import mock
 
-from pickup import i18n
-from pickup.i18n import t
+from corral import i18n
+from corral.i18n import t
 
 # 界面测试固定英文，避免 CI/本机 LANG=zh* 时断言漂移
 i18n.set_lang("en")
 
 # 侧边栏记忆（会话组/置顶/折叠/显隐）隔离到临时目录，避免读到、更避免改到本机
-# ~/.cache/pickup 里机主真实的状态。`PICKUP_CACHE_DIR` 是唯一的隔离开关：少了它，
+# ~/.cache/corral 里机主真实的状态。`CORRAL_CACHE_DIR` 是唯一的隔离开关：少了它，
 # split_layout 会去真实家目录找旧版 JSON 做一次性迁移。
 import tempfile
 
-from pickup import split_layout as _split_layout
+from corral import split_layout as _split_layout
 
-_SIDEBAR_STATE_DIR = tempfile.mkdtemp(prefix="pickup-test-sidebar-state-")
-os.environ["PICKUP_CACHE_DIR"] = _SIDEBAR_STATE_DIR
+_SIDEBAR_STATE_DIR = tempfile.mkdtemp(prefix="corral-test-sidebar-state-")
+os.environ["CORRAL_CACHE_DIR"] = _SIDEBAR_STATE_DIR
 _split_layout.reset_default_layout_db()
 _SIDEBAR_STATE_DB = os.path.join(_SIDEBAR_STATE_DIR, "sidebar-layout.sqlite3")
 
@@ -47,12 +47,12 @@ from textual.color import Color
 from textual.geometry import Offset, Size
 from textual.widgets import Footer, Input, Label, ListView, TextArea
 
-import pickup
-from pickup import ui_prefs as _ui_prefs
-from pickup.models import LaunchPlan
-from pickup.ui.app import PickupApp
-from pickup.ui.embed_pane import EmbedPane
-from pickup.ui.modals import (
+import corral
+from corral import ui_prefs as _ui_prefs
+from corral.models import LaunchPlan
+from corral.ui.app import CorralApp
+from corral.ui.embed_pane import EmbedPane
+from corral.ui.modals import (
     COPY_SESSION_CHOICE,
     EXPORT_SESSION_CHOICE,
     RESTART_SESSION_CHOICE,
@@ -61,15 +61,15 @@ from pickup.ui.modals import (
     RuntimeChoice,
     RuntimePickerModal,
 )
-from pickup.ui.pointer_shape import (
+from corral.ui.pointer_shape import (
     enable_tmux_passthrough,
     reset_sequence,
     restore_tmux_passthrough,
     sequence,
 )
-from pickup.ui.runtime_top_bar import _SidebarToggleChip, _TopBarSpacer
-from pickup.ui.search_modal import FullTextSearchModal, SearchResultRow
-from pickup.ui.session_list import (
+from corral.ui.runtime_top_bar import _SidebarToggleChip, _TopBarSpacer
+from corral.ui.search_modal import FullTextSearchModal, SearchResultRow
+from corral.ui.session_list import (
     ACTIVITY_BOARD_ID,
     GROUP_ID_PREFIX,
     NEW_SESSION_ID,
@@ -84,8 +84,8 @@ from pickup.ui.session_list import (
     SessionListView,
     _session_in_today_window,
 )
-from pickup.ui.split_pane_area import SplitPaneArea
-from pickup.ui.terminal_theme import TerminalBackgroundReport, TerminalThemeParser
+from corral.ui.split_pane_area import SplitPaneArea
+from corral.ui.terminal_theme import TerminalBackgroundReport, TerminalThemeParser
 
 HAS_TMUX = shutil.which("tmux") is not None
 
@@ -191,12 +191,12 @@ def _make_store(sessions=None, extra_runtimes=()):
     claude.is_available.return_value = True
     claude.scan_sessions.return_value = sessions
     claude.load_conversation.return_value = [
-        pickup.ConversationMessage("user", "测试问题"),
-        pickup.ConversationMessage("assistant", "测试回复"),
+        corral.ConversationMessage("user", "测试问题"),
+        corral.ConversationMessage("assistant", "测试回复"),
     ]
-    registry = pickup.RuntimeRegistry((claude, *extra_runtimes))
-    with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-        store = pickup.SessionStore(limit=20, registry=registry)
+    registry = corral.RuntimeRegistry((claude, *extra_runtimes))
+    with mock.patch.object(corral.titles, "load_cache", return_value={}):
+        store = corral.SessionStore(limit=20, registry=registry)
         store.load()
     return store, registry
 
@@ -223,16 +223,16 @@ def _claude_session(
 
 
 class KittyKeyboardProtocolTests(unittest.TestCase):
-    """回归：pickup 必须默认关闭 Textual 的 Kitty 键盘协议，否则 iTerm2/Ghostty/kitty
+    """回归：corral 必须默认关闭 Textual 的 Kitty 键盘协议，否则 iTerm2/Ghostty/kitty
     等支持它的终端会把按键当转义码原样上报、绕过操作系统输入法，用户在内嵌 Agent
     里根本打不出中文（真机反馈：iTerm2 + SSH 下内嵌 Agent 无法输入中文，同一 SSH
-    的 nano 却正常，唯一差别就是 pickup 开了这个协议）。pickup 顶层用
+    的 nano 却正常，唯一差别就是 corral 开了这个协议）。corral 顶层用
     os.environ.setdefault 在任何 textual 导入前关掉它。"""
 
     def test_kitty_keyboard_protocol_disabled_by_default(self) -> None:
         import os
 
-        # import pickup 已在模块顶部发生，setdefault 应已生效
+        # import corral 已在模块顶部发生，setdefault 应已生效
         self.assertEqual(os.environ.get("TEXTUAL_DISABLE_KITTY_KEY"), "1")
         import textual.constants as constants
         self.assertTrue(
@@ -284,7 +284,7 @@ class OscProbeFlushTests(unittest.TestCase):
         import select
         import threading
 
-        from pickup import theme
+        from corral import theme
 
         master, slave = pty.openpty()
 
@@ -316,7 +316,7 @@ class OscProbeFlushTests(unittest.TestCase):
             writer.start()
             with mock.patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("TMUX", None)
-                os.environ.pop("PICKUP_OSC_REPORT", None)
+                os.environ.pop("CORRAL_OSC_REPORT", None)
                 with mock.patch.object(theme.sys, "stdin", _FakeStd(slave)), \
                         mock.patch.object(theme.sys, "stdout", _FakeStd(slave)), \
                         _draining_pty_master(master):
@@ -358,7 +358,7 @@ class OscProbeFlushTests(unittest.TestCase):
         import select
         import threading
 
-        from pickup import theme
+        from corral import theme
 
         master, slave = pty.openpty()
 
@@ -385,7 +385,7 @@ class OscProbeFlushTests(unittest.TestCase):
         try:
             writer.start()
             with mock.patch.dict(os.environ, {"TMUX": "1"}, clear=False):
-                os.environ.pop("PICKUP_OSC_REPORT", None)
+                os.environ.pop("CORRAL_OSC_REPORT", None)
                 with mock.patch.object(theme.sys, "stdin", _FakeStd(slave)), \
                         mock.patch.object(theme.sys, "stdout", _FakeStd(slave)), \
                         _draining_pty_master(master):
@@ -482,9 +482,9 @@ class RuntimeThemeParserTests(unittest.TestCase):
         list(parser.tick())
         self.assertEqual(parser._theme_pending, "")
 
-    def test_pickup_app_uses_runtime_theme_driver_on_unix(self) -> None:
+    def test_corral_app_uses_runtime_theme_driver_on_unix(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         self.assertEqual(app.driver_class.__name__, "TerminalThemeLinuxDriver")
 
 
@@ -531,14 +531,14 @@ class PointerShapeSequenceTests(unittest.TestCase):
 
     def test_passthrough_skipped_without_tmux(self) -> None:
         with _pointer_env("TMUX", "TMUX_PANE"):
-            with mock.patch("pickup.ui.pointer_shape.subprocess.run") as run:
+            with mock.patch("corral.ui.pointer_shape.subprocess.run") as run:
                 enable_tmux_passthrough()
                 restore_tmux_passthrough()
                 run.assert_not_called()
 
     def test_passthrough_sets_and_unsets_pane_option(self) -> None:
         with _pointer_env(TMUX="1,0,0", TMUX_PANE="%0"):
-            with mock.patch("pickup.ui.pointer_shape.subprocess.run") as run:
+            with mock.patch("corral.ui.pointer_shape.subprocess.run") as run:
                 enable_tmux_passthrough()
                 restore_tmux_passthrough()
         self.assertEqual(
@@ -556,7 +556,7 @@ class PointerShapeUiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hover_updates_pointer_shape_by_widget(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             card = app.screen.query_one(SessionCard)
@@ -578,7 +578,7 @@ class PointerShapeUiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_set_pointer_shape_does_not_raise_in_headless(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             app._set_pointer_shape("pointer")
@@ -587,35 +587,35 @@ class PointerShapeUiTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AppThemeTests(unittest.IsolatedAsyncioTestCase):
-    """pickup 自身界面配色应跟随外层终端探测到的深浅色（真机反馈：浅色终端下
-    配色不对——此前只处理了托管会话内的深浅色注入，没接 pickup 自己的界面）。"""
+    """corral 自身界面配色应跟随外层终端探测到的深浅色（真机反馈：浅色终端下
+    配色不对——此前只处理了托管会话内的深浅色注入，没接 corral 自己的界面）。"""
 
     async def test_theme_follows_detected_terminal_background(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False, osc_report=b"\x1b]11;rgb:ffff/ffff/ffff\x07")
+        app = CorralApp(store, embed_ok=False, osc_report=b"\x1b]11;rgb:ffff/ffff/ffff\x07")
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            self.assertEqual(app.theme, "pickup-light")
+            self.assertEqual(app.theme, "corral-light")
 
     async def test_widget_css_survives_a_builtin_theme(self) -> None:
         """自有主题变量必须有兜底值，否则整个应用起不来（v0.24.29 真机事故）。
 
         widget 的 DEFAULT_CSS 是各自第一次挂载时才并入样式表做变量代换的，那一刻
-        当前主题不保证已经是 pickup 自有主题。只把变量写在 Theme 里，换个终端探测
+        当前主题不保证已经是 corral 自有主题。只把变量写在 Theme 里，换个终端探测
         结果或 Textual 版本就可能在代换时找不到它，Textual 直接报
         `reference to undefined variable` 并中止启动，而不是退化成默认颜色。
         这里强行切到 Textual 内置主题再挂载整屏，等价于"最坏时序"。
         """
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            app.theme = "textual-dark"  # 内置主题里没有 pickup 自有变量
+            app.theme = "textual-dark"  # 内置主题里没有 corral 自有变量
             await pilot.pause()
             await pilot.press("down")
             await pilot.pause(delay=0.3)
             # 能取到颜色就说明变量代换成功；解析失败时 Textual 早已中止应用
-            from pickup.ui.app import _SIDEBAR_SPLIT_LADDER
+            from corral.ui.app import _SIDEBAR_SPLIT_LADDER
 
             for name in ("pane-active-background", *_SIDEBAR_SPLIT_LADDER):
                 with self.subTest(variable=name):
@@ -623,14 +623,14 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
 
     def test_theme_variable_defaults_cover_every_custom_variable(self) -> None:
         """自有主题里定义的变量，兜底表必须一个不落地覆盖。"""
-        from pickup.ui.app import (
-            _PICKUP_DARK,
-            _PICKUP_LIGHT,
+        from corral.ui.app import (
+            _CORRAL_DARK,
+            _CORRAL_LIGHT,
             _THEME_VARIABLE_DEFAULTS,
         )
 
         builtin = {"block-cursor-background", "block-cursor-blurred-background"}
-        for theme in (_PICKUP_DARK, _PICKUP_LIGHT):
+        for theme in (_CORRAL_DARK, _CORRAL_LIGHT):
             custom = set(theme.variables) - builtin
             missing = custom - set(_THEME_VARIABLE_DEFAULTS)
             self.assertEqual(
@@ -640,25 +640,25 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dark_background_uses_dark_theme(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False, osc_report=b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07")
+        app = CorralApp(store, embed_ok=False, osc_report=b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07")
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            self.assertEqual(app.theme, "pickup-dark")
+            self.assertEqual(app.theme, "corral-dark")
 
     async def test_missing_report_falls_back_to_default_dark(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False, osc_report=None)
+        app = CorralApp(store, embed_ok=False, osc_report=None)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            self.assertEqual(app.theme, "pickup-dark")
+            self.assertEqual(app.theme, "corral-dark")
 
     async def test_running_app_switches_theme_when_terminal_background_changes(self) -> None:
         store, _ = _make_store()
         old_report = b"\x1b]10;rgb:0000/0000/0000\x07\x1b]11;rgb:ffff/ffff/ffff\x07"
-        app = PickupApp(store, embed_ok=True, osc_report=old_report)
+        app = CorralApp(store, embed_ok=True, osc_report=old_report)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            self.assertEqual(app.theme, "pickup-light")
+            self.assertEqual(app.theme, "corral-light")
 
             area = app.screen.query_one(SplitPaneArea)
             session = store.all_sessions()[0]
@@ -671,7 +671,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             app.post_message(TerminalBackgroundReport(osc_report=dark_report))
             await pilot.pause(delay=0.2)
 
-            self.assertEqual(app.theme, "pickup-dark")
+            self.assertEqual(app.theme, "corral-dark")
             self.assertEqual(app.screen.osc_report, b"\x1b]10;rgb:0000/0000/0000\x07" + dark_report)
             self.assertEqual(area._osc_report, app.screen.osc_report)  # noqa: SLF001
             self.assertEqual(pane._osc_report, app.screen.osc_report)  # noqa: SLF001
@@ -679,7 +679,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dec_mode_notification_switches_theme_before_osc_reply(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(
+        app = CorralApp(
             store,
             embed_ok=False,
             osc_report=b"\x1b]11;rgb:ffff/ffff/ffff\x07",
@@ -688,11 +688,11 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             app.post_message(TerminalBackgroundReport(is_light=False))
             await pilot.pause(delay=0.1)
-            self.assertEqual(app.theme, "pickup-dark")
+            self.assertEqual(app.theme, "corral-dark")
 
     async def test_runtime_top_bar_matches_footer_and_aligns_left(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             top_bar = app.screen.query_one("#runtime-top-bar")
@@ -704,7 +704,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sidebar_and_split_panes_use_one_cell_blank_gaps(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
@@ -734,7 +734,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         from textual.widgets import Static
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             screen = app.screen
@@ -757,7 +757,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_split_supports_max_panes_and_refuses_one_more(self) -> None:
         """分屏上限（当前 4 格）：满格都要能均分挂上，且不再允许加格。"""
-        from pickup.split_layout import MAX_PANES
+        from corral.split_layout import MAX_PANES
 
         sessions = [
             {
@@ -769,7 +769,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             for i in range(MAX_PANES)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(160, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
@@ -788,7 +788,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
     async def test_footer_does_not_bind_n_for_new_session(self) -> None:
         """底栏不再暴露 n 新建快捷键；新建只走侧边栏项 / 顶栏加格。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             keys = {b.key for b in app.screen.BINDINGS}
@@ -804,18 +804,18 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-s{i}",
+                "keepalive_name": f"corral-claude-s{i}",
             }
             for i in range(2)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
             list_view = app.screen.query_one(SessionListView)
-            key0 = pickup.session_key(sessions[0])
-            key1 = pickup.session_key(sessions[1])
+            key0 = corral.session_key(sessions[0])
+            key1 = corral.session_key(sessions[1])
             # 写入分屏记忆，避免后续列表高亮回调把两格收成单格
             app.screen._apply_layout_change(  # noqa: SLF001
                 lambda s: s.set_group("/tmp", [key0, key1], focus_key=key0)
@@ -833,7 +833,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             list_view.index = len(STICKY_IDS)
             await pilot.pause()
             self.assertEqual(len(area._cells()), 2)  # noqa: SLF001
-            self.assertEqual(pickup.session_key(list_view.selected_session()), key0)
+            self.assertEqual(corral.session_key(list_view.selected_session()), key0)
             second = area._cells()[1].embed_pane()  # noqa: SLF001
             self.assertIsNotNone(second)
             second.focus()
@@ -841,13 +841,13 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(
                 lambda: list_view.index == len(STICKY_IDS) + 1
                 and list_view.selected_session() is not None
-                and pickup.session_key(list_view.selected_session()) == key1,
+                and corral.session_key(list_view.selected_session()) == key1,
             )
             self.assertEqual(area.focus_key, key1)
 
     async def test_try_restore_startup_layout_skips_prune_before_store_loaded(self) -> None:
         """扫描未完成时不得 prune+save，否则会把磁盘分屏记忆清空。"""
-        from pickup import split_layout
+        from corral import split_layout
 
         sessions = [
             {
@@ -855,17 +855,17 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-s{i}",
+                "keepalive_name": f"corral-claude-s{i}",
             }
             for i in range(2)
         ]
         store, _ = _make_store(sessions=sessions)
-        key0 = pickup.session_key(sessions[0])
-        key1 = pickup.session_key(sessions[1])
+        key0 = corral.session_key(sessions[0])
+        key1 = corral.session_key(sessions[1])
         # 先写入一份「两格组合」到库；再装 App（__init__ 会读一份快照）
         split_layout.default_layout_db().set_group("/tmp", [key0, key1], focus_key=key0)
         store.loaded = False  # 模拟异步首扫尚未完成
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.05)
             # 显式再调一次：即便 on_mount 漏调，契约也必须守住
@@ -884,17 +884,17 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-s{i}",
+                "keepalive_name": f"corral-claude-s{i}",
             }
             for i in range(2)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
-            key0 = pickup.session_key(sessions[0])
-            key1 = pickup.session_key(sessions[1])
+            key0 = corral.session_key(sessions[0])
+            key1 = corral.session_key(sessions[1])
             app.screen._apply_layout_change(  # noqa: SLF001
                 lambda s: s.set_group("/tmp", [key0, key1], focus_key=key0)
             )
@@ -921,7 +921,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_same_hosted_identity_skips_remount_keeps_live_grid(self) -> None:
         """同 (session_key, keepalive) 再 show_hosted_group 不得整排 remount 清掉 live 画面。"""
-        from pickup.embed import Cell
+        from corral.embed import Cell
 
         sessions = [
             {
@@ -929,15 +929,15 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "会话0",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": "pickup-claude-s0",
+                "keepalive_name": "corral-claude-s0",
             }
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
-            key0 = pickup.session_key(sessions[0])
+            key0 = corral.session_key(sessions[0])
             # 阻止列表跟随在断言窗口内另行 remount
             with mock.patch.object(app.screen, "_follow_current_selection"):
                 area.show_hosted_group(
@@ -988,20 +988,20 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "会话0",
                 "cwd": "/tmp", "live": False,
-                "keepalive_name": "pickup-claude-s0",
+                "keepalive_name": "corral-claude-s0",
             }
         ]
         store, _ = _make_store(sessions=sessions)
-        key = pickup.session_key(sessions[0])
-        store.hosted[key] = "pickup-claude-s0"
-        app = PickupApp(store, embed_ok=True)
+        key = corral.session_key(sessions[0])
+        store.hosted[key] = "corral-claude-s0"
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            with mock.patch("pickup.liveness.is_alive", return_value=False):
+            with mock.patch("corral.liveness.is_alive", return_value=False):
                 self.assertTrue(app.screen._is_session_active(key))  # noqa: SLF001
                 self.assertTrue(app.screen._session_is_active(sessions[0]))  # noqa: SLF001
             with mock.patch(
-                "pickup.liveness.is_alive",
+                "corral.liveness.is_alive",
                 side_effect=AssertionError("hosted 命中时不得 fork has-session"),
             ):
                 self.assertTrue(app.screen._session_is_active(sessions[0]))  # noqa: SLF001
@@ -1015,16 +1015,16 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "会话0",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": "pickup-claude-s0",
+                "keepalive_name": "corral-claude-s0",
             }
         ]
         store, _ = _make_store(sessions=sessions)
-        key = pickup.session_key(sessions[0])
-        app = PickupApp(store, embed_ok=True)
+        key = corral.session_key(sessions[0])
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             with mock.patch(
-                "pickup.liveness.is_alive",
+                "corral.liveness.is_alive",
                 side_effect=AssertionError("live 命中时不得 fork has-session"),
             ):
                 self.assertTrue(app.screen._session_is_active(sessions[0]))  # noqa: SLF001
@@ -1034,7 +1034,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         """占位卡转正后，分屏和侧边栏选择都必须迁移到真实会话。"""
         provisional_id = "abcd1234"
         real_id = "real-session-uuid"
-        kname = "pickup-claude-abcd1234"
+        kname = "corral-claude-abcd1234"
         provisional = {
             "source": "claude", "id": provisional_id, "short_id": provisional_id,
             "mtime": time.time(), "size_bytes": 0, "size_kb": 0,
@@ -1052,13 +1052,13 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             "mtime": time.time() - 1, "size_bytes": 1, "size_kb": 1,
             "native_title": "同伴会话", "fallback_title": "同伴会话",
             "cwd": "/tmp", "live": True,
-            "keepalive_name": "pickup-claude-companion",
+            "keepalive_name": "corral-claude-companion",
         }
         store, _ = _make_store(sessions=[provisional, companion])
-        old_key = pickup.session_key(provisional)
-        new_key = pickup.session_key(real)
-        companion_key = pickup.session_key(companion)
-        app = PickupApp(store, embed_ok=True)
+        old_key = corral.session_key(provisional)
+        new_key = corral.session_key(real)
+        companion_key = corral.session_key(companion)
+        app = CorralApp(store, embed_ok=True)
         # 本测手动模拟一次扫描替换；禁止后台定时重扫把 fixture 又写回占位卡。
         with mock.patch.object(store, "refresh", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
@@ -1069,7 +1069,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                         "/tmp", [old_key, companion_key], focus_key=old_key
                     )
                 )
-                with mock.patch("pickup.liveness.is_alive", return_value=True):
+                with mock.patch("corral.liveness.is_alive", return_value=True):
                     area.show_hosted_group(
                         "/tmp",
                         [(provisional, kname, lambda: "")],
@@ -1078,7 +1078,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                     list_view = app.screen.query_one(SessionListView)
                     await list_view.rebuild(select_key=old_key)
                     self.assertEqual(
-                        pickup.session_key(list_view.selected_session()), old_key
+                        corral.session_key(list_view.selected_session()), old_key
                     )
                     store.sessions["claude"] = [real, companion]
                     store._order = [new_key, companion_key]  # noqa: SLF001 — 模拟重扫把占位卡替换成真实卡
@@ -1089,15 +1089,15 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(group.session_keys, [new_key, companion_key])
                     self.assertEqual(area.pane_specs()[0].session_key, new_key)
                     self.assertEqual(
-                        pickup.session_key(list_view.selected_session()), new_key,
+                        corral.session_key(list_view.selected_session()), new_key,
                         "占位卡转成真实卡后仍应选中同一份运行中会话",
                     )
                     self.assertEqual(area.ordered_session_keys(), [new_key])
 
     async def test_pi_provisional_refresh_keeps_split_group_without_duplicate(self) -> None:
         """Pi 历史落盘后占位卡转正：分屏组跟上新键，侧边栏不得在组外再挂一张。"""
-        kname = "pickup-pi-abcd1234"
-        companion_kname = "pickup-claude-companion"
+        kname = "corral-pi-abcd1234"
+        companion_kname = "corral-claude-companion"
         companion = {
             "source": "claude", "id": "companion", "short_id": "companion",
             "mtime": time.time() - 1, "size_bytes": 1, "size_kb": 1,
@@ -1119,17 +1119,17 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             cwd="/tmp/proj",
             ident="abcd1234",
         )
-        old_key = pickup.session_key(provisional)
+        old_key = corral.session_key(provisional)
         real_id = "019ffa0b-6679-7e5e-bfd9-1615e07cf643"
         new_key = f"pi:{real_id}"
-        companion_key = pickup.session_key(companion)
+        companion_key = corral.session_key(companion)
         real = {
             "source": "pi", "id": real_id, "short_id": real_id[:12],
             "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
             "native_title": "真会话", "fallback_title": "真会话",
             "cwd": "/tmp/proj", "live": False,
         }
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         real_refresh = store.refresh
         with mock.patch.object(store, "refresh", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
@@ -1140,8 +1140,8 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                         "/tmp/proj", [old_key, companion_key], focus_key=old_key
                     )
                 )
-                with mock.patch("pickup.liveness.is_alive", return_value=True), mock.patch.object(
-                    pickup.liveness, "annotate"
+                with mock.patch("corral.liveness.is_alive", return_value=True), mock.patch.object(
+                    corral.liveness, "annotate"
                 ):
                     area.show_hosted_group(
                         "/tmp/proj",
@@ -1159,7 +1159,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIsNone(store.find_session(old_key))
                     grouped = set(group.session_keys)
                     visible = [
-                        pickup.session_key(session)
+                        corral.session_key(session)
                         for session in list_view.visible_sessions()
                     ]
                     self.assertIn(new_key, visible)
@@ -1172,10 +1172,10 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resize_full_repaint_is_debounced(self) -> None:
         """连续缩放手势只在停稳后触发一次整屏全量重绘，不能每次尺寸变化都狂刷。"""
-        import pickup.ui.app as app_mod
+        import corral.ui.app as app_mod
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         # CI 上 pilot.pause 的墙钟开销可能让 0.12s 防抖在「拖动断言」前就到期；
         # 本测把窗口拉长，只验证「拖动中重置、停稳后恰好一次」的契约。
         debounce = 0.5
@@ -1210,7 +1210,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
     def test_compositor_index_error_recovers_instead_of_exiting(self) -> None:
         """窗口缩放时 Textual chops/spans 行数竞态：IndexError 应自愈，不退出 TUI。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         app._compositor_recovery_budget = 2
         forced: list[int] = []
 
@@ -1228,7 +1228,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(app, "_force_full_repaint", side_effect=_fake_force),
             mock.patch("textual.app.App._handle_exception") as fatal,
-            mock.patch("pickup.observe.log_exception") as logged,
+            mock.patch("corral.observe.log_exception") as logged,
         ):
             app._handle_exception(IndexError("list index out of range"))
         fatal.assert_called_once()
@@ -1244,7 +1244,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         """
         from textual.cache import LRUCache
 
-        from pickup.ui.textual_patches import install_textual_patches
+        from corral.ui.textual_patches import install_textual_patches
 
         install_textual_patches()
         cache = LRUCache(2)
@@ -1263,7 +1263,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         """非 compositor 自愈的致命异常必须写入 observe，不能只闪在终端。"""
         import tempfile
 
-        from pickup import observe
+        from corral import observe
 
         store, _ = _make_store()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1276,7 +1276,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             ):
                 observe.reset_for_tests()
                 observe.init(debug=False)
-                app = PickupApp(store, embed_ok=False)
+                app = CorralApp(store, embed_ok=False)
 
                 def _boom() -> None:
                     raise NameError("name '_project_groups' is not defined")
@@ -1304,7 +1304,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
     async def test_f12_saves_screenshot_under_cache(self) -> None:
         import tempfile
 
-        from pickup import observe
+        from corral import observe
 
         store, _ = _make_store()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1316,7 +1316,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             ):
                 observe.reset_for_tests()
                 observe.init(debug=False)
-                app = PickupApp(store, embed_ok=False)
+                app = CorralApp(store, embed_ok=False)
                 async with app.run_test(size=(100, 30)) as pilot:
                     await pilot.pause(delay=0.2)
                     # 直接调 action，避免 Pilot 对 F12 键名在部分环境下不派发到 Screen。
@@ -1339,7 +1339,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
         探到的真实 RGB。"""
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True, osc_report=b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07")
+        app = CorralApp(store, embed_ok=True, osc_report=b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07")
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             pane = _primary_embed_pane(app.screen)
@@ -1352,12 +1352,12 @@ class MainScreenWorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_background_refresh_worker_is_cancelled_on_normal_exit(self) -> None:
         store, _ = _make_store()
         store.refresh = mock.Mock(return_value=False)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
 
         started_at = time.monotonic()
         with (
-            mock.patch("pickup.ui.main_screen.REFRESH_INTERVAL", 0.01),
-            mock.patch("pickup.ui.main_screen.REFRESH_INTERVAL_MAX", 0.02),
+            mock.patch("corral.ui.main_screen.REFRESH_INTERVAL", 0.01),
+            mock.patch("corral.ui.main_screen.REFRESH_INTERVAL_MAX", 0.02),
         ):
             async with app.run_test(size=(100, 30)) as pilot:
                 await _wait_until(lambda: store.refresh.call_count > 0)
@@ -1370,10 +1370,10 @@ class MainScreenWorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_initial_load_wait_worker_is_cancelled_on_normal_exit(self) -> None:
         runtime = mock.Mock(id="claude", display_name="Claude")
-        registry = pickup.RuntimeRegistry((runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
-        app = PickupApp(store, embed_ok=False)
+        registry = corral.RuntimeRegistry((runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
+        app = CorralApp(store, embed_ok=False)
 
         started_at = time.monotonic()
         async with app.run_test(size=(100, 30)) as pilot:
@@ -1394,8 +1394,8 @@ class SessionStoreFailureTests(unittest.IsolatedAsyncioTestCase):
         registry.get.return_value = runtime
         registry.__iter__.side_effect = lambda: iter((runtime,))
         registry.scan_all.side_effect = [RuntimeError("历史目录暂时不可读"), {"claude": []}]
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
 
         store.load()
 
@@ -1404,7 +1404,7 @@ class SessionStoreFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Failed to load sessions", store.get_load_error())
         self.assertIn("历史目录暂时不可读", store.get_load_error())
 
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.1)
             search = app.screen.query_one("#project-search", Input)
@@ -1430,7 +1430,7 @@ class SessionStoreRemoveSessionTests(unittest.TestCase):
         store.display_titles[key] = "标题"
         store.generating.add(key)
         store.conversations[key] = (1.0, [])
-        store.hosted[key] = "pickup-claude-fake"
+        store.hosted[key] = "corral-claude-fake"
         store._provisional[key] = dict(session)
         store._force_ended.add(key)
 
@@ -1507,7 +1507,7 @@ class SessionCardVisualTests(unittest.TestCase):
         source="opencode",
         display_name="OpenCode",
         display_title="修复侧边栏展示",
-        cwd="/tmp/pickup",
+        cwd="/tmp/corral",
     ) -> SessionCard:
         runtime = mock.Mock(id=source, display_name=display_name)
         store = mock.Mock()
@@ -1539,9 +1539,9 @@ class SessionCardVisualTests(unittest.TestCase):
         self.assertEqual(len(lines), 3)
         self.assertNotIn("OpenCode", lines[0])
         self.assertTrue(lines[1].endswith("OpenCode"))
-        self.assertEqual(pickup._text_width(lines[0]), 39)
-        self.assertEqual(pickup._text_width(lines[1]), 39)
-        relative_time = pickup._format_relative_time(card.session["mtime"])
+        self.assertEqual(corral._text_width(lines[0]), 39)
+        self.assertEqual(corral._text_width(lines[1]), 39)
+        relative_time = corral._format_relative_time(card.session["mtime"])
         self.assertTrue(lines[2].endswith(relative_time))
 
     def test_just_now_time_is_bold_older_relative_time_is_not(self) -> None:
@@ -1557,7 +1557,7 @@ class SessionCardVisualTests(unittest.TestCase):
             fresh_text = fresh.render()
             older_text = older.render()
 
-        just_now = pickup._format_relative_time(fresh.session["mtime"], now)
+        just_now = corral._format_relative_time(fresh.session["mtime"], now)
         self.assertEqual(just_now, "just now")
         just_idx = fresh_text.plain.rfind(just_now)
         self.assertGreaterEqual(just_idx, 0)
@@ -1570,7 +1570,7 @@ class SessionCardVisualTests(unittest.TestCase):
             f"just now should be bold, spans={just_spans}",
         )
 
-        older_label = pickup._format_relative_time(older.session["mtime"], now)
+        older_label = corral._format_relative_time(older.session["mtime"], now)
         self.assertEqual(older_label, "4m ago")
         older_idx = older_text.plain.rfind(older_label)
         self.assertGreaterEqual(older_idx, 0)
@@ -1600,7 +1600,7 @@ class SessionCardVisualTests(unittest.TestCase):
         self.assertNotIn("…", lines[0])
         # 截断处仍是标题正文的字符，且整行铺满可用宽度
         self.assertIn("这是一个非常", lines[0])
-        self.assertEqual(pickup._text_width(lines[0]), 39)
+        self.assertEqual(corral._text_width(lines[0]), 39)
 
     def test_runtime_label_uses_distinct_brand_colors(self) -> None:
         cases = (
@@ -1635,7 +1635,7 @@ class SessionCardVisualTests(unittest.TestCase):
 
         项目名是定位用的前缀，同亮度时会和标题抢视线；标题本身必须保持不 dim。
         """
-        card = self._card(cwd="/tmp/pickup", display_title="修复侧边栏展示")
+        card = self._card(cwd="/tmp/corral", display_title="修复侧边栏展示")
         with mock.patch.object(
             SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
         ):
@@ -1643,8 +1643,8 @@ class SessionCardVisualTests(unittest.TestCase):
 
         lines = rendered.plain.splitlines()
         first_line = lines[0]
-        project_start = first_line.index("pickup")
-        project_end = project_start + len("pickup")
+        project_start = first_line.index("corral")
+        project_end = project_start + len("corral")
         title_start = first_line.index("修复侧边栏展示")
 
         project_spans = [
@@ -1674,7 +1674,7 @@ class SessionCardVisualTests(unittest.TestCase):
 
     def test_group_member_title_omits_project_name(self) -> None:
         """组内子项挂在已写项目的组卡下，标题前不再重复项目名。"""
-        card = self._card(cwd="/tmp/pickup", display_title="修复侧边栏展示")
+        card = self._card(cwd="/tmp/corral", display_title="修复侧边栏展示")
         card.tree_position = "last"
         with mock.patch.object(
             SessionCard, "size", new_callable=mock.PropertyMock, return_value=Size(39, 3),
@@ -1683,7 +1683,7 @@ class SessionCardVisualTests(unittest.TestCase):
 
         first_line = rendered.plain.splitlines()[0]
         self.assertTrue(first_line.startswith("└─ "))
-        self.assertNotIn("pickup", first_line)
+        self.assertNotIn("corral", first_line)
         self.assertIn("修复侧边栏展示", first_line)
 
     def test_group_tree_prefix_is_not_dim(self) -> None:
@@ -1720,15 +1720,15 @@ class SessionCardVisualTests(unittest.TestCase):
             rendered = card.render()
 
         first_line = rendered.plain.splitlines()[0]
-        self.assertTrue(first_line.startswith("pickup "))
-        for frame in pickup.SPINNER_FRAMES:
+        self.assertTrue(first_line.startswith("corral "))
+        for frame in corral.SPINNER_FRAMES:
             self.assertNotIn(frame, first_line)
 
     def test_title_color_is_uniform_across_lifecycle_states(self) -> None:
         """运行阶段由第二行圆点表达；标题不再整行变绿，也不展示状态文案。"""
         cases = (
             (self._card(live=True), "live"),
-            (self._card(keepalive_name="pickup-opencode-visual"), "hosted"),
+            (self._card(keepalive_name="corral-opencode-visual"), "hosted"),
             (self._card(), "ended"),
         )
         for card, label in cases:
@@ -1758,7 +1758,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
         「没变化」直接返回，「＋ 新建」与活动看板永远不出现。
         """
         store, _ = _make_store(sessions=[])
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -1769,7 +1769,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_and_card_spacing_are_explicit(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             search = app.screen.query_one("#project-search", Input)
@@ -1798,7 +1798,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
         进行中标题（显式成功绿）和运行时名（品牌色）自带颜色，不受这条影响。
         """
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             card = next(iter(app.screen.query(SessionCard)))
@@ -1828,7 +1828,7 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             for i, age in enumerate(ages)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             cards = list(app.screen.query(SessionCard))
@@ -1867,7 +1867,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
 
     async def _seed_group(self, list_view: SessionListView) -> list[str]:
         keys = [
-            pickup.session_key(session)
+            corral.session_key(session)
             for session in list_view.store.all_sessions()
         ][:2]
         list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -1876,7 +1876,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_split_marks_group_and_active_session(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view, _ = self._items(app)
@@ -1888,7 +1888,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             group_row = list_view._group_items()[0][0]
             session_rows = {
-                pickup.session_key(card.session): item
+                corral.session_key(card.session): item
                 for item, card in list_view._session_items()
             }
             active_row = session_rows[keys[1]]
@@ -1918,18 +1918,18 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-s{i}",
+                "keepalive_name": f"corral-claude-s{i}",
             }
             for i in range(2)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.liveness.is_alive", return_value=True):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.liveness.is_alive", return_value=True):
             async with app.run_test(size=(160, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
                 area = app.screen.query_one(SplitPaneArea)
-                keys = [pickup.session_key(s) for s in sessions]
+                keys = [corral.session_key(s) for s in sessions]
                 list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
                 await list_view.rebuild()
                 area.show_hosted_group(
@@ -1946,7 +1946,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
                 member0 = next(
                     item
                     for item, card in list_view._session_items()
-                    if pickup.session_key(card.session) == keys[0]
+                    if corral.session_key(card.session) == keys[0]
                 )
                 self.assertTrue(member0.has_class("-split-active"))
 
@@ -1958,7 +1958,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(group_row.has_class("-in-split"))
                 self.assertTrue(group_row.has_class("-group-selected"))
                 session_rows = {
-                    pickup.session_key(card.session): item
+                    corral.session_key(card.session): item
                     for item, card in list_view._session_items()
                 }
                 self.assertTrue(session_rows[keys[0]].has_class("-in-split"))
@@ -1992,7 +1992,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
     async def test_keyboard_cursor_on_a_marked_row_never_dims_it(self) -> None:
         """光标停到组合行上必须更重，不能被列表自身的选中底色压回去。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view, _ = self._items(app)
@@ -2007,7 +2007,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             active_row = next(
                 item
                 for item, card in list_view._session_items()
-                if pickup.session_key(card.session) == keys[1]
+                if corral.session_key(card.session) == keys[1]
             )
             listed_bg = group_row.styles.background
             active_bg = active_row.styles.background
@@ -2026,11 +2026,11 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
     async def test_single_pane_and_placeholder_keys_are_not_marked(self) -> None:
         """单格不标（列表光标本身就指着它），新建提示这类占位键也不参与。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view, items = self._items(app)
-            keys = [pickup.session_key(card.session) for _, card in items]
+            keys = [corral.session_key(card.session) for _, card in items]
 
             list_view.set_split_marks([keys[0]], keys[0])
             await pilot.pause()
@@ -2044,7 +2044,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
     async def test_marks_survive_list_rebuild(self) -> None:
         """后台重扫会重建全部列表项，分屏底色必须跟着重新贴上。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view, _ = self._items(app)
@@ -2061,7 +2061,7 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
             active_row = next(
                 item
                 for item, card in list_view._session_items()
-                if pickup.session_key(card.session) == keys[0]
+                if corral.session_key(card.session) == keys[0]
             )
             self.assertTrue(group_row.has_class("-in-split"))
             self.assertTrue(active_row.has_class("-split-active"))
@@ -2096,12 +2096,12 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_independent_sessions_alternate_by_block(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             keys = [
-                pickup.session_key(session) for session in store.all_sessions()
+                corral.session_key(session) for session in store.all_sessions()
             ]
             self.assertGreaterEqual(len(keys), 3)
             stripes = self._stripe_by_identity(list_view)
@@ -2112,15 +2112,15 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_and_members_share_phase(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             group_keys = [
-                pickup.session_key(session) for session in sessions[:2]
+                corral.session_key(session) for session in sessions[:2]
             ]
-            independent_key = pickup.session_key(sessions[2])
+            independent_key = corral.session_key(sessions[2])
             list_view.on_layout_change(
                 lambda s: s.set_group("/tmp", group_keys, focus_key=group_keys[0])
             )
@@ -2137,15 +2137,15 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_collapse_does_not_flip_later_blocks(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             group_keys = [
-                pickup.session_key(session) for session in sessions[:2]
+                corral.session_key(session) for session in sessions[:2]
             ]
-            independent_key = pickup.session_key(sessions[2])
+            independent_key = corral.session_key(sessions[2])
             list_view.on_layout_change(
                 lambda s: s.set_group("/tmp", group_keys, focus_key=group_keys[0])
             )
@@ -2165,13 +2165,13 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_separator_resets_phase(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
-            pinned_key = pickup.session_key(sessions[0])
-            unpinned = [pickup.session_key(session) for session in sessions[1:]]
+            pinned_key = corral.session_key(sessions[0])
+            unpinned = [corral.session_key(session) for session in sessions[1:]]
             list_view.on_layout_change(lambda s: s.toggle_session_pin(pinned_key))
             await list_view.rebuild()
             rows = list_view._sidebar_rows()
@@ -2189,7 +2189,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stripes_survive_in_place_and_full_rebuild(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2204,7 +2204,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
             after = self._stripe_by_identity(list_view)
             self.assertEqual(len(after), len(before) - 1)
             remaining = [
-                pickup.session_key(session) for session in store.all_sessions()
+                corral.session_key(session) for session in store.all_sessions()
             ]
             # 段尾锚定：段末块无条纹，倒数第二块有条纹
             self.assertEqual(after[remaining[0]], True)
@@ -2213,7 +2213,7 @@ class SidebarStripeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stripe_background_is_translucent(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2232,7 +2232,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
 
     async def _grouped_app(self):
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         return store, app
 
     async def test_collapsed_group_card_summarizes_member_attention(self) -> None:
@@ -2243,7 +2243,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             sessions = store.all_sessions()
             sessions[0]["attention_kind"] = "working"
             sessions[1]["attention_kind"] = "waiting"
-            keys = [pickup.session_key(session) for session in sessions[:2]]
+            keys = [corral.session_key(session) for session in sessions[:2]]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
 
@@ -2276,7 +2276,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             child_cards = [
                 card
                 for card in list_view.query(SessionCard)
-                if pickup.session_key(card.session) in keys
+                if corral.session_key(card.session) in keys
             ]
             self.assertEqual(len(child_cards), 2)
             first_child_line = child_cards[0].render().plain.splitlines()[0]
@@ -2299,7 +2299,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             keys = [
-                pickup.session_key(session)
+                corral.session_key(session)
                 for session in store.all_sessions()[:2]
             ]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -2323,19 +2323,19 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_follows_sidebar_memory_changed_by_another_window(self) -> None:
-        """另一个 pickup 窗口改了置顶/分组，本窗口要自动跟上，且不覆盖对方。
+        """另一个 corral 窗口改了置顶/分组，本窗口要自动跟上，且不覆盖对方。
 
         侧边栏记忆是多窗口共享的：这里用一个独立的库句柄模拟另一个窗口，本窗口靠
         版本号轮询发现改动。断言两件事——对方的改动进得来，本窗口自己的改动还在。
         """
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             screen = app.screen
             list_view = screen.query_one(SessionListView)
             keys = [
-                pickup.session_key(session)
+                corral.session_key(session)
                 for session in store.all_sessions()[:3]
             ]
             # 本窗口先置顶一条
@@ -2362,7 +2362,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             keys = [
-                pickup.session_key(session)
+                corral.session_key(session)
                 for session in store.all_sessions()[:2]
             ]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -2396,12 +2396,12 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             },
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
-            alpha = pickup.session_key(sessions[0])
-            beta = pickup.session_key(sessions[1])
+            alpha = corral.session_key(sessions[0])
+            beta = corral.session_key(sessions[1])
             list_view.on_layout_change(lambda s: s.toggle_session_pin(alpha))
             list_view.on_layout_change(
                 lambda s: s.set_group("/work/alpha", [alpha, beta], focus_key=alpha)
@@ -2420,12 +2420,12 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_keeps_ended_sessions_in_the_group(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             keys = [
-                pickup.session_key(session)
+                corral.session_key(session)
                 for session in store.all_sessions()[:2]
             ]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -2439,8 +2439,8 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
-            keys = [pickup.session_key(session) for session in sessions[:2]]
-            independent_key = pickup.session_key(sessions[2])
+            keys = [corral.session_key(session) for session in sessions[:2]]
+            independent_key = corral.session_key(sessions[2])
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
             list_view.focus()
@@ -2448,7 +2448,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             independent_item = next(
                 item
                 for item, card in list_view._session_items()
-                if pickup.session_key(card.session) == independent_key
+                if corral.session_key(card.session) == independent_key
             )
             list_view.index = list(list_view.list_children).index(independent_item)
             await pilot.press("p")
@@ -2477,7 +2477,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             keys = [
-                pickup.session_key(session)
+                corral.session_key(session)
                 for session in store.all_sessions()[:2]
             ]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -2496,7 +2496,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
-            independent_key = pickup.session_key(store.all_sessions()[0])
+            independent_key = corral.session_key(store.all_sessions()[0])
             list_view.focus()
             self.assertTrue(list_view.select_session_key(independent_key))
             await pilot.press("ctrl+p")
@@ -2512,8 +2512,8 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             list_view = app.screen.query_one(SessionListView)
             sessions = store.all_sessions()
             self.assertGreaterEqual(len(sessions), 2)
-            pinned_key = pickup.session_key(sessions[0])
-            other_key = pickup.session_key(sessions[1])
+            pinned_key = corral.session_key(sessions[0])
+            other_key = corral.session_key(sessions[1])
 
             # 无置顶 → 无分隔
             self.assertEqual(len(list(list_view.query(PinSeparatorCard))), 0)
@@ -2543,7 +2543,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             list_view.index = len(STICKY_IDS)  # 置顶会话（固定头之下）
             list_view.action_cursor_down()
             self.assertEqual(
-                pickup.session_key(list_view.selected_session()),
+                corral.session_key(list_view.selected_session()),
                 other_key,
             )
             self.assertNotEqual(
@@ -2553,9 +2553,9 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
 
             # 全部置顶后分隔消失
             remaining = [
-                pickup.session_key(session)
+                corral.session_key(session)
                 for session in sessions
-                if pickup.session_key(session) != pinned_key
+                if corral.session_key(session) != pinned_key
             ]
             for key in remaining:
                 list_view.on_layout_change(lambda s, k=key: s.toggle_session_pin(k))
@@ -2568,7 +2568,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             await list_view.rebuild()
             self.assertEqual(len(list(list_view.query(PinSeparatorCard))), 1)
             self.assertEqual(
-                pickup.session_key(list_view.selected_session()),
+                corral.session_key(list_view.selected_session()),
                 pinned_key,
             )
 
@@ -2580,14 +2580,14 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             *[
                 _claude_session(
                     f"old-{i}",
-                    now - 3 * pickup.TODAY_SECONDS - i,
+                    now - 3 * corral.TODAY_SECONDS - i,
                     f"更早{i}",
                 )
                 for i in range(18)
             ],
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 24)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2601,7 +2601,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             pinned_card = next(
                 card
                 for card in app.screen.query(SessionCard)
-                if pickup.session_key(card.session) == "claude:pin-me"
+                if corral.session_key(card.session) == "claude:pin-me"
             )
             scroll = list_view.query_one("#sidebar-scroll")
             sticky = list_view.query_one("#sidebar-sticky")
@@ -2640,14 +2640,14 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             *[
                 _claude_session(
                     f"old-{i}",
-                    now - 3 * pickup.TODAY_SECONDS - i,
+                    now - 3 * corral.TODAY_SECONDS - i,
                     f"更早{i}",
                 )
                 for i in range(10)
             ],
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 24)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2666,7 +2666,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             pinned_cards = [
                 card
                 for card in app.screen.query(SessionCard)
-                if pickup.session_key(card.session).startswith("claude:pin-")
+                if corral.session_key(card.session).startswith("claude:pin-")
             ]
             self.assertEqual(len(pinned_cards), 8)
             for card in pinned_cards:
@@ -2675,7 +2675,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             last_unpinned = next(
                 card
                 for card in app.screen.query(SessionCard)
-                if pickup.session_key(card.session) == "claude:old-9"
+                if corral.session_key(card.session) == "claude:old-9"
             )
             self.assertGreater(scroll.max_scroll_y, 0)
             search = app.screen.query_one("#project-search", Input)
@@ -2698,7 +2698,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     def test_live_or_recent_mtime_counts_as_today(self) -> None:
         """滚动 24 小时界：live 优先，与时间行 today 档共用 TODAY_SECONDS。"""
         now = time.time()
-        old = now - 10 * pickup.TODAY_SECONDS
+        old = now - 10 * corral.TODAY_SECONDS
         self.assertTrue(
             _session_in_today_window({"live": True, "mtime": old}, now)
         )
@@ -2733,8 +2733,8 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             _claude_session("old-c", now - 180, "旧C"),
         ]
         store, _ = _make_store(sessions=sessions)
-        store.find_session("claude:old-c")["mtime"] = now - 3 * pickup.TODAY_SECONDS
-        app = PickupApp(store, embed_ok=False)
+        store.find_session("claude:old-c")["mtime"] = now - 3 * corral.TODAY_SECONDS
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2775,10 +2775,10 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             _claude_session("old-b", now - 120, "旧B"),
         ]
         store, _ = _make_store(sessions=sessions)
-        age = now - 3 * pickup.TODAY_SECONDS
+        age = now - 3 * corral.TODAY_SECONDS
         for session in store.all_sessions():
             session["mtime"] = age
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2797,9 +2797,9 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         ]
         store, _ = _make_store(sessions=sessions)
         store.find_session("claude:mid-old")["mtime"] = (
-            now - 3 * pickup.TODAY_SECONDS
+            now - 3 * corral.TODAY_SECONDS
         )
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2825,10 +2825,10 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             _claude_session("solo-old", now - 200, "独立旧"),
         ]
         store, _ = _make_store(sessions=sessions)
-        age = now - 3 * pickup.TODAY_SECONDS
+        age = now - 3 * corral.TODAY_SECONDS
         for key in ("claude:g-old1", "claude:g-old2", "claude:solo-old"):
             store.find_session(key)["mtime"] = age
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2857,9 +2857,9 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         ]
         store, _ = _make_store(sessions=sessions)
         store.find_session("claude:old-c")["mtime"] = (
-            now - 3 * pickup.TODAY_SECONDS
+            now - 3 * corral.TODAY_SECONDS
         )
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2882,7 +2882,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             list_view.index = len(STICKY_IDS)  # 置顶会话
             list_view.action_cursor_down()
             self.assertEqual(
-                pickup.session_key(list_view.selected_session()),
+                corral.session_key(list_view.selected_session()),
                 "claude:today-b",
             )
             self.assertNotIn(
@@ -2891,7 +2891,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             )
             list_view.action_cursor_down()
             self.assertEqual(
-                pickup.session_key(list_view.selected_session()),
+                corral.session_key(list_view.selected_session()),
                 "claude:old-c",
             )
             self.assertNotIn(
@@ -2908,11 +2908,11 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
         ]
         store, _ = _make_store(sessions=sessions)
         store.find_session("claude:old-c")["mtime"] = (
-            now - 3 * pickup.TODAY_SECONDS
+            now - 3 * corral.TODAY_SECONDS
         )
         i18n.set_lang("zh")
         try:
-            app = PickupApp(store, embed_ok=False)
+            app = CorralApp(store, embed_ok=False)
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
@@ -2957,7 +2957,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             },
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -2988,18 +2988,18 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": now - 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "组成员 1",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": "pickup-g1",
+                "keepalive_name": "corral-g1",
             },
             {
                 "source": "claude", "id": "g2", "short_id": "g2",
                 "mtime": now - 200, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "组成员 2",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": "pickup-g2",
+                "keepalive_name": "corral-g2",
             },
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -3036,8 +3036,8 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             for i in range(30)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
-        with mock.patch("pickup.ui.session_list._MOUNT_CHUNK", 10):
+        app = CorralApp(store, embed_ok=False)
+        with mock.patch("corral.ui.session_list._MOUNT_CHUNK", 10):
             async with app.run_test(size=(100, 40)) as pilot:
                 list_view = app.screen.query_one(SessionListView)
                 await list_view.clear()
@@ -3078,7 +3078,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 "source": "claude", "id": "b", "short_id": "b",
                 "mtime": time.time() - 10, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "界面打磨",
-                "cwd": "/Users/x/pickup", "live": False,
+                "cwd": "/Users/x/corral", "live": False,
             },
             {
                 "source": "claude", "id": "c", "short_id": "c",
@@ -3088,7 +3088,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             },
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -3138,12 +3138,12 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         销毁重建除了控件开销，还会连带丢掉上一格的实时画面和控制通道——真机上
         表现为每换一个会话右栏都要先空一下再重新连。
         """
-        from pickup.ui.split_pane_area import SplitPaneArea
+        from corral.ui.split_pane_area import SplitPaneArea
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 area = app.screen.query_one(SplitPaneArea)
@@ -3153,29 +3153,29 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(app.screen, "_follow_current_selection").start()
                 self.addCleanup(mock.patch.stopall)
 
-                area.show_hosted_group("/tmp", [(first, "pickup-claude-one", None)])
+                area.show_hosted_group("/tmp", [(first, "corral-claude-one", None)])
                 await _wait_until(
                     lambda: bool(area.cells())
                     and area.cells()[0].embed_pane() is not None
-                    and area.cells()[0].embed_pane().session_name == "pickup-claude-one"
+                    and area.cells()[0].embed_pane().session_name == "corral-claude-one"
                 )
                 pane_before = area.cells()[0].embed_pane()
                 cell_before = area.cells()[0]
 
-                area.show_hosted_group("/tmp", [(second, "pickup-claude-two", None)])
+                area.show_hosted_group("/tmp", [(second, "corral-claude-two", None)])
                 await _wait_until(
                     lambda: bool(area.cells())
                     and area.cells()[0].embed_pane() is not None
-                    and area.cells()[0].embed_pane().session_name == "pickup-claude-two"
+                    and area.cells()[0].embed_pane().session_name == "corral-claude-two"
                 )
                 self.assertIs(area.cells()[0], cell_before, "格子被重建了")
                 self.assertIs(area.cells()[0].embed_pane(), pane_before, "画面控件被重建了")
-                self.assertEqual(area.cells()[0].spec.keepalive_name, "pickup-claude-two")
+                self.assertEqual(area.cells()[0].spec.keepalive_name, "corral-claude-two")
 
     async def test_pane_count_change_reuses_pool_without_remount(self) -> None:
         """2↔4 格切换必须复用格池控件，不得 remove/mount 已有格子。"""
-        from pickup.split_layout import MAX_PANES
-        from pickup.ui.embed_pane import EmbedPane
+        from corral.split_layout import MAX_PANES
+        from corral.ui.embed_pane import EmbedPane
 
         sessions = [
             {
@@ -3183,14 +3183,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-p{i}",
+                "keepalive_name": f"corral-claude-p{i}",
             }
             for i in range(MAX_PANES)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(160, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 area = app.screen.query_one(SplitPaneArea)
@@ -3243,7 +3243,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pane_count_change_resizes_once_at_final_layout_size(self) -> None:
         """分屏格数变化要立即按最终尺寸 resize，布局落定后不得重复一次。"""
-        from pickup.split_layout import MAX_PANES
+        from corral.split_layout import MAX_PANES
 
         sessions = [
             {
@@ -3251,18 +3251,18 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"尺寸会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-resize-{i}",
+                "keepalive_name": f"corral-claude-resize-{i}",
             }
             for i in range(MAX_PANES)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         resize_calls: list[tuple[str, int, int]] = []
         with (
-            mock.patch("pickup.embed.open_channel", return_value=None),
-            mock.patch("pickup.embed.should_resize_host", return_value=True),
+            mock.patch("corral.embed.open_channel", return_value=None),
+            mock.patch("corral.embed.should_resize_host", return_value=True),
             mock.patch(
-                "pickup.embed.resize",
+                "corral.embed.resize",
                 side_effect=lambda name, width, height: resize_calls.append(
                     (name, width, height)
                 ),
@@ -3307,7 +3307,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_two_to_one_discards_half_width_screen_before_first_frame(self) -> None:
         """双格切单格不可先把半宽缓存画在左半边，再等 200ms 防抖修正。"""
-        from pickup.ui import embed_pane as embed_pane_mod
+        from corral.ui import embed_pane as embed_pane_mod
 
         sessions = [
             {
@@ -3315,21 +3315,21 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"单格会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-single-{i}",
+                "keepalive_name": f"corral-claude-single-{i}",
             }
             for i in range(3)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         resize_calls: list[tuple[str, int, int]] = []
         target_name = sessions[2]["keepalive_name"]
         # 这正是切回过双格会话时会命中的旧尺寸缓存；本次切单格必须不用它。
         embed_pane_mod._cache_screen(target_name, [["旧半宽画面"]], None)  # noqa: SLF001
         with (
-            mock.patch("pickup.embed.open_channel", return_value=None),
-            mock.patch("pickup.embed.should_resize_host", return_value=True),
+            mock.patch("corral.embed.open_channel", return_value=None),
+            mock.patch("corral.embed.should_resize_host", return_value=True),
             mock.patch(
-                "pickup.embed.resize",
+                "corral.embed.resize",
                 side_effect=lambda name, width, height: resize_calls.append(
                     (name, width, height)
                 ),
@@ -3382,12 +3382,12 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch.object(pane, "_pane_size", return_value=(50, 28)),
             mock.patch(
-                "pickup.embed.open_channel",
+                "corral.embed.open_channel",
                 side_effect=lambda *_args, **_kwargs: observed.append(pane._capture_size()),
             ),
-            mock.patch("pickup.embed.should_resize_host", return_value=False),
+            mock.patch("corral.embed.should_resize_host", return_value=False),
         ):
-            pane.focus_session("pickup-claude-target", target_size=(101, 28))
+            pane.focus_session("corral-claude-target", target_size=(101, 28))
         self.assertEqual(observed, [(101, 28)])
 
     def test_focus_session_without_target_size_clears_stale_override(self) -> None:
@@ -3397,10 +3397,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         pane._capture_size_override = (24, 28)  # noqa: SLF001
         with (
             mock.patch.object(pane, "_pane_size", return_value=(80, 28)),
-            mock.patch("pickup.embed.open_channel", return_value=None),
-            mock.patch("pickup.embed.should_resize_host", return_value=False),
+            mock.patch("corral.embed.open_channel", return_value=None),
+            mock.patch("corral.embed.should_resize_host", return_value=False),
         ):
-            pane.focus_session("pickup-claude-cleared")
+            pane.focus_session("corral-claude-cleared")
             self.assertIsNone(pane._capture_size_override)  # noqa: SLF001
             self.assertEqual(pane._capture_size(), (80, 28))  # noqa: SLF001
 
@@ -3415,16 +3415,16 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     def test_resize_clears_override_even_when_predicted_size_differs(self) -> None:
         """预测宽与 Textual 实际差 1 列时，Resize 也必须清掉 override。"""
         pane = EmbedPane()
-        pane.session_name = "pickup-claude-mismatch"
+        pane.session_name = "corral-claude-mismatch"
         pane.dead = False
         pane._capture_size_override = (25, 18)  # noqa: SLF001
-        pane._host_size = ("pickup-claude-mismatch", 24, 18)  # noqa: SLF001
+        pane._host_size = ("corral-claude-mismatch", 24, 18)  # noqa: SLF001
         pane._on_resize(events.Resize(Size(24, 18), Size(24, 18)))
         self.assertIsNone(pane._capture_size_override)  # noqa: SLF001
 
     def test_projected_embed_sizes_match_textual_floor_accumulate(self) -> None:
         """四格余数必须按 Textual floor-accumulate 交错分配，不能堆给末格。"""
-        from pickup.ui.split_pane_area import projected_embed_sizes
+        from corral.ui.split_pane_area import projected_embed_sizes
 
         sizes = projected_embed_sizes(101, 30, 4)
         self.assertEqual([w for w, _ in sizes], [24, 25, 24, 25])
@@ -3442,32 +3442,32 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_host_size_drift_retries_resize_with_backoff(self) -> None:
         """tmux 真实尺寸落后于格子时，抓帧线程按间隔重发 resize，同一目标最多 3 次。"""
-        import pickup.ui.embed_pane as embed_pane_mod
+        import corral.ui.embed_pane as embed_pane_mod
 
         pane = EmbedPane()
         pane._capture_size_override = None  # noqa: SLF001
         with (
             mock.patch.object(pane, "_pane_size", return_value=(80, 24)),
-            mock.patch("pickup.embed.should_resize_host", return_value=True),
-            mock.patch("pickup.embed.resize") as resize,
-            mock.patch("pickup.observe.event") as event,
+            mock.patch("corral.embed.should_resize_host", return_value=True),
+            mock.patch("corral.embed.resize") as resize,
+            mock.patch("corral.observe.event") as event,
         ):
-            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            pane._heal_host_size_if_needed("corral-claude-heal", (40, 24))  # noqa: SLF001
             self.assertEqual(resize.call_count, 1)
-            resize.assert_called_with("pickup-claude-heal", 80, 24)
+            resize.assert_called_with("corral-claude-heal", 80, 24)
             event.assert_called()
             self.assertEqual(event.call_args.args[0], "host_size_drift")
-            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            pane._heal_host_size_if_needed("corral-claude-heal", (40, 24))  # noqa: SLF001
             self.assertEqual(resize.call_count, 1, "间隔内不得连发")
             pane._heal_last_at = 0.0  # noqa: SLF001
-            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            pane._heal_host_size_if_needed("corral-claude-heal", (40, 24))  # noqa: SLF001
             pane._heal_last_at = 0.0  # noqa: SLF001
-            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            pane._heal_host_size_if_needed("corral-claude-heal", (40, 24))  # noqa: SLF001
             self.assertEqual(resize.call_count, 3)
             pane._heal_last_at = 0.0  # noqa: SLF001
-            pane._heal_host_size_if_needed("pickup-claude-heal", (40, 24))  # noqa: SLF001
+            pane._heal_host_size_if_needed("corral-claude-heal", (40, 24))  # noqa: SLF001
             self.assertEqual(resize.call_count, 3, "同一目标超过上限即停")
-            pane._heal_host_size_if_needed("pickup-claude-heal", (80, 24))  # noqa: SLF001
+            pane._heal_host_size_if_needed("corral-claude-heal", (80, 24))  # noqa: SLF001
             self.assertEqual(pane._heal_count, 0)  # noqa: SLF001
         self.assertGreaterEqual(embed_pane_mod._HOST_SIZE_HEAL_MAX, 3)
 
@@ -3479,15 +3479,15 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"组会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-g{i}",
+                "keepalive_name": f"corral-claude-g{i}",
             }
             for i in range(4)
         ]
         store, _ = _make_store(sessions=sessions)
-        keys = [pickup.session_key(s) for s in sessions]
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False):
+        keys = [corral.session_key(s) for s in sessions]
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 screen = app.screen
@@ -3535,9 +3535,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_cold_hosted_switch_skips_markdown_fallback(self) -> None:
         """冷切换托管会话不得同步跑 Markdown 回退（空白画布等首帧）。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 pane = _primary_embed_pane(app.screen)
@@ -3547,7 +3547,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     called["n"] += 1
                     return "SHOULD-NOT-RENDER"
 
-                pane.focus_session("pickup-cold-x", heavy)
+                pane.focus_session("corral-cold-x", heavy)
                 self.assertIsNone(pane._grid)
                 self.assertFalse(pane._is_hosted_fallback())
                 self.assertEqual(called["n"], 0)
@@ -3559,10 +3559,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             "source": "claude", "id": "runtime-only", "short_id": "runtime-only",
             "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
             "native_title": None, "fallback_title": "运行时优先",
-            "cwd": "/tmp", "live": True, "keepalive_name": "pickup-runtime-only",
+            "cwd": "/tmp", "live": True, "keepalive_name": "corral-runtime-only",
         }]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         seen_fallbacks: list[object | None] = []
         original = EmbedPane.focus_session
 
@@ -3571,14 +3571,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             return original(pane, name, fallback_renderer, **kwargs)
 
         with (
-            mock.patch("pickup.embed.open_channel", return_value=None),
+            mock.patch("corral.embed.open_channel", return_value=None),
             mock.patch.object(EmbedPane, "focus_session", new=record),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 app.screen.query_one(SplitPaneArea).show_hosted_group(
                     "/tmp",
-                    [(sessions[0], "pickup-runtime-only", lambda: "不得闪现的消息预览")],
+                    [(sessions[0], "corral-runtime-only", lambda: "不得闪现的消息预览")],
                 )
                 await _wait_until(
                     lambda: len(app.screen.query_one(SplitPaneArea).cells()) == 1,
@@ -3590,7 +3590,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 # 同一会话的列表刷新走就地更新，曾经正是这里把预览重新塞回活跃格。
                 area.show_hosted_group(
                     "/tmp",
-                    [(sessions[0], "pickup-runtime-only", lambda: "仍不得闪现")],
+                    [(sessions[0], "corral-runtime-only", lambda: "仍不得闪现")],
                 )
                 self.assertIsNone(pane._detail_renderer)
         self.assertTrue(seen_fallbacks)
@@ -3604,7 +3604,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         之后一定收敛到最后选中的那一项——只快不准同样是回归。
         """
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             screen = app.screen
@@ -3640,7 +3640,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_single_highlight_follows_immediately_not_debounced(self) -> None:
         """单次方向键必须马上跟随，不能改成「按一下也等窗口」的纯 debounce。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             screen = app.screen
@@ -3678,12 +3678,12 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         original = store.get_conversation
 
         def wrapped(session, *args, **kwargs):
-            key = pickup.session_key(session)
+            key = corral.session_key(session)
             loaded.append((threading.current_thread().name, key))
             return original(session, *args, **kwargs)
 
         store.get_conversation = wrapped  # type: ignore[method-assign]
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.25)
             cards = app.screen.query_one(SessionListView)._session_cards()
@@ -3696,18 +3696,18 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_enter_without_embed_exits_with_launch_request(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
             await pilot.pause()
-        self.assertIsInstance(app.return_value, pickup.LaunchRequest)
+        self.assertIsInstance(app.return_value, corral.LaunchRequest)
         self.assertEqual(app.return_value.session["id"], "s0")
 
     async def test_startup_selects_first_session_not_new_row(self) -> None:
-        """进入 pickup 默认高亮列表第一条会话/会话组，焦点在侧边栏。"""
+        """进入 corral 默认高亮列表第一条会话/会话组，焦点在侧边栏。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.3)
             list_view = app.screen.query_one(SessionListView)
@@ -3721,11 +3721,11 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_startup_selects_first_group_when_list_starts_with_group(self) -> None:
         """列表顶是会话组时，启动默认高亮组卡而不是「＋新建」。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
-            keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
+            keys = [corral.session_key(s) for s in store.all_sessions()[:2]]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             # 清空后再重建，走「初次填充」分支（had_rows=False）。
             await list_view.clear()
@@ -3738,7 +3738,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_activity_board_sticky_shows_empty_and_does_not_save_group(self) -> None:
         """侧栏固定头第二项是活动看板；没人需要盯时右栏空态，且不写入水果组。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.3)
             list_view = app.screen.query_one(SessionListView)
@@ -3766,16 +3766,16 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_activity_board_lays_out_members_without_saving_group(self) -> None:
         """有够格成员时右栏自动铺格，跨项目标题带项目名，不写成持久会话组。"""
-        from pickup.activity_board import BoardCandidate
+        from corral.activity_board import BoardCandidate
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         candidates = [
             BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
             BoardCandidate(key="claude:s1", kind="working", updated_at=1),
         ]
         with mock.patch(
-            "pickup.ui.controllers.board_controller.collect_candidates",
+            "corral.ui.controllers.board_controller.collect_candidates",
             return_value=candidates,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
@@ -3793,31 +3793,31 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_activity_board_holds_panes_while_hosted_during_viewing(self) -> None:
         """观看期间不撤格：会话跑完但仍托管时钉在原格，真正结束（不再托管）才撤。"""
-        from pickup.activity_board import BoardCandidate
+        from corral.activity_board import BoardCandidate
 
         sessions = [
             {
                 "source": "claude", "id": "s0", "short_id": "s0",
                 "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "会话0",
-                "cwd": "/tmp", "live": True, "keepalive_name": "pickup-s0",
+                "cwd": "/tmp", "live": True, "keepalive_name": "corral-s0",
             },
             {
                 "source": "claude", "id": "s1", "short_id": "s1",
                 "mtime": time.time() - 1, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "会话1",
-                "cwd": "/tmp", "live": True, "keepalive_name": "pickup-s1",
+                "cwd": "/tmp", "live": True, "keepalive_name": "corral-s1",
             },
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         both = [
             BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
             BoardCandidate(key="claude:s1", kind="working", updated_at=1),
         ]
         only_s0 = [BoardCandidate(key="claude:s0", kind="waiting", updated_at=2)]
         with mock.patch(
-            "pickup.ui.controllers.board_controller.collect_candidates",
+            "corral.ui.controllers.board_controller.collect_candidates",
             return_value=both,
         ) as candidates_mock:
             async with app.run_test(size=(120, 30)) as pilot:
@@ -3844,15 +3844,15 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_activity_board_full_does_not_block_top_bar_new_session(self) -> None:
         """看板铺满时顶栏加助手进队列，不报分屏已满。"""
-        from pickup.activity_board import BoardCandidate
-        from pickup.split_layout import MAX_PANES
+        from corral.activity_board import BoardCandidate
+        from corral.split_layout import MAX_PANES
 
         sessions = [
             {
                 "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
                 "mtime": time.time() - i, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}",
-                "cwd": "/tmp", "live": True, "keepalive_name": f"pickup-s{i}",
+                "cwd": "/tmp", "live": True, "keepalive_name": f"corral-s{i}",
             }
             for i in range(MAX_PANES)
         ]
@@ -3862,10 +3862,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             for i in range(MAX_PANES)
         ]
         with mock.patch(
-            "pickup.ui.controllers.board_controller.collect_candidates",
+            "corral.ui.controllers.board_controller.collect_candidates",
             return_value=candidates,
         ):
-            app = PickupApp(store, embed_ok=True)
+            app = CorralApp(store, embed_ok=True)
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
                 list_view = app.screen.query_one(SessionListView)
@@ -3891,7 +3891,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shell_from_activity_board_leaves_board(self) -> None:
         """看板里点终端会离开看板，右栏换成这一格终端，不写水果组。"""
-        from pickup.activity_board import BoardCandidate
+        from corral.activity_board import BoardCandidate
 
         store, _ = _make_store()
         candidates = [
@@ -3900,13 +3900,13 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         ]
         with (
             mock.patch(
-                "pickup.ui.controllers.board_controller.collect_candidates",
+                "corral.ui.controllers.board_controller.collect_candidates",
                 return_value=candidates,
             ),
-            mock.patch("pickup.embed.host_session", return_value="pickup-shell-from-board"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-shell-from-board"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
-            app = PickupApp(store, embed_ok=True)
+            app = CorralApp(store, embed_ok=True)
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
                 list_view = app.screen.query_one(SessionListView)
@@ -3926,13 +3926,13 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(app.screen._activity_board_active)
                 self.assertEqual(
                     [spec.keepalive_name for spec in area.pane_specs() if spec.is_shell],
-                    ["pickup-shell-from-board"],
+                    ["corral-shell-from-board"],
                 )
                 self.assertEqual(app.screen._split_store.groups, {})
 
     async def test_escape_exits_with_no_result(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("escape")
@@ -3946,10 +3946,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         访问 .region 抛 AttributeError 崩溃整个应用。修法：子卡片 + 外层
         NoSelectListItem + SessionListView 都关 ALLOW_SELECT；EmbedPane 保留。
         这里钉死点击会话卡不能再回归成崩溃；已结束会话点击只选中、回车才恢复。"""
-        from pickup.ui.session_list import NoSelectListItem
+        from corral.ui.session_list import NoSelectListItem
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -3962,25 +3962,25 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(clicked)
             self.assertEqual(
-                pickup.session_key(list_view.selected_session()),
-                pickup.session_key(cards[1].session),
+                corral.session_key(list_view.selected_session()),
+                corral.session_key(cards[1].session),
                 "点击必须把选中挪到这张卡上",
             )
             self.assertIsNone(app.return_value, "点已结束会话只看历史，不许直接恢复")
             await pilot.press("enter")
             await pilot.pause()
-        self.assertIsInstance(app.return_value, pickup.LaunchRequest)
+        self.assertIsInstance(app.return_value, corral.LaunchRequest)
 
     async def test_clicking_group_card_does_not_crash(self) -> None:
         """会话组卡同样包在会重建的 ListItem 里，拖选开着会在启动刷新时崩。"""
-        from pickup.ui.session_list import NoSelectListItem
+        from corral.ui.session_list import NoSelectListItem
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
-            keys = [pickup.session_key(session) for session in store.all_sessions()[:2]]
+            keys = [corral.session_key(session) for session in store.all_sessions()[:2]]
             list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
             await list_view.rebuild()
             group_card = list_view.query(SessionGroupCard).first()
@@ -3998,13 +3998,13 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, _ = _make_store()
         for session in store.all_sessions()[:2]:
             session["live"] = True
-            session["keepalive_name"] = f"pickup-{session['id']}"
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.liveness.is_alive", return_value=True):
+            session["keepalive_name"] = f"corral-{session['id']}"
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.liveness.is_alive", return_value=True):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
-                keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
+                keys = [corral.session_key(s) for s in store.all_sessions()[:2]]
                 list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
                 await list_view.rebuild()
                 await pilot.pause(delay=0.2)
@@ -4024,7 +4024,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_ctrl_click_multi_select_does_not_launch(self) -> None:
         """Ctrl/Cmd+点击只 toggle 多选，不等价 Enter，也不退出应用。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -4051,7 +4051,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             for i in range(2)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -4071,7 +4071,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_space_toggles_multi_select_on_focused_session(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -4086,7 +4086,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_escape_clears_multi_select_before_quit(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -4103,9 +4103,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_item_gap_padding_is_part_of_hit_area(self) -> None:
         """会话卡第三行（时间行）仍属本卡命中区；不要用 ListItem margin/padding 做分隔。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
-        self.assertNotIn("margin-bottom:", PickupApp.CSS)
-        self.assertNotIn("padding-bottom:", PickupApp.CSS)
+        app = CorralApp(store, embed_ok=False)
+        self.assertNotIn("margin-bottom:", CorralApp.CSS)
+        self.assertNotIn("padding-bottom:", CorralApp.CSS)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -4116,8 +4116,8 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(clicked)
             self.assertEqual(
-                pickup.session_key(list_view.selected_session()),
-                pickup.session_key(cards[1].session),
+                corral.session_key(list_view.selected_session()),
+                corral.session_key(cards[1].session),
             )
 
     async def test_rebuild_updates_in_place_when_session_set_unchanged(self) -> None:
@@ -4129,7 +4129,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         状态不能证明渲染结果对，这是 docs/MAINTAINER_GUIDE.md 记录过的教训。
         """
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -4165,7 +4165,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             "source": "claude", "id": "detail", "short_id": "detail",
             "mtime": 100.0, "size_bytes": 1, "size_kb": 1,
             "native_title": "旧标题", "fallback_title": "旧标题",
-            "cwd": "/tmp/pickup", "live": False, "path": "/tmp/pickup-detail.jsonl",
+            "cwd": "/tmp/corral", "live": False, "path": "/tmp/corral-detail.jsonl",
             "first_user_msg": "旧首问", "last_user_msg": "旧问题",
             "last_agent_msg": "旧回复",
         }
@@ -4182,20 +4182,20 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         runtime.scan_sessions.side_effect = [[old_session], [new_session]]
         runtime.load_conversation.side_effect = [
             [
-                pickup.ConversationMessage("user", "旧问题"),
-                pickup.ConversationMessage("assistant", "旧回复"),
+                corral.ConversationMessage("user", "旧问题"),
+                corral.ConversationMessage("assistant", "旧回复"),
             ],
             [
-                pickup.ConversationMessage("user", "新问题"),
-                pickup.ConversationMessage("assistant", "新回复"),
+                corral.ConversationMessage("user", "新问题"),
+                corral.ConversationMessage("assistant", "新回复"),
             ],
         ]
-        registry = pickup.RuntimeRegistry((runtime,))
+        registry = corral.RuntimeRegistry((runtime,))
         with (
-            mock.patch.object(pickup.titles, "load_cache", return_value={}),
-            mock.patch.object(pickup.liveness, "annotate"),
+            mock.patch.object(corral.titles, "load_cache", return_value={}),
+            mock.patch.object(corral.liveness, "annotate"),
         ):
-            store = pickup.SessionStore(limit=20, registry=registry)
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         original_signature = store._sessions_signature()
@@ -4206,7 +4206,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(store._sessions_signature(), original_signature)
         store.sessions["claude"][0]["last_user_msg"] = "旧问题"
 
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             screen = app.screen
@@ -4216,7 +4216,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: "旧标题" in pane.render().plain)
             old_snapshot = store.sessions["claude"][0]
 
-            with mock.patch.object(pickup.liveness, "annotate"):
+            with mock.patch.object(corral.liveness, "annotate"):
                 self.assertTrue(store.refresh())
             # 历史 path 未变时对话缓存仍有效；清掉让右栏重新 warm 到新对话。
             store.conversations.clear()
@@ -4238,14 +4238,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_rebuild_falls_back_to_full_rebuild_when_session_set_changes(self) -> None:
         """新增一条会话时走 splice：旧卡实例保留，且不得 clear()+extend() 整表。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             cards_before = list_view._session_cards()
             self.assertEqual(len(cards_before), 3)
             before_ids = {
-                pickup.session_key(card.session): id(card) for card in cards_before
+                corral.session_key(card.session): id(card) for card in cards_before
             }
 
             new_session = {
@@ -4266,9 +4266,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
             cards = list_view._session_cards()
             self.assertEqual(len(cards), 4)
-            self.assertIn("claude:s99", [pickup.session_key(c.session) for c in cards])
+            self.assertIn("claude:s99", [corral.session_key(c.session) for c in cards])
             for card in cards:
-                key = pickup.session_key(card.session)
+                key = corral.session_key(card.session)
                 if key in before_ids:
                     self.assertEqual(
                         id(card), before_ids[key],
@@ -4298,7 +4298,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             cards = list_view._session_cards()
             self.assertEqual(len(cards), 6)
             for card in cards:
-                key = pickup.session_key(card.session)
+                key = corral.session_key(card.session)
                 if key in before_ids:
                     self.assertEqual(id(card), before_ids[key])
             print(f"\n[列表增一条] splice {splice_ms:.1f}ms；一次加两条 splice {full_ms:.1f}ms")
@@ -4306,12 +4306,12 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_rebuild_splices_single_deleted_session(self) -> None:
         """删一条会话同样只摘那一行，其余卡片实例保持。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             cards_before = list_view._session_cards()
-            keep_key = pickup.session_key(cards_before[0].session)
+            keep_key = corral.session_key(cards_before[0].session)
             keep_id = id(cards_before[0])
 
             store.sessions["claude"] = store.sessions["claude"][:-1]
@@ -4325,13 +4325,13 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
             cards = list_view._session_cards()
             self.assertEqual(len(cards), 2)
-            remaining = {pickup.session_key(card.session): id(card) for card in cards}
+            remaining = {corral.session_key(card.session): id(card) for card in cards}
             self.assertIn(keep_key, remaining)
             self.assertEqual(remaining[keep_key], keep_id)
             print(f"\n[列表删一条] splice {splice_ms:.1f}ms")
 
     def test_region_splice_matches_single_and_local_region_changes(self) -> None:
-        from pickup.ui.session_list import _region_splice
+        from corral.ui.session_list import _region_splice
 
         # 单行插入 / 删除是区段替换的特例
         self.assertEqual(_region_splice(["a", "b"], ["x", "a", "b"]), (0, 0, 1))
@@ -4363,7 +4363,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_screen_serializes_concurrent_list_rebuilds(self) -> None:
         """后台重扫和交互刷新同时到达时，列表重建必须串行，不能重复挂载条目。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             screen = app.screen
@@ -4380,7 +4380,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         抛 DuplicateIds 打崩整个 TUI。`SessionListView.rebuild()` 内部必须自带
         闸门，无论调用方来自哪条泵都串行进 DOM。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             screen = app.screen
@@ -4403,7 +4403,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(screen._rebuild_list(), interleaved_filter_rebuild())
 
             self.assertEqual(len(list_view.query(f"#{NEW_SESSION_ID}")), 1)
-            keys = [pickup.session_key(c.session) for c in list_view._session_cards()]
+            keys = [corral.session_key(c.session) for c in list_view._session_cards()]
             self.assertEqual(len(keys), len(set(keys)))
 
     async def test_rebuild_keeps_focus_on_same_session_when_new_session_appears(self) -> None:
@@ -4414,13 +4414,13 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         `_displayed_selected_key()` 改按已渲染的 DOM 卡片取键，必须确保新会话
         置顶插入后，原选中会话仍被选中（只是位置下移），不能串到相邻会话。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
             list_view.index = len(STICKY_IDS) + 1  # 选中 s1（第二条）
             await pilot.pause()
-            target_key = pickup.session_key(list_view.selected_session())
+            target_key = corral.session_key(list_view.selected_session())
             self.assertEqual(target_key, "claude:s1")
 
             new_session = {
@@ -4434,7 +4434,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             await list_view.rebuild()
 
             self.assertEqual(
-                pickup.session_key(list_view.selected_session()), target_key,
+                corral.session_key(list_view.selected_session()), target_key,
                 "新会话置顶插入后，原选中会话应仍被选中（只是位置下移），"
                 "不能串到相邻会话",
             )
@@ -4445,7 +4445,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         """同一 bug 的右栏视角：右栏详情预览必须跟着原选中会话一起下移，
         不能因为高亮串位而展示成相邻会话的内容。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -4475,10 +4475,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         """
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4488,7 +4488,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
                 self.assertFalse(list_view.has_focus)
                 self.assertFalse(pane.input_masked, "持有输入的格不该压暗")
@@ -4502,16 +4502,16 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         """点开托管会话时，灰色输入蒙版必须先于下一帧的真实落焦消失。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
 
                 await pilot.press("ctrl+backslash")
@@ -4527,16 +4527,16 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         """已调用聚焦、但真实焦点尚未落下时，迟到的蒙版同步不能闪灰一帧。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
 
                 await pilot.press("ctrl+backslash")
@@ -4568,15 +4568,15 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"蒙版会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-mask-{i}",
+                "keepalive_name": f"corral-claude-mask-{i}",
             }
             for i in range(2)
         ]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.open_channel", return_value=None),
-            mock.patch("pickup.embed.should_resize_host", return_value=False),
+            mock.patch("corral.embed.open_channel", return_value=None),
+            mock.patch("corral.embed.should_resize_host", return_value=False),
         ):
             async with app.run_test(size=(160, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4606,7 +4606,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 area.show_hosted_group(
                     "/tmp",
                     [(s, s["keepalive_name"], None) for s in sessions],
-                    focus_key=pickup.session_key(sessions[1]),
+                    focus_key=corral.session_key(sessions[1]),
                     focus_pane=True,
                 )
                 self.assertFalse(pane.input_masked)
@@ -4615,10 +4615,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         """鼠标点右栏进入内嵌交互（自动聚焦之外的另一条路径）。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4626,7 +4626,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
                 await pilot.press("ctrl+backslash")
                 await pilot.pause()
@@ -4635,7 +4635,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 # 托管成功后列表重建仍可能排在下一帧；等 DOM 稳定并重新取当前 pane，
                 # 避免点击刚被替换掉的旧 Widget。
                 await pilot.pause(delay=0.2)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await pilot.click(pane)
                 await pilot.pause()
                 self.assertTrue(pane.has_focus)
@@ -4651,10 +4651,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         """
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4662,9 +4662,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
-                hosted_key = pickup.session_key(list_view.selected_session())
+                hosted_key = corral.session_key(list_view.selected_session())
 
                 await pilot.press("ctrl+backslash")
                 await pilot.pause()
@@ -4675,17 +4675,17 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.3)
                 self.assertTrue(list_view.has_focus, "浏览不得抢焦点")
                 self.assertNotEqual(
-                    pickup.session_key(list_view.selected_session()), hosted_key
+                    corral.session_key(list_view.selected_session()), hosted_key
                 )
 
                 # 点回那张已托管的卡：右栏重新变实时终端，且输入直接交给它。
                 card = next(
                     c for c in app.screen.query(SessionCard)
-                    if pickup.session_key(c.session) == hosted_key
+                    if corral.session_key(c.session) == hosted_key
                 )
                 await pilot.click(card)
                 await _wait_until(lambda: app.screen._host_pending == 0)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
                 self.assertFalse(list_view.has_focus, "点已托管的会话卡必须进右栏")
                 self.assertFalse(pane.input_masked, "持有输入的格不该压暗")
@@ -4698,10 +4698,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         """
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4709,14 +4709,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
 
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
-                hosted_key = pickup.session_key(list_view.selected_session())
+                hosted_key = corral.session_key(list_view.selected_session())
 
                 def hosted_card() -> SessionCard:
                     return next(
                         c for c in app.screen.query(SessionCard)
-                        if pickup.session_key(c.session) == hosted_key
+                        if corral.session_key(c.session) == hosted_key
                     )
 
                 # 点当前正持有输入的那张卡：焦点撤回列表，该格重新压暗。
@@ -4728,7 +4728,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 # 再点一次又进去：开关必须对称，不能一去不回。
                 await pilot.click(hosted_card())
                 await _wait_until(lambda: app.screen._host_pending == 0)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
                 self.assertFalse(list_view.has_focus)
                 self.assertFalse(pane.input_masked)
@@ -4747,18 +4747,18 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}",
-                "cwd": "/tmp", "live": True, "keepalive_name": f"pickup-claude-s{i}",
+                "cwd": "/tmp", "live": True, "keepalive_name": f"corral-claude-s{i}",
             }
             for i in range(3)
         ]
         store, registry = _make_store(sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
             mock.patch(
-                "pickup.embed.host_session",
+                "corral.embed.host_session",
                 side_effect=AssertionError("已托管会话不该重新拉起"),
             ),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4775,7 +4775,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 for index in (0, 1, 2, 0):
                     await pilot.click(card(index))
                     pane = await _wait_for_embed_session(
-                        screen, f"pickup-claude-s{index}",
+                        screen, f"corral-claude-s{index}",
                     )
                     await _wait_until(lambda p=pane: p.has_focus)
                     self.assertFalse(
@@ -4790,8 +4790,8 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_stale_highlight_after_hosting_keeps_live_pane(self) -> None:
         """托管落库早于列表重建时，旧卡片高亮事件不能把实时终端盖回静态预览。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.liveness.is_alive", return_value=True):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.liveness.is_alive", return_value=True):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 screen = app.screen
@@ -4802,7 +4802,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(stale_session["id"], "s0")
                 self.assertNotIn("keepalive_name", stale_session)
 
-                store.mark_hosted("claude:s0", "pickup-claude-s0")
+                store.mark_hosted("claude:s0", "corral-claude-s0")
                 self.assertNotIn("keepalive_name", stale_session)
                 with (
                     mock.patch.object(area, "show_hosted_group", wraps=area.show_hosted_group) as live,
@@ -4818,10 +4818,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         store, registry = _make_store()
         long_body = "\n".join(f"行{i} " + ("内容" * 20) for i in range(80))
         registry.get("claude").load_conversation.return_value = [
-            pickup.ConversationMessage("user", long_body),
-            pickup.ConversationMessage("assistant", long_body),
+            corral.ConversationMessage("user", long_body),
+            corral.ConversationMessage("assistant", long_body),
         ]
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -4856,10 +4856,10 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             # dict(old, …) 把 keepalive_name 拷进新对象，断言两边都有名字。
             if not release.wait(timeout=5.0):
                 raise TimeoutError("测试未能及时释放 delayed_host")
-            return "pickup-claude-s0"
+            return "corral-claude-s0"
 
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.host_session", side_effect=delayed_host) as host_mock:
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.host_session", side_effect=delayed_host) as host_mock:
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 old_request_session = store.sessions["claude"][0]
@@ -4879,19 +4879,19 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: app.screen._host_pending == 0)
 
                 self.assertEqual(host_mock.call_count, 1)
-                self.assertEqual(current_session.get("keepalive_name"), "pickup-claude-s0")
+                self.assertEqual(current_session.get("keepalive_name"), "corral-claude-s0")
                 self.assertNotIn("keepalive_name", old_request_session)
                 pane = await _wait_for_embed_pane(app.screen)
-                await _wait_until(lambda: pane.session_name == "pickup-claude-s0")
+                await _wait_until(lambda: pane.session_name == "corral-claude-s0")
 
     async def test_host_failure_releases_single_flight_guard(self) -> None:
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
 
         with (
-            mock.patch("pickup.embed.host_session", side_effect=RuntimeError("模拟启动失败")) as host_mock,
-            mock.patch.object(pickup, "_log_embed_error"),
+            mock.patch("corral.embed.host_session", side_effect=RuntimeError("模拟启动失败")) as host_mock,
+            mock.patch.object(corral, "_log_embed_error"),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -4908,27 +4908,27 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         """
         store, registry = _make_store()
         registry.build_new_session_plan = lambda request: LaunchPlan(("claude",), "/tmp")
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
 
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-new"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-new"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 app.screen._embed_open(
-                    pickup.NewSessionRequest("claude", "/tmp"),
+                    corral.NewSessionRequest("claude", "/tmp"),
                     add_pane=False,
                 )
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 await _wait_until(
                     lambda: any(
-                        s.get("keepalive_name") == "pickup-claude-new"
+                        s.get("keepalive_name") == "corral-claude-new"
                         for s in app.screen.query_one(SessionListView).visible_sessions()
                     ),
                     tries=500,
                 )
-                await _wait_for_embed_session(app.screen, "pickup-claude-new")
+                await _wait_for_embed_session(app.screen, "corral-claude-new")
 
     async def test_cross_runtime_handoff_shows_hosted_card_and_keeps_embed(self) -> None:
         """回归：Claude→Cursor 接力后左栏立刻出现托管卡，右栏与源会话并排分屏。
@@ -4948,20 +4948,20 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         cursor.load_conversation.return_value = []
         store, registry = _make_store(extra_runtimes=(cursor,))
         registry.build_launch_plan = lambda request: LaunchPlan(("agent", "--force", "prompt"), "/tmp")
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
 
         with (
             mock.patch(
-                "pickup.embed.host_session", return_value="pickup-cursor-handoff"
+                "corral.embed.host_session", return_value="corral-cursor-handoff"
             ) as host_mock,
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
                 source = list_view.selected_session()
                 self.assertIsNotNone(source)
-                source_key = pickup.session_key(source)
+                source_key = corral.session_key(source)
 
                 await pilot.press("a")
                 await pilot.pause()
@@ -4973,7 +4973,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 # 等 call_next(_rebuild_list) 跑完
                 await _wait_until(
                     lambda: any(
-                        s.get("keepalive_name") == "pickup-cursor-handoff"
+                        s.get("keepalive_name") == "corral-cursor-handoff"
                         for s in list_view.visible_sessions()
                     )
                 )
@@ -4981,13 +4981,13 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
 
                 hosted = [
                     s for s in list_view.visible_sessions()
-                    if s.get("keepalive_name") == "pickup-cursor-handoff"
+                    if s.get("keepalive_name") == "corral-cursor-handoff"
                 ]
                 self.assertEqual(len(hosted), 1, "左栏应立刻出现 Cursor 托管占位卡")
                 self.assertEqual(hosted[0].get("source"), "cursor")
                 selected = list_view.selected_session()
                 self.assertIsNotNone(selected)
-                self.assertEqual(selected.get("keepalive_name"), "pickup-cursor-handoff")
+                self.assertEqual(selected.get("keepalive_name"), "corral-cursor-handoff")
 
                 area = app.screen.query_one(SplitPaneArea)
                 keys = area.ordered_session_keys()
@@ -4997,13 +4997,13 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_for_embed_pane(app.screen)
                 await _wait_until(
                     lambda: any(
-                        (c.embed_pane() and c.embed_pane().session_name == "pickup-cursor-handoff")
+                        (c.embed_pane() and c.embed_pane().session_name == "corral-cursor-handoff")
                         for c in area.cells()
                     )
                 )
                 handoff_cell = next(
                     c for c in area.cells()
-                    if c.embed_pane() and c.embed_pane().session_name == "pickup-cursor-handoff"
+                    if c.embed_pane() and c.embed_pane().session_name == "corral-cursor-handoff"
                 )
                 handoff_pane = handoff_cell.embed_pane()
                 # 接力托管成功 = 明确意图，输入直接落到新会话那一格
@@ -5020,20 +5020,20 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             return LaunchPlan(("claude", "--dangerously-skip-permissions", "prompt"), "/tmp")
 
         registry.build_launch_plan = capture_plan
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
 
         with (
             mock.patch(
-                "pickup.embed.host_session", return_value="pickup-claude-handoff-self"
+                "corral.embed.host_session", return_value="corral-claude-handoff-self"
             ) as host_mock,
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
                 source = list_view.selected_session()
                 self.assertIsNotNone(source)
-                source_key = pickup.session_key(source)
+                source_key = corral.session_key(source)
 
                 await pilot.press("a")
                 await pilot.pause()
@@ -5044,7 +5044,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 await _wait_until(
                     lambda: any(
-                        s.get("keepalive_name") == "pickup-claude-handoff-self"
+                        s.get("keepalive_name") == "corral-claude-handoff-self"
                         for s in list_view.visible_sessions()
                     )
                 )
@@ -5059,11 +5059,11 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(source_key, keys)
                 hosted = [
                     s for s in list_view.visible_sessions()
-                    if s.get("keepalive_name") == "pickup-claude-handoff-self"
+                    if s.get("keepalive_name") == "corral-claude-handoff-self"
                 ]
                 self.assertEqual(len(hosted), 1)
                 self.assertNotEqual(
-                    pickup.session_key(hosted[0]), source_key,
+                    corral.session_key(hosted[0]), source_key,
                     "同助手另起必须是新会话卡，不能 mark 到原会话",
                 )
 
@@ -5080,20 +5080,20 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         registry.build_launch_plan = capture_plan
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
 
         with (
             mock.patch(
-                "pickup.embed.host_session", return_value="pickup-claude-copy-fork"
+                "corral.embed.host_session", return_value="corral-claude-copy-fork"
             ) as host_mock,
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
                 source = list_view.selected_session()
                 self.assertIsNotNone(source)
-                source_key = pickup.session_key(source)
+                source_key = corral.session_key(source)
 
                 await pilot.press("a")
                 await pilot.pause()
@@ -5106,7 +5106,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 await _wait_until(
                     lambda: any(
-                        s.get("keepalive_name") == "pickup-claude-copy-fork"
+                        s.get("keepalive_name") == "corral-claude-copy-fork"
                         for s in list_view.visible_sessions()
                     )
                 )
@@ -5122,17 +5122,17 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(source_key, keys)
                 hosted = [
                     s for s in list_view.visible_sessions()
-                    if s.get("keepalive_name") == "pickup-claude-copy-fork"
+                    if s.get("keepalive_name") == "corral-claude-copy-fork"
                 ]
                 self.assertEqual(len(hosted), 1)
-                self.assertNotEqual(pickup.session_key(hosted[0]), source_key)
+                self.assertNotEqual(corral.session_key(hosted[0]), source_key)
 
     async def test_export_session_advanced_action_copies_share_path(self) -> None:
         """高级操作选「导出会话」：写出 share JSON，绝对路径进剪贴板，不启动会话。"""
         import json
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("a")
@@ -5149,7 +5149,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(os.path.isfile(path), path)
             with open(path, encoding="utf-8") as fp:
                 envelope = json.load(fp)
-            self.assertEqual(envelope["data"]["schema"], "pickup.share/v1")
+            self.assertEqual(envelope["data"]["schema"], "corral.share/v1")
             self.assertIn("events", envelope["data"])
             self.assertEqual(type(app.screen).__name__, "MainScreen")
 
@@ -5165,23 +5165,23 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         registry.build_launch_plan = capture_plan
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
 
         with (
             mock.patch(
-                "pickup.embed.host_session", return_value="pickup-claude-s0"
+                "corral.embed.host_session", return_value="corral-claude-s0"
             ) as host_mock,
-            mock.patch("pickup.liveness.is_alive", return_value=True),
-            mock.patch("pickup.keepalive.kill", return_value=True) as kill_mock,
-            mock.patch("pickup.embed.close_channel") as close_mock,
+            mock.patch("corral.liveness.is_alive", return_value=True),
+            mock.patch("corral.keepalive.kill", return_value=True) as kill_mock,
+            mock.patch("corral.embed.close_channel") as close_mock,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
                 source = list_view.selected_session()
                 self.assertIsNotNone(source)
-                source_key = pickup.session_key(source)
-                store.mark_hosted(source_key, "pickup-claude-s0")
+                source_key = corral.session_key(source)
+                store.mark_hosted(source_key, "corral-claude-s0")
                 await pilot.pause()
 
                 await pilot.press("a")
@@ -5200,8 +5200,8 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: host_mock.call_count == 1)
                 await _wait_until(lambda: app.screen._host_pending == 0)
 
-                kill_mock.assert_called_once_with("pickup-claude-s0")
-                close_mock.assert_called_once_with("pickup-claude-s0")
+                kill_mock.assert_called_once_with("corral-claude-s0")
+                close_mock.assert_called_once_with("corral-claude-s0")
                 self.assertEqual(len(captured), 1)
                 self.assertFalse(captured[0].force_new)
                 self.assertFalse(captured[0].copy_session)
@@ -5209,13 +5209,13 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 # 重启后仍是同一条会话，且重新登记为托管
                 current = store.find_session(source_key)
                 self.assertIsNotNone(current)
-                self.assertEqual(current.get("keepalive_name"), "pickup-claude-s0")
+                self.assertEqual(current.get("keepalive_name"), "corral-claude-s0")
 
     async def test_restart_session_unavailable_for_unhosted_session(self) -> None:
         """未托管的普通会话：重启项置灰，回车响铃不启动。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.host_session") as host_mock:
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.host_session") as host_mock:
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("a")
@@ -5236,7 +5236,7 @@ class PaneCellHeaderSyncTests(unittest.TestCase):
     """分栏标题栏在重建中间态可能缺失；焦点同步不得因此崩掉（真机：双击顶栏 OpenCode）。"""
 
     def test_pane_header_title_update_before_compose(self) -> None:
-        from pickup.ui.split_pane_area import _PaneHeader
+        from corral.ui.split_pane_area import _PaneHeader
 
         header = _PaneHeader("旧标题", lambda: None)
         header.set_title("新标题")
@@ -5245,7 +5245,7 @@ class PaneCellHeaderSyncTests(unittest.TestCase):
         self.assertEqual(str(title_widget.render()), "新标题")
 
     def test_sync_active_marker_tolerates_missing_header(self) -> None:
-        from pickup.ui.split_pane_area import PaneCell, PaneSpec
+        from corral.ui.split_pane_area import PaneCell, PaneSpec
 
         cell = PaneCell(
             PaneSpec(session_key="k", cell_id="c1"),
@@ -5268,7 +5268,7 @@ class FooterActionGatingTests(unittest.TestCase):
     """
 
     def _screen(self, live: bool):
-        from pickup.ui.main_screen import MainScreen
+        from corral.ui.main_screen import MainScreen
 
         store, _ = _make_store()
         screen = MainScreen(store, embed_ok=True)
@@ -5302,7 +5302,7 @@ class FooterActionGatingTests(unittest.TestCase):
         self.assertTrue(screen.check_action("toggle_pin", ()))
 
     def test_toggle_sidebar_disabled_without_embed(self) -> None:
-        from pickup.ui.main_screen import MainScreen
+        from corral.ui.main_screen import MainScreen
 
         store, _ = _make_store()
         screen = MainScreen(store, embed_ok=False)
@@ -5313,17 +5313,17 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
     """底栏右端常驻版本号；不再展示框架自带的 `^p palette`。"""
 
     async def test_footer_shows_version_without_command_palette(self) -> None:
-        from pickup.ui.footer import PickupFooter
+        from corral.ui.footer import CorralFooter
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         self.assertFalse(app.ENABLE_COMMAND_PALETTE)
         async with app.run_test(size=(100, 30)):
             footer = app.screen.query_one(Footer)
-            self.assertIsInstance(footer, PickupFooter)
+            self.assertIsInstance(footer, CorralFooter)
             await _wait_until(lambda: bool(footer.query("#footer-version")))
             version = footer.query_one("#footer-version", Label)
-            self.assertEqual(str(version.content), f"v{pickup.__version__}")
+            self.assertEqual(str(version.content), f"v{corral.__version__}")
             right = footer.query_one("#footer-right")
             kids = list(right.children)
             self.assertEqual([child.id for child in kids], ["footer-version"])
@@ -5335,13 +5335,13 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
 class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
     """Ctrl+Shift+B / 顶栏开关显隐侧栏；偏好落盘；藏起后仍能点回来。
 
-    不用 Ctrl+B：机主在 Claude Code 里按 Ctrl+B 是「把任务转后台」，会与 pickup
+    不用 Ctrl+B：机主在 Claude Code 里按 Ctrl+B 是「把任务转后台」，会与 corral
     抢键（2026-08-04 冲突实报后改键）。
     """
 
     async def test_ctrl_shift_b_toggles_list_pane_display(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             list_pane = app.screen.query_one("#list-pane")
             chip = app.screen.query_one("#sidebar-toggle", _SidebarToggleChip)
@@ -5361,7 +5361,7 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_top_bar_chip_click_restores_sidebar(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             list_pane = app.screen.query_one("#list-pane")
             await pilot.press("ctrl+shift+b")
@@ -5375,7 +5375,7 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
         # 顺序不能反：_make_store() 会整份重置侧边栏记忆库（含这条显隐偏好）。
         store, _ = _make_store()
         _ui_prefs.save_sidebar_visible(False)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)):
             list_pane = app.screen.query_one("#list-pane")
             chip = app.screen.query_one("#sidebar-toggle", _SidebarToggleChip)
@@ -5394,7 +5394,7 @@ class InputMaskFilterTests(unittest.TestCase):
         from rich.terminal_theme import DEFAULT_TERMINAL_THEME
         from textual.color import Color
 
-        from pickup.ui.embed_pane import _InputMaskFilter
+        from corral.ui.embed_pane import _InputMaskFilter
 
         f = _InputMaskFilter(DEFAULT_TERMINAL_THEME)
         out = f.apply([Segment("x", style)], Color(0, 0, 0))
@@ -5445,14 +5445,14 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
     def _cleanup_hosted(self) -> None:
         for name in self._hosted_names:
-            subprocess.run(["tmux", "-L", "pickup-keepalive", "kill-session", "-t", name],
+            subprocess.run(["tmux", "-L", "corral-keepalive", "kill-session", "-t", name],
                             stderr=subprocess.DEVNULL)
 
     async def test_first_frame_never_exposes_connecting_state(self) -> None:
         """抓帧尚未完成时也要即时展示已有详情或空白终端，不能出现连接中间态。"""
         store, _registry = _make_store()
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.open_channel", return_value=None):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.open_channel", return_value=None):
             async with app.run_test(size=(120, 30)):
                 pane = _primary_embed_pane(app.screen)
 
@@ -5479,10 +5479,10 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         lines = [early] + [f"mid-{i}" for i in range(80)] + [late]
         body = RichText("\n".join(lines))
         store, _registry = _make_store()
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False), \
-             mock.patch("pickup.embed.capture", return_value=None):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False), \
+             mock.patch("corral.embed.capture", return_value=None):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 pane = _primary_embed_pane(app.screen)
@@ -5490,7 +5490,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
                 # 挡住列表跟随，避免 focus_session 后被盖回静态预览
                 with mock.patch.object(app.screen, "_follow_current_selection"):
                     pane.focus_session(
-                        "pickup-cursor-x", lambda: body, detail_until_frame=True,
+                        "corral-cursor-x", lambda: body, detail_until_frame=True,
                     )
                     self.assertTrue(pane._detail_stick_bottom)
                     self.assertTrue(pane._is_hosted_fallback())
@@ -5506,7 +5506,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             ("bash", "-c", "printf 'HELLO-UI-TEST\\n'; cat"), None
         )
 
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -5544,21 +5544,21 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             area = app.screen.query_one(SplitPaneArea)
             self.assertEqual(area.pane_count(), 0)
 
-        from pickup import embed
+        from corral import embed
         self.assertTrue(embed.is_alive(self._hosted_names[0]))
 
     async def test_ctrl_shift_b_toggles_sidebar_while_pane_has_input(self) -> None:
         """实时终端持有输入时 Ctrl+Shift+B 仍可显隐侧栏，旧键 Ctrl+B 不再截胡。
 
         改键背景（2026-08-04 机主实报）：Claude Code 里 Ctrl+B 是「把任务转后台」，
-        pickup 截走会把侧栏藏起来。新键与 Ctrl+\\ 同级属壳层键，EmbedPane 先拦截
+        corral 截走会把侧栏藏起来。新键与 Ctrl+\\ 同级属壳层键，EmbedPane 先拦截
         不进托管会话；旧键则原样转发给助手。
         """
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(
             ("bash", "-c", "printf 'HELLO-UI-TEST\\n'; cat"), None
         )
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -5587,7 +5587,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             ("bash", "-c", "printf 'STATIC-RESELECT-TEST\\n'; cat"), None
         )
 
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -5611,7 +5611,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             ("bash", "-c", "printf 'STATIC-ROUND-TRIP-TEST\\n'; cat"), None
         )
 
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -5634,7 +5634,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             ("bash", "-c", "printf 'STALE-CALLBACK-TEST\\n'; cat"), None
         )
 
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -5653,7 +5653,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_capture_thread_recovers_after_unexpected_parse_error(self) -> None:
         """单帧解析异常只能丢一帧，抓帧线程必须继续并自动重试。"""
-        from pickup import embed
+        from corral import embed
 
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(
@@ -5669,9 +5669,9 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("模拟单帧解析失败")
             return original_parse_screen(*args, **kwargs)
 
-        app = PickupApp(store, embed_ok=True)
-        with (mock.patch("pickup.embed.parse_screen_rows", side_effect=flaky_parse_screen),
-              mock.patch("pickup._log_embed_error") as log_error):
+        app = CorralApp(store, embed_ok=True)
+        with (mock.patch("corral.embed.parse_screen_rows", side_effect=flaky_parse_screen),
+              mock.patch("corral._log_embed_error") as log_error):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("enter")
@@ -5693,7 +5693,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         registry.build_launch_plan = lambda request: LaunchPlan(
             ("bash", "-c", "printf 'CURSOR-TEST\\n'; cat"), None
         )
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -5728,7 +5728,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         registry.build_launch_plan = lambda request: LaunchPlan(
             ("bash", "-c", "printf 'HELLO-SELECT-ME\\n'; while true; do sleep 0.1; done"), None
         )
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -5750,7 +5750,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         registry.build_launch_plan = lambda request: LaunchPlan(
             ("bash", "-c", "printf 'HELLO-SELECT-ME\\n'; while true; do sleep 0.1; done"), None
         )
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -5781,7 +5781,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             ("bash", "-c", 'trap "echo GOT-SIGINT" INT; echo READY; while true; do sleep 0.1; done'),
             None,
         )
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -5806,10 +5806,10 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
 
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with mock.patch(
-            "pickup.embed.host_session",
-            side_effect=__import__("pickup.embed", fromlist=["EmbedError"]).EmbedError("boom"),
+            "corral.embed.host_session",
+            side_effect=__import__("corral.embed", fromlist=["EmbedError"]).EmbedError("boom"),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -5826,28 +5826,28 @@ class EmbedPaneWheelTests(unittest.TestCase):
 
     def test_wheel_forwards_press_only_via_background_sender(self):
         pane = EmbedPane()
-        pane.session_name = "pickup-claude-x"
+        pane.session_name = "corral-claude-x"
         pane._mouse_any = True
-        with (mock.patch("pickup.embed.send_mouse_sequence") as send_mock,
-              mock.patch("pickup.embed.send_literal") as literal_mock):
+        with (mock.patch("corral.embed.send_mouse_sequence") as send_mock,
+              mock.patch("corral.embed.send_literal") as literal_mock):
             pane._wheel(64, 10.0, 5.0, -3)
         # 只发一次 press 序列（64;11;6，坐标 1-based），经后台队列，不直接 fork
-        send_mock.assert_called_once_with("pickup-claude-x", "\x1b[<64;11;6M")
+        send_mock.assert_called_once_with("corral-claude-x", "\x1b[<64;11;6M")
         literal_mock.assert_not_called()
 
     def test_wheel_without_mouse_capture_uses_app_level_scroll(self):
         pane = EmbedPane()
-        pane.session_name = "pickup-codex-x"
+        pane.session_name = "corral-codex-x"
         pane._mouse_any = False
         pane._scroll = mock.Mock()
-        with mock.patch("pickup.embed.send_mouse_sequence") as send_mock:
+        with mock.patch("corral.embed.send_mouse_sequence") as send_mock:
             pane._wheel(64, 10.0, 5.0, -3)
         pane._scroll.assert_called_once_with(-3)
         send_mock.assert_not_called()
 
     def test_scroll_handlers_move_app_history_in_expected_direction(self):
         pane = EmbedPane()
-        pane.session_name = "pickup-codex-x"
+        pane.session_name = "corral-codex-x"
         pane._mouse_any = False
         pane._history_size = 100
         scroll_up = events.MouseScrollUp(None, 10, 5, 0, 0, 0, False, False, False)
@@ -5890,9 +5890,9 @@ class EmbedPaneWheelTests(unittest.TestCase):
     def test_focus_session_without_fallback_stays_blank_canvas(self):
         """无 fallback 时仍空白画布，不出现连接中。"""
         pane = EmbedPane()
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False):
-            pane.focus_session("pickup-cursor-new")
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False):
+            pane.focus_session("corral-cursor-new")
         self.assertFalse(pane._detail_stick_bottom)
         self.assertEqual(pane.render().plain, "")
         self.assertNotIn("连接中", pane.render().plain)
@@ -5900,10 +5900,10 @@ class EmbedPaneWheelTests(unittest.TestCase):
     def test_focus_session_with_fallback_enables_stick_bottom(self):
         """显式要求首帧前对话回退时 focus_session 必须开启钉底。"""
         pane = EmbedPane()
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False):
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False):
             pane.focus_session(
-                "pickup-cursor-x", lambda: "fallback", detail_until_frame=True,
+                "corral-cursor-x", lambda: "fallback", detail_until_frame=True,
             )
         self.assertTrue(pane._detail_stick_bottom)
         self.assertTrue(pane._is_hosted_fallback())
@@ -5911,22 +5911,22 @@ class EmbedPaneWheelTests(unittest.TestCase):
 
     def test_scroll_handlers_preserve_sgr_direction_without_local_scroll(self):
         pane = EmbedPane()
-        pane.session_name = "pickup-claude-x"
+        pane.session_name = "corral-claude-x"
         pane._mouse_any = True
         pane._history_size = 100
         pane.history_offset = 7
         scroll_up = events.MouseScrollUp(None, 10, 5, 0, 0, 0, False, False, False)
         scroll_down = events.MouseScrollDown(None, 10, 5, 0, 0, 0, False, False, False)
 
-        with mock.patch("pickup.embed.send_mouse_sequence") as send_mock:
+        with mock.patch("corral.embed.send_mouse_sequence") as send_mock:
             pane._on_mouse_scroll_up(scroll_up)
             pane._on_mouse_scroll_down(scroll_down)
 
         self.assertEqual(
             send_mock.call_args_list,
             [
-                mock.call("pickup-claude-x", "\x1b[<64;11;6M"),
-                mock.call("pickup-claude-x", "\x1b[<65;11;6M"),
+                mock.call("corral-claude-x", "\x1b[<64;11;6M"),
+                mock.call("corral-claude-x", "\x1b[<65;11;6M"),
             ],
         )
         self.assertEqual(pane.history_offset, 7)
@@ -5973,7 +5973,7 @@ class EmbedPaneSelectionSpanTests(unittest.IsolatedAsyncioTestCase):
         from textual.strip import Strip
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(120, 30)) as pilot:
             pane = EmbedPane()
             await app.screen.mount(pane)
@@ -6010,7 +6010,7 @@ class EmbedPaneSelectionSpanTests(unittest.IsolatedAsyncioTestCase):
         from textual.strip import Strip
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(120, 30)) as pilot:
             pane = EmbedPane()
             await app.screen.mount(pane)
@@ -6038,17 +6038,17 @@ class EmbedPaneSelectionSpanTests(unittest.IsolatedAsyncioTestCase):
         from textual.geometry import Offset, Size
         from textual.selection import Selection
 
-        from pickup import embed
-        from pickup.ui.embed_pane import _row_to_strip
+        from corral import embed
+        from corral.ui.embed_pane import _row_to_strip
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         WIDTH = 40
         async with app.run_test(size=(80, 24)) as pilot:
             pane = EmbedPane()
             await app.screen.mount(pane)
             await pilot.pause()
-            pane.session_name = "pickup-claude-x"
+            pane.session_name = "corral-claude-x"
             pane.dead = False
             for line in ["the quick brown fox", "标点bug hello", "ｈｅｌｌｏ ab 你好"]:
                 grid = embed.parse_screen(line, width=WIDTH, height=1)
@@ -6103,7 +6103,7 @@ class EmbedPaneSelectionSpanTests(unittest.IsolatedAsyncioTestCase):
             return True, None, None
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(60, 8)) as pilot:
             pane = EmbedPane()
             await app.screen.mount(pane)
@@ -6148,7 +6148,7 @@ class EmbedPaneSelectionStyleTests(unittest.IsolatedAsyncioTestCase):
         from textual.strip import Strip
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(120, 30)) as pilot:
             pane = EmbedPane()
             await app.screen.mount(pane)
@@ -6184,7 +6184,7 @@ class EmbedPaneSelectionStyleTests(unittest.IsolatedAsyncioTestCase):
         from textual.strip import Strip
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(120, 30)) as pilot:
             pane = EmbedPane()
             await app.screen.mount(pane)
@@ -6230,8 +6230,8 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
         """原生解析器返回预编译行时，首帧和逐行更新都不能按 Cell 列表取长度。"""
         pane = EmbedPane()
         pane.refresh = mock.Mock()
-        first = [pickup.embed.ParsedRow("abc   ", (), 1)]
-        second = [pickup.embed.ParsedRow("abd   ", (), 2)]
+        first = [corral.embed.ParsedRow("abc   ", (), 1)]
+        second = [corral.embed.ParsedRow("abd   ", (), 2)]
 
         pane._sync_strips(first)
         self.assertEqual(pane._strips[0].cell_length, 6)
@@ -6245,7 +6245,7 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
         from textual.strip import Strip
 
         pane = EmbedPane()
-        pane.session_name = "pickup-claude-x"
+        pane.session_name = "corral-claude-x"
         # 模拟旧宽度缓存行（10 列），面板已缩到 6 列
         pane._grid = [[object()] * 10]  # 非空即可让 render_line 走 _strips 分支
         pane._strips = [Strip([Segment("abcdefghij")])]
@@ -6261,46 +6261,46 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
         不缓存的话每次切回都要先退回静态对话回退、等首帧抓到才跳成实时画面，
         观感就是右栏闪一下；缓存命中时 `_grid` 在 focus_session 返回时就有了。
         """
-        import pickup.ui.embed_pane as embed_pane_mod
-        from pickup.embed import Cell
+        import corral.ui.embed_pane as embed_pane_mod
+        from corral.embed import Cell
 
         embed_pane_mod._screen_cache.clear()
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 pane = _primary_embed_pane(app.screen)
-                pane.focus_session("pickup-claude-cache-a")
+                pane.focus_session("corral-claude-cache-a")
                 pane._sync_strips([[Cell("A")], [Cell("B")]])
                 self.assertIsNotNone(pane._grid)
 
-                pane.focus_session("pickup-claude-cache-b")
+                pane.focus_session("corral-claude-cache-b")
                 self.assertIsNone(pane._grid, "切到别的会话必须先清掉旧画面")
 
-                pane.focus_session("pickup-claude-cache-a")
+                pane.focus_session("corral-claude-cache-a")
                 self.assertIsNotNone(pane._grid, "切回来应立刻恢复缓存画面")
                 self.assertIsNotNone(pane._strips, "只恢复网格不重建 Strip 会渲染成空白")
                 self.assertEqual(pane._strips[0].text.strip(), "A")
 
     async def test_prefetch_parses_capture_text_before_caching(self) -> None:
         """预抓帧必须 parse 成行网格；把 capture 原文塞进缓存会在恢复时崩掉。"""
-        import pickup.ui.embed_pane as embed_pane_mod
-        from pickup.embed import Cell
+        import corral.ui.embed_pane as embed_pane_mod
+        from corral.embed import Cell
 
         embed_pane_mod._screen_cache.clear()
         ansi = "\x1b[38;5;29mhello\x1b[0m\nworld"
-        with mock.patch("pickup.embed.capture", return_value=ansi), \
+        with mock.patch("corral.embed.capture", return_value=ansi), \
              mock.patch(
-                 "pickup.embed.parse_screen_rows",
+                 "corral.embed.parse_screen_rows",
                  return_value=[[Cell("h")], [Cell("w")]],
              ) as parse_mock:
             self.assertTrue(
-                embed_pane_mod.prefetch_cached_screen("pickup-prefetch-x", width=40, height=10)
+                embed_pane_mod.prefetch_cached_screen("corral-prefetch-x", width=40, height=10)
             )
             parse_mock.assert_called_once()
-        hit = embed_pane_mod._take_cached_screen("pickup-prefetch-x")
+        hit = embed_pane_mod._take_cached_screen("corral-prefetch-x")
         self.assertIsNotNone(hit)
         grid, _ = hit
         self.assertIsInstance(grid, list)
@@ -6308,49 +6308,49 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_restore_rejects_raw_capture_string_in_cache(self) -> None:
         """脏缓存（capture 原文）恢复时必须丢弃，不得 AttributeError 崩界面。"""
-        import pickup.ui.embed_pane as embed_pane_mod
+        import corral.ui.embed_pane as embed_pane_mod
 
         embed_pane_mod._screen_cache.clear()
         # 模拟 v0.24.61 错误写入：把 ANSI 原文当 grid
-        embed_pane_mod._screen_cache["pickup-dirty"] = ("\x1b[31mraw\x1b[0m", None)
+        embed_pane_mod._screen_cache["corral-dirty"] = ("\x1b[31mraw\x1b[0m", None)
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 pane = _primary_embed_pane(app.screen)
-                pane.focus_session("pickup-dirty")
+                pane.focus_session("corral-dirty")
                 self.assertIsNone(pane._grid)
-                self.assertNotIn("pickup-dirty", embed_pane_mod._screen_cache)
+                self.assertNotIn("corral-dirty", embed_pane_mod._screen_cache)
 
     async def test_dead_session_drops_cached_screen(self) -> None:
         """确认结束的会话必须丢掉缓存画面，别用旧屏幕伪装成还在跑。"""
-        import pickup.ui.embed_pane as embed_pane_mod
-        from pickup.embed import Cell
+        import corral.ui.embed_pane as embed_pane_mod
+        from corral.embed import Cell
 
         embed_pane_mod._screen_cache.clear()
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.embed.open_channel", return_value=None), \
-             mock.patch("pickup.embed.should_resize_host", return_value=False):
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.embed.open_channel", return_value=None), \
+             mock.patch("corral.embed.should_resize_host", return_value=False):
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause()
                 pane = _primary_embed_pane(app.screen)
-                pane.focus_session("pickup-claude-gone")
+                pane.focus_session("corral-claude-gone")
                 pane._sync_strips([[Cell("X")]])
-                pane._apply_dead(pane._capture_generation, "pickup-claude-gone")
-                self.assertNotIn("pickup-claude-gone", embed_pane_mod._screen_cache)
+                pane._apply_dead(pane._capture_generation, "corral-claude-gone")
+                self.assertNotIn("corral-claude-gone", embed_pane_mod._screen_cache)
 
     async def test_tmux_resize_and_capture_are_debounced(self) -> None:
-        import pickup.ui.embed_pane as embed_pane_mod
+        import corral.ui.embed_pane as embed_pane_mod
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             pane = _primary_embed_pane(app.screen)
-            pane.session_name = "pickup-claude-debounce"
+            pane.session_name = "corral-claude-debounce"
             pane.dead = False
             resize_calls: list[tuple] = []
             poke_calls: list[int] = []
@@ -6359,7 +6359,7 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
                 resize_calls.append((name, w, h))
 
             with (
-                mock.patch("pickup.embed.resize", side_effect=_fake_resize),
+                mock.patch("corral.embed.resize", side_effect=_fake_resize),
                 mock.patch.object(pane._poke, "set", side_effect=lambda: poke_calls.append(1)),
             ):
                 pane._on_resize(events.Resize(Size(50, 20), Size(50, 20)))
@@ -6369,25 +6369,25 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(resize_calls, [], "拖动过程中不应立刻 resize-window")
                 self.assertEqual(poke_calls, [], "拖动过程中不应立刻唤醒抓帧")
                 await pilot.pause(delay=embed_pane_mod._RESIZE_TMUX_DEBOUNCE + 0.05)
-                self.assertEqual(resize_calls, [("pickup-claude-debounce", 40, 18)])
+                self.assertEqual(resize_calls, [("corral-claude-debounce", 40, 18)])
                 self.assertEqual(len(poke_calls), 1)
 
     async def test_resize_with_live_grid_starts_capture_hold(self) -> None:
         """已有直播画面时，防抖 resize 后必须冻结抓帧显示，避免镜像 Cursor 重排滚动。"""
-        import pickup.ui.embed_pane as embed_pane_mod
-        from pickup.embed import Cell
+        import corral.ui.embed_pane as embed_pane_mod
+        from corral.embed import Cell
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             pane = _primary_embed_pane(app.screen)
-            pane.session_name = "pickup-cursor-hold"
+            pane.session_name = "corral-cursor-hold"
             pane.dead = False
             pane._grid = [[Cell("x")]]  # noqa: SLF001
             with (
-                mock.patch("pickup.embed.resize"),
-                mock.patch("pickup.embed.capture", return_value=None),
+                mock.patch("corral.embed.resize"),
+                mock.patch("corral.embed.capture", return_value=None),
             ):
                 pane._on_resize(events.Resize(Size(60, 22), Size(60, 22)))
                 await pilot.pause(delay=embed_pane_mod._RESIZE_TMUX_DEBOUNCE + 0.05)
@@ -6415,18 +6415,18 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tmux_resize_skips_when_pane_too_narrow(self) -> None:
         """右栏短时缩到下限以下时不得 resize-window，避免窄折行烧进历史。"""
-        import pickup.ui.embed_pane as embed_pane_mod
+        import corral.ui.embed_pane as embed_pane_mod
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause()
             pane = _primary_embed_pane(app.screen)
-            pane.session_name = "pickup-claude-narrow"
+            pane.session_name = "corral-claude-narrow"
             pane.dead = False
             resize_calls: list[tuple] = []
 
-            with mock.patch("pickup.embed.resize", side_effect=lambda *a: resize_calls.append(a)):
+            with mock.patch("corral.embed.resize", side_effect=lambda *a: resize_calls.append(a)):
                 pane._on_resize(events.Resize(Size(20, 18), Size(20, 18)))
                 await pilot.pause(delay=embed_pane_mod._RESIZE_TMUX_DEBOUNCE + 0.05)
                 self.assertEqual(resize_calls, [])
@@ -6434,7 +6434,7 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(HAS_TMUX, "内嵌面板依赖真实 tmux")
 class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
-    """直启子命令（pickup claude ...）带进 TUI 的托管路径。"""
+    """直启子命令（corral claude ...）带进 TUI 的托管路径。"""
 
     def setUp(self) -> None:
         self._hosted_names: list[str] = []
@@ -6442,16 +6442,16 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
 
     def _cleanup_hosted(self) -> None:
         for name in self._hosted_names:
-            subprocess.run(["tmux", "-L", "pickup-keepalive", "kill-session", "-t", name],
+            subprocess.run(["tmux", "-L", "corral-keepalive", "kill-session", "-t", name],
                             stderr=subprocess.DEVNULL)
 
     async def test_direct_launch_hosts_and_focuses_pane_without_stealing_focus_back(self) -> None:
         """直启托管成功后焦点应在右栏；且挂载时不能再调度列表 focus 把焦点抢回去。"""
         store, _ = _make_store()
         plan = LaunchPlan(("bash", "-c", "printf 'DIRECT-HELLO\\n'; cat"), None)
-        direct = pickup._DirectLaunch(plan, "claude", "directtest01")
+        direct = corral._DirectLaunch(plan, "claude", "directtest01")
 
-        app = PickupApp(store, embed_ok=True, direct=direct)
+        app = CorralApp(store, embed_ok=True, direct=direct)
         async with app.run_test(size=(120, 30)) as pilot:
             area = app.screen.query_one(SplitPaneArea)
             await _wait_until(
@@ -6476,12 +6476,12 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(provisional["cwd"], os.getcwd())
             self.assertIn(
                 "claude:directtest01",
-                [pickup.session_key(session) for session in store.all_sessions()],
+                [corral.session_key(session) for session in store.all_sessions()],
             )
             list_view = app.screen.query_one(SessionListView)
             await _wait_until(
                 lambda: list_view.selected_session() is not None
-                and pickup.session_key(list_view.selected_session()) == "claude:directtest01"
+                and corral.session_key(list_view.selected_session()) == "claude:directtest01"
             )
             self.assertFalse(list_view.is_new_session_selected())
             self.assertTrue(pane.has_focus)
@@ -6494,7 +6494,7 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
         """真机直启：搜索框不可聚焦时默认焦点在侧边栏，托管成功仍须把输入交给新会话。"""
         store, _ = _make_store()
         release = threading.Event()
-        real_host = pickup.embed.host_session
+        real_host = corral.embed.host_session
 
         def delayed_host(*args, **kwargs):
             if not release.wait(timeout=5.0):
@@ -6502,9 +6502,9 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
             return real_host(*args, **kwargs)
 
         plan = LaunchPlan(("bash", "-c", "printf 'DIRECT-LIST\\n'; cat"), None)
-        direct = pickup._DirectLaunch(plan, "claude", "directlist01")
-        app = PickupApp(store, embed_ok=True, direct=direct)
-        with mock.patch("pickup.embed.host_session", side_effect=delayed_host):
+        direct = corral._DirectLaunch(plan, "claude", "directlist01")
+        app = CorralApp(store, embed_ok=True, direct=direct)
+        with mock.patch("corral.embed.host_session", side_effect=delayed_host):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
                 app.screen._focus_list()
@@ -6526,7 +6526,7 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: pane.has_focus)
                 await _wait_until(
                     lambda: list_view.selected_session() is not None
-                    and pickup.session_key(list_view.selected_session())
+                    and corral.session_key(list_view.selected_session())
                     == "claude:directlist01"
                 )
                 self.assertFalse(list_view.is_new_session_selected())
@@ -6544,12 +6544,12 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
         def delayed_host(*_a, **_k):
             if not release.wait(timeout=5.0):
                 raise TimeoutError("测试未能及时释放 delayed_host")
-            return "pickup-claude-directfocus1"
+            return "corral-claude-directfocus1"
 
         plan = LaunchPlan(("true",), None)
-        direct = pickup._DirectLaunch(plan, "claude", "directfocus1")
-        app = PickupApp(store, embed_ok=True, direct=direct)
-        with mock.patch("pickup.embed.host_session", side_effect=delayed_host):
+        direct = corral._DirectLaunch(plan, "claude", "directfocus1")
+        app = CorralApp(store, embed_ok=True, direct=direct)
+        with mock.patch("corral.embed.host_session", side_effect=delayed_host):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
                 search = app.screen.query_one("#project-search", Input)
@@ -6570,7 +6570,7 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
         from textual.widgets import Input
 
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             search = app.screen.query_one("#project-search", Input)
@@ -6596,12 +6596,12 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         """焦点在右栏静态预览格上按回车 = 重启这条会话。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
             mock.patch(
-                "pickup.embed.host_session", return_value="pickup-claude-s0",
+                "corral.embed.host_session", return_value="corral-claude-s0",
             ) as host,
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
@@ -6613,7 +6613,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await _wait_until(lambda: host.called)
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
-                await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_for_embed_session(app.screen, "corral-claude-s0")
 
     async def test_enter_on_ended_pane_restarts_and_clears_stale_hosting(self) -> None:
         """会话就在这一格里跑完退出：画面变「会话已结束」，回车原地重启。
@@ -6623,19 +6623,19 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         """
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
             mock.patch(
-                "pickup.embed.host_session", return_value="pickup-claude-again",
+                "corral.embed.host_session", return_value="corral-claude-again",
             ) as host,
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
-                key = pickup.session_key(store.all_sessions()[0])
-                store.mark_hosted(key, "pickup-claude-old")
+                key = corral.session_key(store.all_sessions()[0])
+                store.mark_hosted(key, "corral-claude-old")
                 pane = _primary_embed_pane(app.screen)
-                pane.session_name = "pickup-claude-old"
+                pane.session_name = "corral-claude-old"
                 pane.dead = True
                 app.screen.set_focus(pane)
                 await pilot.pause()
@@ -6644,9 +6644,9 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await _wait_until(lambda: host.called)
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
-                await _wait_for_embed_session(app.screen, "pickup-claude-again")
+                await _wait_for_embed_session(app.screen, "corral-claude-again")
                 self.assertEqual(
-                    store.find_session(key).get("keepalive_name"), "pickup-claude-again",
+                    store.find_session(key).get("keepalive_name"), "corral-claude-again",
                 )
 
     async def test_enter_restarts_ended_member_of_session_group(self) -> None:
@@ -6656,17 +6656,17 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         """
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
             mock.patch(
-                "pickup.embed.host_session", return_value="pickup-claude-s0",
+                "corral.embed.host_session", return_value="corral-claude-s0",
             ) as host,
-            mock.patch("pickup.liveness.is_alive", return_value=False),
+            mock.patch("corral.liveness.is_alive", return_value=False),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
-                keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
+                keys = [corral.session_key(s) for s in store.all_sessions()[:2]]
                 list_view.on_layout_change(
                     lambda s: s.set_group("/tmp", keys, focus_key=keys[0])
                 )
@@ -6678,7 +6678,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await _wait_until(lambda: host.called)
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
-                await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 area = app.screen.query_one(SplitPaneArea)
                 self.assertEqual(
                     set(area.ordered_session_keys()), set(keys),
@@ -6686,54 +6686,54 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_live_pane_forwards_enter_but_ctrl_f_opens_search(self) -> None:
-        """回车照常发给助手，但 Ctrl+F 必须由 pickup 打开全文搜索。"""
+        """回车照常发给助手，但 Ctrl+F 必须由 corral 打开全文搜索。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
                 pane._grid = [[]]  # noqa: SLF001 — 首帧已到达，不再是回退态
                 self.assertFalse(pane._is_restart_target())  # noqa: SLF001
-                with mock.patch("pickup.embed.send_key") as send_key:
+                with mock.patch("corral.embed.send_key") as send_key:
                     await pilot.press("enter")
                     await pilot.pause()
                     self.assertTrue(send_key.called)
 
-                with mock.patch("pickup.embed.send_key") as send_key:
+                with mock.patch("corral.embed.send_key") as send_key:
                     await pilot.press("ctrl+f")
                     await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))
                     self.assertFalse(send_key.called)
                     await pilot.press("escape")
 
     async def test_live_pane_forwards_enter_but_ctrl_p_pins(self) -> None:
-        """回车照常发给助手，但 Ctrl+P 必须由 pickup 置顶当前这一格。"""
+        """回车照常发给助手，但 Ctrl+P 必须由 corral 置顶当前这一格。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
                 pane._grid = [[]]  # noqa: SLF001 — 首帧已到达，不再是回退态
                 area = app.screen.query_one(SplitPaneArea)
                 key = area.focus_key
                 self.assertTrue(key)
                 list_view = app.screen.query_one(SessionListView)
-                with mock.patch("pickup.embed.send_key") as send_key:
+                with mock.patch("corral.embed.send_key") as send_key:
                     await pilot.press("ctrl+p")
                     await _wait_until(
                         lambda: key in list_view.group_store.pinned_session_keys
@@ -6744,15 +6744,15 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         """右栏某一格持焦时 Ctrl+P 置顶的是整组，不是把这一格拆出去单独钉。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
-                keys = [pickup.session_key(s) for s in store.all_sessions()[:2]]
+                keys = [corral.session_key(s) for s in store.all_sessions()[:2]]
                 list_view.on_layout_change(
                     lambda s: s.set_group("/tmp", keys, focus_key=keys[0])
                 )
@@ -6760,11 +6760,11 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(list_view.select_session_key(keys[0]))
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
                 pane._grid = [[]]  # noqa: SLF001
                 group = list_view.group_store.get_group(keys[0])
-                with mock.patch("pickup.embed.send_key") as send_key:
+                with mock.patch("corral.embed.send_key") as send_key:
                     await pilot.press("ctrl+p")
                     await _wait_until(
                         lambda: group.group_id in list_view.group_store.pinned_group_ids
@@ -6776,12 +6776,12 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         """进程早就没了的会话：单击只摆历史，回车才恢复（机主 2026-08-05 拍板）。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
             mock.patch(
-                "pickup.embed.host_session", return_value="pickup-claude-s1",
+                "corral.embed.host_session", return_value="corral-claude-s1",
             ) as host,
-            mock.patch("pickup.liveness.is_alive", return_value=False),
+            mock.patch("corral.liveness.is_alive", return_value=False),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
@@ -6793,35 +6793,35 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(host.called, "单击已结束会话不许启动助手进程")
                 self.assertTrue(list_view.has_focus, "焦点应留在侧边栏")
                 self.assertEqual(
-                    pickup.session_key(list_view.selected_session()),
-                    pickup.session_key(cards[1].session),
+                    corral.session_key(list_view.selected_session()),
+                    corral.session_key(cards[1].session),
                 )
 
                 await pilot.press("enter")
                 await _wait_until(lambda: host.called)
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
-                await _wait_for_embed_session(app.screen, "pickup-claude-s1")
+                await _wait_for_embed_session(app.screen, "corral-claude-s1")
 
     async def test_clicking_live_session_still_opens_it(self) -> None:
         """还活着的会话不受影响：单击仍等于回车，直接接管那一格。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
         for session in store.all_sessions():
-            session["keepalive_name"] = f"pickup-{session['id']}"
-        app = PickupApp(store, embed_ok=True)
-        with mock.patch("pickup.liveness.is_alive", return_value=True):
+            session["keepalive_name"] = f"corral-{session['id']}"
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.liveness.is_alive", return_value=True):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
                 cards = list(app.screen.query(SessionCard))
                 await pilot.click(cards[1])
                 await pilot.pause(delay=0.3)
-                pane = await _wait_for_embed_session(app.screen, "pickup-s1")
+                pane = await _wait_for_embed_session(app.screen, "corral-s1")
                 await _wait_until(lambda: pane.has_focus)
 
     async def test_preview_header_shows_restart_hint(self) -> None:
         """已结束会话的详情头要写明回车可重启，否则用户找不到入口。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.3)
             pane = _primary_embed_pane(app.screen)
@@ -6832,12 +6832,12 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         """预览默认钉底，详情头提示会滚出视野；顶/底 chrome 必须常驻 Enter 重启。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
             mock.patch(
-                "pickup.embed.host_session", return_value="pickup-claude-s0",
+                "corral.embed.host_session", return_value="corral-claude-s0",
             ),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
@@ -6865,7 +6865,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 list_view.focus()
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
-                await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(
                     lambda: short not in footer.render().plain
                     and focused not in footer.render().plain
@@ -6878,7 +6878,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_right_pane_shows_full_conversation_not_last_qa_blurb(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
@@ -6895,7 +6895,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_space_no_longer_opens_fullscreen_preview(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
@@ -6911,7 +6911,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         codex.is_available.return_value = True
         codex.scan_sessions.return_value = []
         store, _ = _make_store(extra_runtimes=(codex,))
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
@@ -6921,15 +6921,15 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("down")  # claude(原生恢复) -> codex
             await pilot.press("enter")
             await pilot.pause()
-        self.assertIsInstance(app.return_value, pickup.LaunchRequest)
+        self.assertIsInstance(app.return_value, corral.LaunchRequest)
         self.assertEqual(app.return_value.target_runtime_id, "codex")
 
     async def test_right_pane_detail_scrolls_with_page_and_end(self) -> None:
         """长对话预览：默认钉底；PgUp / Home 可回到更早内容；End 再回最新。"""
         long_msgs = []
         for i in range(40):
-            long_msgs.append(pickup.ConversationMessage("user", f"问题行-{i}-" + ("x" * 20)))
-            long_msgs.append(pickup.ConversationMessage("assistant", f"回复行-{i}-" + ("y" * 20)))
+            long_msgs.append(corral.ConversationMessage("user", f"问题行-{i}-" + ("x" * 20)))
+            long_msgs.append(corral.ConversationMessage("assistant", f"回复行-{i}-" + ("y" * 20)))
         sessions = [{
             "source": "claude", "id": "s0", "short_id": "s0",
             "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
@@ -6940,7 +6940,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         registry.get("claude").load_conversation.return_value = long_msgs
         # 清掉 store.load() 时预热的短对话缓存，强制按新返回值重读
         store.conversations.clear()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 24)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
@@ -6975,10 +6975,10 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_detail_async_load_pins_to_bottom(self) -> None:
         """对话异步填入后仍应钉在最新；用户上滚后刷新保持当前位置。"""
         long_msgs = [
-            pickup.ConversationMessage("user", f"早-{i}-" + ("u" * 40))
+            corral.ConversationMessage("user", f"早-{i}-" + ("u" * 40))
             for i in range(30)
         ] + [
-            pickup.ConversationMessage("assistant", "最新答复-" + ("z" * 40)),
+            corral.ConversationMessage("assistant", "最新答复-" + ("z" * 40)),
         ]
         sessions = [{
             "source": "claude", "id": "s0", "short_id": "s0",
@@ -6990,7 +6990,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         # 首次 peek 为空：模拟暖加载前；随后 get_conversation 写入缓存
         registry.get("claude").load_conversation.return_value = long_msgs
         store.conversations.clear()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 24)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
@@ -7012,7 +7012,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
 class ModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_session_modal_escape_cancels(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             result_holder = {}
@@ -7034,7 +7034,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_session_modal_picks_project_then_runtime(self) -> None:
         """一个弹窗内选完：左栏回车换到右栏，右栏回车才确认。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
             await pilot.pause(delay=0.2)
             result_holder = {}
@@ -7066,7 +7066,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_session_modal_arrow_keys_switch_columns(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
             await pilot.pause(delay=0.2)
 
@@ -7091,7 +7091,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_session_modal_bells_on_unavailable_runtime(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
             await pilot.pause(delay=0.2)
 
@@ -7115,7 +7115,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_session_modal_filters_projects(self) -> None:
         """左栏筛选框按名/路径收窄项目列表，清空后还原。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
             await pilot.pause(delay=0.2)
             result_holder = {}
@@ -7126,7 +7126,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
                         [
                             ("/tmp/alpha", "alpha", "/tmp/alpha"),
                             ("/tmp/beta", "beta", "/tmp/beta"),
-                            ("/Codes/pickup", "pickup", "/Codes/pickup"),
+                            ("/Codes/corral", "corral", "/Codes/corral"),
                         ],
                         [RuntimeChoice("claude", "Claude", "", True)],
                     )
@@ -7140,11 +7140,11 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("slash")
             await pilot.pause()
             self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
-            await pilot.press("p", "i", "c", "k")
+            await pilot.press("c", "o", "r", "r")
             await pilot.pause()
             projects = modal.query_one("#ns-projects")
             self.assertEqual(len(projects.children), 1)
-            self.assertEqual(modal._row("#ns-projects").value, "/Codes/pickup")
+            self.assertEqual(modal._row("#ns-projects").value, "/Codes/corral")
             await pilot.press("down")  # 筛选框 -> 项目列表
             await pilot.pause()
             self.assertTrue(projects.has_focus)
@@ -7161,7 +7161,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_session_modal_initial_query_seeds_filter(self) -> None:
         """侧边栏 project_query 作初值时，打开即已收窄，且不写回 nav。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
             await pilot.pause(delay=0.2)
             nav = app.screen.nav
@@ -7203,7 +7203,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_session_modal_empty_filter_bells_on_confirm(self) -> None:
         """无命中时确认响铃、弹窗不关。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
             await pilot.pause(delay=0.2)
 
@@ -7230,7 +7230,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_session_modal_escape_clears_filter_then_dismisses(self) -> None:
         """筛选框持焦且有内容时 Esc 先清空；再 Esc 才关窗。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
             await pilot.pause(delay=0.2)
             result_holder = {}
@@ -7270,7 +7270,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         codex.is_available.return_value = True
         codex.scan_sessions.return_value = []
         store, _ = _make_store(extra_runtimes=(codex,))
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         projects = [{"cwd_key": "/tmp", "label": "tmp", "count": 3, "latest_mtime": 0.0}]
         with mock.patch.object(store, "projects", return_value=projects):
             async with app.run_test(size=(110, 30)) as pilot:
@@ -7283,7 +7283,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("down")  # Claude -> Codex
                 await pilot.press("enter")
                 await pilot.pause(delay=0.3)
-        self.assertIsInstance(app.return_value, pickup.NewSessionRequest)
+        self.assertIsInstance(app.return_value, corral.NewSessionRequest)
         self.assertEqual(app.return_value.target_runtime_id, "codex")
         self.assertEqual(app.return_value.cwd, "/tmp")
 
@@ -7294,7 +7294,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         kimi.is_available.return_value = False
         kimi.scan_sessions.return_value = []
         store, _ = _make_store(extra_runtimes=(kimi,))
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
@@ -7310,7 +7310,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_confirm_modal_other_key_cancels(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             result_holder = {}
@@ -7326,7 +7326,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_confirm_modal_q_confirms(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             result_holder = {}
@@ -7343,7 +7343,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_confirm_modal_custom_key_confirms_and_q_no_longer_does(self) -> None:
         """删除会话复用 ConfirmModal 但确认键换成 x；默认键 q 此时不应再生效。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             result_holder = {}
@@ -7361,7 +7361,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_confirm_modal_custom_key_x_confirms(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             result_holder = {}
@@ -7404,7 +7404,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_runtime_picker_backdrop_click_cancels(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = RuntimePickerModal("接力到", [RuntimeChoice("claude", "Claude", "", True)])
@@ -7417,7 +7417,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_runtime_picker_click_inside_keeps_modal_open(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = RuntimePickerModal("接力到", [RuntimeChoice("claude", "Claude", "", True)])
@@ -7428,7 +7428,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_session_backdrop_click_cancels(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
             await pilot.pause(delay=0.2)
             holder = await self._open(app, pilot, self._new_session_modal())
@@ -7440,7 +7440,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_session_click_on_column_keeps_modal_open(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = self._new_session_modal()
@@ -7452,7 +7452,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_confirm_backdrop_click_cancels(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             holder = await self._open(app, pilot, ConfirmModal("确认？"))
@@ -7464,7 +7464,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_confirm_click_inside_keeps_modal_open(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = ConfirmModal("确认？")
@@ -7479,11 +7479,11 @@ class KillKeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
         sessions = [{
             "source": "claude", "id": "s0", "short_id": "s0", "mtime": time.time(),
             "size_bytes": 1, "size_kb": 1, "native_title": None, "fallback_title": "会话0",
-            "cwd": "/tmp", "live": True, "pid": 4242, "keepalive_name": "pickup-claude-fake",
+            "cwd": "/tmp", "live": True, "pid": 4242, "keepalive_name": "corral-claude-fake",
         }]
         store, _ = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
-        with mock.patch("pickup.keepalive.kill") as kill_mock:
+        app = CorralApp(store, embed_ok=False)
+        with mock.patch("corral.keepalive.kill") as kill_mock:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("down")
@@ -7503,7 +7503,7 @@ class KillKeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(
                     any("#3F9A6A" in str(span.style) for span in card.render().spans),
                 )
-        kill_mock.assert_called_once_with("pickup-claude-fake")
+        kill_mock.assert_called_once_with("corral-claude-fake")
         current = store.find_session("claude:s0")
         self.assertIsNotNone(current)
         self.assertNotIn("keepalive_name", current)
@@ -7520,7 +7520,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         }]
         store, registry = _make_store(sessions=sessions)
         claude_runtime = registry.get("claude")
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
@@ -7543,7 +7543,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         }]
         store, registry = _make_store(sessions=sessions)
         claude_runtime = registry.get("claude")
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
@@ -7558,13 +7558,13 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         sessions = [{
             "source": "claude", "id": "s0", "short_id": "s0", "mtime": time.time(),
             "size_bytes": 1, "size_kb": 1, "native_title": None, "fallback_title": "会话0",
-            "cwd": "/tmp", "live": True, "pid": 4242, "keepalive_name": "pickup-claude-fake",
+            "cwd": "/tmp", "live": True, "pid": 4242, "keepalive_name": "corral-claude-fake",
             "path": "/tmp/s0.jsonl",
         }]
         store, registry = _make_store(sessions=sessions)
         claude_runtime = registry.get("claude")
-        app = PickupApp(store, embed_ok=False)
-        with mock.patch("pickup.keepalive.kill") as kill_mock:
+        app = CorralApp(store, embed_ok=False)
+        with mock.patch("corral.keepalive.kill") as kill_mock:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("down")
@@ -7580,7 +7580,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(list_view._session_cards(), [])
                 # 结束进程与磁盘抹除都挪到了后台线程，必须在 App 存活期间等它跑完。
                 await _wait_until(lambda: claude_runtime.delete_session.called)
-        kill_mock.assert_called_once_with("pickup-claude-fake")
+        kill_mock.assert_called_once_with("corral-claude-fake")
         claude_runtime.delete_session.assert_called_once()
         self.assertIsNone(store.find_session("claude:s0"))
 
@@ -7595,7 +7595,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         claude_runtime = registry.get("claude")
         released = threading.Event()
         claude_runtime.delete_session.side_effect = lambda *_: released.wait(5)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         try:
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause(delay=0.2)
@@ -7622,7 +7622,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         store, registry = _make_store(sessions=sessions)
         claude_runtime = registry.get("claude")
         claude_runtime.delete_session.side_effect = OSError("模拟磁盘删除失败")
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
@@ -7644,7 +7644,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
         await pilot.pause(delay=0.2)
         list_view = app.screen.query_one(SessionListView)
         keys = [
-            pickup.session_key(session)
+            corral.session_key(session)
             for session in app.screen.store.all_sessions()[:count]
         ]
         list_view.on_layout_change(lambda s: s.set_group("/tmp", keys, focus_key=keys[0]))
@@ -7661,7 +7661,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_x_on_group_card_deletes_every_member(self) -> None:
         store, registry = _make_store()
         claude_runtime = registry.get("claude")
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             list_view, keys = await self._grouped(app, pilot)
             self.assertIsNotNone(list_view.selected_group())
@@ -7687,15 +7687,15 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
                 "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
                 "mtime": time.time() - i, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}", "cwd": "/tmp",
-                "live": True, "pid": 4242 + i, "keepalive_name": f"pickup-claude-fake{i}",
+                "live": True, "pid": 4242 + i, "keepalive_name": f"corral-claude-fake{i}",
                 "path": f"/tmp/s{i}.jsonl",
             }
             for i in range(2)
         ]
         store, registry = _make_store(sessions=sessions)
         claude_runtime = registry.get("claude")
-        app = PickupApp(store, embed_ok=False)
-        with mock.patch("pickup.keepalive.kill") as kill_mock:
+        app = CorralApp(store, embed_ok=False)
+        with mock.patch("corral.keepalive.kill") as kill_mock:
             async with app.run_test(size=(100, 30)) as pilot:
                 _, keys = await self._grouped(app, pilot)
                 await pilot.press("x")
@@ -7707,7 +7707,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertEqual(
             sorted(call.args[0] for call in kill_mock.call_args_list),
-            ["pickup-claude-fake0", "pickup-claude-fake1"],
+            ["corral-claude-fake0", "corral-claude-fake1"],
         )
         for key in keys:
             self.assertIsNone(store.find_session(key))
@@ -7715,7 +7715,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_x_on_group_card_cancel_keeps_every_member(self) -> None:
         store, registry = _make_store()
         claude_runtime = registry.get("claude")
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             _, keys = await self._grouped(app, pilot)
             await pilot.press("x")
@@ -7735,7 +7735,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
                 raise OSError("模拟磁盘删除失败")
 
         claude_runtime.delete_session.side_effect = fail_second
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await self._grouped(app, pilot)
             await pilot.press("x")
@@ -7748,7 +7748,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
-    """在别的终端窗口里跑、没被 pickup 托管的会话。
+    """在别的终端窗口里跑、没被 corral 托管的会话。
 
     这类会话拿不到实时画面（画面只存在于那个窗口自己的终端连接里）。以前点进去
     会静默用原生恢复另起一个进程，右栏冒出一个刚从历史恢复的新界面，用户看到的
@@ -7764,10 +7764,10 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         }]
 
     def test_is_external_running_only_for_live_untracked(self) -> None:
-        from pickup.ui.main_screen import _status_key, is_external_running
+        from corral.ui.main_screen import _status_key, is_external_running
 
         external = {"live": True}
-        hosted = {"live": True, "keepalive_name": "pickup-claude-x"}
+        hosted = {"live": True, "keepalive_name": "corral-claude-x"}
         ended = {"live": False}
         self.assertTrue(is_external_running(external))
         self.assertFalse(is_external_running(hosted))
@@ -7778,7 +7778,7 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_detail_header_explains_why_no_live_screen(self) -> None:
         store, _registry = _make_store(sessions=self._external_sessions())
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             header = app.screen._detail_header(store.find_session("claude:s0")).plain
@@ -7791,7 +7791,7 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         registry.build_launch_plan = mock.Mock(
             side_effect=AssertionError("确认前不该构造启动计划")
         )
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -7800,9 +7800,9 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(app.return_value)
         registry.build_launch_plan.assert_not_called()
 
-    async def test_external_running_session_stays_in_pickup(self) -> None:
+    async def test_external_running_session_stays_in_corral(self) -> None:
         store, _registry = _make_store(sessions=self._external_sessions())
-        app = PickupApp(store, embed_ok=False)  # embed 不可用 → 确认后退出交外层接管
+        app = CorralApp(store, embed_ok=False)  # embed 不可用 → 确认后退出交外层接管
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -7816,7 +7816,7 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
         registry.build_launch_plan = mock.Mock(
             side_effect=AssertionError("外部会话不该构造启动计划")
         )
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.3)
             pane = _primary_embed_pane(app.screen)
@@ -7831,14 +7831,14 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_transcript_keeps_being_reloaded_while_running_elsewhere(self) -> None:
         """助手仍在写历史 → mtime 变、缓存失效；右栏必须自己补读，否则正文会空掉。"""
         store, _registry = _make_store(sessions=self._external_sessions())
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.3)
             screen = app.screen
             warmed: list[str] = []
             with mock.patch.object(
                 screen, "_warm_conversation",
-                side_effect=lambda s, gen: warmed.append(pickup.session_key(s)),
+                side_effect=lambda s, gen: warmed.append(corral.session_key(s)),
             ):
                 screen._build_hosted_entries(["claude:s0"])
             self.assertEqual(warmed, ["claude:s0"])
@@ -7846,26 +7846,26 @@ class ExternalRunningSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_hosted_session_is_not_reloaded_from_disk(self) -> None:
         """已托管会话右栏是实时画面，不该为它反复读历史文件。"""
         sessions = self._external_sessions()
-        sessions[0]["keepalive_name"] = "pickup-claude-fake"
+        sessions[0]["keepalive_name"] = "corral-claude-fake"
         store, _registry = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.3)
             screen = app.screen
             warmed: list[str] = []
             with mock.patch.object(
                 screen, "_warm_conversation",
-                side_effect=lambda s, gen: warmed.append(pickup.session_key(s)),
+                side_effect=lambda s, gen: warmed.append(corral.session_key(s)),
             ):
                 screen._build_hosted_entries(["claude:s0"])
             self.assertEqual(warmed, [])
 
     async def test_hosted_running_session_opens_without_confirm(self) -> None:
-        """已被 pickup 托管的运行中会话是老路径，不能被新确认框挡住。"""
+        """已被 corral 托管的运行中会话是老路径，不能被新确认框挡住。"""
         sessions = self._external_sessions()
-        sessions[0]["keepalive_name"] = "pickup-claude-fake"
+        sessions[0]["keepalive_name"] = "corral-claude-fake"
         store, _registry = _make_store(sessions=sessions)
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("enter")
@@ -7883,7 +7883,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
                 "source": "claude", "id": "a", "short_id": "a",
                 "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "侧边栏改造",
-                "cwd": "/Users/x/pickup", "live": False,
+                "cwd": "/Users/x/corral", "live": False,
             },
             {
                 "source": "claude", "id": "b", "short_id": "b",
@@ -7893,8 +7893,8 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             },
         ]
         conversations = {
-            "a": [pickup.ConversationMessage("user", "第一行\n这里聊到了红烧肉的做法\n第三行")],
-            "b": [pickup.ConversationMessage("assistant", "字幕断句改好了")],
+            "a": [corral.ConversationMessage("user", "第一行\n这里聊到了红烧肉的做法\n第三行")],
+            "b": [corral.ConversationMessage("assistant", "字幕断句改好了")],
         }
         store, registry = _make_store(sessions=sessions)
         runtime = registry.get("claude")
@@ -7917,7 +7917,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         await pilot.pause()
 
     async def test_search_matches_conversation_body_and_shows_the_hit_line(self) -> None:
-        app = PickupApp(self._store(), embed_ok=False)
+        app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
@@ -7927,14 +7927,14 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             rows = modal.query(SearchResultRow)
             self.assertEqual(len(rows), 1)
             rendered = rows.first().render().plain
-            self.assertIn("pickup: 侧边栏改造", rendered)
+            self.assertIn("corral: 侧边栏改造", rendered)
             self.assertIn("这里聊到了红烧肉的做法", rendered)
             # 只展示命中的那一行，不把整条消息倒出来
             self.assertNotIn("第三行", rendered)
             await pilot.press("escape")
 
     async def test_hit_keyword_is_highlighted(self) -> None:
-        app = PickupApp(self._store(), embed_ok=False)
+        app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
@@ -7955,7 +7955,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_enter_reveals_session_and_clears_blocking_filter(self) -> None:
         """搜到的会话被侧边栏筛选词挡在外面时，选中它必须先把筛选清掉。"""
-        app = PickupApp(self._store(), embed_ok=False)
+        app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -7978,7 +7978,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(selected["id"], "a")
 
     async def test_escape_closes_without_touching_the_sidebar(self) -> None:
-        app = PickupApp(self._store(), embed_ok=False)
+        app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -7997,7 +7997,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_backdrop_click_closes_without_touching_the_sidebar(self) -> None:
         """点框外空白＝Esc：关弹窗、不动侧边栏、不退出程序。"""
-        app = PickupApp(self._store(), embed_ok=False)
+        app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             list_view = app.screen.query_one(SessionListView)
@@ -8015,7 +8015,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_click_on_the_query_box_keeps_the_modal_open(self) -> None:
         """回归：Click 从输入框冒泡上来，不能被当成点在背景上。"""
-        app = PickupApp(self._store(), embed_ok=False)
+        app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
@@ -8025,7 +8025,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
 
     async def test_sidebar_filter_is_carried_into_the_modal(self) -> None:
-        app = PickupApp(self._store(), embed_ok=False)
+        app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             app.screen.query_one("#project-search", Input).value = "字幕"
@@ -8038,7 +8038,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
 
     async def test_results_are_sorted_newest_first(self) -> None:
-        app = PickupApp(self._store(), embed_ok=False)
+        app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
@@ -8049,7 +8049,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_arrow_keys_move_results_while_input_keeps_focus(self) -> None:
         """输入框全程持有焦点，↑↓ 只挪结果高亮——用户不用在两个控件间切焦点。"""
-        app = PickupApp(self._store(), embed_ok=False)
+        app = CorralApp(self._store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
@@ -8078,14 +8078,14 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
                 "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
                 "mtime": now - i, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}",
-                "cwd": "/Users/x/pickup", "live": False,
+                "cwd": "/Users/x/corral", "live": False,
             }
             for i in range(count)
         ]
         store, registry = _make_store(sessions=sessions)
         registry.get("claude").load_conversation.side_effect = lambda s: [
-            pickup.ConversationMessage("user", f"甲词 {s['id']}"),
-            pickup.ConversationMessage("assistant", f"乙词 {s['id']}"),
+            corral.ConversationMessage("user", f"甲词 {s['id']}"),
+            corral.ConversationMessage("assistant", f"乙词 {s['id']}"),
         ]
         return store
 
@@ -8098,7 +8098,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         用户打完字立刻回车会打开一个他没在看的会话。这里直接并发调重建来锁住
         `_results_lock` + `await clear/extend` 这套约定。
         """
-        app = PickupApp(self._bulk_store(), embed_ok=False)
+        app = CorralApp(self._bulk_store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
@@ -8123,7 +8123,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
         成立的；用例的价值在于把这个约定钉死——将来谁把它改回「用 `index` 索引
         `_matches`」（两份可能不同步的数据），这里的采样就会在重建中间态上炸。
         """
-        app = PickupApp(self._bulk_store(), embed_ok=False)
+        app = CorralApp(self._bulk_store(), embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             modal = await self._open_search(pilot, app)
@@ -8153,7 +8153,7 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
     async def test_reopening_the_modal_picks_up_sessions_added_since_warmup(self) -> None:
         """索引不能建一次就不管了：开着不动期间新产生的会话必须搜得到。"""
         store = self._store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             screen = app.screen
@@ -8163,12 +8163,12 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
                 "source": "claude", "id": "c", "short_id": "c",
                 "mtime": time.time() + 10, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "新会话",
-                "cwd": "/Users/x/pickup", "live": False,
+                "cwd": "/Users/x/corral", "live": False,
             }
             runtime = store.registry.get("claude")
             previous = runtime.load_conversation.side_effect
             runtime.load_conversation.side_effect = (
-                lambda s: [pickup.ConversationMessage("user", "刚聊到的秘密暗号")]
+                lambda s: [corral.ConversationMessage("user", "刚聊到的秘密暗号")]
                 if s["id"] == "c"
                 else previous(s)
             )
@@ -8181,9 +8181,9 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("escape")
 
     async def test_ctrl_f_opens_search_when_a_live_pane_has_focus(self) -> None:
-        """右栏实时终端持有输入时，Ctrl+F 仍是 pickup 的全文搜索入口。"""
+        """右栏实时终端持有输入时，Ctrl+F 仍是 corral 的全文搜索入口。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             screen = app.screen
@@ -8203,18 +8203,18 @@ class SessionHudSummaryTests(unittest.TestCase):
     def _messages(self, count: int):
         out = []
         for i in range(count):
-            out.append(pickup.ConversationMessage("user", f"问题{i}"))
-            out.append(pickup.ConversationMessage("assistant", f"回复{i}"))
+            out.append(corral.ConversationMessage("user", f"问题{i}"))
+            out.append(corral.ConversationMessage("assistant", f"回复{i}"))
         return out
 
     def test_injected_runtime_prompts_are_dropped(self) -> None:
         """Your prompts 只列人敲的话；扫描层留下的注入轮次必须在这里丢掉。
 
-        样本取自本机真实历史：Cursor 计划附件、任务收尾提示、pickup 接力词、
+        样本取自本机真实历史：Cursor 计划附件、任务收尾提示、corral 接力词、
         Codex skill/中断包裹、OpenConductor 角色提示。用户自己敲的 `$doc-update`
         和带图提问要留下。
         """
-        from pickup.ui.session_hud import is_injected_user_prompt, summarize_user_messages
+        from corral.ui.session_hud import is_injected_user_prompt, summarize_user_messages
 
         injected = [
             "Briefly inform the user about the task result"
@@ -8253,30 +8253,30 @@ class SessionHudSummaryTests(unittest.TestCase):
             self.assertFalse(is_injected_user_prompt(body), body[:60])
 
         mixed = [
-            pickup.ConversationMessage("user", injected[0]),
-            pickup.ConversationMessage("user", "人敲的第一句"),
-            pickup.ConversationMessage("assistant", "回复"),
-            pickup.ConversationMessage("user", injected[2]),
-            pickup.ConversationMessage("user", "人敲的第二句"),
+            corral.ConversationMessage("user", injected[0]),
+            corral.ConversationMessage("user", "人敲的第一句"),
+            corral.ConversationMessage("assistant", "回复"),
+            corral.ConversationMessage("user", injected[2]),
+            corral.ConversationMessage("user", "人敲的第二句"),
         ]
         data = summarize_user_messages(mixed)
         self.assertEqual(data.count, 2)
         self.assertEqual([body for _stamp, body in data.entries], ["人敲的第一句", "人敲的第二句"])
 
     def test_image_wrapper_keeps_the_caption(self) -> None:
-        from pickup.ui.session_hud import summarize_user_messages
+        from corral.ui.session_hud import summarize_user_messages
 
         wrapped = (
             '<image name=[Image #1] path="/tmp/a.png">\n</image>\n'
             "[Image #1] 展开的时候这条线要连到三角形"
         )
-        data = summarize_user_messages([pickup.ConversationMessage("user", wrapped)])
+        data = summarize_user_messages([corral.ConversationMessage("user", wrapped)])
         self.assertEqual(data.count, 1)
         self.assertIn("展开的时候这条线要连到三角形", data.entries[0][1])
         self.assertNotIn("<image", data.entries[0][1])
 
     def test_only_user_messages_oldest_first(self) -> None:
-        from pickup.ui.session_hud import summarize_user_messages
+        from corral.ui.session_hud import summarize_user_messages
 
         data = summarize_user_messages(self._messages(3))
         self.assertEqual(data.count, 3)
@@ -8287,7 +8287,7 @@ class SessionHudSummaryTests(unittest.TestCase):
 
     def test_long_session_keeps_both_ends_and_drops_the_middle(self) -> None:
         """最早那条决定「这个会话本来要干嘛」，不能跟着中间那段一起被砍掉。"""
-        from pickup.ui.session_hud import MAX_ENTRIES, summarize_user_messages
+        from corral.ui.session_hud import MAX_ENTRIES, summarize_user_messages
 
         data = summarize_user_messages(self._messages(20))
         self.assertEqual(data.count, 20)
@@ -8301,7 +8301,7 @@ class SessionHudSummaryTests(unittest.TestCase):
 
     def test_time_column_drops_the_date_for_todays_prompts(self) -> None:
         """横向寸土寸金：当天只给 HH:MM，更早只给 MM-DD，两者都恰好 5 格宽。"""
-        from pickup.ui.session_hud import _short_time
+        from corral.ui.session_hud import _short_time
 
         now = time.mktime((2026, 7, 31, 16, 30, 0, 0, 0, -1))
         today = time.mktime((2026, 7, 31, 9, 5, 0, 0, 0, -1))
@@ -8309,47 +8309,47 @@ class SessionHudSummaryTests(unittest.TestCase):
         self.assertEqual(_short_time(today, now), "09:05")
         self.assertEqual(_short_time(earlier, now), "07-28")
         for stamp in (_short_time(today, now), _short_time(earlier, now)):
-            self.assertEqual(pickup._text_width(stamp), 5)
+            self.assertEqual(corral._text_width(stamp), 5)
 
     def test_expanded_shows_na_when_timestamp_missing(self) -> None:
         """Cursor 等没有逐条时间的历史：展开态用 N/A 占位，列宽与真实时间对齐。"""
-        from pickup.ui.session_hud import _MISSING_TIME, SessionHud, summarize_user_messages
+        from corral.ui.session_hud import _MISSING_TIME, SessionHud, summarize_user_messages
 
         hud = SessionHud()
         hud.update_data(
-            summarize_user_messages([pickup.ConversationMessage("user", "无时间提问")]),
+            summarize_user_messages([corral.ConversationMessage("user", "无时间提问")]),
             expanded=True,
         )
         body = hud.lines(40)[1].plain
-        self.assertEqual(pickup._text_width(_MISSING_TIME), 5)
+        self.assertEqual(corral._text_width(_MISSING_TIME), 5)
         self.assertTrue(body.startswith(_MISSING_TIME), body)
         self.assertEqual(body[7:7 + len("无时间提问")], "无时间提问")
 
     def test_multiline_prompt_collapsed_to_single_line(self) -> None:
-        from pickup.ui.session_hud import summarize_user_messages
+        from corral.ui.session_hud import summarize_user_messages
 
         data = summarize_user_messages(
-            [pickup.ConversationMessage("user", "第一行\n\n  第二行\t第三行  ")],
+            [corral.ConversationMessage("user", "第一行\n\n  第二行\t第三行  ")],
         )
         self.assertEqual(data.entries[0][1], "第一行 第二行 第三行")
 
     def test_no_user_messages_means_no_hud(self) -> None:
-        from pickup.ui.session_hud import summarize_user_messages
+        from corral.ui.session_hud import summarize_user_messages
 
-        data = summarize_user_messages([pickup.ConversationMessage("assistant", "只有回复")])
+        data = summarize_user_messages([corral.ConversationMessage("assistant", "只有回复")])
         self.assertFalse(data)
         self.assertEqual(data.count, 0)
 
     def test_consecutive_duplicate_prompts_collapse(self) -> None:
         """相邻同一句只留一条；隔了一轮再发同一句是真人重复，要留下。"""
-        from pickup.ui.session_hud import summarize_user_messages
+        from corral.ui.session_hud import summarize_user_messages
 
         data = summarize_user_messages([
-            pickup.ConversationMessage("user", "同一句"),
-            pickup.ConversationMessage("user", "同一句\n"),
-            pickup.ConversationMessage("assistant", "回"),
-            pickup.ConversationMessage("user", "下一句"),
-            pickup.ConversationMessage("user", "同一句"),
+            corral.ConversationMessage("user", "同一句"),
+            corral.ConversationMessage("user", "同一句\n"),
+            corral.ConversationMessage("assistant", "回"),
+            corral.ConversationMessage("user", "下一句"),
+            corral.ConversationMessage("user", "同一句"),
         ])
         self.assertEqual(data.count, 3)
         self.assertEqual(
@@ -8362,11 +8362,11 @@ class SessionHudRenderTests(unittest.TestCase):
     """小窗两种形态的内容：收起态给两头，展开态补上中间并如实说明省略了多少条。"""
 
     def _hud(self, count: int, *, expanded: bool):
-        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
 
         messages = []
         for i in range(count):
-            messages.append(pickup.ConversationMessage("user", f"问题{i}"))
+            messages.append(corral.ConversationMessage("user", f"问题{i}"))
         hud = SessionHud()
         hud.update_data(summarize_user_messages(messages), expanded=expanded)
         return hud
@@ -8390,7 +8390,7 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertIn("问题0", lines[1])
 
     def test_expanded_is_oldest_to_newest_with_the_middle_reported(self) -> None:
-        from pickup.ui.session_hud import MAX_ENTRIES
+        from corral.ui.session_hud import MAX_ENTRIES
 
         hud = self._hud(10, expanded=True)
         lines = [line.plain for line in hud.lines(40)]
@@ -8413,12 +8413,12 @@ class SessionHudRenderTests(unittest.TestCase):
 
     def test_expanded_folds_long_prompt_with_ellipsis(self) -> None:
         """展开态每条最多两行，超出末行加省略号，不再整条换行铺满浮层。"""
-        from pickup.ui.session_hud import _MAX_PROMPT_LINES, SessionHud, summarize_user_messages
+        from corral.ui.session_hud import _MAX_PROMPT_LINES, SessionHud, summarize_user_messages
 
         body = "长提问" * 40
         hud = SessionHud()
         hud.update_data(
-            summarize_user_messages([pickup.ConversationMessage("user", body)]),
+            summarize_user_messages([corral.ConversationMessage("user", body)]),
             expanded=True,
         )
         lines = hud.lines(30)
@@ -8429,14 +8429,14 @@ class SessionHudRenderTests(unittest.TestCase):
         joined = "".join(line.plain[7:].rstrip() for line in body_lines)
         self.assertLess(len(joined), len(body))
         for line in lines:
-            self.assertLessEqual(pickup._text_width(line.plain), 30)
+            self.assertLessEqual(corral._text_width(line.plain), 30)
 
     def test_short_prompt_does_not_grow_or_ellipsis(self) -> None:
-        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
 
         hud = SessionHud()
         hud.update_data(
-            summarize_user_messages([pickup.ConversationMessage("user", "短提问")]),
+            summarize_user_messages([corral.ConversationMessage("user", "短提问")]),
             expanded=True,
         )
         body_lines = hud.lines(40)[1:-1]
@@ -8445,12 +8445,12 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertNotIn("...", body_lines[0].plain)
 
     def test_expanded_continuation_lines_align_with_the_first_line(self) -> None:
-        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
 
         hud = SessionHud()
         hud.update_data(
             summarize_user_messages([
-                pickup.ConversationMessage("user", "对齐" * 30, 1_785_000_000.0),
+                corral.ConversationMessage("user", "对齐" * 30, 1_785_000_000.0),
             ]),
             expanded=True,
         )
@@ -8466,9 +8466,9 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertEqual(head_indent, 0, "首行以时间列开头，不额外缩进")
 
     def test_expanded_caps_height_and_scrolls_instead_of_dropping_content(self) -> None:
-        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
 
-        msgs = [pickup.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(6)]
+        msgs = [corral.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(6)]
         hud = SessionHud()
         hud.update_data(summarize_user_messages(msgs), expanded=True)
 
@@ -8497,16 +8497,16 @@ class SessionHudRenderTests(unittest.TestCase):
 
     def test_new_prompts_keep_viewport_pinned_to_latest(self) -> None:
         """新提问追加在末尾时，钉底状态必须跟着贴到最新，不能停在旧位置。"""
-        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
 
-        short = [pickup.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(3)]
+        short = [corral.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(3)]
         hud = SessionHud()
         hud.update_data(summarize_user_messages(short), expanded=True)
         hud.lines(40, 10)
         self.assertTrue(hud._stick_bottom)  # noqa: SLF001
 
         longer = short + [
-            pickup.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(3, 6)
+            corral.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(3, 6)
         ]
         hud.update_data(summarize_user_messages(longer), expanded=True)
         visible = " ".join(line.plain for line in hud.lines(40, 10)[1:-1])
@@ -8514,9 +8514,9 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertEqual(hud._scroll, hud._max_scroll)  # noqa: SLF001
 
     def test_collapsing_resets_scroll(self) -> None:
-        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
 
-        msgs = [pickup.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(6)]
+        msgs = [corral.ConversationMessage("user", f"第{i}条" + "正文" * 20) for i in range(6)]
         data = summarize_user_messages(msgs)
         hud = SessionHud()
         hud.update_data(data, expanded=True)
@@ -8539,7 +8539,7 @@ class SessionHudRenderTests(unittest.TestCase):
 
     def test_expanded_zebra_paints_odd_prompt_blocks(self) -> None:
         """提问块按奇偶交替涂条纹；页眉、中间省略行、页脚都不涂。"""
-        from pickup.ui.session_hud import SessionHud, summarize_user_messages
+        from corral.ui.session_hud import SessionHud, summarize_user_messages
 
         def has_bg(line) -> bool:
             for span in line.spans:
@@ -8550,7 +8550,7 @@ class SessionHudRenderTests(unittest.TestCase):
                     return True
             return False
 
-        msgs = [pickup.ConversationMessage("user", f"问题{i}") for i in range(8)]
+        msgs = [corral.ConversationMessage("user", f"问题{i}") for i in range(8)]
         hud = SessionHud()
         hud.update_data(summarize_user_messages(msgs), expanded=True)
         body = hud._expanded_body(40, "on #334455")  # noqa: SLF001
@@ -8567,7 +8567,7 @@ class SessionHudRenderTests(unittest.TestCase):
         """条纹叠 `$primary`，必须仍是蓝，不能被 `$foreground` 洗成灰。"""
         from textual.color import Color as TextualColor
 
-        from pickup.ui.session_hud import _hud_stripe_color
+        from corral.ui.session_hud import _hud_stripe_color
 
         gray = TextualColor.parse("#C9D1D9")
         for bg_hex, primary_hex in (("#31475E", "#3B7EB8"), ("#D1E7F7", "#2F6F9F")):
@@ -8601,7 +8601,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
                 "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"会话{i}",
                 "cwd": "/tmp", "live": True,
-                "keepalive_name": f"pickup-claude-s{i}",
+                "keepalive_name": f"corral-claude-s{i}",
             }
             for i in range(count)
         ]
@@ -8610,22 +8610,22 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         store, registry = _make_store(sessions=sessions)
         # 收起态要同时给出最初和最近，夹具至少得有两条真人提问
         registry.get("claude").load_conversation.return_value = [
-            pickup.ConversationMessage("user", "最初的问题"),
-            pickup.ConversationMessage("assistant", "测试回复"),
-            pickup.ConversationMessage("user", "最近的问题"),
+            corral.ConversationMessage("user", "最初的问题"),
+            corral.ConversationMessage("assistant", "测试回复"),
+            corral.ConversationMessage("user", "最近的问题"),
         ]
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         return store, app
 
     async def test_collapsed_hud_sits_top_right_and_stays_small(self) -> None:
-        from pickup.ui.session_hud import SessionHud
+        from corral.ui.session_hud import SessionHud
 
         sessions = self._live_sessions(1)
         store, app = await self._hosted_app(sessions)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
-            key = pickup.session_key(sessions[0])
+            key = corral.session_key(sessions[0])
             area.show_hosted_group(
                 "/tmp", [(sessions[0], sessions[0]["keepalive_name"], lambda: "")],
                 focus_key=key,
@@ -8662,7 +8662,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
-            key = pickup.session_key(sessions[0])
+            key = corral.session_key(sessions[0])
             area.show_hosted_group(
                 "/tmp", [(sessions[0], sessions[0]["keepalive_name"], lambda: "")],
                 focus_key=key,
@@ -8690,13 +8690,13 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         store, app = await self._hosted_app(sessions)
         registry = store.registry
         registry.get("claude").load_conversation.return_value = [
-            pickup.ConversationMessage("user", f"第{i}条提问：" + "很长的正文" * 10)
+            corral.ConversationMessage("user", f"第{i}条提问：" + "很长的正文" * 10)
             for i in range(6)
         ]
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
-            key = pickup.session_key(sessions[0])
+            key = corral.session_key(sessions[0])
             area.show_hosted_group(
                 "/tmp", [(sessions[0], sessions[0]["keepalive_name"], lambda: "")],
                 focus_key=key,
@@ -8715,7 +8715,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: not hud.expanded and hud.size.height == 3)
             self.assertTrue(_matches(), "收起态：底色框高度与正文行数不一致")
             # 每行都补齐到同宽，底色才是规整矩形，右侧不会露出锯齿
-            widths = {pickup._text_width(line) for line in hud.render().plain.split("\n")}
+            widths = {corral._text_width(line) for line in hud.render().plain.split("\n")}
             self.assertEqual(widths, {hud.size.width})
 
     async def test_every_live_pane_draws_its_own_hud(self) -> None:
@@ -8725,8 +8725,8 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(160, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
-            key0 = pickup.session_key(sessions[0])
-            key1 = pickup.session_key(sessions[1])
+            key0 = corral.session_key(sessions[0])
+            key1 = corral.session_key(sessions[1])
             app.screen._apply_layout_change(  # noqa: SLF001
                 lambda s: s.set_group("/tmp", [key0, key1], focus_key=key0)
             )
@@ -8757,7 +8757,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
     async def test_static_preview_pane_also_draws_hud(self) -> None:
         """历史消息预览也要画 Your prompts：长对话里靠小窗扫提问脉络。"""
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
             area = app.screen.query_one(SplitPaneArea)
@@ -8784,7 +8784,7 @@ class SessionHudGatingTests(unittest.TestCase):
     """小窗的快捷键归属：右栏实时格持有输入时让路给助手，纯列表模式整体不可用。"""
 
     def test_toggle_hud_yields_to_the_assistant(self) -> None:
-        from pickup.ui.main_screen import MainScreen
+        from corral.ui.main_screen import MainScreen
 
         store, _ = _make_store()
         screen = MainScreen(store, embed_ok=True)
@@ -8795,7 +8795,7 @@ class SessionHudGatingTests(unittest.TestCase):
         self.assertTrue(screen.check_action("toggle_hud", ()))
 
     def test_toggle_hud_disabled_without_embed(self) -> None:
-        from pickup.ui.main_screen import MainScreen
+        from corral.ui.main_screen import MainScreen
 
         store, _ = _make_store()
         screen = MainScreen(store, embed_ok=False)
@@ -8814,7 +8814,7 @@ class PreviewSustainWarmTests(unittest.TestCase):
         import tempfile
         import types
 
-        from pickup.ui.main_screen import MainScreen
+        from corral.ui.main_screen import MainScreen
 
         store, _ = _make_store()
         screen = MainScreen(store, embed_ok=True)
@@ -8841,7 +8841,7 @@ class PreviewSustainWarmTests(unittest.TestCase):
             os.unlink(path.name)
 
     def test_missed_preview_warm_is_throttled(self) -> None:
-        from pickup.ui.main_screen import MainScreen
+        from corral.ui.main_screen import MainScreen
 
         store, screen, area, spec = self._make_preview()
         with mock.patch.object(MainScreen, "_split_area", return_value=area), mock.patch.object(
@@ -8862,9 +8862,9 @@ class PreviewSustainWarmTests(unittest.TestCase):
             self.assertEqual(warm.call_count, 2)
 
     def test_keepalive_pane_never_triggers_rewarm(self) -> None:
-        from pickup.ui.main_screen import MainScreen
+        from corral.ui.main_screen import MainScreen
 
-        store, screen, area, spec = self._make_preview(keepalive="pickup-claude-abc")
+        store, screen, area, spec = self._make_preview(keepalive="corral-claude-abc")
         with mock.patch.object(MainScreen, "_split_area", return_value=area), mock.patch.object(
             MainScreen, "_warm_conversation"
         ) as warm:
@@ -8875,7 +8875,7 @@ class PreviewSustainWarmTests(unittest.TestCase):
 class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
     """顶栏「终端」：内嵌自由 shell 分屏与生命周期清理。"""
 
-    async def _open_shell_pane(self, pilot, app, *, keepalive_name: str = "pickup-shell-abc123"):
+    async def _open_shell_pane(self, pilot, app, *, keepalive_name: str = "corral-shell-abc123"):
         area = app.screen.query_one(SplitPaneArea)
         area.current_project = "/tmp"
         app.screen._on_shell_pick()
@@ -8887,51 +8887,51 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_shell_chip_opens_hosted_pane(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-shell-abc123") as host_mock,
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-shell-abc123") as host_mock,
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 chip = app.screen.query_one("#shell-chip")
-                from pickup.i18n import t
+                from corral.i18n import t
                 self.assertIn(t("shell.chip_label"), chip.render().plain)
                 area = await self._open_shell_pane(pilot, app)
                 host_mock.assert_called_once()
                 runtime_id = host_mock.call_args[0][1]
-                self.assertEqual(runtime_id, pickup.models.SHELL_RUNTIME_ID)
+                self.assertEqual(runtime_id, corral.models.SHELL_RUNTIME_ID)
                 shell_specs = [spec for spec in area.pane_specs() if spec.is_shell]
                 self.assertEqual(len(shell_specs), 1)
-                self.assertEqual(shell_specs[0].keepalive_name, "pickup-shell-abc123")
+                self.assertEqual(shell_specs[0].keepalive_name, "corral-shell-abc123")
 
     async def test_shell_not_listed_in_sidebar(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-shell-sidebar"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-shell-sidebar"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                await self._open_shell_pane(pilot, app, keepalive_name="pickup-shell-sidebar")
+                await self._open_shell_pane(pilot, app, keepalive_name="corral-shell-sidebar")
                 list_view = app.screen.query_one(SessionListView)
-                keys = {pickup.session_key(s) for s in list_view.visible_sessions()}
+                keys = {corral.session_key(s) for s in list_view.visible_sessions()}
                 self.assertTrue(all(not key.startswith("shell:") for key in keys))
 
     async def test_close_shell_pane_kills_tmux_session(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-shell-closeme"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
-            mock.patch("pickup.keepalive.kill", return_value=True) as kill_mock,
-            mock.patch("pickup.embed.close_channel") as close_mock,
+            mock.patch("corral.embed.host_session", return_value="corral-shell-closeme"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
+            mock.patch("corral.keepalive.kill", return_value=True) as kill_mock,
+            mock.patch("corral.embed.close_channel") as close_mock,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 area = await self._open_shell_pane(
-                    pilot, app, keepalive_name="pickup-shell-closeme",
+                    pilot, app, keepalive_name="corral-shell-closeme",
                 )
                 shell_key = next(
                     spec.session_key for spec in area.pane_specs() if spec.is_shell
@@ -8941,23 +8941,23 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
                 before = len(area.pane_specs())
                 app.screen.action_close_pane()
                 await _wait_until(lambda: len(area.pane_specs()) == before - 1)
-                kill_mock.assert_called_once_with("pickup-shell-closeme")
-                close_mock.assert_called_once_with("pickup-shell-closeme")
+                kill_mock.assert_called_once_with("corral-shell-closeme")
+                close_mock.assert_called_once_with("corral-shell-closeme")
 
     async def test_close_agent_pane_does_not_kill_tmux(self) -> None:
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-claude-s0"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
-            mock.patch("pickup.keepalive.kill", return_value=True) as kill_mock,
+            mock.patch("corral.embed.host_session", return_value="corral-claude-s0"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
+            mock.patch("corral.keepalive.kill", return_value=True) as kill_mock,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)
-                pane = await _wait_for_embed_session(app.screen, "pickup-claude-s0")
+                pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
                 before = len(app.screen.query_one(SplitPaneArea).pane_specs())
                 app.screen.action_close_pane()
@@ -8967,7 +8967,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
                 kill_mock.assert_not_called()
 
     def test_shell_launch_plan_uses_login_shell(self) -> None:
-        from pickup.ui.controllers.host_controller import _shell_launch_plan
+        from corral.ui.controllers.host_controller import _shell_launch_plan
 
         with (
             mock.patch.dict(os.environ, {"SHELL": "/bin/zsh"}, clear=False),
@@ -8986,14 +8986,14 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
         整屏弹错误面板；shell 成员应被过滤，只留 AI 成员。
         """
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-shell-grp1"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-shell-grp1"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                area = await self._open_shell_pane(pilot, app, keepalive_name="pickup-shell-grp1")
+                area = await self._open_shell_pane(pilot, app, keepalive_name="corral-shell-grp1")
                 shell_key = next(
                     spec.session_key for spec in area.pane_specs() if spec.is_shell
                 )
@@ -9010,7 +9010,7 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.2)
                 list_view = app.screen.query_one(SessionListView)
                 rendered_keys = {
-                    pickup.session_key(s)
+                    corral.session_key(s)
                     for card in list_view.query(SessionCard)
                     if (s := card.session) is not None
                 }
@@ -9026,19 +9026,19 @@ class ShellPaneTests(unittest.IsolatedAsyncioTestCase):
         对 shell 会话调 `registry.get("shell")` 直接抛 LaunchError。
         """
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with (
-            mock.patch("pickup.embed.host_session", return_value="pickup-shell-srch1"),
-            mock.patch("pickup.liveness.is_alive", return_value=True),
+            mock.patch("corral.embed.host_session", return_value="corral-shell-srch1"),
+            mock.patch("corral.liveness.is_alive", return_value=True),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                await self._open_shell_pane(pilot, app, keepalive_name="pickup-shell-srch1")
+                await self._open_shell_pane(pilot, app, keepalive_name="corral-shell-srch1")
                 await pilot.press("ctrl+f")
                 await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))
                 modal = app.screen
                 await _wait_until(lambda: not modal._indexing)
-                from pickup.i18n import t as _t
+                from corral.i18n import t as _t
 
                 modal.query_one("#search-query", TextArea).load_text(
                     _t("shell.pane_title"),
@@ -9072,9 +9072,9 @@ class SidebarSnapshotTests(unittest.TestCase):
         claude.is_available.return_value = True
         claude.scan_sessions.return_value = sessions
         claude.load_conversation.return_value = []
-        registry = pickup.RuntimeRegistry((claude,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=50, registry=registry)
+        registry = corral.RuntimeRegistry((claude,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=50, registry=registry)
             store.load()
         return store
 
@@ -9092,7 +9092,7 @@ class SidebarSnapshotTests(unittest.TestCase):
     def test_snapshot_roundtrip_and_scan_convergence(self) -> None:
         """快照秒开 + 真扫描收敛：hydrated 态列表立即有卡，扫描后与全新扫描一致。"""
         store = self._store_with(self._sessions(5))
-        fresh = pickup.SessionStore(
+        fresh = corral.SessionStore(
             limit=50, registry=store.registry,
         )
         # 模拟新进程：hydrate 后再跑真扫描（load 会被调用方阻塞到完成）
@@ -9104,29 +9104,29 @@ class SidebarSnapshotTests(unittest.TestCase):
         fresh.load()
         self.assertEqual(fresh._order, store._order, "真扫描后顺序与全新扫描一致")
         self.assertEqual(
-            [pickup.session_key(s) for b in fresh.sessions.values() for s in b],
-            [pickup.session_key(s) for b in store.sessions.values() for s in b],
+            [corral.session_key(s) for b in fresh.sessions.values() for s in b],
+            [corral.session_key(s) for b in store.sessions.values() for s in b],
         )
 
     def test_hydrate_is_noop_after_load_or_repeated(self) -> None:
         """已 loaded 或已 hydrated 时不再覆盖（防真扫描后被旧快照冲掉）。"""
         store = self._store_with(self._sessions(3))
         self.assertFalse(store.hydrate_from_snapshot())
-        fresh = pickup.SessionStore(limit=50, registry=store.registry)
+        fresh = corral.SessionStore(limit=50, registry=store.registry)
         self.assertTrue(fresh.hydrate_from_snapshot())
         self.assertFalse(fresh.hydrate_from_snapshot())
 
     def test_corrupt_snapshot_degrades_silently(self) -> None:
         """快照损坏/不存在时不报错，返回 False，界面照常走空骨架路径。"""
-        from pickup.store import SessionStore
+        from corral.store import SessionStore
 
         claude = mock.Mock()
         claude.id = "claude"
         claude.is_available.return_value = True
         claude.scan_sessions.return_value = []
-        registry = pickup.RuntimeRegistry((claude,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            fresh = pickup.SessionStore(limit=50, registry=registry)
+        registry = corral.RuntimeRegistry((claude,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            fresh = corral.SessionStore(limit=50, registry=registry)
         path = SessionStore._snapshot_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not-json", encoding="utf-8")

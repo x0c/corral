@@ -1,4 +1,4 @@
-"""pickup.remote.service：会话动作路由与未配对拒绝。"""
+"""corral.remote.service：会话动作路由与未配对拒绝。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import os
 import tempfile
 import unittest
 
-from pickup.remote import protocol, ratelimit
-from pickup.remote.service import Connection, RemoteService
+from corral.remote import protocol, ratelimit
+from corral.remote.service import Connection, RemoteService
 
 
 class FakeHub:
@@ -108,8 +108,8 @@ class RemoteActionTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self._old_cache = os.environ.get("PICKUP_CACHE_DIR")
-        os.environ["PICKUP_CACHE_DIR"] = self._tmp.name
+        self._old_cache = os.environ.get("CORRAL_CACHE_DIR")
+        os.environ["CORRAL_CACHE_DIR"] = self._tmp.name
         self.addCleanup(self._restore_cache)
         ratelimit.PAIR_ATTEMPTS.reset()
         ratelimit.PAIR_ATTEMPTS_HOURLY.reset()
@@ -123,9 +123,9 @@ class RemoteActionTests(unittest.TestCase):
 
     def _restore_cache(self) -> None:
         if self._old_cache is None:
-            os.environ.pop("PICKUP_CACHE_DIR", None)
+            os.environ.pop("CORRAL_CACHE_DIR", None)
         else:
-            os.environ["PICKUP_CACHE_DIR"] = self._old_cache
+            os.environ["CORRAL_CACHE_DIR"] = self._old_cache
 
     def _connect(self, public_key: str = "aa" * 32) -> Connection:
         connection = Connection(public_key, self.sent.append)

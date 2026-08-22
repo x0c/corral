@@ -9,8 +9,8 @@ import unittest
 
 from textual.app import App, ComposeResult
 
-from pickup import i18n
-from pickup.ui.update_toast import UpdateToast
+from corral import i18n
+from corral.ui.update_toast import UpdateToast
 
 i18n.set_lang("en")
 

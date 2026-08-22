@@ -11,24 +11,24 @@ from unittest import mock
 
 from textual.geometry import Size
 
-import pickup
-from pickup import i18n
-from pickup.attention import AttentionState
-from pickup.models import ConversationMessage
-from pickup.ui.app import PickupApp
-from pickup.ui.main_screen import MainScreen
-from pickup.ui.session_list import SessionCard
+import corral
+from corral import i18n
+from corral.attention import AttentionState
+from corral.models import ConversationMessage
+from corral.ui.app import CorralApp
+from corral.ui.main_screen import MainScreen
+from corral.ui.session_list import SessionCard
 
 # 侧边栏记忆（会话组/置顶/折叠/焦点）是机器级共享的真实状态（sqlite3），测试若
 # 不隔离会读到机主真实的组与置顶，侧边栏布局被真实数据污染导致时序断言全挂
-# （v0.24.44 记忆库 sqlite3 化后本机必现，CI 干净环境不现）。`PICKUP_CACHE_DIR`
+# （v0.24.44 记忆库 sqlite3 化后本机必现，CI 干净环境不现）。`CORRAL_CACHE_DIR`
 # 是唯一的隔离开关，与 tests/test_ui.py 的既有做法一致。
-_SIDEBAR_STATE_DIR = tempfile.mkdtemp(prefix="pickup-test-attention-")
-os.environ["PICKUP_CACHE_DIR"] = _SIDEBAR_STATE_DIR
+_SIDEBAR_STATE_DIR = tempfile.mkdtemp(prefix="corral-test-attention-")
+os.environ["CORRAL_CACHE_DIR"] = _SIDEBAR_STATE_DIR
 
 
 def _make_store(*, sessions: list[dict] | None = None):
-    from pickup import split_layout
+    from corral import split_layout
 
     split_layout.reset_default_layout_db()
     sessions = sessions or [
@@ -41,7 +41,7 @@ def _make_store(*, sessions: list[dict] | None = None):
             "size_kb": 1,
             "native_title": None,
             "fallback_title": f"会话{index}",
-            "cwd": "/tmp/pickup",
+            "cwd": "/tmp/corral",
             "live": False,
         }
         for index in range(2)
@@ -55,9 +55,9 @@ def _make_store(*, sessions: list[dict] | None = None):
     ]
     attention_store = mock.Mock()
     attention_store.reconcile.return_value = {}
-    registry = pickup.RuntimeRegistry((runtime,))
-    with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-        store = pickup.SessionStore(
+    registry = corral.RuntimeRegistry((runtime,))
+    with mock.patch.object(corral.titles, "load_cache", return_value={}):
+        store = corral.SessionStore(
             limit=20, registry=registry, attention_store=attention_store,
         )
         store.load()
@@ -99,7 +99,7 @@ class SessionAttentionCardTests(unittest.TestCase):
             "source": "claude",
             "id": "visual",
             "fallback_title": "修复状态展示",
-            "cwd": "/tmp/pickup",
+            "cwd": "/tmp/corral",
             "mtime": time.time(),
             "live": live,
             "attention_kind": kind,
@@ -139,7 +139,7 @@ class SessionAttentionCardTests(unittest.TestCase):
         rendered = self._render("waiting")
         lines = rendered.plain.splitlines()
         self.assertEqual(len(lines), 3)
-        self.assertEqual([pickup._text_width(line) for line in lines], [39, 39, 39])
+        self.assertEqual([corral._text_width(line) for line in lines], [39, 39, 39])
         # 圆点在首行最左，紧跟一个空格再接「项目 标题」；运行时独占第二行靠右。
         self.assertTrue(lines[0].startswith("● "))
         self.assertTrue(lines[1].endswith("Claude"))
@@ -148,13 +148,13 @@ class SessionAttentionCardTests(unittest.TestCase):
         """无圆点时不留占位空格：标题顶到最左，并吃满整行宽度。"""
         plain = self._render("none").plain.splitlines()[0]
         self.assertFalse(plain.startswith(" "))
-        self.assertTrue(plain.startswith("pickup "))
-        self.assertEqual(pickup._text_width(plain), 39)
+        self.assertTrue(plain.startswith("corral "))
+        self.assertEqual(corral._text_width(plain), 39)
 
         # 有圆点的卡片才让出两列，标题可用宽度相应少 2。
         dotted = self._render("waiting").plain.splitlines()[0]
-        self.assertTrue(dotted.startswith("● pickup "))
-        self.assertEqual(pickup._text_width(dotted), 39)
+        self.assertTrue(dotted.startswith("● corral "))
+        self.assertEqual(corral._text_width(dotted), 39)
 
     def test_title_style_is_uniform_even_when_session_is_live(self) -> None:
         rendered = self._render("working", live=True)
@@ -199,9 +199,9 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_loaded_preview_clears_unread_immediately(self) -> None:
         store = _make_store()
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with mock.patch(
-            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
+            "corral.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -219,9 +219,9 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
         """分屏里所有可见格同屏可见：红点一起清，不只有聚焦格。"""
         store = _make_store()
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with mock.patch(
-            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
+            "corral.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -241,9 +241,9 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
         """右栏已切到别的会话后，没出现在画面上的红点不能清。"""
         store = _make_store()
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with mock.patch(
-            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
+            "corral.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -261,9 +261,9 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_app_blur_blocks_read_and_refocus_restarts(self) -> None:
         store = _make_store()
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with mock.patch(
-            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
+            "corral.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -281,9 +281,9 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_preview_load_failure_never_clears_unread(self) -> None:
         store = _make_store()
         store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         with mock.patch(
-            "pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
+            "corral.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01,
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.05)
@@ -301,8 +301,8 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(kind=kind):
                 store = _make_store()
                 store.mark_session_read = mock.Mock(side_effect=_mark_read_side_effect(store))
-                app = PickupApp(store, embed_ok=True)
-                with mock.patch("pickup.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01):
+                app = CorralApp(store, embed_ok=True)
+                with mock.patch("corral.ui.controllers.attention_reader._ATTENTION_READY_POLL", 0.01):
                     async with app.run_test(size=(120, 30)) as pilot:
                         await pilot.pause(delay=0.08)
                         _set_attention(store, "claude:s0", kind)
@@ -314,10 +314,10 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
 class CursorObserverBackgroundInstallTests(unittest.IsolatedAsyncioTestCase):
     async def test_install_runs_in_background_and_failure_is_silent(self) -> None:
         store = _make_store()
-        app = PickupApp(store, embed_ok=False)
+        app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             with mock.patch(
-                "pickup.cursor_observer.install", side_effect=OSError("模拟配置不可写"),
+                "corral.cursor_observer.install", side_effect=OSError("模拟配置不可写"),
             ) as install:
                 worker = app.screen._install_cursor_observer()
                 await worker.wait()

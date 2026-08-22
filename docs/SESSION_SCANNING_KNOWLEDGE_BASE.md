@@ -18,7 +18,7 @@
 
 ## §1 业务背景与核心概念
 
-pickup 的会话扫描负责从本机已安装助手的私有历史中读取可恢复会话，转换成统一的**会话列表项**（`SessionInfo`），供主界面、只读查询和接力编排复用。扫描是只读的：不修改历史、不启动助手，也不把历史同步到业务数据库或远程服务。
+corral 的会话扫描负责从本机已安装助手的私有历史中读取可恢复会话，转换成统一的**会话列表项**（`SessionInfo`），供主界面、只读查询和接力编排复用。扫描是只读的：不修改历史、不启动助手，也不把历史同步到业务数据库或远程服务。
 
 本域服务两个用户可见目标：
 
@@ -102,10 +102,10 @@ sequenceDiagram
    - Kimi：按主 `wire.jsonl` 的 mtime 排序，读取 `state.json` 与主 agent 事件流的头尾。
    - OpenCode：一次只读 SQL 获取顶层、未归档会话与摘要。
    - Cursor：只读 `meta.json` 和 `prompt_history.json`；不在列表阶段打开 `store.db`。
-   - Pi：递归 `~/.pi/agent/sessions/**/*.jsonl`。列表身份 = jsonl header 的 `id`（不是文件名 ident）。`limit` 对默认 cwd 堆和 `pickup-<ident>/` 隔离目录**各算一份**（合并后最多约 `2×limit`）：隔离目录的新文件 mtime 最新，若仍按全树凑满 `limit` 就停，会把堆里的历史挤出列表。置顶/分组成员的 `keep_ids` 不计入这两份配额，quota 满后仍按 header `id` 保留。
+   - Pi：递归 `~/.pi/agent/sessions/**/*.jsonl`。列表身份 = jsonl header 的 `id`（不是文件名 ident）。`limit` 对默认 cwd 堆和 `corral-<ident>/` 隔离目录**各算一份**（合并后最多约 `2×limit`）：隔离目录的新文件 mtime 最新，若仍按全树凑满 `limit` 就停，会把堆里的历史挤出列表。置顶/分组成员的 `keep_ids` 不计入这两份配额，quota 满后仍按 header `id` 保留。
 4. 各扫描器返回字段完整的会话列表项，按有效会话时间降序排列。`SessionStore._merge_scanned()` 合并所有来源；已在列表出现过的会话位置稳定，新出现会话才按时间插入顶部。
 5. `keepalive.annotate()` 可在合并后补充托管标记；这不改变扫描器只读本地历史和进程状态的边界。
-6. 刚由 pickup 创建、还没产生第一条用户消息的 Codex 会话，只有在进程仍运行时才保留并显示为「Codex 新会话」；进程已结束的空记录继续过滤，避免旧的无效记录占满列表。
+6. 刚由 corral 创建、还没产生第一条用户消息的 Codex 会话，只有在进程仍运行时才保留并显示为「Codex 新会话」；进程已结束的空记录继续过滤，避免旧的无效记录占满列表。
 7. Codex 的用户与助手正文同时兼容旧事件流和新版响应记录；新版首轮会混入运行环境说明，必须跳过这类注入内容，继续读到真实任务文本。否则真实会话会被误判为空会话、标题生成只会得到「新会话」之类无意义输入。同一句真人输入还会各写一遍 `response_item` 和 `event_msg`，`load_conversation` 必须按相邻正文去重，只留先到的那条。
 
 ### 2.2 运行中判定
@@ -116,10 +116,10 @@ sequenceDiagram
 |---|---|---|---|
 | Claude | `~/.claude/sessions/<pid>.json` + `os.kill(pid, 0)` | 文件中的 `sessionId` 映射到 pid | 注册文件损坏或进程不存在则视为已结束 |
 | Codex | 活着的 `codex` 进程持有的 `rollout-*.jsonl` | 从打开的文件名提取会话 UUID | Linux 读 `/proc/<pid>/fd`；macOS 合并一次 `lsof` |
-| OpenCode | 命令行 `-s` / `--session`；完整 `PICKUP_SESSION_ID`；其余 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 禁止再按「同 cwd 仅最新一条」猜测。`run`/`serve` 等子命令不算 TUI。`--prompt` 后的接力说明词不当 argv | 无法探测时返回空映射 |
-| Kimi | 命令行 `-S` / `--session`；完整 `PICKUP_SESSION_ID`；其余 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 禁止再按「同 cwd 仅最新一条」猜测。`-p` 打印模式与 `server` / `web` 不算 TUI | 无法探测时返回空映射 |
-| Cursor | `agent` 进程；优先解析命令行 `--resume <chatId>`，其次读打开的 `store.db` 路径，再次读 `PICKUP_SESSION_ID`/`SC_SESSION_ID` | 只按上述正向证据精确绑定；禁止再按「cwd → 最新会话」猜测。空白新建的临时 8 位标识不参与匹配 | 无法探测时返回空列表 |
-| Pi | 打开的 jsonl（有隔离目录时还须在该目录内）；`pickup-<ident>/` 目录最新 jsonl；进程内记住的当前文件；命令行 `--session` / `--session-id`；完整 `PICKUP_SESSION_ID`；其余裸 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 托管写入 `pickup-<ident>/` 隔离目录，禁止再按「同 cwd 仅最新一条」猜测，也禁止把默认堆新文件认给带隔离目录的空闲进程。指向 Pi 默认 cwd 堆的 `--session-dir` 不算隔离。进程内 `/new` 后，打开的 jsonl 或隔离目录最新文件优先于启动 ident。`-c`/`--continue` 才回落到该目录未标记的最新一条。`-p` 打印模式与 `auth`/`install` 等子命令不算 TUI。位置参数里的接力说明词不当 argv | 无法探测时返回空映射 |
+| OpenCode | 命令行 `-s` / `--session`；完整 `CORRAL_SESSION_ID`；其余 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 禁止再按「同 cwd 仅最新一条」猜测。`run`/`serve` 等子命令不算 TUI。`--prompt` 后的接力说明词不当 argv | 无法探测时返回空映射 |
+| Kimi | 命令行 `-S` / `--session`；完整 `CORRAL_SESSION_ID`；其余 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 禁止再按「同 cwd 仅最新一条」猜测。`-p` 打印模式与 `server` / `web` 不算 TUI | 无法探测时返回空映射 |
+| Cursor | `agent` 进程；优先解析命令行 `--resume <chatId>`，其次读打开的 `store.db` 路径，再次读 `CORRAL_SESSION_ID`/`SC_SESSION_ID` | 只按上述正向证据精确绑定；禁止再按「cwd → 最新会话」猜测。空白新建的临时 8 位标识不参与匹配 | 无法探测时返回空列表 |
+| Pi | 打开的 jsonl（有隔离目录时还须在该目录内）；`corral-<ident>/` 目录最新 jsonl；进程内记住的当前文件；命令行 `--session` / `--session-id`；完整 `CORRAL_SESSION_ID`；其余裸 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 托管写入 `corral-<ident>/` 隔离目录，禁止再按「同 cwd 仅最新一条」猜测，也禁止把默认堆新文件认给带隔离目录的空闲进程。指向 Pi 默认 cwd 堆的 `--session-dir` 不算隔离。进程内 `/new` 后，打开的 jsonl 或隔离目录最新文件优先于启动 ident。`-c`/`--continue` 才回落到该目录未标记的最新一条。`-p` 打印模式与 `auth`/`install` 等子命令不算 TUI。位置参数里的接力说明词不当 argv | 无法探测时返回空映射 |
 
 ### 2.3 完整对话按需加载
 
@@ -169,17 +169,17 @@ flowchart TD
 
 | 目录（相对 cli） | 内容 | 关键文件 |
 |---|---|---|
-| `src/pickup/scan/` | Claude 历史扫描、预览解析、轻量过滤 | `scan/claude.py` |
-| `src/pickup/scan/` | Codex 历史扫描、判活、预览解析 | `scan/codex.py` |
-| `src/pickup/scan/` | OpenCode SQLite 扫描、签名与预览解析 | `scan/opencode.py` |
-| `src/pickup/scan/` | Kimi 元数据与主事件流扫描、预览解析 | `scan/kimi.py` |
-| `src/pickup/scan/` | Cursor CLI 元数据扫描、SQLite blob 预览 | `scan/cursor.py` |
-| `src/pickup/scan/` | 跨扫描器纯函数、按 cwd 判活 | `scan/common.py` |
-| `src/pickup/` | 关注状态裁决、各运行时证据解析与 Cursor 用户级观察器 | `attention.py`、`attention_signals.py`、`cursor_observer.py` |
-| `src/pickup/runtime/` | 统一适配抽象、注册表与各助手委托 | `runtime/base.py`、`runtime/registry.py`、`runtime/*.py` |
-| `src/pickup/` | 会话列表合并、异步加载、预览缓存 | `store.py`、`cli.py` |
-| `src/pickup/` | 统一会话与完整对话的数据结构 | `models.py` |
-| `src/pickup/` | 派生缓存读写（元数据与完整对话） | `cache.py` |
+| `src/corral/scan/` | Claude 历史扫描、预览解析、轻量过滤 | `scan/claude.py` |
+| `src/corral/scan/` | Codex 历史扫描、判活、预览解析 | `scan/codex.py` |
+| `src/corral/scan/` | OpenCode SQLite 扫描、签名与预览解析 | `scan/opencode.py` |
+| `src/corral/scan/` | Kimi 元数据与主事件流扫描、预览解析 | `scan/kimi.py` |
+| `src/corral/scan/` | Cursor CLI 元数据扫描、SQLite blob 预览 | `scan/cursor.py` |
+| `src/corral/scan/` | 跨扫描器纯函数、按 cwd 判活 | `scan/common.py` |
+| `src/corral/` | 关注状态裁决、各运行时证据解析与 Cursor 用户级观察器 | `attention.py`、`attention_signals.py`、`cursor_observer.py` |
+| `src/corral/runtime/` | 统一适配抽象、注册表与各助手委托 | `runtime/base.py`、`runtime/registry.py`、`runtime/*.py` |
+| `src/corral/` | 会话列表合并、异步加载、预览缓存 | `store.py`、`cli.py` |
+| `src/corral/` | 统一会话与完整对话的数据结构 | `models.py` |
+| `src/corral/` | 派生缓存读写（元数据与完整对话） | `cache.py` |
 | `tests/` | 扫描、格式、缓存与性能回归测试 | `test_session_scanning.py`、`test_cache.py` |
 
 ## §3 本域代码入口索引
@@ -192,15 +192,15 @@ flowchart TD
 | 修改 Claude 完整预览 | Claude 扫描器 | `scan.claude.load_conversation()` | 只根据文本内容决定是否展示 assistant 消息；保留真人用户消息 |
 | 修改 Codex 扫描或判活 | Codex 扫描器 | `scan.codex.scan_sessions()`、`_live_session_ids()` | 过滤子代理线程；macOS 使用批量 `lsof`，不可逐 pid 调用 |
 | 修改 Codex 完整预览 | Codex 扫描器 | `scan.codex.load_conversation()` | 同时读 `event_msg` 与 `response_item`；用户/助手都按相邻正文去重 |
-| 修改 OpenCode 查询或刷新跳过 | OpenCode 扫描器 | `scan.opencode.scan_sessions()`、`_apply_live_flags()`、`scan_signature()` | 历史为 SQLite；签名需同时覆盖 DB/WAL 和 `(pid, cwd)` 全量进程快照；同 cwd 多 TUI 必须按 `-s` / 完整 `PICKUP_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`opencode run` 不算 TUI；`--prompt` 后的接力说明不当 argv，取值旗标跳一词不够 |
+| 修改 OpenCode 查询或刷新跳过 | OpenCode 扫描器 | `scan.opencode.scan_sessions()`、`_apply_live_flags()`、`scan_signature()` | 历史为 SQLite；签名需同时覆盖 DB/WAL 和 `(pid, cwd)` 全量进程快照；同 cwd 多 TUI 必须按 `-s` / 完整 `CORRAL_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`opencode run` 不算 TUI；`--prompt` 后的接力说明不当 argv，取值旗标跳一词不够 |
 | 修改 OpenCode 完整预览 | OpenCode 扫描器 | `scan.opencode.load_conversation()` | 从 `message` 与 `part` 表合并同一消息的多个 text part |
-| 修改 Kimi 事件过滤、预览或判活 | Kimi 扫描器 | `scan.kimi.scan_sessions()`、`_apply_live_flags()`、`_iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent；同 cwd 多 TUI 必须按 `-S` / 完整 `PICKUP_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`-p`/`server`/`web` 不算 TUI |
-| 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；对话缓存签名含 `store.db-wal`；同 cwd 多 `agent` 必须按打开的 store.db / 完整 PICKUP_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底 |
-| 修改 Pi 扫描或预览 | Pi 扫描器 | `scan.pi.scan_sessions()`、`_apply_live_flags()`、`load_conversation()`、`hosted_session_dir()` | JSONL 首行必须是 session；列表身份 = header `id`；v2+ 从最新叶子沿 `parentId` 回溯，v1 无 id 则按文件顺序；`limit` 对默认堆与 `pickup-<ident>/` 各留一份配额，禁止隔离目录把历史挤出列表；置顶/分组成员经 `keep_ids` 豁免 limit（不计入配额）；托管写入 `pickup-<ident>/`；判活按 ① 打开的 jsonl（隔离目录内）② 隔离目录最新 jsonl ③ 本进程记住的「该 pid 上次在写哪条」（**且该记忆的目标会话必须晚于进程启动才落盘，早于进程创建的必是写错的记忆，信任前剔除并回写磁盘**）④ `--session` / `--session-id` ⑤ 精确 `PICKUP_SESSION_ID` ⑥ `-c` 才回落到该目录未标记的最新一条 ⑦ 其余裸 TUI 按「进程启动 ≤ 会话创建」一对一认领，禁止「同 cwd 仅最新一条」，也禁止把默认堆新文件认给隔离目录进程；指向默认 cwd 堆的 `--session-dir` 不算隔离；进程内 `/new` 后启动 ident 不得压过当前 jsonl；写字节/mtime 相关性认领**不得抢已绑在别的活进程上的会话**；`-p`/`auth`/`install` 不算 TUI；`live_processes("pi")` 需 cmdline 兜底（comm 常是 `node`）；macOS `process_environ` 须白名单 `PI_CODING_AGENT_SESSION_DIR` |
-| 修改统一 transcript / `pickup share` | `transcript.py`、`agent_api.py` | `load_events()`、`_parse_*`、`export_share_to_cache()` | 不改 `load_conversation` 的纯文本契约；按各助手原始落盘抽出 thinking 与工具调用。TUI 高级操作「导出会话」走同一套 `load_events`，写到缓存目录 `share/`。Cursor `store.db` 里 tool-result 的 rowid 可以早于对应 tool-call，必须按完整 `toolCallId`（常含换行，禁止按 `\n` 拆）攒着、见到 call 再按 call→result 发出。核对以原始 JSONL/SQLite 为权威，禁止用 `show`/`export` 对照 |
+| 修改 Kimi 事件过滤、预览或判活 | Kimi 扫描器 | `scan.kimi.scan_sessions()`、`_apply_live_flags()`、`_iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent；同 cwd 多 TUI 必须按 `-S` / 完整 `CORRAL_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`-p`/`server`/`web` 不算 TUI |
+| 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；对话缓存签名含 `store.db-wal`；同 cwd 多 `agent` 必须按打开的 store.db / 完整 CORRAL_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底 |
+| 修改 Pi 扫描或预览 | Pi 扫描器 | `scan.pi.scan_sessions()`、`_apply_live_flags()`、`load_conversation()`、`hosted_session_dir()` | JSONL 首行必须是 session；列表身份 = header `id`；v2+ 从最新叶子沿 `parentId` 回溯，v1 无 id 则按文件顺序；`limit` 对默认堆与 `corral-<ident>/` 各留一份配额，禁止隔离目录把历史挤出列表；置顶/分组成员经 `keep_ids` 豁免 limit（不计入配额）；托管写入 `corral-<ident>/`；判活按 ① 打开的 jsonl（隔离目录内）② 隔离目录最新 jsonl ③ 本进程记住的「该 pid 上次在写哪条」（**且该记忆的目标会话必须晚于进程启动才落盘，早于进程创建的必是写错的记忆，信任前剔除并回写磁盘**）④ `--session` / `--session-id` ⑤ 精确 `CORRAL_SESSION_ID` ⑥ `-c` 才回落到该目录未标记的最新一条 ⑦ 其余裸 TUI 按「进程启动 ≤ 会话创建」一对一认领，禁止「同 cwd 仅最新一条」，也禁止把默认堆新文件认给隔离目录进程；指向默认 cwd 堆的 `--session-dir` 不算隔离；进程内 `/new` 后启动 ident 不得压过当前 jsonl；写字节/mtime 相关性认领**不得抢已绑在别的活进程上的会话**；`-p`/`auth`/`install` 不算 TUI；`live_processes("pi")` 需 cmdline 兜底（comm 常是 `node`）；macOS `process_environ` 须白名单 `PI_CODING_AGENT_SESSION_DIR` |
+| 修改统一 transcript / `corral share` | `transcript.py`、`agent_api.py` | `load_events()`、`_parse_*`、`export_share_to_cache()` | 不改 `load_conversation` 的纯文本契约；按各助手原始落盘抽出 thinking 与工具调用。TUI 高级操作「导出会话」走同一套 `load_events`，写到缓存目录 `share/`。Cursor `store.db` 里 tool-result 的 rowid 可以早于对应 tool-call，必须按完整 `toolCallId`（常含换行，禁止按 `\n` 拆）攒着、见到 call 再按 call→result 发出。核对以原始 JSONL/SQLite 为权威，禁止用 `show`/`export` 对照 |
 | 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`process_environ()`、`process_start_time()`、`is_cursor_agent_cmdline()`、`is_pi_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`）；`pi` 同样要 cmdline 兜底（comm 常是 `node`）；OpenCode / Kimi / Pi 判活禁止再按 cwd 折叠 |
 | 修改跨运行时并发或扫描复用 | 注册表 | `runtime.registry.RuntimeRegistry.scan_all()` | 各运行时并发、异常隔离、结果副本隔离、签名命中跳过 |
-| 修改异步首屏、列表合并或预览缓存 | 会话存储 | `pickup.SessionStore.load()`、`refresh()`、`get_conversation()` | `store.load` 在后台线程，预览缓存按 mtime 失效 |
+| 修改异步首屏、列表合并或预览缓存 | 会话存储 | `corral.SessionStore.load()`、`refresh()`、`get_conversation()` | `store.load` 在后台线程，预览缓存按 mtime 失效 |
 | 修改会话关注状态裁决或已读基线 | 关注状态存储 | `attention.AttentionStore`、`store.SessionStore` | 单圆点优先级、首升级基线、占位键迁移和删除清理收敛在此；不得改变排序或机器接口状态 |
 | 修改各助手关注信号 | 状态证据解析 | `attention_signals.inspect_session()` | 只解析明确事件；结构化问题才产生等待回答，历史证据必须使用稳定时间 |
 | 修改 Cursor 实时状态接入 | 用户级观察器 | `cursor_observer` | 增量维护 hook 配置，备份并原子写；事件接收始终故障开放；公开命令支持状态、安装、卸载、结构化输出和写入预演 |
@@ -209,7 +209,7 @@ flowchart TD
 
 ## §4 本域外部数据入口索引
 
-本域没有业务数据库、没有项目业务表，也不维护权威会话镜像。所有输入都是各助手自己的本机历史；读取必须只读，文件路径可随助手版本变化而演进。pickup 仅维护可随时删除和重建的本地派生缓存，不改变任何助手的历史。
+本域没有业务数据库、没有项目业务表，也不维护权威会话镜像。所有输入都是各助手自己的本机历史；读取必须只读，文件路径可随助手版本变化而演进。corral 仅维护可随时删除和重建的本地派生缓存，不改变任何助手的历史。
 
 | 助手 | 默认本地入口（相对用户主目录） | 文件形态 | 列表读取 | 完整对话读取 | 改动注意 |
 |---|---|---|---|---|---|
@@ -219,7 +219,7 @@ flowchart TD
 | OpenCode | `~/.local/share/opencode/opencode.db` | SQLite，可能 WAL | `session`、`message`、`part` 三表的只读 SQL | 同三表、按消息与分片合并 | `OPENCODE_DATA_DIR` 或 `XDG_DATA_HOME` 可改入口；只读打开失败不能伪装为空历史；删除会话是唯一写入例外，见下方「外部数据读取原则」 |
 | Kimi Code | `~/.kimi-code/sessions/<workspace>/<session>/` | `state.json` + `agents/main/wire.jsonl` | state + wire 头尾 | 主 `wire.jsonl` | 忽略 `agents/<other>/wire.jsonl`；事件流含大系统行 |
 | Cursor Agent CLI | `~/.cursor/chats/<workspace>/<chatId>/` | `meta.json`、`prompt_history.json`、`store.db` | meta + prompt history | SQLite `blobs` JSON blob | 只扫 CLI 历史，不扫 IDE 的 agent transcripts；预览仍跳过二进制 DAG blob。**关注圆点必须另读 AskQuestion 的 field-2 protobuf**（等用户作答时 JSON tool-call 往往还没落盘） |
-| Cursor 状态观察 | `~/.cursor/hooks.json` | 用户级 JSON 配置 + hook 标准输入事件 | 只读检查并增量维护 pickup 管理的条目 | 不读取提示词正文，只取会话标识、事件名和生成标识 | 保留其他工具条目；配置损坏或版本未知时停止写入；hook 失败不能阻断 Cursor |
+| Cursor 状态观察 | `~/.cursor/hooks.json` | 用户级 JSON 配置 + hook 标准输入事件 | 只读检查并增量维护 corral 管理的条目 | 不读取提示词正文，只取会话标识、事件名和生成标识 | 保留其他工具条目；配置损坏或版本未知时停止写入；hook 失败不能阻断 Cursor |
 
 外部数据读取原则：
 
@@ -249,9 +249,9 @@ flowchart TD
 - **AI 易错点**【禁止】用 Claude 的 `stop_reason` 判断 assistant 文本是否应展示 → 必须只要存在非空 text 分片就保留（原因：thinking、文本与工具调用是独立顶层记录，却可能共享 `tool_use` 的 stop reason）。
 - **AI 易错点**【禁止】把原始 `type: "user"` 一律视为真人输入 → 必须检查 `origin.kind`；Claude 只接受缺失或 `human`，Kimi 只接受缺失或 `user`（原因：Monitor、task-notification 等系统注入会伪装在用户轮次中）。
 - **AI 易错点**【禁止】让完整对话出现 system、think、工具定义、工具结果或空文本 → 对话预览只保留真实用户消息和助手最终可读答复（原因：右栏是用户对话预览，不是原始事件调试器）。
-- **AI 易错点**【禁止】把 `pickup share` 接到 `load_conversation`，或按 Cursor `store.db` 的 rowid 假定 tool-call 一定早于 tool-result → share 走 `transcript.py`，tool-result 可能先落盘，必须按 `toolCallId` 配对后再按 call→result 发出（原因：本机真实历史里 result 的 rowid 可以更小）。
+- **AI 易错点**【禁止】把 `corral share` 接到 `load_conversation`，或按 Cursor `store.db` 的 rowid 假定 tool-call 一定早于 tool-result → share 走 `transcript.py`，tool-result 可能先落盘，必须按 `toolCallId` 配对后再按 call→result 发出（原因：本机真实历史里 result 的 rowid 可以更小）。
 - **AI 易错点**【禁止】以 `dict.get(key, 默认值)` 单独防范历史字段缺失 → 嵌套 JSON 取值统一使用 `value or 默认值` 并先验类型（原因：key 存在但值可能是 JSON `null`；否则会崩溃或把 `None` 显示成字面量 `"None"`）。
-- **AI 易错点**【禁止】将对话预览按会话键永久缓存 → 必须将历史入口 mtime 与缓存中的 mtime 比较，变化时重新调用 `load_conversation`（原因：会话可在 pickup 打开期间继续写入）。
+- **AI 易错点**【禁止】将对话预览按会话键永久缓存 → 必须将历史入口 mtime 与缓存中的 mtime 比较，变化时重新调用 `load_conversation`（原因：会话可在 corral 打开期间继续写入）。
 - **AI 易错点**【消歧】主界面的“运行中” vs `titles.status_tag` / 机器接口英文状态：前者只表示关联进程当前是否活着（`live`），后两者描述最后一轮对话的完成、待回复或中断语义；两者不能相互推导或互相替换。
 - **AI 易错点**【消歧】关注状态圆点是第三套面向注意力的本地状态：黄=结构化问题待回答、绿=当前轮执行、红=新结果未读。它不得覆盖或改写 `live`、`status`、`status_tag`，也不得参与会话排序。**禁止**用「进程还在」或「最后一条消息是谁发的」冒充绿点：Pi/Claude/Codex/Kimi/OpenCode 只认历史里最近的明确执行/等待/结束证据（工具未收束、step 未结束、结构化提问）；Cursor 绿点仍只来自观察器，但历史若已有最终可见答复必须给 idle，否则常驻 `agent` 会把旧 working 钉死。空闲常驻 TUI 的 `live` 仍可为 True（右栏才能进真实窗口），关注态不得因此为绿。
 - **AI 易错点**【禁止】把 OpenCode 在 `finish=tool-calls` 之后插入的空助手行当成执行中 → 没有 part / 没有 running 工具就是常驻空转。进程已死且没有完成标记时给 idle，不要把 unknown 留给侧栏。提问已从历史消失时，只有历史仍是 unknown 才能回落到 working；历史已经 idle 则不得因进程还在强行亮绿。
@@ -266,16 +266,16 @@ flowchart TD
 - **AI 易错点**【禁止】把 OpenCode 当作 JSONL，或在只读失败时静默返回“没有会话” → 它是 SQLite；发现数据库但全部只读连接/查询失败时抛出错误，让注册表保留上一份成功结果。
 - **AI 易错点**【必须】Cursor 只扫描 `~/.cursor/chats/` 的 CLI 历史，列表阶段只读 `meta.json` 和 `prompt_history.json`，完整预览才读 `store.db`（原因：IDE agent transcripts 不属于本域，过早读大 SQLite 会破坏首屏预算）。
 - **AI 易错点**【禁止】Cursor 预览打开 `store.db` 时加 `immutable=1`，或对话缓存只签主库不签 `-wal` → 会漏掉未 checkpoint 的最新消息（原因：Cursor 长期 WAL；预览与 HUD 小窗都走 `load_conversation`）。
-- **AI 易错点**【禁止】Cursor 判活按「同 cwd 最新会话」猜测 → 只能用 `--resume`、已打开的 `store.db` 路径或完整 `PICKUP_SESSION_ID`（原因：空白新建的临时 8 位标识与历史 chatId 无关，cwd 兜底会把空壳欢迎页绑到同目录旧会话，侧边栏标题与右栏画面串台）。
+- **AI 易错点**【禁止】Cursor 判活按「同 cwd 最新会话」猜测 → 只能用 `--resume`、已打开的 `store.db` 路径或完整 `CORRAL_SESSION_ID`（原因：空白新建的临时 8 位标识与历史 chatId 无关，cwd 兜底会把空壳欢迎页绑到同目录旧会话，侧边栏标题与右栏画面串台）。
 - **AI 易错点**【必须】Cursor/`live_processes("agent")` 不能只靠 `pgrep -x agent`：新版 agent 的 `comm` 是 `MainThread`，必须按 cmdline 兜底；同一 chat 同时有无 resume 原托管与二次 `--resume` 时优先绑前者，否则占位卡退不掉会双卡（原因：2026-07-23 真机双份会话）。
 - **AI 易错点**【必须】过滤标题生成自产会话：所有运行时的用户消息、原生标题或回退标题只要包含 `titles.PROMPT_MARKER` 就丢弃（原因：OpenCode 会给请求额外加引号，若只匹配开头会让后台标题生成反向污染用户会话列表）。OpenCode 扫描的 SQL 窗口必须超额读取再滤，不能把 `LIMIT` 直接设成界面条数（原因：噪音占满最近 N 条后，真实会话会在窗口边界反复进出，侧边栏自己乱跳）。
 - **AI 易错点**【必须】OpenCode 标题生成不得写入用户的 `opencode.db`：`opencode run` 没有 `--ephemeral`，必须用临时 `OPENCODE_DATA_DIR` + `--dir`，并把 `auth.json` 拷进临时目录。否则一次性标题任务会变成侧边栏新卡、滤掉后又消失，开几个 OpenCode 会话后列表自己乱跳。
-- **AI 易错点**【禁止】OpenCode 判活按「同 cwd 最新一条」猜测 → 必须按 ① 命令行 `-s`/`--session` ② 完整 `PICKUP_SESSION_ID` ③ `-c` 才回落到该目录未标记的最新一条 ④ 其余 TUI 按「进程启动 ≤ 会话创建」一对一认领；`run`/`serve` 不算 TUI。8 位占位 ident 不得前缀去碰 `ses_…`。原因：同目录多路还在跑时，旧算法只给最新历史贴运行中，点回去就变成历史消息预览；空白新建还会把 pid 错绑到别人的会话（2026-08-16 真机：主目录同时 4 路 TUI，带 `-s` 的恢复会话被标成已结束）。
-- **AI 易错点**【禁止】把 OpenCode `--prompt`（以及 Pi 位置参数）后面的接力说明词再当 argv 去撞子命令表，也不得从这段正文里再抠 `-s` / `--session` / `-c`。进程命令行是空格拼接的，说明里常有 `session` / `agent` / `run` / `list` / `install`，嵌套接力还会把原命令的 `-s ses_…` 写进提问；撞上就会把仍在跑的交互会话标成已结束，或错绑到被接力的那条历史上，右栏变成别人的预览。**走不通**：`--prompt` 早已在取值旗标里、解析时跳过「旗标 + 下一个词」——取值是整段自由文本，空格拼接后只跳一词，后面的 `session` 照样撞上；不要再在取值表里加一遍当修法。看到 `--prompt`（或 `--prompt=`）必须立刻停扫，后面整段都是提问。`opencode run --prompt …` 仍算非 TUI，因为 `run` 在 `--prompt` 之前。真正的 `-s` 只认出现在 `--prompt` 之前的旗标。pickup 自己的跨助手新建就是 `--auto --prompt <整段接力说明>`，几乎必中。**验收陷阱**：`--prompt hello world` 即使用旧逻辑也过（`world` 不是子命令）；必须用含 `session`/`run`/`agent` 的接力原文，或跑下面两条回归，再对本机仍在跑、命令行带 `--prompt` 的进程实扫一遍确认标成运行中。回归：`test_live_flags_bind_handoff_prompt_containing_subcommand_words`、`test_live_flags_ignore_session_flag_inside_handoff_prompt`（2026-08-16 真机：从 Pi 接到 OpenCode 的三条 `--prompt` 会话全部被 `session` 一词误判）。
-- **AI 易错点**【禁止】Kimi 判活按「同 cwd 最新一条」猜测 → 必须按 ① 命令行 `-S`/`--session` ② 完整 `PICKUP_SESSION_ID` ③ `-c` 才回落到该目录未标记的最新一条 ④ 其余 TUI 按「进程启动 ≤ 会话创建」一对一认领；`-p`/`server`/`web` 不算 TUI。进程 comm 是 `kimi-code` 不是 `kimi`。8 位占位 ident 不得前缀去碰 `session_…`。原因：与 OpenCode 同构，同目录多开会把仍在跑的会话标成已结束，或把 pid 错绑到别人的历史上。
-- **AI 易错点**【必须】Pi 扫描的 `limit` 必须给默认 cwd 堆和 `pickup-<ident>/` 隔离目录各留一份配额。v0.24.139 起托管写入隔离目录，那些 jsonl mtime 最新；若仍按「全树 mtime 降序凑满 limit 就停」，隔离目录会把 `--<cwd>--/` 堆里的历史挤出列表（2026-08-20：工作电脑只能看到最近的 Pi）。**置顶和分组成员还要再豁免一次**：`keep_ids`（来自 `sidebar-layout.sqlite3` 的 pin + 组员，按 header `id` 匹配）即使落在两份配额之外也必须扫回来，且不计入 heap/isolated 计数。项目名筛选是客户端过滤，救不回根本没进 `all_sessions()` 的卡——「另一台电脑钉过的旧 Pi 消失」经常是这条，不是 UI 折叠。不要为了让旧卡出现去改 `_apply_live_flags`。回归：`test_isolation_dir_sessions_do_not_starve_heap_history`、`test_keep_ids_survive_scan_limit`、`test_remembered_ids_include_pins_and_group_members`。Pi v1 jsonl 的 message 没有 `id`/`parentId`，`active_messages` 必须回退到文件顺序，不能当成空会话丢掉——Pi 自己加载时才 `migrateV1ToV2`，pickup 只读不得依赖那次迁移已经落盘。回归：`test_v1_session_without_parent_ids_still_lists_and_previews`。
+- **AI 易错点**【禁止】OpenCode 判活按「同 cwd 最新一条」猜测 → 必须按 ① 命令行 `-s`/`--session` ② 完整 `CORRAL_SESSION_ID` ③ `-c` 才回落到该目录未标记的最新一条 ④ 其余 TUI 按「进程启动 ≤ 会话创建」一对一认领；`run`/`serve` 不算 TUI。8 位占位 ident 不得前缀去碰 `ses_…`。原因：同目录多路还在跑时，旧算法只给最新历史贴运行中，点回去就变成历史消息预览；空白新建还会把 pid 错绑到别人的会话（2026-08-16 真机：主目录同时 4 路 TUI，带 `-s` 的恢复会话被标成已结束）。
+- **AI 易错点**【禁止】把 OpenCode `--prompt`（以及 Pi 位置参数）后面的接力说明词再当 argv 去撞子命令表，也不得从这段正文里再抠 `-s` / `--session` / `-c`。进程命令行是空格拼接的，说明里常有 `session` / `agent` / `run` / `list` / `install`，嵌套接力还会把原命令的 `-s ses_…` 写进提问；撞上就会把仍在跑的交互会话标成已结束，或错绑到被接力的那条历史上，右栏变成别人的预览。**走不通**：`--prompt` 早已在取值旗标里、解析时跳过「旗标 + 下一个词」——取值是整段自由文本，空格拼接后只跳一词，后面的 `session` 照样撞上；不要再在取值表里加一遍当修法。看到 `--prompt`（或 `--prompt=`）必须立刻停扫，后面整段都是提问。`opencode run --prompt …` 仍算非 TUI，因为 `run` 在 `--prompt` 之前。真正的 `-s` 只认出现在 `--prompt` 之前的旗标。corral 自己的跨助手新建就是 `--auto --prompt <整段接力说明>`，几乎必中。**验收陷阱**：`--prompt hello world` 即使用旧逻辑也过（`world` 不是子命令）；必须用含 `session`/`run`/`agent` 的接力原文，或跑下面两条回归，再对本机仍在跑、命令行带 `--prompt` 的进程实扫一遍确认标成运行中。回归：`test_live_flags_bind_handoff_prompt_containing_subcommand_words`、`test_live_flags_ignore_session_flag_inside_handoff_prompt`（2026-08-16 真机：从 Pi 接到 OpenCode 的三条 `--prompt` 会话全部被 `session` 一词误判）。
+- **AI 易错点**【禁止】Kimi 判活按「同 cwd 最新一条」猜测 → 必须按 ① 命令行 `-S`/`--session` ② 完整 `CORRAL_SESSION_ID` ③ `-c` 才回落到该目录未标记的最新一条 ④ 其余 TUI 按「进程启动 ≤ 会话创建」一对一认领；`-p`/`server`/`web` 不算 TUI。进程 comm 是 `kimi-code` 不是 `kimi`。8 位占位 ident 不得前缀去碰 `session_…`。原因：与 OpenCode 同构，同目录多开会把仍在跑的会话标成已结束，或把 pid 错绑到别人的历史上。
+- **AI 易错点**【必须】Pi 扫描的 `limit` 必须给默认 cwd 堆和 `corral-<ident>/` 隔离目录各留一份配额。v0.24.139 起托管写入隔离目录，那些 jsonl mtime 最新；若仍按「全树 mtime 降序凑满 limit 就停」，隔离目录会把 `--<cwd>--/` 堆里的历史挤出列表（2026-08-20：工作电脑只能看到最近的 Pi）。**置顶和分组成员还要再豁免一次**：`keep_ids`（来自 `sidebar-layout.sqlite3` 的 pin + 组员，按 header `id` 匹配）即使落在两份配额之外也必须扫回来，且不计入 heap/isolated 计数。项目名筛选是客户端过滤，救不回根本没进 `all_sessions()` 的卡——「另一台电脑钉过的旧 Pi 消失」经常是这条，不是 UI 折叠。不要为了让旧卡出现去改 `_apply_live_flags`。回归：`test_isolation_dir_sessions_do_not_starve_heap_history`、`test_keep_ids_survive_scan_limit`、`test_remembered_ids_include_pins_and_group_members`。Pi v1 jsonl 的 message 没有 `id`/`parentId`，`active_messages` 必须回退到文件顺序，不能当成空会话丢掉——Pi 自己加载时才 `migrateV1ToV2`，corral 只读不得依赖那次迁移已经落盘。回归：`test_v1_session_without_parent_ids_still_lists_and_previews`。
 - **AI 易错点**【禁止】两个分屏格抓同一份 tmux 画面 → 一个 `keepalive_name` 只能挂一条会话。扫描把父进程和子进程绑到两张卡时，`annotate` 的祖先链会让两张卡都命中同一个 pane（2026-08-20 真机：明明两个会话，分屏内容一模一样）。`_reconcile_split_session_keys` 同名歧义只拒绝迁移分屏键，**不会**阻止右栏按这个名字各开一格。三道闸：① annotate 已占用的 pane 名不再分配；② `SessionStore._dedupe_keepalive_names` 只留 hosted 属主 / ident 命中 / 非占位卡之一；③ `_build_hosted_entries` 第二次见到同一名字改走该会话自己的静态预览。不要只修扫描启发式——UI 必须在名字已经重复时仍画出两份不同内容。回归：`test_one_pane_is_not_assigned_to_two_sessions`、`test_store_keeps_hosted_owner_when_two_sessions_share_a_name`、`test_duplicate_keepalive_only_embeds_once`。
-- **AI 易错点**【禁止】Pi 判活按「同 cwd 最新一条」猜测 → 必须按 ① 打开的 jsonl（有隔离目录时还须在该目录内）② `pickup-<ident>/` 隔离目录最新 jsonl ③ 本进程记住的「该 pid 上次在写哪条」④ 命令行 `--session` / `--session-id` ⑤ 完整 `PICKUP_SESSION_ID` ⑥ `-c` 才回落到该目录未标记的最新一条 ⑦ 其余裸 TUI 按「进程启动 ≤ 会话创建」一对一认领；`-p` 打印模式与 `auth` / `install` 等子命令不算 TUI。**进程内 `/new` / `/resume` / `/fork` 会换一份 uuidv7 jsonl，启动时钉的 `--session-id` 与 `PICKUP_SESSION_ID` 仍是旧 ident**：若启动 ident 优先，侧栏标题停在旧卡、新历史被标成 Ended 历史预览（2026-08-17 真机：`74cd9122` 标题「开发机CPU内存优化」，实际画面/新文件是「多Agent并行防重复发布」的 `01a00dcc-…`）。Pi 用 `appendFileSync` 写完即关，扫描经常看不到打开的 jsonl，TUI 长驻必须记住这次切换。裸 `pi` 不长期持有 jsonl、命令行也不带会话参数，旧实现四条正向路径全部落空，会把仍在跑的会话标成已结束历史预览。8 位占位 ident 不得前缀去碰 uuidv7 历史。会话头时间戳约等于进程启动时间（文件却要等第一条助手回复才落盘）。标题生成固定使用 `--no-session --no-tools --print`，不应产生会话；扫描器仍只接受以 session header 起始的文件，忽略 thinking 和工具分片。托管新建/分叉必须带 `--session-id <占位 ident>`（`runtime.pi.bind_hosted_ident`），否则落盘 uuid 与占位卡 ident 不同，分屏组会丢成员、组外出现重复卡。**不要为了消掉每次启动都出现的 `Warning: No project session found with id '…'` 去拆这个旗标**：Pi ≥0.80.4 找不到该 id 时先告警、随后仍用它新建，属预期无害，定性见 `MAINTAINER_GUIDE.md`「Pi 扫描与启动」。**同 cwd 多 pane 还必须注入官方 `--session-dir` 与 `PI_CODING_AGENT_SESSION_DIR`，把 jsonl 写到 `pickup-<ident>/`**：Pi 默认把同目录全部会话堆在 `~/.pi/agent/sessions/--<cwd>--/`，TUI 又把进程标题改成 `pi`，cmdline 上看不到旗标；空闲认领会把后开的裸会话抢给先开的托管进程，随后 annotate 把 A 的 tmux 名贴到 B 上，右栏 Your prompts 串台（2026-08-19 真机）。判活时带隔离目录的进程只绑该目录最新 jsonl，禁止认领目录外文件。恢复 `--session <path>` 时 session-dir 用该文件所在目录，但指向 Pi 默认 cwd 堆的 session-dir **不算**隔离，否则会把 `--session` 改绑到堆里更新的另一条。`_claim_unique_hosted_newcomer` 按隔离目录一对一迁 keepalive。回归另加 `test_live_flags_session_dir_*`、`test_pi_session_dir_newcomers_claim_without_crossing`。接力位置参数里的 `list` / `install` 等词不得再当子命令，见上条 OpenCode `--prompt` 同源约束。npm 包装后常见 `node …/cli.js …`：脚本路径是位置参数但不是提问，取 `--session` 已跳过这一段；判定「是不是交互窗口」必须同样跳过，否则 `install` 会被当成提问起点而当成交互（2026-08-16 排查见此缺口，两处必须一起跳）。回归：`test_live_flags_open_jsonl_wins_over_hosted_session_id`、`test_live_flags_remember_in_process_session_switch_after_jsonl_closes`。**2026-08-18 真机事故（同分屏两会话串台）**：同项目两条 Pi 分屏，磁盘记忆 `pi-live-pids.json` 里被写进一条「B 进程 → A 会话」的坏记录（A 比 B 进程早 13 分钟创建，不可能是 /new 切换结果；写入源头是写字节/mtime 相关性认领的采样错位）。处理顺序一旦先轮到 B 进程，A 会话抢走 B 的 pid、B 丢 live；`liveness.annotate` 又按 pid 自匹配把 A 贴上 B 的 tmux 名，两条会话挂了同一个托管名 → 两个分屏渲染同一份终端；`_reconcile_split_session_keys` 同名后写胜出，把分屏格改绑到错的会话、会话组被拆（用户看到的「分屏自动拆开」）。下轮扫描顺序颠倒又会自愈，表现为时好时坏。四道防线：① 相关性认领不得抢已绑在别的活进程上的会话、且目标必须晚于进程启动创建；② 信任 pid→会话记忆前校验「目标创建 ≥ 进程启动 - 2s」，不成立剔除并回写磁盘；③ annotate 两遍匹配（先 pane 顶层 pid 精确命中，后祖先链；每个 pid 只挂一个名字，**每个 pane 也只挂一条会话**）；④ 同名歧义的托管名不参与分屏键迁移；⑤ store 去掉重复的 `keepalive_name`，右栏第二格改走静态预览。回归：`test_one_pane_is_not_assigned_to_two_sessions`、`test_store_keeps_hosted_owner_when_two_sessions_share_a_name`、`test_duplicate_keepalive_only_embeds_once`、`test_follow_switch_correlation_does_not_steal_bound_session`、`test_live_flags_reject_override_pointing_to_session_created_before_process`、`test_disk_live_map_prunes_impossible_override`、`test_exact_pane_pid_match_wins_over_earlier_ancestor_match`、`test_annotated_pid_is_not_renamed_by_later_pane`、`test_ambiguous_keepalive_name_is_not_used_for_migration`。
+- **AI 易错点**【禁止】Pi 判活按「同 cwd 最新一条」猜测 → 必须按 ① 打开的 jsonl（有隔离目录时还须在该目录内）② `corral-<ident>/` 隔离目录最新 jsonl ③ 本进程记住的「该 pid 上次在写哪条」④ 命令行 `--session` / `--session-id` ⑤ 完整 `CORRAL_SESSION_ID` ⑥ `-c` 才回落到该目录未标记的最新一条 ⑦ 其余裸 TUI 按「进程启动 ≤ 会话创建」一对一认领；`-p` 打印模式与 `auth` / `install` 等子命令不算 TUI。**进程内 `/new` / `/resume` / `/fork` 会换一份 uuidv7 jsonl，启动时钉的 `--session-id` 与 `CORRAL_SESSION_ID` 仍是旧 ident**：若启动 ident 优先，侧栏标题停在旧卡、新历史被标成 Ended 历史预览（2026-08-17 真机：`74cd9122` 标题「开发机CPU内存优化」，实际画面/新文件是「多Agent并行防重复发布」的 `01a00dcc-…`）。Pi 用 `appendFileSync` 写完即关，扫描经常看不到打开的 jsonl，TUI 长驻必须记住这次切换。裸 `pi` 不长期持有 jsonl、命令行也不带会话参数，旧实现四条正向路径全部落空，会把仍在跑的会话标成已结束历史预览。8 位占位 ident 不得前缀去碰 uuidv7 历史。会话头时间戳约等于进程启动时间（文件却要等第一条助手回复才落盘）。标题生成固定使用 `--no-session --no-tools --print`，不应产生会话；扫描器仍只接受以 session header 起始的文件，忽略 thinking 和工具分片。托管新建/分叉必须带 `--session-id <占位 ident>`（`runtime.pi.bind_hosted_ident`），否则落盘 uuid 与占位卡 ident 不同，分屏组会丢成员、组外出现重复卡。**不要为了消掉每次启动都出现的 `Warning: No project session found with id '…'` 去拆这个旗标**：Pi ≥0.80.4 找不到该 id 时先告警、随后仍用它新建，属预期无害，定性见 `MAINTAINER_GUIDE.md`「Pi 扫描与启动」。**同 cwd 多 pane 还必须注入官方 `--session-dir` 与 `PI_CODING_AGENT_SESSION_DIR`，把 jsonl 写到 `corral-<ident>/`**：Pi 默认把同目录全部会话堆在 `~/.pi/agent/sessions/--<cwd>--/`，TUI 又把进程标题改成 `pi`，cmdline 上看不到旗标；空闲认领会把后开的裸会话抢给先开的托管进程，随后 annotate 把 A 的 tmux 名贴到 B 上，右栏 Your prompts 串台（2026-08-19 真机）。判活时带隔离目录的进程只绑该目录最新 jsonl，禁止认领目录外文件。恢复 `--session <path>` 时 session-dir 用该文件所在目录，但指向 Pi 默认 cwd 堆的 session-dir **不算**隔离，否则会把 `--session` 改绑到堆里更新的另一条。`_claim_unique_hosted_newcomer` 按隔离目录一对一迁 keepalive。回归另加 `test_live_flags_session_dir_*`、`test_pi_session_dir_newcomers_claim_without_crossing`。接力位置参数里的 `list` / `install` 等词不得再当子命令，见上条 OpenCode `--prompt` 同源约束。npm 包装后常见 `node …/cli.js …`：脚本路径是位置参数但不是提问，取 `--session` 已跳过这一段；判定「是不是交互窗口」必须同样跳过，否则 `install` 会被当成提问起点而当成交互（2026-08-16 排查见此缺口，两处必须一起跳）。回归：`test_live_flags_open_jsonl_wins_over_hosted_session_id`、`test_live_flags_remember_in_process_session_switch_after_jsonl_closes`。**2026-08-18 真机事故（同分屏两会话串台）**：同项目两条 Pi 分屏，磁盘记忆 `pi-live-pids.json` 里被写进一条「B 进程 → A 会话」的坏记录（A 比 B 进程早 13 分钟创建，不可能是 /new 切换结果；写入源头是写字节/mtime 相关性认领的采样错位）。处理顺序一旦先轮到 B 进程，A 会话抢走 B 的 pid、B 丢 live；`liveness.annotate` 又按 pid 自匹配把 A 贴上 B 的 tmux 名，两条会话挂了同一个托管名 → 两个分屏渲染同一份终端；`_reconcile_split_session_keys` 同名后写胜出，把分屏格改绑到错的会话、会话组被拆（用户看到的「分屏自动拆开」）。下轮扫描顺序颠倒又会自愈，表现为时好时坏。四道防线：① 相关性认领不得抢已绑在别的活进程上的会话、且目标必须晚于进程启动创建；② 信任 pid→会话记忆前校验「目标创建 ≥ 进程启动 - 2s」，不成立剔除并回写磁盘；③ annotate 两遍匹配（先 pane 顶层 pid 精确命中，后祖先链；每个 pid 只挂一个名字，**每个 pane 也只挂一条会话**）；④ 同名歧义的托管名不参与分屏键迁移；⑤ store 去掉重复的 `keepalive_name`，右栏第二格改走静态预览。回归：`test_one_pane_is_not_assigned_to_two_sessions`、`test_store_keeps_hosted_owner_when_two_sessions_share_a_name`、`test_duplicate_keepalive_only_embeds_once`、`test_follow_switch_correlation_does_not_steal_bound_session`、`test_live_flags_reject_override_pointing_to_session_created_before_process`、`test_disk_live_map_prunes_impossible_override`、`test_exact_pane_pid_match_wins_over_earlier_ancestor_match`、`test_annotated_pid_is_not_renamed_by_later_pane`、`test_ambiguous_keepalive_name_is_not_used_for_migration`。
 - **AI 易错点**【必须】过滤 OpenConductor 管家临时 cwd：路径任一段以 `oc-manager-` 开头（如 `/tmp/oc-manager-codex/...`）时丢弃（`is_ephemeral_agent_cwd`）。原因：这类目录会删了再建，旧会话因「cwd 不存在」被滤掉后又整批复活；若再被 `SessionStore` 当成 fresh 插最前，侧边栏会被几天前的管家会话刷屏。
 - **AI 易错点**【必须】`SessionStore` 合并 fresh 时：mtime 在约 2 天内才 prepend；更旧的 fresh 追加到 `_order` 末尾（原因：即使漏过滤的目录复活，也不能把冷会话顶到视口）。
 - **AI 易错点**【必须】Codex `load_conversation` 对用户消息也做相邻正文去重：新版同一句会各写一遍 `response_item` 和 `event_msg`，助手侧早已去重，用户侧漏了预览 / Your prompts 会成对出现。只折相邻、留先到的时间戳；不相邻的同一句是两轮。回归：`test_codex_conversation_dedupes_response_item_and_event_msg_user`。
@@ -293,7 +293,7 @@ flowchart TD
 在 `cli/` 目录执行：
 
 ```bash
-python3 -m compileall -q src/pickup tests
+python3 -m compileall -q src/corral tests
 python3 -m unittest discover -s tests -p 'test_session_scanning.py' -v
 python3 -m unittest -v test_session_scanning.py
 ```
@@ -306,7 +306,7 @@ python3 -m unittest -v
 
 重点覆盖：JSON `null`、系统 `origin.kind` 过滤、Claude `stop_reason` 文本保留、Codex 子代理过滤、OpenCode 只读失败回退、预览 mtime 失效、Cursor blob 解析与启动延迟；`DeleteSessionScanTests` 覆盖各助手 `delete_session()`，重点断言删对了、没删多（尤其 OpenCode 共享库不能连带删掉其他会话）。
 
-涉及关注状态时还要覆盖：黄 > 绿 > 红优先级、仅结构化问题变黄、重复扫描不制造新令牌、首次历史基线不批量亮红、占位会话转正迁移、删除清理、Cursor 冷会话不打开数据库、Cursor protobuf AskQuestion 在 JSON 结果出现前为 waiting、JSON tool-result 早于 tool-call 不得误判 waiting、protobuf 提问之后若已有其它工具或 JSON 窗口已前移不得误判 waiting、`afterAgentResponse` 不得把仍活着的会话钉在 working、仍活着的未配对提问能覆盖更早的 idle 时间戳、`stop` 不得清掉未作答等待、**进程仍在但最后一轮已结束不得亮绿、进程仍在且明确在跑工具/等提问仍须亮绿、假阴性判活用例不得红**，以及 observer 安装两次不重复、`--dry-run` 零写入、卸载只移除 pickup 条目、损坏配置与 hook 写入失败均不阻断调用方。
+涉及关注状态时还要覆盖：黄 > 绿 > 红优先级、仅结构化问题变黄、重复扫描不制造新令牌、首次历史基线不批量亮红、占位会话转正迁移、删除清理、Cursor 冷会话不打开数据库、Cursor protobuf AskQuestion 在 JSON 结果出现前为 waiting、JSON tool-result 早于 tool-call 不得误判 waiting、protobuf 提问之后若已有其它工具或 JSON 窗口已前移不得误判 waiting、`afterAgentResponse` 不得把仍活着的会话钉在 working、仍活着的未配对提问能覆盖更早的 idle 时间戳、`stop` 不得清掉未作答等待、**进程仍在但最后一轮已结束不得亮绿、进程仍在且明确在跑工具/等提问仍须亮绿、假阴性判活用例不得红**，以及 observer 安装两次不重复、`--dry-run` 零写入、卸载只移除 corral 条目、损坏配置与 hook 写入失败均不阻断调用方。
 
 ### 7.2 真实抽查 5 条会话
 

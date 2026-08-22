@@ -1,4 +1,4 @@
-"""pickup.remote.richmsg：各助手工具调用摘要与提问选项解析。"""
+"""corral.remote.richmsg：各助手工具调用摘要与提问选项解析。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pickup.remote import richmsg
+from corral.remote import richmsg
 
 
 def _write_jsonl(path: Path, entries: list[dict]) -> None:

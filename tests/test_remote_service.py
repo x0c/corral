@@ -1,4 +1,4 @@
-"""pickup.remote.service：方法路由、配对准入与订阅记账。
+"""corral.remote.service：方法路由、配对准入与订阅记账。
 
 这里用一个假的会话中枢，把「谁能调什么」和「断线后后台还在不在白抓帧」这两件
 真正容易出错的事单独拎出来验证，不去碰真实的 tmux 与助手历史文件。
@@ -10,10 +10,10 @@ import os
 import tempfile
 import unittest
 
-from pickup.remote import config as remote_config
-from pickup.remote import crypto, protocol, ratelimit
-from pickup.remote.service import Connection, RemoteService
-from pickup.remote.sessions import ActionError
+from corral.remote import config as remote_config
+from corral.remote import crypto, protocol, ratelimit
+from corral.remote.service import Connection, RemoteService
+from corral.remote.sessions import ActionError
 
 
 class FakeHub:
@@ -95,8 +95,8 @@ class RemoteServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self._old_cache = os.environ.get("PICKUP_CACHE_DIR")
-        os.environ["PICKUP_CACHE_DIR"] = self._tmp.name
+        self._old_cache = os.environ.get("CORRAL_CACHE_DIR")
+        os.environ["CORRAL_CACHE_DIR"] = self._tmp.name
         self.addCleanup(self._restore_cache)
 
         ratelimit.PAIR_ATTEMPTS.reset()
@@ -110,9 +110,9 @@ class RemoteServiceTests(unittest.TestCase):
 
     def _restore_cache(self) -> None:
         if self._old_cache is None:
-            os.environ.pop("PICKUP_CACHE_DIR", None)
+            os.environ.pop("CORRAL_CACHE_DIR", None)
         else:
-            os.environ["PICKUP_CACHE_DIR"] = self._old_cache
+            os.environ["CORRAL_CACHE_DIR"] = self._old_cache
 
     def _connect(self, public_key: str = "aa" * 32) -> Connection:
         connection = Connection(public_key, self.sent.append)
@@ -416,15 +416,15 @@ class PairingWindowTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self._old = os.environ.get("PICKUP_CACHE_DIR")
-        os.environ["PICKUP_CACHE_DIR"] = self._tmp.name
+        self._old = os.environ.get("CORRAL_CACHE_DIR")
+        os.environ["CORRAL_CACHE_DIR"] = self._tmp.name
         self.addCleanup(self._restore)
 
     def _restore(self) -> None:
         if self._old is None:
-            os.environ.pop("PICKUP_CACHE_DIR", None)
+            os.environ.pop("CORRAL_CACHE_DIR", None)
         else:
-            os.environ["PICKUP_CACHE_DIR"] = self._old
+            os.environ["CORRAL_CACHE_DIR"] = self._old
 
     def test_expired_window_is_treated_as_closed(self):
         remote_config.write_pairing(crypto.new_pairing_code(), ttl=-1)

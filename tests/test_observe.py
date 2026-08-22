@@ -1,4 +1,4 @@
-"""pickup.observe.py：结构化事件日志（~/.cache/pickup/events.log）。"""
+"""corral.observe.py：结构化事件日志（~/.cache/corral/events.log）。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ class ObserveTests(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
         self.cache_dir = self._tmpdir.name
-        from pickup import observe
+        from corral import observe
 
         self.observe = observe
         self._events_log = os.path.join(self.cache_dir, "events.log")
@@ -203,25 +203,25 @@ class ObserveTests(unittest.TestCase):
         self.assertIn("via RuntimeError", last["traceback"])
 
 
-class PickupEmbedErrorBridgeTests(unittest.TestCase):
-    """pickup._log_embed_error 必须转调 observe（双写 events + embed-error）。"""
+class CorralEmbedErrorBridgeTests(unittest.TestCase):
+    """corral._log_embed_error 必须转调 observe（双写 events + embed-error）。"""
 
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
         cache = self._tmpdir.name
-        import pickup
-        from pickup import observe
+        import corral
+        from corral import observe
 
         self.observe = observe
-        self.pickup = pickup
+        self.corral = corral
         self.events = os.path.join(cache, "events.log")
         self.embed_err = os.path.join(cache, "embed-error.log")
         for p in (
             mock.patch.object(observe, "CACHE_DIR", cache),
             mock.patch.object(observe, "EVENTS_LOG", self.events),
             mock.patch.object(observe, "EMBED_ERROR_LOG", self.embed_err),
-            mock.patch.object(pickup.titles, "CACHE_FILE", os.path.join(cache, "pickup.titles.json")),
+            mock.patch.object(corral.titles, "CACHE_FILE", os.path.join(cache, "corral.titles.json")),
         ):
             p.start()
             self.addCleanup(p.stop)
@@ -232,7 +232,7 @@ class PickupEmbedErrorBridgeTests(unittest.TestCase):
         try:
             raise RuntimeError("x")
         except RuntimeError as exc:
-            self.pickup._log_embed_error("抓帧", exc)
+            self.corral._log_embed_error("抓帧", exc)
         with open(self.events, encoding="utf-8") as fh:
             rows = [json.loads(line) for line in fh if line.strip()]
         self.assertEqual(rows[0]["name"], "error")
@@ -248,7 +248,7 @@ class InstrumentationTests(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
         cache = self._tmpdir.name
-        from pickup import observe
+        from corral import observe
 
         self.observe = observe
         self.events = os.path.join(cache, "events.log")
@@ -263,16 +263,16 @@ class InstrumentationTests(unittest.TestCase):
         observe.init(debug=False)
 
     def test_scan_all_event_from_store_refresh(self) -> None:
-        import pickup
+        import corral
 
         runtime = mock.Mock(id="claude", display_name="Claude")
         runtime.scan_signature.return_value = None
         runtime.scan_sessions.return_value = []
-        registry = pickup.RuntimeRegistry((runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}), mock.patch.object(
-            pickup.liveness, "annotate"
+        registry = corral.RuntimeRegistry((runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}), mock.patch.object(
+            corral.liveness, "annotate"
         ):
-            store = pickup.SessionStore(limit=5, registry=registry)
+            store = corral.SessionStore(limit=5, registry=registry)
             store.load()
             store.refresh()
         with open(self.events, encoding="utf-8") as fh:

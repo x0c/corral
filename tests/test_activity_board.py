@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 import unittest
 
-from pickup import i18n
-from pickup.activity_board import (
+from corral import i18n
+from corral.activity_board import (
     RECENT_ACTIVE_SECONDS,
     ActivityBoard,
     BoardCandidate,
@@ -14,9 +14,9 @@ from pickup.activity_board import (
     collect_candidates,
     collect_hosted_keys,
 )
-from pickup.attention import AttentionState
-from pickup.split_layout import MAX_PANES
-from pickup.ui.session_list import ActivityBoardCard, activity_board_label
+from corral.attention import AttentionState
+from corral.split_layout import MAX_PANES
+from corral.ui.session_list import ActivityBoardCard, activity_board_label
 
 
 def _cand(key: str, kind: str, updated_at: float = 0.0) -> BoardCandidate:
@@ -369,7 +369,7 @@ class ActivityBoardHoldTests(unittest.TestCase):
 
 class FocusedBoardSessionKeyTests(unittest.TestCase):
     def test_dead_ended_pane_still_pins_on_board(self) -> None:
-        from pickup.ui.session_list import (
+        from corral.ui.session_list import (
             _focused_board_session_key,
             _focused_live_session_key,
         )
@@ -394,12 +394,12 @@ class FocusedBoardSessionKeyTests(unittest.TestCase):
         self.assertEqual(_focused_board_session_key(embed), "claude:done")
 
     def test_live_pane_still_resolves_for_click_focus(self) -> None:
-        from pickup.ui.session_list import _focused_live_session_key
+        from corral.ui.session_list import _focused_live_session_key
 
         class _Spec:
             def __init__(self) -> None:
                 self.session_key = "claude:live"
-                self.keepalive_name = "pickup-live"
+                self.keepalive_name = "corral-live"
 
         class _Cell:
             def __init__(self) -> None:

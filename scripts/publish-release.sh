@@ -20,20 +20,20 @@
 #   bash scripts/publish-release.sh v0.24.26   # 显式指定
 #
 # 可选环境变量：
-#   PICKUP_SKIP_WHEELS=1   跳过构建/上传安装包
-#   PICKUP_SKIP_TAP=1      跳过更新 Homebrew 配方
+#   CORRAL_SKIP_WHEELS=1   跳过构建/上传安装包
+#   CORRAL_SKIP_TAP=1      跳过更新 Homebrew 配方
 # 中断恢复：若在「计算源码归档校验和」一步因境外网络超时中断（附件已传好、
-# 只差配方），直接 `PICKUP_SKIP_WHEELS=1 bash scripts/publish-release.sh` 补跑即可
+# 只差配方），直接 `CORRAL_SKIP_WHEELS=1 bash scripts/publish-release.sh` 补跑即可
 # （2026-08-17 v0.24.131 实踩）。
-#   PICKUP_SKIP_CI_GATE=1  跳过发版前完整 ci-test（仅应急；默认必须过）
+#   CORRAL_SKIP_CI_GATE=1  跳过发版前完整 ci-test（仅应急；默认必须过）
 #   HOMEBREW_TAP_TOKEN     写 tap 仓库用的令牌（默认取 `gh auth token`）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-TAP_REPO="${PICKUP_TAP_REPO:-x0c/homebrew-tap}"
-SOURCE_REPO="${PICKUP_REPO:-x0c/pickup}"
+TAP_REPO="${CORRAL_TAP_REPO:-x0c/homebrew-tap}"
+SOURCE_REPO="${CORRAL_REPO:-x0c/corral}"
 
 die() { echo "错误：$*" >&2; exit 1; }
 
@@ -53,8 +53,8 @@ echo "==> 发布 ${TAG}"
 
 # 发版硬门槛：与 CI 同源的 ruff + 全量单测。推送门禁若被 --no-verify 绕过，
 # 这里仍拦住「装坏包 / 把配方指到未经验证的 tag」。
-if [ "${PICKUP_SKIP_CI_GATE:-0}" = "1" ]; then
-  echo "==> 跳过发版前 CI 同源检查（PICKUP_SKIP_CI_GATE=1）"
+if [ "${CORRAL_SKIP_CI_GATE:-0}" = "1" ]; then
+  echo "==> 跳过发版前 CI 同源检查（CORRAL_SKIP_CI_GATE=1）"
 else
   echo "==> 发版前强制跑 CI 同源检查"
   env -u TEXTUAL_DISABLE_KITTY_KEY PYTHONPATH=src python3 scripts/ci-test.py \
@@ -86,8 +86,8 @@ else
 fi
 
 # ---- 2. 安装包 ----
-if [ "${PICKUP_SKIP_WHEELS:-0}" = "1" ]; then
-  echo "==> 跳过安装包构建（PICKUP_SKIP_WHEELS=1）"
+if [ "${CORRAL_SKIP_WHEELS:-0}" = "1" ]; then
+  echo "==> 跳过安装包构建（CORRAL_SKIP_WHEELS=1）"
 else
   command -v maturin >/dev/null || die "未找到 maturin，先执行 pip install 'maturin>=1.9,<2'"
   DIST="$(mktemp -d)"
@@ -155,8 +155,8 @@ PY
 fi
 
 # ---- 3. Homebrew 配方 ----
-if [ "${PICKUP_SKIP_TAP:-0}" = "1" ]; then
-  echo "==> 跳过 Homebrew 配方（PICKUP_SKIP_TAP=1）"
+if [ "${CORRAL_SKIP_TAP:-0}" = "1" ]; then
+  echo "==> 跳过 Homebrew 配方（CORRAL_SKIP_TAP=1）"
 else
   TOKEN="${HOMEBREW_TAP_TOKEN:-$(gh auth token)}"
   [ -n "$TOKEN" ] || die "拿不到可写 ${TAP_REPO} 的令牌"
@@ -168,14 +168,27 @@ print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())
 ')"
   WORK="$(mktemp -d)"
   git clone -q "https://x-access-token:${TOKEN}@github.com/${TAP_REPO}.git" "$WORK/tap"
+  FORMULA="$WORK/tap/Formula/corral.rb"
+  if [ ! -f "$FORMULA" ]; then
+    if [ -f "$WORK/tap/Formula/pickup.rb" ]; then
+      cp "$WORK/tap/Formula/pickup.rb" "$FORMULA"
+    else
+      rm -rf "$WORK"; die "tap 里没有 Formula/corral.rb，也没有可迁移的 Formula/pickup.rb"
+    fi
+  fi
   # 用 python 改写而不是 sed -i：BSD sed（macOS）与 GNU sed 的 -i 参数不兼容，
   # 而发版机大概率就是 Mac。
   # 退出码 3 = 配方已是更新的版本，属正常跳过，不能让 set -e 把脚本带走。
   rc=0
-  ARCHIVE="$ARCHIVE" SHA="$SHA" VERSION="$VERSION" python3 - "$WORK/tap/Formula/pickup.rb" <<'PY' || rc=$?
+  ARCHIVE="$ARCHIVE" SHA="$SHA" VERSION="$VERSION" python3 - "$FORMULA" <<'PY' || rc=$?
 import os, pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
+# 过渡期：若 tap 里还是 pickup 配方，改成 corral（类名、安装产物、homepage）。
+text = text.replace("class Pickup", "class Corral")
+text = re.sub(r'\bbin\.install\s+"pickup"', 'bin.install "corral"', text)
+text = text.replace('bin/"pickup"', 'bin/"corral"')
+text = text.replace("github.com/x0c/pickup", "github.com/x0c/corral")
 current = re.search(r'^  url ".*/tags/v([^"]+)\.tar\.gz"', text, re.M)
 def parts(v): return tuple(int(x) for x in re.findall(r"\d+", v))
 if current and parts(current.group(1)) > parts(os.environ["VERSION"]):
@@ -187,11 +200,11 @@ text = re.sub(r'^  sha256 ".*"', f'  sha256 "{os.environ["SHA"]}"', text, count=
 path.write_text(text, encoding="utf-8")
 PY
   if [ "$rc" -eq 0 ]; then
-    if git -C "$WORK/tap" diff --quiet -- Formula/pickup.rb; then
+    if git -C "$WORK/tap" diff --quiet -- Formula/corral.rb; then
       echo "==> 配方已经指向 ${TAG}，无需改动"
     else
       git -C "$WORK/tap" -c user.name="x0c" -c user.email="x0c@users.noreply.github.com" \
-        commit -q -am "pickup ${VERSION}"
+        commit -q -am "corral ${VERSION}"
       git -C "$WORK/tap" push -q origin main
       echo "==> 配方已更新到 ${VERSION}"
     fi
@@ -205,7 +218,7 @@ echo
 echo "==> 收尾核对"
 gh release view "$TAG" --json tagName,assets \
   --jq '"Release \(.tagName)：\(.assets | length) 个附件"'
-curl -fsSL "https://raw.githubusercontent.com/${TAP_REPO}/main/Formula/pickup.rb" \
+curl -fsSL "https://raw.githubusercontent.com/${TAP_REPO}/main/Formula/corral.rb" \
   | grep -E '^  url ' | sed 's/^/配方 /'
 curl -fsSL "https://api.github.com/repos/${SOURCE_REPO}/releases/latest" \
   | python3 -c 'import json,sys; print("最新 Release：" + json.load(sys.stdin)["tag_name"])'

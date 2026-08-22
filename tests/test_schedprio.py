@@ -8,17 +8,17 @@ from unittest import mock
 
 class SchedPrioTests(unittest.TestCase):
     def test_boost_interactive_never_raises(self) -> None:
-        from pickup import schedprio
+        from corral import schedprio
 
         schedprio.boost_interactive()
 
     def test_boost_ui_worker_never_raises(self) -> None:
-        from pickup import schedprio
+        from corral import schedprio
 
         schedprio.boost_ui_worker()
 
     def test_darwin_path_calls_qos_api(self) -> None:
-        from pickup import schedprio
+        from corral import schedprio
 
         fake_lib = mock.Mock()
         fake_lib.pthread_set_qos_class_self_np.return_value = 0
@@ -35,7 +35,7 @@ class SchedPrioTests(unittest.TestCase):
         )
 
     def test_darwin_worker_uses_user_initiated(self) -> None:
-        from pickup import schedprio
+        from corral import schedprio
 
         fake_lib = mock.Mock()
         fake_lib.pthread_set_qos_class_self_np.return_value = 0
@@ -49,7 +49,7 @@ class SchedPrioTests(unittest.TestCase):
         )
 
     def test_qos_api_failure_is_swallowed(self) -> None:
-        from pickup import schedprio
+        from corral import schedprio
 
         with (
             mock.patch.object(sys, "platform", "darwin"),

@@ -1,4 +1,4 @@
-"""pickup.remote 的加密与协议层。
+"""corral.remote 的加密与协议层。
 
 这一层出错的后果不是「功能不好用」而是「别人能看到你的代码」，所以用例重心放在
 反面路径：改一个字节要能被发现、重放与乱序要被拒、冒充开发机要解不开。
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-from pickup.remote import crypto, protocol
+from corral.remote import crypto, protocol
 
 _HAS_CRYPTO = crypto.available()
 _SKIP = "未安装 remote 附加组件（pip install '.[remote]'）"
@@ -142,10 +142,15 @@ class FrameTests(unittest.TestCase):
     def test_frame_round_trip(self):
         channel = bytes(range(protocol.CHANNEL_ID_LEN))
         raw = protocol.encode_frame(protocol.FRAME_DATA, channel, b"payload")
+        self.assertEqual(raw[0], protocol.FRAME_VERSION)
         kind, got_channel, payload = protocol.decode_frame(raw)
         self.assertEqual(kind, protocol.FRAME_DATA)
         self.assertEqual(got_channel, channel)
         self.assertEqual(payload, b"payload")
+
+    def test_v1_shaped_frame_is_rejected(self):
+        with self.assertRaises(protocol.ProtocolError):
+            protocol.decode_frame(bytes([protocol.FRAME_DATA]) + bytes(16))
 
     def test_bad_channel_length_is_rejected(self):
         with self.assertRaises(protocol.ProtocolError):
@@ -178,6 +183,23 @@ class FrameTests(unittest.TestCase):
     def test_invalid_json_is_rejected(self):
         with self.assertRaises(protocol.ProtocolError):
             protocol.loads(b"\xff\xfe not json")
+
+
+@unittest.skipUnless(_HAS_CRYPTO, _SKIP)
+class HostIdentityTests(unittest.TestCase):
+    def test_routing_id_matches_spec_vector(self):
+        pub = bytes(range(32))
+        self.assertEqual(crypto.routing_id_from_x25519(pub), "xp47bhr5gnbtbbmjviugjxbnxm")
+
+    def test_host_assertion_round_trip_shape(self):
+        key = crypto.generate_host_key_bytes()
+        nonce = b"\x01" * 16
+        header = crypto.sign_host_assertion(key, "abc", 1_700_000_000, nonce)
+        parts = header.split(".")
+        self.assertEqual(parts[0], "v2")
+        self.assertEqual(parts[1], "abc")
+        self.assertEqual(parts[2], "1700000000")
+        self.assertEqual(len(parts), 5)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup import cursor_observer
+from corral import cursor_observer
 
 
 class _FakeAttentionStore:
@@ -32,7 +32,7 @@ class CursorObserverTests(unittest.TestCase):
             os.environ,
             {
                 "HOME": str(self.home),
-                "PICKUP_CACHE_DIR": str(self.cache),
+                "CORRAL_CACHE_DIR": str(self.cache),
                 "XDG_CACHE_HOME": str(Path(self.temp.name) / "xdg"),
             },
             clear=False,
@@ -75,8 +75,8 @@ class CursorObserverTests(unittest.TestCase):
             managed = [entry for entry in config["hooks"][event] if cursor_observer._managed_entry(entry)]
             self.assertEqual(len(managed), 1)
 
-    def test_install_upgrades_only_pickup_entries(self):
-        old = "/old/python -m pickup _cursor-hook"
+    def test_install_upgrades_only_corral_entries(self):
+        old = "/old/python -m corral _cursor-hook"
         self._write({
             "version": 1,
             "hooks": {
@@ -130,7 +130,7 @@ class CursorObserverTests(unittest.TestCase):
                 self.assertEqual(self.config_path.read_bytes(), original)
                 self.assertFalse(self.cache.exists())
 
-    def test_uninstall_removes_only_pickup_entries_and_is_idempotent(self):
+    def test_uninstall_removes_only_corral_entries_and_is_idempotent(self):
         cursor_observer.install(self.home)
         config = self._read()
         config["hooks"]["stop"].insert(0, {"command": "user-tool"})
@@ -157,14 +157,14 @@ class CursorObserverTests(unittest.TestCase):
         cursor_observer.install(self.home)
         self.assertEqual(cursor_observer.status(self.home)["status"], "installed")
         config = self._read()
-        config["hooks"]["stop"][0]["command"] = "/old/python -m pickup _cursor-hook"
+        config["hooks"]["stop"][0]["command"] = "/old/python -m corral _cursor-hook"
         self._write(config)
         self.assertEqual(cursor_observer.status(self.home)["status"], "outdated")
 
     def test_hook_command_quotes_posix_interpreter_and_never_embeds_payload(self):
         with mock.patch.object(sys, "executable", "/dir with space/python"):
             command = cursor_observer._hook_command()
-        self.assertEqual(command, "'/dir with space/python' -m pickup _cursor-hook")
+        self.assertEqual(command, "'/dir with space/python' -m corral _cursor-hook")
         self.assertNotIn("conversation_id", command)
 
     def test_hook_command_uses_windows_native_quoting(self):
@@ -173,7 +173,7 @@ class CursorObserverTests(unittest.TestCase):
             command = cursor_observer._hook_command()
         self.assertEqual(
             command,
-            '"C:\\Program Files\\Python\\python.exe" -m pickup _cursor-hook',
+            '"C:\\Program Files\\Python\\python.exe" -m corral _cursor-hook',
         )
         self.assertNotIn("'", command)
 
@@ -225,7 +225,7 @@ class CursorObserverCliTests(unittest.TestCase):
         self.home.mkdir()
         self.env = mock.patch.dict(
             os.environ,
-            {"HOME": str(self.home), "PICKUP_CACHE_DIR": str(Path(self.temp.name) / "cache")},
+            {"HOME": str(self.home), "CORRAL_CACHE_DIR": str(Path(self.temp.name) / "cache")},
             clear=False,
         )
         self.env.start()

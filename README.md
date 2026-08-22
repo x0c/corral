@@ -1,13 +1,13 @@
-# pickup
+# corral
 
 **Languages:** English | [简体中文](README.zh-CN.md)
 
-[![test](https://github.com/x0c/pickup/actions/workflows/test.yml/badge.svg)](https://github.com/x0c/pickup/actions/workflows/test.yml)
+[![test](https://github.com/x0c/corral/actions/workflows/test.yml/badge.svg)](https://github.com/x0c/corral/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Fast terminal session picker for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi.
+Corral is a terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi.
 
-`pickup` scans your local Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi history, shows recent coding sessions in a terminal UI (built with [Textual](https://github.com/Textualize/textual)), and lets you resume the selected session in its native runtime. It can also hand off a session from one runtime to another (e.g. Claude to Codex, or Pi to Claude) by starting a new target session with a structured pointer to the original history.
+`corral` scans your local Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi history, shows recent coding sessions in a terminal UI (built with [Textual](https://github.com/Textualize/textual)), and lets you resume the selected session in its native runtime. It can also hand off a session from one runtime to another (e.g. Claude to Codex, or Pi to Claude) by starting a new target session with a structured pointer to the original history.
 
 Keywords: Claude Code session manager, Codex CLI resume, OpenCode session manager, Kimi Code CLI session manager, terminal TUI, AI coding agent workflow, JSONL chat history, cross-runtime handoff.
 
@@ -36,15 +36,15 @@ The tool is local-first.
 - It does not upload session history by itself.
 - Cross-runtime handoff passes the original history file path to the target runtime instead of copying the whole conversation into command-line arguments.
 - Optional title generation distributes batches evenly among installed Claude Code, Codex, OpenCode, Kimi Code, Cursor Agent, and Pi CLIs; a failed assistant automatically yields its batch to another available one. It may consume the corresponding account quota.
-- Title and derived performance caches are stored under `~/.cache/pickup/`; they can be inspected or cleared locally.
-- Attention state is local and content-free: it stores only runtime/session identifiers, opaque change tokens, timestamps, and read state. Cursor live-state support adds pickup-managed entries to your user-level hooks file without replacing existing hooks.
+- Title and derived performance caches are stored under `~/.cache/corral/`; they can be inspected or cleared locally.
+- Attention state is local and content-free: it stores only runtime/session identifiers, opaque change tokens, timestamps, and read state. Cursor live-state support adds corral-managed entries to your user-level hooks file without replacing existing hooks.
 
 See [PRIVACY.md](PRIVACY.md) for the detailed privacy and data-flow notes.
 
 ## Requirements
 
 - Python 3.10 or newer.
-- `tmux` 3.2 or newer (hard requirement — session hosting, embedded panes, and SSH keep-alive are all built on it; `pickup` checks the version at startup and refuses to run on older tmux, since `new-session -e` environment injection requires 3.2+).
+- `tmux` 3.2 or newer (hard requirement — session hosting, embedded panes, and SSH keep-alive are all built on it; `corral` checks the version at startup and refuses to run on older tmux, since `new-session -e` environment injection requires 3.2+).
 - macOS or Linux terminal (any modern ANSI-capable terminal works; the UI is built with Textual, not curses).
 - Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and/or Pi installed if you want to resume those sessions.
 
@@ -52,14 +52,18 @@ See [PRIVACY.md](PRIVACY.md) for the detailed privacy and data-flow notes.
 
 ### Homebrew (macOS/Linux)
 
+Homebrew core already has an unrelated formula named `corral` (the Pony language). Always install from this tap:
+
 ```bash
-brew install x0c/tap/pickup
+brew install x0c/tap/corral
 ```
+
+Do not run `brew install corral` — that installs the unrelated Pony formula.
 
 ### Install Script
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x0c/pickup/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/x0c/corral/main/install.sh | bash
 ```
 
 Requires Python 3.10+. On supported macOS/Linux machines the script installs a prebuilt native wheel, falling back to a source build only when no matching wheel exists. It prints a `PATH` hint if the install directory isn't already on it.
@@ -67,56 +71,56 @@ Requires Python 3.10+. On supported macOS/Linux machines the script installs a p
 ### From Source
 
 ```bash
-git clone https://github.com/x0c/pickup.git
-cd pickup
+git clone https://github.com/x0c/corral.git
+cd corral
 python3 -m pip install --user .
 ```
 
 Then run:
 
 ```bash
-pickup
+corral
 ```
 
 ### From Source (editable)
 
 ```bash
-git clone https://github.com/x0c/pickup.git
-cd pickup
+git clone https://github.com/x0c/corral.git
+cd corral
 python3 -m pip install --user -e .
 ```
 
 Then run:
 
 ```bash
-pickup
-# or: python3 -m pickup
+corral
+# or: python3 -m corral
 ```
 
-Do not run a deleted root-level `pickup.py`; the package lives under `src/pickup/`.
+Do not run a deleted root-level `corral.py`; the package lives under `src/corral/`.
 
 ## Usage
 
 ```bash
-pickup                  # open the interactive TUI
-pickup --limit 30       # show up to 30 sessions per runtime
-pickup --json           # print sessions as JSON and exit
-pickup --json --limit 5 # script-friendly small result set
-pickup --no-input       # force non-interactive JSON output
-pickup -v               # show version, install path, and install channel
-pickup -d               # enable detailed diagnostic logging
-pickup -q               # suppress non-essential startup messages
-pickup --no-color       # disable colors (also respects NO_COLOR)
-pickup update           # manually check for and install the latest version
-pickup cache status     # inspect the bounded local performance cache
-pickup cache clear      # clear derived metadata and conversation cache
-pickup observer status cursor                    # inspect Cursor live-state integration
-pickup observer install cursor --dry-run --json  # preview its user-level hook changes
-pickup observer install cursor                   # repair/install it explicitly
-pickup observer uninstall cursor                 # remove only pickup-managed hooks
-pickup shim status                               # command interception status (type `claude`, get pickup)
-pickup shim install                              # repair/install interception now
-pickup shim uninstall                            # remove interception
+corral                  # open the interactive TUI
+corral --limit 30       # show up to 30 sessions per runtime
+corral --json           # print sessions as JSON and exit
+corral --json --limit 5 # script-friendly small result set
+corral --no-input       # force non-interactive JSON output
+corral -v               # show version, install path, and install channel
+corral -d               # enable detailed diagnostic logging
+corral -q               # suppress non-essential startup messages
+corral --no-color       # disable colors (also respects NO_COLOR)
+corral update           # manually check for and install the latest version
+corral cache status     # inspect the bounded local performance cache
+corral cache clear      # clear derived metadata and conversation cache
+corral observer status cursor                    # inspect Cursor live-state integration
+corral observer install cursor --dry-run --json  # preview its user-level hook changes
+corral observer install cursor                   # repair/install it explicitly
+corral observer uninstall cursor                 # remove only corral-managed hooks
+corral shim status                               # command interception status (type `claude`, get corral)
+corral shim install                              # repair/install interception now
+corral shim uninstall                            # remove interception
 ```
 
 Common aliases are supported: `-h` / `--help`, `-v` / `-V` / `--version`,
@@ -124,13 +128,13 @@ and `-d` / `--debug` / `--verbose`.
 
 JSON output includes runtime, session ID, title, working directory, update time, size, status, resume command, and history path.
 
-The TUI defaults to English. If your system locale is Chinese (`zh*`), the interface switches to Chinese automatically. Force a language with `PICKUP_LANG=en` or `PICKUP_LANG=zh`.
+The TUI defaults to English. If your system locale is Chinese (`zh*`), the interface switches to Chinese automatically. Force a language with `CORRAL_LANG=en` or `CORRAL_LANG=zh`.
 
-The derived cache defaults to 256 MiB and invalidates entries whenever the source history changes. Set `PICKUP_CACHE=0` to disable it, `PICKUP_CACHE_MAX_MB` to change its bound, or `PICKUP_NATIVE=0` to force the portable Python fallback for troubleshooting.
+The derived cache defaults to 256 MiB and invalidates entries whenever the source history changes. Set `CORRAL_CACHE=0` to disable it, `CORRAL_CACHE_MAX_MB` to change its bound, or `CORRAL_NATIVE=0` to force the portable Python fallback for troubleshooting.
 
 ## Embedded Panes (work on multiple sessions at once)
 
-`pickup` is a unified, time-ordered session timeline: Claude Code, Codex CLI, OpenCode, Kimi Code,
+`corral` is a unified, time-ordered session timeline: Claude Code, Codex CLI, OpenCode, Kimi Code,
 and Cursor Agent sessions appear in one list rather than separate runtime tabs. Each card uses three
 rows for `<dot> project title`, runtime, and update time. While a title is being generated the
 card just shows its fallback title with no loading animation, then updates in place once the generated
@@ -162,13 +166,13 @@ Only one dot is shown, with `yellow > green > red` priority. Yellow and green th
 a waiting question temporarily takes precedence, while ordinary work still shows green. Dots never reorder,
 filter, or count sessions, and they do not trigger sounds or system notifications. A red dot clears as soon as the right-pane content is actually visible;
 split view clears every on-screen session together. Quickly moving past a card, a failed preview,
-or switching away from pickup does not mark it read. Existing history is baselined as read on the first upgraded
+or switching away from corral does not mark it read. Existing history is baselined as read on the first upgraded
 launch, so old sessions do not all light up at once.
 
 Claude Code, Codex CLI, OpenCode, and Kimi Code derive these signals from local history. Cursor also exposes
-live turn boundaries through user-level hooks; pickup installs its entries idempotently in the background,
+live turn boundaries through user-level hooks; corral installs its entries idempotently in the background,
 preserves unrelated entries, backs up changed files, writes atomically, and fails open so observer problems never
-block Cursor. Use the `pickup observer ... cursor` commands above to audit, preview, repair, or remove that integration.
+block Cursor. Use the `corral observer ... cursor` commands above to audit, preview, repair, or remove that integration.
 
 - The first two rows never scroll away. `+ New session` (Chinese: `＋ 新建会话`) still starts a blank
   hosted session. The row under it is **Active sessions** (Chinese: `活跃会话`): it auto-tiles up to
@@ -222,139 +226,139 @@ block Cursor. Use the `pickup observer ... cursor` commands above to audit, prev
   running in the background.
 - The wheel follows where the mouse is, independent of keyboard focus: over the right pane it
   scrolls conversation preview or live history; over the left sidebar it scrolls the session list.
-  At the live edge, agents that request wheel input receive it directly; otherwise pickup browses
+  At the live edge, agents that request wheel input receive it directly; otherwise corral browses
   tmux history.
 - Drag to select text in the embedded pane — releasing the mouse copies it through OSC 52
   automatically (including over SSH when the terminal supports it). `Ctrl+C` still re-copies
   the current selection if you need it.
 - The terminal cursor is parked at the agent's own cursor position, so IME preedit popups
   (e.g. CJK input methods) appear right at the agent's input box, not at the bottom of the screen.
-- Dark/light theme detection inside panes is repaired on tmux ≥ 3.5a: `pickup` probes your real
+- Dark/light theme detection inside panes is repaired on tmux ≥ 3.5a: `corral` probes your real
   terminal's background color at startup and feeds it to each hosted pane
   (`refresh-client -r`), so agents that query OSC 11 get the true value. Agents that were
   already running keep their earlier guess — restart them or set their theme manually once.
 - `c` closes the focused pane; its hosted session keeps running in the background and can be reopened
   with `Enter`.
 - `q` on a backgrounded / in-progress session ends it after a second `q` confirmation;
-  quitting `pickup` with `Esc` never kills anything — everything stays alive in tmux.
+  quitting `corral` with `Esc` never kills anything — everything stays alive in tmux.
 
 ## Direct Launch
 
-`pickup claude [args...]`, `pickup codex [args...]`, `pickup opencode [args...]`,
-`pickup kimi [args...]`, `pickup cursor [args...]`, and `pickup pi [args...]` start a brand-new session.
+`corral claude [args...]`, `corral codex [args...]`, `corral opencode [args...]`,
+`corral kimi [args...]`, `corral cursor [args...]`, and `corral pi [args...]` start a brand-new session.
 In a real terminal they open the same sidebar TUI with the new session already hosted and
 focused in the right-hand pane; outside a real terminal (piped/scripted) or with
 `--no-keepalive` they take over the terminal the classic way instead.
 
 Two forms after the runtime name:
 
-1. **Project shortcut** — first argument does **not** start with `-` (e.g. `pickup claude subswap`):
+1. **Project shortcut** — first argument does **not** start with `-` (e.g. `corral claude subswap`):
    fuzzy-match a local project (session history cwds ∪ git roots under `$HOME`, overridable with
-   `PICKUP_PROJECT_ROOTS`), then open a blank session in that directory. Multiple matches → numbered
+   `CORRAL_PROJECT_ROOTS`), then open a blank session in that directory. Multiple matches → numbered
    picker. Extra args after the project name are rejected.
-2. **Passthrough** — no args, or first arg starts with `-` (e.g. `pickup claude --resume id`):
-   remaining args go straight to the underlying CLI; `pickup` only prepends the runtime's
+2. **Passthrough** — no args, or first arg starts with `-` (e.g. `corral claude --resume id`):
+   remaining args go straight to the underlying CLI; `corral` only prepends the runtime's
    auto-approve flag unless you already included it, and hosts with
    [Keep-Alive](#keep-alive-survive-ssh-disconnects).
 
 ```bash
-pickup claude                       # blank Claude session in the current directory (TUI-hosted)
-pickup claude subswap               # blank Claude session in the matched project directory
-pickup claude --print "hi"          # passthrough flags/args to claude
-pickup codex --resume <id>          # `codex --resume`, auto-approved and hosted in the TUI
-pickup opencode                     # blank OpenCode TUI session, hosted in the TUI
-pickup kimi                         # blank auto-approved Kimi session, hosted in the TUI
-pickup pi                           # blank auto-approved Pi session, hosted in the TUI
-pickup --no-keepalive claude        # classic full-terminal launch without the background tmux wrapper
+corral claude                       # blank Claude session in the current directory (TUI-hosted)
+corral claude subswap               # blank Claude session in the matched project directory
+corral claude --print "hi"          # passthrough flags/args to claude
+corral codex --resume <id>          # `codex --resume`, auto-approved and hosted in the TUI
+corral opencode                     # blank OpenCode TUI session, hosted in the TUI
+corral kimi                         # blank auto-approved Kimi session, hosted in the TUI
+corral pi                           # blank auto-approved Pi session, hosted in the TUI
+corral --no-keepalive claude        # classic full-terminal launch without the background tmux wrapper
 ```
 
 OpenCode uses its own `--auto` flag (auto-approve every permission request that is not explicitly
-denied) and pickup adds it for you. Placement matters: `--auto` belongs to the main command and to
+denied) and corral adds it for you. Placement matters: `--auto` belongs to the main command and to
 `opencode run` only, and it must come *after* the subcommand — `opencode --auto run …` is parsed as
-"open the TUI in a directory named `run`". So `pickup opencode run …` becomes
+"open the TUI in a directory named `run`". So `corral opencode run …` becomes
 `opencode run --auto …`, while subcommands that reject the flag (`stats`, `export`, `auth`, …) are
 passed through untouched. If your opencode does not know `--auto` yet, upgrade it.
 
-Cursor also answers to the names you actually type: `pickup agent` and `pickup cursor-agent` are exact
-aliases for `pickup cursor` (Cursor's installer ships both `agent` and `cursor-agent` entry points).
+Cursor also answers to the names you actually type: `corral agent` and `corral cursor-agent` are exact
+aliases for `corral cursor` (Cursor's installer ships both `agent` and `cursor-agent` entry points).
 
-## Command Interception (type the real command, get pickup)
+## Command Interception (type the real command, get corral)
 
-pickup automatically enables interception during installation and whenever it first opens interactively. Typing `claude`, `codex`, `opencode`, `kimi`, `cursor-agent`, `agent` (when it is Cursor's CLI), or `pi` in your
-terminal is the same as typing `pickup <runtime>`: the new session is hosted, auto-approved, and
+corral automatically enables interception during installation and whenever it first opens interactively. Typing `claude`, `codex`, `opencode`, `kimi`, `cursor-agent`, `agent` (when it is Cursor's CLI), or `pi` in your
+terminal is the same as typing `corral <runtime>`: the new session is hosted, auto-approved, and
 survives disconnects.
 
 ```bash
-pickup shim status                    # what's installed for the current shell
-pickup shim install                   # install (adds one marked block to your shell config)
-pickup shim install --dry-run --json  # preview only, writes nothing
-pickup shim install --include agent   # force-intercept `agent` if it wasn't recognized as Cursor
-pickup shim uninstall                 # remove only pickup's block, leave everything else intact
+corral shim status                    # what's installed for the current shell
+corral shim install                   # install (adds one marked block to your shell config)
+corral shim install --dry-run --json  # preview only, writes nothing
+corral shim install --include agent   # force-intercept `agent` if it wasn't recognized as Cursor
+corral shim uninstall                 # remove only corral's block, leave everything else intact
 ```
 
 Supports bash / zsh / fish and detects the current shell automatically. The setup is idempotent, preserves
-unrelated configuration, and backs up a changed configuration file before writing. `pickup shim uninstall`
-removes only pickup's marked block.
+unrelated configuration, and backs up a changed configuration file before writing. `corral shim uninstall`
+removes only corral's marked block.
 
 These always run the real command untouched:
 
 - headless/scripted calls (`claude -p "..."`, `codex exec ...`, pipes, CI, editor extensions, agents
   spawning agents);
 - management subcommands (`claude update`, `pi install`, `agent login`, `agent about`, …);
-- commands already inside a pickup-hosted session (no double wrapping). Your own tmux/screen sessions
+- commands already inside a corral-hosted session (no double wrapping). Your own tmux/screen sessions
   are still intercepted;
-- when `pickup` isn't on PATH (e.g. you uninstalled it) — your original command always still works.
+- when `corral` isn't on PATH (e.g. you uninstalled it) — your original command always still works.
 
-`agent` is intercepted automatically only when pickup recognizes it as Cursor's CLI (the official
+`agent` is intercepted automatically only when corral recognizes it as Cursor's CLI (the official
 install, or a local wrapper that still launches Cursor). Other tools with that name are left alone;
 use `--include agent` if recognition misses your install.
 
 ## Keep-Alive (survive SSH disconnects)
 
 Sessions started or resumed from the TUI are, by default, wrapped in a dedicated background `tmux`
-server (`tmux -L pickup-keepalive`, using a bundled config — never your own `~/.tmux.conf`). If your SSH
+server (`tmux -L corral-keepalive`, using a bundled config — never your own `~/.tmux.conf`). If your SSH
 connection drops or you close your laptop, the underlying `claude`/`codex` process keeps running on
-the remote machine. Reopen `pickup` and the session shows `后台运行中` (running in background); pressing
+the remote machine. Reopen `corral` and the session shows `后台运行中` (running in background); pressing
 `Enter` reattaches instead of starting a competing second process.
 
 - Press `Ctrl-\` (no prefix needed) to detach and return to your shell while the session keeps running;
   the standard `Ctrl-b d` also works.
 - Press `q` on a backgrounded / in-progress session to end it (press `q` again to confirm).
 - Idle sessions (no tmux activity) are auto-reaped after 6h by default; tune with
-  `PICKUP_KEEPALIVE_IDLE_HOURS` (`0` disables reaping; the legacy name `SC_KEEPALIVE_IDLE_HOURS`
+  `CORRAL_KEEPALIVE_IDLE_HOURS` (`0` disables reaping; the legacy name `SC_KEEPALIVE_IDLE_HOURS`
   still works). Reaping only closes the background tmux session — history stays on disk.
-- Disable keep-alive for a single run with `pickup --no-keepalive`, or permanently with
-  `PICKUP_KEEPALIVE=0` (legacy `SC_KEEPALIVE=0` also works).
-- Keep-alive of the full-screen attach form is skipped when `pickup` is already running inside a
+- Disable keep-alive for a single run with `corral --no-keepalive`, or permanently with
+  `CORRAL_KEEPALIVE=0` (legacy `SC_KEEPALIVE=0` also works).
+- Keep-alive of the full-screen attach form is skipped when `corral` is already running inside a
   `tmux`/`screen` session (no nesting); embedded panes don't attach and work fine there.
 
 ## Agent / Automation
 
-`pickup` also exposes read-only, structured subcommands meant for AI agents to query local session
+`corral` also exposes read-only, structured subcommands meant for AI agents to query local session
 history — list, search, inspect, build a handoff context package, and produce a native continuation
 plan. None of them launch or resume anything; what to do with the data and plan is left to the
 caller.
 
 ```bash
-pickup list --cwd my-app --status pending --top 5 --compact # compact, capped session list
-pickup search weather app --top 3 --compact                 # relevance-ranked topic search
-pickup search weather app --deep                            # include full conversation search
-pickup show <session-id-prefix> --messages 10 --compact     # session detail + recent conversation
-pickup show <session-id-prefix> --full --out /tmp/pickup.json # write large full output to a file
-pickup context <session-id-prefix>          # handoff package: history path, suggested prompt, resume command
-pickup plan continue <runtime:id> --instruction "Continue the remaining work" # argv/cwd plan; does not start it
-pickup describe [command]                   # machine-readable command/argument/field reference
+corral list --cwd my-app --status pending --top 5 --compact # compact, capped session list
+corral search weather app --top 3 --compact                 # relevance-ranked topic search
+corral search weather app --deep                            # include full conversation search
+corral show <session-id-prefix> --messages 10 --compact     # session detail + recent conversation
+corral show <session-id-prefix> --full --out /tmp/corral.json # write large full output to a file
+corral context <session-id-prefix>          # handoff package: history path, suggested prompt, resume command
+corral plan continue <runtime:id> --instruction "Continue the remaining work" # argv/cwd plan; does not start it
+corral describe [command]                   # machine-readable command/argument/field reference
 ```
 
 Every command prints a JSON envelope (`{ok, data, error, meta}`) and uses fine-grained exit codes
-(`0` success, `2` usage error, `3` not found, `5` ambiguous session reference). Running `pickup` with no
+(`0` success, `2` usage error, `3` not found, `5` ambiguous session reference). Running `corral` with no
 subcommand outside a real terminal (piped, scripted, or invoked by an agent) also falls back to a
 JSON session list instead of trying to start the terminal UI.
 
 For `list` and `search`, `--limit` is scan depth per runtime and `--top` is the returned result
 count cap. `search` returns `score`, `matched_via`, and `matched_fields`; `list`/`search` rows
 include `resumable` and `resume_command` so automation can decide whether to resume in place or
-start fresh. `pickup plan continue` turns that decision into a structured, read-only execution plan
+start fresh. `corral plan continue` turns that decision into a structured, read-only execution plan
 (`argv` and `cwd`), never a shell command string and never a launched process.
 
 See [docs/SKILL.md](docs/SKILL.md) for the full command reference, field semantics, and typical
@@ -377,7 +381,7 @@ agent workflows.
 | `Ctrl+Shift+B` | Show / hide the sidebar (also the ◀/▶ control on the runtime top bar) |
 | `Ctrl+G` | Expand / collapse the session card floating in the top-right corner of a live pane (clicking it does the same) |
 | `Home` / `End` / `PgUp` / `PgDn` | Scroll the right-pane conversation preview (also mouse wheel over the pane) |
-| `F12` | Save a local diagnostic screenshot under `~/.cache/pickup/screenshots/` |
+| `F12` | Save a local diagnostic screenshot under `~/.cache/corral/screenshots/` |
 | `Esc` | Clear search / close dialog, or quit (clicking outside a dialog closes it too) |
 
 `Enter` (or a click) hands input to a hosted agent; `Ctrl-\` returns keyboard focus to the sidebar
@@ -391,7 +395,7 @@ reach the agent. Mouse wheel over either pane works regardless of which side has
 
 Press `Enter` on a session for native resume (same assistant, full original context).
 
-Advanced action (`a`) first item **exports** the same share transcript as `pickup share` and copies the file path; second item **copies** the session beside the original; picking an assistant always starts a **new** session that reads the source history—whether you pick another assistant or the same one (useful when the original session is stuck or buggy). Copy and handoff open beside the source in a split view. The prompt includes:
+Advanced action (`a`) first item **exports** the same share transcript as `corral share` and copies the file path; second item **copies** the session beside the original; picking an assistant always starts a **new** session that reads the source history—whether you pick another assistant or the same one (useful when the original session is stuck or buggy). Copy and handoff open beside the source in a split view. The prompt includes:
 
 - source runtime name;
 - original session title;
@@ -418,14 +422,14 @@ Cost controls:
   account quota. A future title-cache upgrade may retry it under updated rules.
 
 Title generation is optional in practice: if no generator is available or generation fails, the
-session picker still works.
+Corral still works.
 
 ## Client Auto-Update
 
 Each time the TUI starts, it checks in the background whether a newer release is available (one
 HTTPS request to the public GitHub API, see [Privacy Model](#privacy-model)). If your install can be
 upgraded in place (Homebrew tap, `pipx`, or `pip`-based install), a small notice appears in the
-bottom-right corner; click it to update, then optionally restart `pickup` right there. The upgrade
+bottom-right corner; click it to update, then optionally restart `corral` right there. The upgrade
 installs the prebuilt wheel published with the release, so no Rust toolchain is needed. Dismissing
 it for the day is one click — that works in the failed state too, where the notice also shows a
 short reason. Source/dev checkouts are never nagged — the check is skipped entirely for that
@@ -434,30 +438,30 @@ install path.
 You can also trigger the same check manually at any time, without opening the TUI:
 
 ```bash
-pickup update
+corral update
 ```
 
 ## Project Layout
 
 | Path | Purpose |
 | --- | --- |
-| `src/pickup/` | installable package (src-layout) |
-| `src/pickup/cli.py` | process entry, argparse, direct-launch dispatch |
-| `src/pickup/store.py` | session store / snapshot refresh |
-| `src/pickup/display.py` | width, cards, preview, filtering helpers |
-| `src/pickup/theme.py` | OSC probe and runtime label colors |
-| `src/pickup/ui/` | Textual UI: main screen, modals, session list, split-pane area, runtime top bar, embed pane |
-| `src/pickup/ui/search_modal.py` | full-text search modal (`Ctrl+F`) |
-| `src/pickup/search.py` | in-memory full-text index over session conversations |
-| `src/pickup/split_layout.py` | persistent session groups, collapsed state and sidebar pinning |
-| `src/pickup/embed.py` | embedded-pane host (`capture-pane` / `send-keys`) |
-| `src/pickup/agent_api.py` | read-only `list`/`search`/`show`/`context`/`describe` |
-| `src/pickup/keepalive.py` | tmux-backed keep-alive wrapper |
-| `src/pickup/models.py` | shared session / handoff / launch-plan models |
-| `src/pickup/runtime/` | runtime adapters |
-| `src/pickup/scan/` | per-assistant history scanners |
-| `src/pickup/titles.py` / `titlegen.py` | title cache and generators |
-| `src/pickup/updater.py` | client auto-update: version check, channel detection, in-place upgrade |
+| `src/corral/` | installable package (src-layout) |
+| `src/corral/cli.py` | process entry, argparse, direct-launch dispatch |
+| `src/corral/store.py` | session store / snapshot refresh |
+| `src/corral/display.py` | width, cards, preview, filtering helpers |
+| `src/corral/theme.py` | OSC probe and runtime label colors |
+| `src/corral/ui/` | Textual UI: main screen, modals, session list, split-pane area, runtime top bar, embed pane |
+| `src/corral/ui/search_modal.py` | full-text search modal (`Ctrl+F`) |
+| `src/corral/search.py` | in-memory full-text index over session conversations |
+| `src/corral/split_layout.py` | persistent session groups, collapsed state and sidebar pinning |
+| `src/corral/embed.py` | embedded-pane host (`capture-pane` / `send-keys`) |
+| `src/corral/agent_api.py` | read-only `list`/`search`/`show`/`context`/`describe` |
+| `src/corral/keepalive.py` | tmux-backed keep-alive wrapper |
+| `src/corral/models.py` | shared session / handoff / launch-plan models |
+| `src/corral/runtime/` | runtime adapters |
+| `src/corral/scan/` | per-assistant history scanners |
+| `src/corral/titles.py` / `titlegen.py` | title cache and generators |
+| `src/corral/updater.py` | client auto-update: version check, channel detection, in-place upgrade |
 | `tests/` | unit tests |
 | `docs/SKILL.md` | agent-facing command reference |
 
@@ -465,7 +469,7 @@ pickup update
 
 ```bash
 python3 -m pip install --user -e .
-python3 -m compileall -q src/pickup tests
+python3 -m compileall -q src/corral tests
 python3 -m unittest discover -s tests -v
 ```
 

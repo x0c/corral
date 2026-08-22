@@ -18,7 +18,7 @@
 
 ## §1 业务背景与核心概念
 
-「新助手接入」是指从零把一种新的 AI 编程助手纳入 pickup：用户能在统一列表看到其本地历史，查看对话预览，原生恢复同一助手的会话，把该会话交给其他助手接力，或在指定工作目录创建空白新会话。
+「新助手接入」是指从零把一种新的 AI 编程助手纳入 corral：用户能在统一列表看到其本地历史，查看对话预览，原生恢复同一助手的会话，把该会话交给其他助手接力，或在指定工作目录创建空白新会话。
 
 文档主称谓为「新助手」和「助手运行时」。实现中分别对应新的扫描器、`BaseRuntime` 子类（adapter）和注册表中的一项。助手运行时的职责是解释该助手私有的历史格式与命令行语义；统一列表、跨助手编排、保活和内嵌终端不是某个助手运行时的职责。
 
@@ -87,11 +87,11 @@ sequenceDiagram
 按以下检查清单完成新助手接入；任何一项缺失都会导致「能扫到但不能使用」或「界面能选到但启动失败」的半接入状态。
 
 1. **确认真实数据与命令能力**：在本机实际创建、续接并结束至少一个新助手会话；记录历史目录或数据库、会话 ID、工作目录、用户/助手正文、时间、原生恢复命令、空白新建命令，以及可安全使用的自动批准参数。不要只依据官网文档推断参数。
-2. **实现扫描与预览**：新增 `scan/<助手>.py`，把私有历史转换成完整 `SessionInfo`；列表扫描保持轻量，完整对话在 `load_conversation` 按需读取。过滤内部子任务、空会话、系统注入和标题生成留下的噪音会话。`load_conversation` 仍只出纯文本。`pickup share` 另走 `transcript.py` 的 `_parse_<id>`，必须按该助手真实落盘格式抽出 thinking / tool_call / tool_result，否则 share 对该助手返回空 events。
+2. **实现扫描与预览**：新增 `scan/<助手>.py`，把私有历史转换成完整 `SessionInfo`；列表扫描保持轻量，完整对话在 `load_conversation` 按需读取。过滤内部子任务、空会话、系统注入和标题生成留下的噪音会话。`load_conversation` 仍只出纯文本。`corral share` 另走 `transcript.py` 的 `_parse_<id>`，必须按该助手真实落盘格式抽出 thinking / tool_call / tool_result，否则 share 对该助手返回空 events。
 3. **实现助手运行时**：新增 `runtime/<助手>.py` 的 `BaseRuntime` 子类，声明稳定的 id、显示名、可执行命令、历史阅读提示和唯一一处的 `auto_approve_args`；实现扫描、预览、原生恢复、跨助手目标新建、空白新建。仅在确实支持且已验证时实现带指令的原生续接。
    同时实现 `delete_session(session)`（终端界面 `x` 删除会话用；`BaseRuntime` 默认实现是直接报错，不覆写就等于该助手不支持删除）：删除是彻底抹掉、不可恢复，必须先确认新助手的历史存储形态再决定实现方式——单文件（如 Claude/Codex 的 JSONL）直接 `os.unlink`；每会话一个目录（如 Kimi/Cursor）要整目录 `shutil.rmtree`，只删 `path` 指向的那一个文件会留下同目录的其他元数据文件；**所有会话共享同一份存储时（如 OpenCode 的单个 SQLite 库）绝对不能删文件本身**，必须开一个可写连接、按会话 ID 精确删除对应的行（含外键关联表，按依赖顺序删除、一次事务提交），否则会连带清空其他会话的历史。详见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md` 和各 `scan/<助手>.py` 里 `delete_session()` 的实现与测试。
 4. **注册一次**：在 `runtime/registry.py` 导入并加入 `default_registry()`。注册表顺序就是默认显示/选择顺序之一；id 必须唯一，且扫描结果的 `source` 必须与其一致。
-5. **补展示配色**：仅在 `src/pickup/theme.py` 的 `RUNTIME_LABEL_STYLES` 加一行 `id → 色值`，使列表、详情和预览角色名通过同一个 `runtime_label_style` 自动取得样式。
+5. **补展示配色**：仅在 `src/corral/theme.py` 的 `RUNTIME_LABEL_STYLES` 加一行 `id → 色值`，使列表、详情和预览角色名通过同一个 `runtime_label_style` 自动取得样式。
 6. **补测试**：在 `test_runtime.py` 覆盖新助手自身恢复、空白新建、作为跨助手目标、作为跨助手源（有真实可读历史样例时）；补相应扫描器测试，锁定私有格式的过滤和解析。
 7. **运行自动验收**：执行编译检查与完整 unittest；运行注册表扫描计时，确保新助手异常不会拖垮其他助手，也不明显拉长首屏。
 8. **真机抽查**：随机检查至少 5 条真实新助手历史的扫描与预览；进入终端界面，确认列表显示、配色、同助手恢复、跨助手接力和空白新建。对接力后产生的新目标会话确认原始历史未被改写。
@@ -113,7 +113,7 @@ sequenceDiagram
 | `scan/kimi.py` | Kimi `state.json` / `wire.jsonl` 扫描 | Kimi 扫描器 |
 | `scan/cursor.py` | Cursor CLI 目录、JSON 与 SQLite 扫描 | Cursor 扫描器 |
 | `scan/pi.py` | Pi JSONL 扫描、活动分支回溯与对话预览 | Pi 扫描器 |
-| `transcript.py` | `pickup share` 统一事件流（thinking / 工具调用） | `load_events`、`_parse_<id>` |
+| `transcript.py` | `corral share` 统一事件流（thinking / 工具调用） | `load_events`、`_parse_<id>` |
 | `models.py` | 统一会话、接力和启动计划数据模型 | `SessionInfo`、`Handoff`、`LaunchPlan` |
 | `theme.py` | 运行时配色唯一来源 | `RUNTIME_LABEL_STYLES`、`runtime_label_style` |
 | `cli.py`、`bootstrap.py` | 启动入口与直启分发 | `main()`、`_dispatch_direct_launch()` |
@@ -140,7 +140,7 @@ sequenceDiagram
 
 ## §4 本域表与外部数据入口索引
 
-本域没有业务数据库表、迁移或服务端持久化模型。pickup 仅读取各助手已存在于本机的历史，不创建、不改写这些历史。
+本域没有业务数据库表、迁移或服务端持久化模型。corral 仅读取各助手已存在于本机的历史，不创建、不改写这些历史。
 
 | 外部数据入口 | 典型路径形态 | 用途 | 改动注意 |
 |---|---|---|---|
@@ -161,7 +161,7 @@ sequenceDiagram
 | 扫描缓存 | 可选签名 | `BaseRuntime.scan_signature` | 仅可靠的廉价文件级变化信号才能启用 |
 | 接力编排 | `Handoff → LaunchPlan` | `RuntimeRegistry.build_launch_plan` | 同助手原生恢复；跨助手新建目标会话 |
 | 空白新建编排 | 新会话计划 | `RuntimeRegistry.build_new_session_plan` | 用户选择新助手和工作目录但不关联历史 |
-| 直启编排 | 参数透传计划 | `RuntimeRegistry.build_passthrough_plan` | `pickup <助手> [参数…]` 的统一入口 |
+| 直启编排 | 参数透传计划 | `RuntimeRegistry.build_passthrough_plan` | `corral <助手> [参数…]` 的统一入口 |
 | 展示组件 | 运行时标签样式 | `theme.py` 的 `RUNTIME_LABEL_STYLES` | 列表、详情和预览共享的显示色 |
 | 标题噪音防护 | 标记前缀 | `titles.PROMPT_MARKER` 与各扫描器 | 标题生成器可能落盘时，避免自产会话刷入列表 |
 
@@ -180,7 +180,7 @@ sequenceDiagram
 - **AI 易错点**【必须】新助手配色只在 `RUNTIME_LABEL_STYLES` 新增一行；不要在界面组件重复硬编码颜色。未知 id 已有弱化回退样式。
 - **AI 易错点**【必须】扫描器返回完整统一会话字段，并隔离私有历史格式；列表扫描不可因一条损坏记录崩溃。真实历史中的显式 `null`、系统事件、内部子任务和已删除工作目录都应按该助手格式处理。
 - 【消歧】「同助手恢复」与「跨助手接力」不是同一能力：前者复用原会话 ID 与原生命令，后者启动全新目标会话并给出源历史位置；不能为了统一命令外观把后者伪装成恢复。
-- **AI 易错点**【必须】若新助手在首次落盘时自己生成会话 ID（如 Pi 的 uuidv7），托管新建/分叉必须把占位 ident 钉进启动计划（Pi 用 `--session-id`），让扫描键与占位卡相同。否则分屏组仍记着临时键，真实卡会出现在组外。禁止用 cwd 把新进程猜到同目录历史。Pi 还要把官方 `--session-dir` 指到 `pickup-<ident>/`，否则同 cwd 两个 pane 的 jsonl 仍挤在默认堆里，空闲认领会串 Your prompts。**不要为了消掉 Pi 启动时那行 `Warning: No project session found with id '…'` 去拆这个旗标**——该告警是新助手把「按 id 恢复」与「按 id 新建」合并成一个参数时的正常输出，无害，细则见 `MAINTAINER_GUIDE.md`「Pi 扫描与启动」。
+- **AI 易错点**【必须】若新助手在首次落盘时自己生成会话 ID（如 Pi 的 uuidv7），托管新建/分叉必须把占位 ident 钉进启动计划（Pi 用 `--session-id`），让扫描键与占位卡相同。否则分屏组仍记着临时键，真实卡会出现在组外。禁止用 cwd 把新进程猜到同目录历史。Pi 还要把官方 `--session-dir` 指到 `corral-<ident>/`，否则同 cwd 两个 pane 的 jsonl 仍挤在默认堆里，空闲认领会串 Your prompts。**不要为了消掉 Pi 启动时那行 `Warning: No project session found with id '…'` 去拆这个旗标**——该告警是新助手把「按 id 恢复」与「按 id 新建」合并成一个参数时的正常输出，无害，细则见 `MAINTAINER_GUIDE.md`「Pi 扫描与启动」。
 - **AI 易错点**【必须】实现 `delete_session` 前先确认该助手的历史是不是多个会话共享同一份存储（单个数据库/单个索引文件）；共享存储绝不能直接删文件，必须按会话 ID 精确删行，否则会把其他用户会话一起删掉且不可恢复。判断依据是 `SessionInfo.path` 的真实含义——同一助手的多条会话若 `path` 指向同一个文件（如 OpenCode 的 `opencode.db`），就是共享存储。
 
 ## §7 验证路径
@@ -188,7 +188,7 @@ sequenceDiagram
 1. **静态与全量单测**：在 cli 根执行：
 
    ```bash
-   python3 -m compileall -q src/pickup tests
+   python3 -m compileall -q src/corral tests
    python3 -m unittest -v
    ```
 
@@ -212,7 +212,7 @@ sequenceDiagram
 
 5. **真实历史抽查**：随机抽查至少 5 条本机新助手会话，分别调用扫描与预览，检查无空文本、字面量 `"None"`、错误角色、时间倒序、内部子任务或标题生成噪音；同时确认扫描出的历史路径实际存在。
 
-6. **真机流程验收**：用当前源码启动 `python3 -m pickup --limit 5`，确认新助手出现在列表和高级操作目标中、标签颜色可区分。分别完成同助手恢复、从一个现有助手交给新助手、从新助手交给一个现有助手、指定工作目录的空白新建；跨助手后检查源历史文件的修改时间和内容未被本流程改写。
+6. **真机流程验收**：用当前源码启动 `python3 -m corral --limit 5`，确认新助手出现在列表和高级操作目标中、标签颜色可区分。分别完成同助手恢复、从一个现有助手交给新助手、从新助手交给一个现有助手、指定工作目录的空白新建；跨助手后检查源历史文件的修改时间和内容未被本流程改写。
 
 7. **对照验收**：将新助手逐项与现有适配器对照，而非只验证「能启动」：
    - Claude/Codex：多层 JSONL 历史，默认不使用扫描签名；

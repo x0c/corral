@@ -12,13 +12,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from pickup import split_layout
+from corral import split_layout
 
 
 class _TempLayoutDB(unittest.TestCase):
     """把库和旧文件一起隔离到临时目录。
 
-    `PICKUP_CACHE_DIR` 必须设：`split_layout` 只有看到这个覆盖变量才不去真实家目录
+    `CORRAL_CACHE_DIR` 必须设：`split_layout` 只有看到这个覆盖变量才不去真实家目录
     找旧版 JSON。少了它，测试会读到（历史上还改名过）机主真实的侧边栏记忆。
     """
 
@@ -27,7 +27,7 @@ class _TempLayoutDB(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.cache_dir = Path(self.temp.name)
         patcher = mock.patch.dict(
-            os.environ, {"PICKUP_CACHE_DIR": str(self.cache_dir)}, clear=False,
+            os.environ, {"CORRAL_CACHE_DIR": str(self.cache_dir)}, clear=False,
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -269,11 +269,11 @@ class SidebarLayoutDBTests(_TempLayoutDB):
         script = (
             "import sys;"
             f"sys.path.insert(0, {str(Path(split_layout.__file__).resolve().parents[1])!r});"
-            "from pickup.split_layout import SidebarLayoutDB;"
+            "from corral.split_layout import SidebarLayoutDB;"
             "SidebarLayoutDB().toggle_session_pin(sys.argv[1])"
         )
         keys = [f"claude:p{i}" for i in range(8)]
-        env = dict(os.environ, PICKUP_CACHE_DIR=str(self.cache_dir))
+        env = dict(os.environ, CORRAL_CACHE_DIR=str(self.cache_dir))
 
         def run(key: str) -> int:
             return subprocess.run(
@@ -355,7 +355,7 @@ class SidebarLayoutDBTests(_TempLayoutDB):
                 self.assertEqual(self.db().read().groups, {})
 
     def test_sidebar_visible_roundtrip(self) -> None:
-        from pickup import ui_prefs
+        from corral import ui_prefs
 
         self.assertTrue(ui_prefs.load_sidebar_visible())
         ui_prefs.save_sidebar_visible(False)
@@ -386,7 +386,7 @@ class ReconcileSplitKeysTests(unittest.TestCase):
     """
 
     def test_ambiguous_keepalive_name_is_not_used_for_migration(self) -> None:
-        from pickup.ui.controllers.layout_controller import LayoutControllerMixin
+        from corral.ui.controllers.layout_controller import LayoutControllerMixin
 
         class _Spec:
             def __init__(self, key: str, name: str) -> None:
@@ -395,7 +395,7 @@ class ReconcileSplitKeysTests(unittest.TestCase):
 
         class _Area:
             def __init__(self) -> None:
-                self._specs = [_Spec("pi:aaa", "pickup-pi-bbb"), _Spec("pi:bbb", "pickup-pi-bbb")]
+                self._specs = [_Spec("pi:aaa", "corral-pi-bbb"), _Spec("pi:bbb", "corral-pi-bbb")]
                 self.reconciled: dict[str, str] | None = None
 
             def pane_specs(self):
@@ -407,11 +407,11 @@ class ReconcileSplitKeysTests(unittest.TestCase):
         class _Store:
             sessions = {
                 "pi": [
-                    {"source": "pi", "id": "aaa", "keepalive_name": "pickup-pi-bbb"},
-                    {"source": "pi", "id": "bbb", "keepalive_name": "pickup-pi-bbb"},
+                    {"source": "pi", "id": "aaa", "keepalive_name": "corral-pi-bbb"},
+                    {"source": "pi", "id": "bbb", "keepalive_name": "corral-pi-bbb"},
                 ],
             }
-            hosted = {"pi:bbb": "pickup-pi-bbb"}
+            hosted = {"pi:bbb": "corral-pi-bbb"}
 
         class _Host(LayoutControllerMixin):
             def __init__(self) -> None:
@@ -427,10 +427,10 @@ class ReconcileSplitKeysTests(unittest.TestCase):
         host = _Host()
         migrated = host._reconcile_split_session_keys()
         self.assertEqual(migrated, {})
-        self.assertNotIn("pickup-pi-bbb", host._area.reconciled)
+        self.assertNotIn("corral-pi-bbb", host._area.reconciled)
 
     def test_unique_keepalive_name_still_migrates(self) -> None:
-        from pickup.ui.controllers.layout_controller import LayoutControllerMixin
+        from corral.ui.controllers.layout_controller import LayoutControllerMixin
 
         class _Spec:
             def __init__(self, key: str, name: str) -> None:
@@ -439,7 +439,7 @@ class ReconcileSplitKeysTests(unittest.TestCase):
 
         class _Area:
             def __init__(self) -> None:
-                self._specs = [_Spec("pi:placeholder", "pickup-pi-ccc")]
+                self._specs = [_Spec("pi:placeholder", "corral-pi-ccc")]
                 self.reconciled: dict[str, str] | None = None
 
             def pane_specs(self):
@@ -450,7 +450,7 @@ class ReconcileSplitKeysTests(unittest.TestCase):
 
         class _Store:
             sessions = {
-                "pi": [{"source": "pi", "id": "ccc", "keepalive_name": "pickup-pi-ccc"}],
+                "pi": [{"source": "pi", "id": "ccc", "keepalive_name": "corral-pi-ccc"}],
             }
             hosted = {}
 
@@ -468,31 +468,31 @@ class ReconcileSplitKeysTests(unittest.TestCase):
         host = _Host()
         migrated = host._reconcile_split_session_keys()
         self.assertEqual(migrated, {"pi:placeholder": "pi:ccc"})
-        self.assertEqual(host._area.reconciled.get("pickup-pi-ccc"), "pi:ccc")
+        self.assertEqual(host._area.reconciled.get("corral-pi-ccc"), "pi:ccc")
 
 
 class DedupeKeepaliveNameTests(unittest.TestCase):
     def test_store_keeps_hosted_owner_when_two_sessions_share_a_name(self) -> None:
-        from pickup.store import SessionStore
+        from corral.store import SessionStore
 
         store = SessionStore(limit=5)
-        store.hosted = {"pi:aaa": "pickup-pi-aaa"}
-        owner = {"source": "pi", "id": "aaa", "keepalive_name": "pickup-pi-aaa"}
-        other = {"source": "pi", "id": "bbb", "keepalive_name": "pickup-pi-aaa"}
+        store.hosted = {"pi:aaa": "corral-pi-aaa"}
+        owner = {"source": "pi", "id": "aaa", "keepalive_name": "corral-pi-aaa"}
+        other = {"source": "pi", "id": "bbb", "keepalive_name": "corral-pi-aaa"}
         by_key = {"pi:aaa": owner, "pi:bbb": other}
         store._dedupe_keepalive_names(by_key)
-        self.assertEqual(owner.get("keepalive_name"), "pickup-pi-aaa")
+        self.assertEqual(owner.get("keepalive_name"), "corral-pi-aaa")
         self.assertNotIn("keepalive_name", other)
         self.assertNotIn("pi:bbb", store.hosted)
 
     def test_duplicate_keepalive_only_embeds_once(self) -> None:
-        from pickup.ui.controllers.layout_controller import LayoutControllerMixin
+        from corral.ui.controllers.layout_controller import LayoutControllerMixin
 
         owner = {
-            "source": "pi", "id": "aaa", "keepalive_name": "pickup-pi-aaa", "live": True,
+            "source": "pi", "id": "aaa", "keepalive_name": "corral-pi-aaa", "live": True,
         }
         other = {
-            "source": "pi", "id": "bbb", "keepalive_name": "pickup-pi-aaa", "live": True,
+            "source": "pi", "id": "bbb", "keepalive_name": "corral-pi-aaa", "live": True,
         }
 
         class _Store:
@@ -514,7 +514,7 @@ class DedupeKeepaliveNameTests(unittest.TestCase):
         host = _Host()
         entries = host._build_hosted_entries(["pi:aaa", "pi:bbb"])
         self.assertEqual(entries[0][0]["id"], "aaa")
-        self.assertEqual(entries[0][1], "pickup-pi-aaa")
+        self.assertEqual(entries[0][1], "corral-pi-aaa")
         self.assertIsNone(entries[0][2])
         self.assertEqual(entries[1][0]["id"], "bbb")
         self.assertIsNone(entries[1][1])

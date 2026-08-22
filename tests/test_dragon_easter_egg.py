@@ -10,8 +10,8 @@ from rich.style import Style
 from test_ui import _make_store
 from textual.strip import Strip
 
-from pickup.ui.app import PickupApp
-from pickup.ui.dragon_easter_egg import (
+from corral.ui.app import CorralApp
+from corral.ui.dragon_easter_egg import (
     DragonGrid,
     DragonOverlay,
     composite_snapshot_line,
@@ -24,7 +24,7 @@ from pickup.ui.dragon_easter_egg import (
     render_dragon_cells_row,
     render_dragon_frame,
 )
-from pickup.ui.runtime_top_bar import RuntimeTopBar
+from corral.ui.runtime_top_bar import RuntimeTopBar
 
 _MINI_SOURCE = {
     "format": "tui-square-grid-rle/v1",
@@ -50,7 +50,7 @@ class DragonGridTests(unittest.TestCase):
         self.assertEqual(grid[2][2], 2)
 
     def test_load_dragon_grid_from_bundle(self) -> None:
-        path = resources.files("pickup.ui.assets").joinpath("dragon-grid.json")
+        path = resources.files("corral.ui.assets").joinpath("dragon-grid.json")
         self.assertTrue(path.is_file())
         grid = load_dragon_grid()
         self.assertEqual(grid.width, 256)
@@ -141,7 +141,7 @@ class DragonGridTests(unittest.TestCase):
 class DragonOverlayTests(unittest.IsolatedAsyncioTestCase):
     async def test_dragon_chip_present_in_top_bar(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             top_bar = app.screen.query_one("#runtime-top-bar", RuntimeTopBar)
@@ -149,7 +149,7 @@ class DragonOverlayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_click_dragon_starts_overlay(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             overlay = app.screen.query_one("#dragon-overlay", DragonOverlay)
@@ -161,7 +161,7 @@ class DragonOverlayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_play_debounce_ignores_second_click(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             overlay = app.screen.query_one("#dragon-overlay", DragonOverlay)
@@ -172,7 +172,7 @@ class DragonOverlayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_animation_stops_when_off_screen(self) -> None:
         store, _ = _make_store()
-        app = PickupApp(store, embed_ok=True)
+        app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             overlay = app.screen.query_one("#dragon-overlay", DragonOverlay)

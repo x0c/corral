@@ -1,11 +1,11 @@
-"""pickup.remote.screen：行级差分与 status_line 宽字符口径。"""
+"""corral.remote.screen：行级差分与 status_line 宽字符口径。"""
 
 from __future__ import annotations
 
 import unittest
 
-from pickup.embed import Cell
-from pickup.remote.screen import ScreenEncoder, encode_row, status_line
+from corral.embed import Cell
+from corral.remote.screen import ScreenEncoder, encode_row, status_line
 
 
 def _grid(rows: list[str]) -> list[list[Cell]]:

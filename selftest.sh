@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# pickup 端到端自测（Textual 界面层）：隔离 HOME 与 tmux socket，不碰真实会话。
+# corral 端到端自测（Textual 界面层）：隔离 HOME 与 tmux socket，不碰真实会话。
 #
 # 界面层已从 curses 换成 Textual；本脚本随之重写，覆盖：内嵌面板真实托管/
 # 接回/关闭、Ctrl+\ 焦点切回列表（Textual 能原生区分 Ctrl+\ 和连续两次按 \，
 # 不再需要旧版靠 300ms 时间窗口消歧义的双反斜杠 hack）、键盘输入真实转发进
-# 托管会话、Esc 退出、直启子命令（pickup claude ...）托管路径、IME 光标锚定
+# 托管会话、Esc 退出、直启子命令（corral claude ...）托管路径、IME 光标锚定
 # 的真实终端坐标验证、划词选中 + Ctrl+C 复制的真实 OSC 52 写入验证。
 #
 # 会话列表卡片本身的鼠标点击这版暂未覆盖（Textual 的会话列表布局与旧版 curses
@@ -14,9 +14,9 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUTER="pickup-timeline-test-$$"
-KEEPALIVE="pickup-keepalive"
-TMP="$(mktemp -d /tmp/pickup-selftest.XXXXXX)"
+OUTER="corral-timeline-test-$$"
+KEEPALIVE="corral-keepalive"
+TMP="$(mktemp -d /tmp/corral-selftest.XXXXXX)"
 PASS=0
 
 ok() { PASS=$((PASS + 1)); echo "PASS  $1"; }
@@ -44,8 +44,8 @@ focus_right_pane() {
 }
 cleanup() {
   tmux -L "$OUTER" kill-server 2>/dev/null || true
-  tmux -L "$KEEPALIVE" kill-session -t pickup-claude-aaaa1111 2>/dev/null || true
-  tmux -L "$KEEPALIVE" kill-session -t pickup-claude-bbbb2222 2>/dev/null || true
+  tmux -L "$KEEPALIVE" kill-session -t corral-claude-aaaa1111 2>/dev/null || true
+  tmux -L "$KEEPALIVE" kill-session -t corral-claude-bbbb2222 2>/dev/null || true
   # direct_session/cursor_session 是直启子命令生成的随机 uuid 会话名，运行到
   # 对应步骤才会被赋值；trap 在函数体内引用是延迟求值，EXIT 时能拿到当时的值。
   [[ -n "${direct_session:-}" ]] && tmux -L "$KEEPALIVE" kill-session -t "$direct_session" 2>/dev/null || true
@@ -54,8 +54,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TMP/home/.claude/projects/demo" "$TMP/workA" "$TMP/workB" "$TMP/fakebin" "$TMP/home/.cache/pickup"
-cat > "$TMP/home/.cache/pickup/titles.json" <<'EOF'
+mkdir -p "$TMP/home/.claude/projects/demo" "$TMP/workA" "$TMP/workB" "$TMP/fakebin" "$TMP/home/.cache/corral"
+cat > "$TMP/home/.cache/corral/titles.json" <<'EOF'
 {"claude:aaaa1111":{"title":"修复切换体验","fp":"seed"},"claude:bbbb2222":{"title":"第二个会话","fp":"seed"}}
 EOF
 cat > "$TMP/home/.claude/projects/demo/aaaa1111.jsonl" <<EOF
@@ -90,16 +90,16 @@ TMUX_DIR="$(dirname "$(command -v tmux)")"
 # 能看到的 sys.path 原样透传，绕开这个问题；真正 pip install 到系统/venv 的
 # 用户不受影响。
 PYWORKAROUND_PATH="$(python3 -c 'import sys; print(":".join(p for p in sys.path if p))')"
-ENVV="HOME=$TMP/home PYTHONPATH=$PYWORKAROUND_PATH PATH=$TMP/fakebin:$TMUX_DIR:/usr/local/bin:/usr/bin:/bin TERM=xterm-256color PICKUP_TITLE_GENERATOR=none PICKUP_LANG=zh"
+ENVV="HOME=$TMP/home PYTHONPATH=$PYWORKAROUND_PATH PATH=$TMP/fakebin:$TMUX_DIR:/usr/local/bin:/usr/bin:/bin TERM=xterm-256color CORRAL_TITLE_GENERATOR=none CORRAL_LANG=zh"
 tmux -L "$OUTER" new-session -d -s tui -x 180 -y 42
 tmux -L "$OUTER" set-option -t tui mouse on
-tmux -L "$OUTER" send-keys -t tui "cd $REPO && env $ENVV python3 -m pickup --limit 5" Enter
+tmux -L "$OUTER" send-keys -t tui "cd $REPO && env $ENVV python3 -m corral --limit 5" Enter
 
 wait_for "workA 修复切换体验" 60
 wait_for "workB 第二个会话" 60
 ok "首屏是跨运行时统一时间线"
 
-# 进入 pickup 默认就高亮第一张会话卡（「＋ 新建」被跳过），右栏应直接展示完整
+# 进入 corral 默认就高亮第一张会话卡（「＋ 新建」被跳过），右栏应直接展示完整
 # 对话预览（选中即预览，不再依赖 Space）。**这里不能再按 Down**——那会落到第二
 # 张卡（workB），后面的托管断言全部对不上 aaaa1111。
 wait_for "● 你" 60
@@ -108,7 +108,7 @@ ok "选中未托管会话时右栏展示完整对话预览"
 
 tmux -L "$OUTER" send-keys -t tui Enter
 wait_for "FAKE-CLAUDE --resume aaaa1111" 60
-sessions | grep -qx "pickup-claude-aaaa1111"
+sessions | grep -qx "corral-claude-aaaa1111"
 ok "回车把会话托管进后台 tmux 并在右栏展示实时画面"
 
 # 回车 = 明确意图：输入应当已经在右栏，直接打字就该到达托管会话（不再需要先
@@ -163,13 +163,13 @@ sleep 0.6
 # 关闭分栏：托管会话必须在后台 tmux 继续存活，不能被一并杀掉。
 tmux -L "$OUTER" send-keys -t tui c
 sleep 0.4
-sessions | grep -qx "pickup-claude-aaaa1111"
+sessions | grep -qx "corral-claude-aaaa1111"
 ok "c 关闭分栏后，托管会话仍在后台存活"
 
 # 再次回车接回同一个托管会话，不能新建重复会话。
 tmux -L "$OUTER" send-keys -t tui Enter
 wait_for "FAKE-CLAUDE --resume aaaa1111" 40
-[[ "$(sessions | grep -c '^pickup-claude-aaaa1111$')" == "1" ]]
+[[ "$(sessions | grep -c '^corral-claude-aaaa1111$')" == "1" ]]
 ok "重新回车接回已托管会话，不产生重复会话"
 
 # Esc 退出：先回列表，再 Esc。
@@ -181,21 +181,21 @@ for _ in {1..20}; do
   sleep 0.1
 done
 if [[ "$(tmux -L "$OUTER" display-message -p -t tui '#{pane_current_command}')" == "python3" ]]; then
-  echo "Esc 后 pickup 仍在运行" >&2
+  echo "Esc 后 corral 仍在运行" >&2
   cap >&2
   exit 1
 fi
 ok "列表 Esc 退出，托管会话继续在后台存活"
-sessions | grep -qx "pickup-claude-aaaa1111"
-ok "退出 pickup 后，后台托管会话不受影响"
+sessions | grep -qx "corral-claude-aaaa1111"
+ok "退出 corral 后，后台托管会话不受影响"
 
-# ---- 直启子命令：pickup claude --resume <id> 直接带进 TUI 侧边栏并托管 ----
+# ---- 直启子命令：corral claude --resume <id> 直接带进 TUI 侧边栏并托管 ----
 # 直启的 ident 是 keepalive.new_session_ident() 生成的随机 uuid 片段，与
 # --resume 后面的参数无关，因此新会话名靠"托管前后 diff 出唯一新增项"识别，
-# 不能假设成 pickup-claude-<--resume 的参数>。
-before_direct="$(sessions | grep '^pickup-claude-' || true)"
+# 不能假设成 corral-claude-<--resume 的参数>。
+before_direct="$(sessions | grep '^corral-claude-' || true)"
 tmux -L "$OUTER" new-window -t tui -n direct
-tmux -L "$OUTER" send-keys -t direct "cd $REPO && env $ENVV python3 -m pickup claude --resume directcccc" Enter
+tmux -L "$OUTER" send-keys -t direct "cd $REPO && env $ENVV python3 -m corral claude --resume directcccc" Enter
 wait_for_direct() {
   local text="$1" tries="${2:-40}"
   local i
@@ -208,7 +208,7 @@ wait_for_direct() {
   return 1
 }
 wait_for_direct "FAKE-CLAUDE --resume directcccc" 60
-direct_session="$(comm -13 <(echo "$before_direct" | sort) <(sessions | grep '^pickup-claude-' | sort))"
+direct_session="$(comm -13 <(echo "$before_direct" | sort) <(sessions | grep '^corral-claude-' | sort))"
 [[ -n "$direct_session" ]]
 ok "直启子命令自动托管新会话并在侧边栏展示"
 
@@ -224,9 +224,9 @@ ok "直启场景键盘输入真实转发进托管会话"
 # 快照必须在新建 cursor 窗口之前拍，diff 才有意义（曾经错误地在 wait_for_cursor
 # 成功之后才拍快照，那时新会话早已存在，diff 出来永远是空，是脚本自身的 bug，
 # 不是产品的 bug）。
-before_cursor="$(sessions | grep '^pickup-claude-' || true)"
+before_cursor="$(sessions | grep '^corral-claude-' || true)"
 tmux -L "$OUTER" new-window -t tui -n cursor
-tmux -L "$OUTER" send-keys -t cursor "cd $REPO && env $ENVV python3 -m pickup claude --resume cursortest" Enter
+tmux -L "$OUTER" send-keys -t cursor "cd $REPO && env $ENVV python3 -m corral claude --resume cursortest" Enter
 wait_for_cursor() {
   local text="$1" tries="${2:-40}"
   local i
@@ -239,7 +239,7 @@ wait_for_cursor() {
   return 1
 }
 wait_for_cursor "PROMPT>" 60
-cursor_session="$(comm -13 <(echo "$before_cursor" | sort -u) <(sessions | grep '^pickup-claude-' | sort -u) | head -1)"
+cursor_session="$(comm -13 <(echo "$before_cursor" | sort -u) <(sessions | grep '^corral-claude-' | sort -u) | head -1)"
 if [[ -z "$cursor_session" ]]; then
   echo "未能识别出 cursor 测试新建的托管会话名" >&2
   sessions >&2
@@ -278,7 +278,7 @@ fi
 # ---- IME 关键回归：外层真实光标必须「可见」（DECTCEM 打开），不能只是位置对 ----
 # Textual 全屏运行期默认 `\e[?25l` 藏掉真实光标，只移动一个看不见的光标——位置
 # 再准，IME 也没有可见锚点，用户在内嵌 Agent 里根本打不出中文（真机反馈）。
-# `#{cursor_flag}` 反映托管 pickup 当前有没有把真实光标显示出来：聚焦内嵌 pane
+# `#{cursor_flag}` 反映托管 corral 当前有没有把真实光标显示出来：聚焦内嵌 pane
 # 且有可见光标时必须为 1。EmbedPane._set_real_cursor 就是补这一步的。
 outer_cursor_flag="$(tmux -L "$OUTER" display-message -p -t cursor '#{cursor_flag}')"
 if [[ "$outer_cursor_flag" == "1" ]]; then

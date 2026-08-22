@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from pickup.ui.dragon_easter_egg import load_dragon_grid
-from pickup.ui.dragon_splash import (
+from corral.ui.dragon_easter_egg import load_dragon_grid
+from corral.ui.dragon_splash import (
     LOGO_LINES,
     LOGO_SCALE,
     LOGO_WIDTH,
@@ -182,7 +182,7 @@ class BootSplashFlowTests(unittest.TestCase):
         import time
         from unittest import mock
 
-        import pickup
+        import corral
 
         sessions = [
             {
@@ -198,9 +198,9 @@ class BootSplashFlowTests(unittest.TestCase):
         claude.is_available.return_value = True
         claude.scan_sessions.return_value = sessions
         claude.load_conversation.return_value = []
-        registry = pickup.RuntimeRegistry((claude,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((claude,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
         # 重置为「未加载」态，模拟 main() 后台扫描还没跑完的真实启动窗口。
         store.loaded = False
@@ -211,12 +211,12 @@ class BootSplashFlowTests(unittest.TestCase):
     def test_splash_shown_then_removed_on_load(self) -> None:
         import asyncio
 
-        from pickup.ui.app import PickupApp
+        from corral.ui.app import CorralApp
 
         store = self._make_unloaded()
 
         async def run() -> tuple[bool, bool, bool]:
-            app = PickupApp(store, embed_ok=True)
+            app = CorralApp(store, embed_ok=True)
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 shown_at_boot = bool(app.screen.query("#boot-splash"))
@@ -240,14 +240,14 @@ class BootSplashFlowTests(unittest.TestCase):
     def test_no_splash_when_already_loaded_or_direct(self) -> None:
         import asyncio
 
-        from pickup.ui.app import PickupApp
+        from corral.ui.app import CorralApp
 
         store = self._make_unloaded()
         store.loaded = True  # 已同步加载完（测试 / 预扫路径），不该出占位屏。
         store._load_event.set()
 
         async def run() -> bool:
-            app = PickupApp(store, embed_ok=True)
+            app = CorralApp(store, embed_ok=True)
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 return bool(app.screen.query("#boot-splash"))
@@ -257,12 +257,12 @@ class BootSplashFlowTests(unittest.TestCase):
     def test_unloaded_splash_renders_fullscreen_logo(self) -> None:
         import asyncio
 
-        from pickup.ui.app import PickupApp
+        from corral.ui.app import CorralApp
 
         store = self._make_unloaded()
 
         async def run() -> set[str]:
-            app = PickupApp(store, embed_ok=True)
+            app = CorralApp(store, embed_ok=True)
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 splash = app.screen.query_one("#boot-splash")

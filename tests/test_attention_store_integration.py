@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup.attention import AttentionEvidence, AttentionStore
-from pickup.store import SessionStore
+from corral.attention import AttentionEvidence, AttentionStore
+from corral.store import SessionStore
 
 
 class _Registry:
@@ -56,10 +56,10 @@ class SessionStoreAttentionTests(unittest.TestCase):
         self.attention = AttentionStore(path)
         self.store = SessionStore(50, _Registry(), self.attention)
         self.title_patch = mock.patch(
-            "pickup.store.titles.resolve_initial_title",
+            "corral.store.titles.resolve_initial_title",
             side_effect=lambda session, cache: (session["fallback_title"], False),
         )
-        self.keepalive_patch = mock.patch("pickup.store.liveness.annotate")
+        self.keepalive_patch = mock.patch("corral.store.liveness.annotate")
         self.title_patch.start()
         self.keepalive = self.keepalive_patch.start()
 
@@ -70,7 +70,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
 
     def test_first_scan_baselines_old_reply_then_increment_is_unread(self):
         evidence = AttentionEvidence(activity_token="old", observed_at=1)
-        with mock.patch("pickup.store.inspect_session", return_value=evidence):
+        with mock.patch("corral.store.inspect_session", return_value=evidence):
             self.store._merge_scanned({"claude": [_session("claude", "one")]})
         first = self.store.find_session("claude:one")
         self.assertNotIn("attention_kind", first)
@@ -78,7 +78,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
         self.assertNotIn("attention_updated_at", first)
 
         evidence = AttentionEvidence(activity_token="new", observed_at=2)
-        with mock.patch("pickup.store.inspect_session", return_value=evidence):
+        with mock.patch("corral.store.inspect_session", return_value=evidence):
             self.store._merge_scanned(
                 {"claude": [_session("claude", "one", mtime=2)]}
             )
@@ -104,14 +104,14 @@ class SessionStoreAttentionTests(unittest.TestCase):
                 )
             return AttentionEvidence(phase="working", observed_at=1)
 
-        with mock.patch("pickup.store.inspect_session", side_effect=active_evidence):
+        with mock.patch("corral.store.inspect_session", side_effect=active_evidence):
             self.store._merge_scanned({"codex": [sessions[0]], "claude": [sessions[1]]})
         self.assertEqual(self.store.attention_for("codex:working").kind, "working")
         self.assertEqual(self.store.attention_for("claude:waiting").kind, "waiting")
 
         stopped = _session("codex", "working", live=False, mtime=2)
         with mock.patch(
-            "pickup.store.inspect_session",
+            "corral.store.inspect_session",
             return_value=AttentionEvidence(observed_at=2),
         ):
             self.store._merge_scanned({"codex": [stopped], "claude": []})
@@ -121,7 +121,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
         older = _session("claude", "older", mtime=10)
         newer = _session("claude", "newer", mtime=20)
         with mock.patch(
-            "pickup.store.inspect_session",
+            "corral.store.inspect_session",
             return_value=AttentionEvidence(observed_at=1),
         ):
             self.store._merge_scanned({"claude": [newer, older]})
@@ -137,7 +137,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
                 source="observer",
             ),
         )
-        with mock.patch("pickup.store.inspect_session") as inspect:
+        with mock.patch("corral.store.inspect_session") as inspect:
             self.store._merge_scanned({"claude": [newer, older]})
         inspect.assert_not_called()
         after = [session["id"] for session in self.store.all_sessions()]
@@ -147,7 +147,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
     def test_attention_fields_participate_in_refresh_signature(self):
         session = _session("claude", "one")
         with mock.patch(
-            "pickup.store.inspect_session",
+            "corral.store.inspect_session",
             return_value=AttentionEvidence(observed_at=1),
         ):
             self.store._merge_scanned({"claude": [session]})
@@ -167,7 +167,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
                 observed_at=float(session["mtime"]),
             )
 
-        with mock.patch("pickup.store.inspect_session", side_effect=inspect):
+        with mock.patch("corral.store.inspect_session", side_effect=inspect):
             self.store._merge_scanned({"claude": [one], "codex": [two]})
             self.assertEqual(calls, ["claude:one", "codex:two"])
 
@@ -204,7 +204,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
             probes.append(session.get("signal_probe") is True)
             return AttentionEvidence(observed_at=float(len(probes)))
 
-        with mock.patch("pickup.store.inspect_session", side_effect=capture):
+        with mock.patch("corral.store.inspect_session", side_effect=capture):
             self.store._merge_scanned(
                 {"cursor": [_session("cursor", "one", path=str(chat_dir))]}
             )
@@ -223,7 +223,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
         self.assertEqual(probes, [False, True, True])
 
     def test_provisional_state_migrates_to_real_session_and_delete_cleans_it(self):
-        name = "pickup-codex-temporary"
+        name = "corral-codex-temporary"
         self.attention.reconcile([], {})
         self.attention.record_event(
             "codex",
@@ -245,7 +245,7 @@ class SessionStoreAttentionTests(unittest.TestCase):
         self.keepalive.side_effect = annotate
         real = _session("codex", "real", live=True)
         with mock.patch(
-            "pickup.store.inspect_session",
+            "corral.store.inspect_session",
             return_value=AttentionEvidence(observed_at=2),
         ):
             self.store._merge_scanned({"codex": [real]})

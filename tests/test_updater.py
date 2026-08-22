@@ -1,4 +1,4 @@
-"""pickup.updater：版本比较、安装渠道判定、最新版查询、忽略状态持久化。"""
+"""corral.updater：版本比较、安装渠道判定、最新版查询、忽略状态持久化。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from pickup import updater
+from corral import updater
 
 
 class VersionCompareTests(unittest.TestCase):
@@ -31,12 +31,12 @@ class VersionCompareTests(unittest.TestCase):
 
 class ChannelDetectionTests(unittest.TestCase):
     def _with_pkg_file(self, path: str):
-        import pickup
+        import corral
 
-        return mock.patch.object(pickup, "__file__", os.path.join(path, "__init__.py"))
+        return mock.patch.object(corral, "__file__", os.path.join(path, "__init__.py"))
 
     def test_detects_brew_cellar_path(self) -> None:
-        with self._with_pkg_file("/home/linuxbrew/.linuxbrew/Cellar/pickup/0.20.0/lib/python3.12/site-packages/pickup"):
+        with self._with_pkg_file("/home/linuxbrew/.linuxbrew/Cellar/corral/0.20.0/lib/python3.12/site-packages/corral"):
             self.assertEqual(updater.detect_channel(), "brew")
 
     def test_detects_pip_user_site_packages(self) -> None:
@@ -45,7 +45,7 @@ class ChannelDetectionTests(unittest.TestCase):
             return_value="/home/user/.local/lib/python3.12/site-packages",
         ):
             with mock.patch.object(updater.site, "getsitepackages", return_value=[]):
-                with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/pickup"):
+                with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/corral"):
                     self.assertEqual(updater.detect_channel(), "pip")
 
     def test_detects_dev_source_checkout(self) -> None:
@@ -54,16 +54,16 @@ class ChannelDetectionTests(unittest.TestCase):
             return_value="/home/user/.local/lib/python3.12/site-packages",
         ):
             with mock.patch.object(updater.site, "getsitepackages", return_value=[]):
-                with self._with_pkg_file("/Users/demo/Codes/pickup/cli/src/pickup"):
+                with self._with_pkg_file("/Users/demo/Codes/corral/cli/src/corral"):
                     self.assertEqual(updater.detect_channel(), "dev")
 
     def test_find_checkout_root_and_stale_warning(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = os.path.join(td, "cli")
-            src = os.path.join(root, "src", "pickup")
+            src = os.path.join(root, "src", "corral")
             os.makedirs(src)
             with open(os.path.join(root, "pyproject.toml"), "w", encoding="utf-8") as fh:
-                fh.write('[project]\nname = "pickup"\nversion = "0.0.0"\n')
+                fh.write('[project]\nname = "corral"\nversion = "0.0.0"\n')
             with open(os.path.join(src, "__init__.py"), "w", encoding="utf-8") as fh:
                 fh.write("__version__ = '0.0.0'\n")
             self.assertEqual(updater.find_checkout_root(src), root)
@@ -71,7 +71,7 @@ class ChannelDetectionTests(unittest.TestCase):
                 self.assertTrue(updater.is_loaded_from_checkout(root))
                 self.assertIsNone(updater.stale_source_warning(cwd=root))
             with self._with_pkg_file(
-                "/home/u/.local/pipx/venvs/pickup/lib/python3.12/site-packages/pickup"
+                "/home/u/.local/pipx/venvs/corral/lib/python3.12/site-packages/corral"
             ):
                 warn = updater.stale_source_warning(cwd=root)
                 self.assertIsNotNone(warn)
@@ -86,12 +86,12 @@ class ChannelDetectionTests(unittest.TestCase):
             with open(os.path.join(td, "pipx_metadata.json"), "w", encoding="utf-8") as fh:
                 fh.write("{}")
             with mock.patch.object(updater.sys, "prefix", td), \
-                 self._with_pkg_file(os.path.join(td, "lib", "python3.14", "site-packages", "pickup")):
+                 self._with_pkg_file(os.path.join(td, "lib", "python3.14", "site-packages", "corral")):
                 self.assertEqual(updater.detect_channel(), "pipx")
 
     def test_detects_pipx_by_path_marker(self) -> None:
         with mock.patch.object(updater.sys, "prefix", "/usr"), \
-             self._with_pkg_file("/home/u/.local/share/pipx/venvs/pickup/lib/python3.12/site-packages/pickup"):
+             self._with_pkg_file("/home/u/.local/share/pipx/venvs/corral/lib/python3.12/site-packages/corral"):
             self.assertEqual(updater.detect_channel(), "pipx")
 
     def test_install_report_includes_paths(self) -> None:
@@ -109,14 +109,14 @@ class ChannelDetectionTests(unittest.TestCase):
         self.assertFalse(updater.is_updatable("dev"))
 
     def test_update_command_brew(self) -> None:
-        self.assertEqual(updater.update_command("0.21.0", "brew"), ["brew", "upgrade", "pickup"])
+        self.assertEqual(updater.update_command("0.21.0", "brew"), ["brew", "upgrade", "x0c/tap/corral"])
 
     def test_update_command_pip_user_site(self) -> None:
         with mock.patch.object(
             updater.site, "getusersitepackages",
             return_value="/home/user/.local/lib/python3.12/site-packages",
         ):
-            with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/pickup"):
+            with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/corral"):
                 cmd = updater.update_command("0.21.0", "pip", spec="WHEEL_URL")
         self.assertIn("--user", cmd)
         self.assertEqual(cmd[-1], "WHEEL_URL")
@@ -158,12 +158,12 @@ class InstallSpecTests(unittest.TestCase):
 
     def test_picks_matching_wheel_for_current_platform(self) -> None:
         names = [
-            "pickup-0.21.0-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl",
-            "pickup-0.21.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
-            "pickup-0.21.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
-            "pickup-0.21.0-cp310-abi3-musllinux_1_2_x86_64.whl",
-            "pickup-0.21.0-cp310-abi3-musllinux_1_2_aarch64.whl",
-            "pickup-0.21.0.tar.gz",
+            "corral-0.21.0-cp310-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl",
+            "corral-0.21.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+            "corral-0.21.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+            "corral-0.21.0-cp310-abi3-musllinux_1_2_x86_64.whl",
+            "corral-0.21.0-cp310-abi3-musllinux_1_2_aarch64.whl",
+            "corral-0.21.0.tar.gz",
         ]
         with self._urlopen(self._release_payload(names)):
             url = updater.release_asset_url("0.21.0")
@@ -176,10 +176,10 @@ class InstallSpecTests(unittest.TestCase):
             self.assertIsNone(url)
 
     def test_falls_back_to_source_when_no_matching_asset(self) -> None:
-        with self._urlopen(self._release_payload(["pickup-0.21.0.tar.gz"])):
+        with self._urlopen(self._release_payload(["corral-0.21.0.tar.gz"])):
             self.assertEqual(
                 updater.install_spec("0.21.0"),
-                "git+https://github.com/x0c/pickup.git@v0.21.0",
+                "git+https://github.com/x0c/corral.git@v0.21.0",
             )
 
     def test_network_failure_falls_back_to_source(self) -> None:
@@ -189,7 +189,7 @@ class InstallSpecTests(unittest.TestCase):
         ):
             self.assertEqual(
                 updater.install_spec("0.21.0"),
-                "git+https://github.com/x0c/pickup.git@v0.21.0",
+                "git+https://github.com/x0c/corral.git@v0.21.0",
             )
 
 
@@ -251,7 +251,7 @@ class RunUpdateTests(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
-            return self._completed(0, "installed package pickup 0.21.0")
+            return self._completed(0, "installed package corral 0.21.0")
 
         with mock.patch.object(updater.shutil, "which", return_value="/usr/local/bin/pipx"), \
              mock.patch.object(updater, "install_spec", return_value="WHEEL_URL"), \
@@ -339,7 +339,7 @@ class DismissStateTests(unittest.TestCase):
 
 
 class CliUpdateTests(unittest.TestCase):
-    """`pickup update` 终端子命令：三条主路径（dev 无法自动升级 / 已是最新 /
+    """`corral update` 终端子命令：三条主路径（dev 无法自动升级 / 已是最新 /
     有新版本并成功升级），全部走 stdout 断言，不发真实网络请求。"""
 
     def _capture(self, **patches) -> tuple[int, str]:
@@ -354,7 +354,7 @@ class CliUpdateTests(unittest.TestCase):
     def test_dev_channel_prints_manual_hint_and_exits_nonzero(self) -> None:
         code, out = self._capture(detect_channel=lambda: "dev")
         self.assertEqual(code, 1)
-        self.assertIn("x0c/pickup", out)
+        self.assertIn("x0c/corral", out)
 
     def test_network_failure_prints_check_failed_and_exits_nonzero(self) -> None:
         code, out = self._capture(

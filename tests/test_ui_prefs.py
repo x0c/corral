@@ -7,16 +7,16 @@ import tempfile
 import unittest
 from unittest import mock
 
-from pickup import split_layout, ui_prefs
+from corral import split_layout, ui_prefs
 
 
 class UiPrefsTests(unittest.TestCase):
     def setUp(self) -> None:
-        # `PICKUP_CACHE_DIR` 是唯一的隔离开关，少了它会读到、甚至迁走机主真实的偏好。
-        self.temp = tempfile.TemporaryDirectory(prefix="pickup-ui-prefs-ut-")
+        # `CORRAL_CACHE_DIR` 是唯一的隔离开关，少了它会读到、甚至迁走机主真实的偏好。
+        self.temp = tempfile.TemporaryDirectory(prefix="corral-ui-prefs-ut-")
         self.addCleanup(self.temp.cleanup)
         patcher = mock.patch.dict(
-            os.environ, {"PICKUP_CACHE_DIR": self.temp.name}, clear=False,
+            os.environ, {"CORRAL_CACHE_DIR": self.temp.name}, clear=False,
         )
         patcher.start()
         self.addCleanup(patcher.stop)

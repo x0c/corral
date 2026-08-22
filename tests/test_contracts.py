@@ -11,45 +11,45 @@ import re
 import unittest
 from pathlib import Path
 
-import pickup
-from pickup import updater
-from pickup.models import SessionInfo, make_session_info
+import corral
+from corral import updater
+from corral.models import SessionInfo, make_session_info
 
 
 class CompatExportsTests(unittest.TestCase):
-    """`pickup/__init__.py` 的 `__getattr__` 兼容导出表：45 条全手工维护，
-    移动/重命名符号时同步漏改不会报错，只会让 `pickup.X` 形式的老调用方在运行期
+    """`corral/__init__.py` 的 `__getattr__` 兼容导出表：45 条全手工维护，
+    移动/重命名符号时同步漏改不会报错，只会让 `corral.X` 形式的老调用方在运行期
     才抛 `AttributeError`（见 `cli/AGENTS.md`「入口分层与包顶层的兼容导出」）。
     这里逐条实际取一次属性，代替只读表不求值的静态检查。
     """
 
     def test_all_module_exports_resolve(self) -> None:
-        for name in sorted(pickup._MODULE_EXPORTS):
+        for name in sorted(corral._MODULE_EXPORTS):
             with self.subTest(name=name):
-                self.assertIsNotNone(getattr(pickup, name))
+                self.assertIsNotNone(getattr(corral, name))
 
     def test_all_standard_module_exports_resolve(self) -> None:
-        for name in sorted(pickup._STANDARD_MODULE_EXPORTS):
+        for name in sorted(corral._STANDARD_MODULE_EXPORTS):
             with self.subTest(name=name):
-                self.assertIsNotNone(getattr(pickup, name))
+                self.assertIsNotNone(getattr(corral, name))
 
     def test_all_standard_symbol_exports_resolve(self) -> None:
-        for name in sorted(pickup._STANDARD_SYMBOL_EXPORTS):
+        for name in sorted(corral._STANDARD_SYMBOL_EXPORTS):
             with self.subTest(name=name):
-                self.assertIsNotNone(getattr(pickup, name))
+                self.assertIsNotNone(getattr(corral, name))
 
     def test_all_symbol_exports_resolve(self) -> None:
-        for name in sorted(pickup._SYMBOL_EXPORTS):
+        for name in sorted(corral._SYMBOL_EXPORTS):
             with self.subTest(name=name):
                 # 不用 assertIsNotNone：导出目标本身可能合法地是 None 兜底值
                 # （目前没有，但不应该因未来出现而误判失败）；关键断言是
                 # getattr 不抛异常，且 __dir__ 里确实登记了这个名字。
-                getattr(pickup, name)
-        self.assertTrue(set(pickup._SYMBOL_EXPORTS).issubset(set(dir(pickup))))
+                getattr(corral, name)
+        self.assertTrue(set(corral._SYMBOL_EXPORTS).issubset(set(dir(corral))))
 
     def test_unknown_attribute_still_raises(self) -> None:
         with self.assertRaises(AttributeError):
-            pickup._does_not_exist_anywhere  # noqa: B018 - 刻意求值触发 __getattr__
+            corral._does_not_exist_anywhere  # noqa: B018 - 刻意求值触发 __getattr__
 
 
 class VersionConsistencyTests(unittest.TestCase):
@@ -64,7 +64,7 @@ class VersionConsistencyTests(unittest.TestCase):
     def setUp(self) -> None:
         root = updater.find_checkout_root()
         if root is None:
-            self.skipTest("当前不是源码检出树（没有 pyproject.toml + src/pickup），跳过版本一致性校验")
+            self.skipTest("当前不是源码检出树（没有 pyproject.toml + src/corral），跳过版本一致性校验")
         self.root = Path(root)
 
     @staticmethod
@@ -85,14 +85,14 @@ class VersionConsistencyTests(unittest.TestCase):
         cargo_lock_text = (self.root / "Cargo.lock").read_text(encoding="utf-8")
         cargo_lock_version = self._extract(
             cargo_lock_text,
-            r'name = "pickup-native"\nversion = "([^"]+)"',
+            r'name = "corral-native"\nversion = "([^"]+)"',
         )
 
-        self.assertEqual(pickup.__version__, pyproject_version, "__init__.py 与 pyproject.toml 版本不一致")
-        self.assertEqual(pickup.__version__, cargo_toml_version, "__init__.py 与 Cargo.toml 版本不一致")
+        self.assertEqual(corral.__version__, pyproject_version, "__init__.py 与 pyproject.toml 版本不一致")
+        self.assertEqual(corral.__version__, cargo_toml_version, "__init__.py 与 Cargo.toml 版本不一致")
         self.assertEqual(
-            pickup.__version__, cargo_lock_version,
-            "__init__.py 与 Cargo.lock 里 pickup-native 版本不一致",
+            corral.__version__, cargo_lock_version,
+            "__init__.py 与 Cargo.lock 里 corral-native 版本不一致",
         )
 
 

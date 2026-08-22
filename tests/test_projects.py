@@ -1,4 +1,4 @@
-"""项目发现与快捷启动 `pickup <runtime> <project>` 分流。"""
+"""项目发现与快捷启动 `corral <runtime> <project>` 分流。"""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import pickup
-from pickup import projects
-from pickup.i18n import t
-from pickup.models import LaunchPlan
+import corral
+from corral import projects
+from corral.i18n import t
+from corral.models import LaunchPlan
 
 
 def _temp_root(td: str) -> Path:
@@ -80,11 +80,11 @@ class GitScanTests(unittest.TestCase):
             root = _temp_root(td)
             real = root / "real"
             link = root / "link"
-            _touch_git(real / "pickup")
+            _touch_git(real / "corral")
             link.symlink_to(real)
 
             found = projects.scan_git_roots([str(link)], depth=4, use_cache=False)
-            self.assertEqual(found, [str((real / "pickup").resolve())])
+            self.assertEqual(found, [str((real / "corral").resolve())])
 
     def test_scan_follows_symlinked_subdir(self) -> None:
         """回归：`~/Codes -> /elsewhere/Codes` 这类软链接子目录必须照样扫到项目。"""
@@ -110,17 +110,17 @@ class GitScanTests(unittest.TestCase):
             found = projects.scan_git_roots([str(root)], depth=4, use_cache=False)
             self.assertEqual(found, [str((root / "repo").resolve())])
 
-    def test_pickup_project_roots_env(self) -> None:
+    def test_corral_project_roots_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = _temp_root(td)
             _touch_git(root / "only")
-            with mock.patch.dict(os.environ, {"PICKUP_PROJECT_ROOTS": str(root)}):
+            with mock.patch.dict(os.environ, {"CORRAL_PROJECT_ROOTS": str(root)}):
                 projects.clear_filesystem_cache()
                 found = projects.scan_git_roots(depth=2, use_cache=False)
             self.assertEqual(found, [str(root / "only")])
 
-    def test_empty_pickup_project_roots_skips_filesystem(self) -> None:
-        with mock.patch.dict(os.environ, {"PICKUP_PROJECT_ROOTS": ""}):
+    def test_empty_corral_project_roots_skips_filesystem(self) -> None:
+        with mock.patch.dict(os.environ, {"CORRAL_PROJECT_ROOTS": ""}):
             self.assertEqual(projects.configured_roots(), [])
             self.assertEqual(projects.scan_git_roots(use_cache=False), [])
 
@@ -130,7 +130,7 @@ class MatchResolveTests(unittest.TestCase):
         return projects.discover(paths, scan_filesystem=False)
 
     def test_fuzzy_case_insensitive_unique(self) -> None:
-        items = self._projects("/Codes/SubSwap", "/Codes/pickup")
+        items = self._projects("/Codes/SubSwap", "/Codes/corral")
         matched = projects.match_projects("subswap", items)
         self.assertEqual([p.path for p in matched], ["/Codes/SubSwap"])
         self.assertEqual(projects.resolve_query("SUB", items), "/Codes/SubSwap")
@@ -156,7 +156,7 @@ class MatchResolveTests(unittest.TestCase):
         )
 
     def test_zero_matches_raises(self) -> None:
-        items = self._projects("/Codes/pickup")
+        items = self._projects("/Codes/corral")
         with self.assertRaises(projects.ProjectResolveError) as ctx:
             projects.resolve_query("nope", items)
         self.assertEqual(str(ctx.exception), t("project.not_found", query="nope"))
@@ -219,7 +219,7 @@ class ProjectEntriesTests(unittest.TestCase):
 
 
 class DirectLaunchProjectTests(unittest.TestCase):
-    """`pickup claude <project>` 与透传分流。"""
+    """`corral claude <project>` 与透传分流。"""
 
     def setUp(self) -> None:
         projects.clear_filesystem_cache()
@@ -236,15 +236,15 @@ class DirectLaunchProjectTests(unittest.TestCase):
         registry.ids = ("claude",)
 
         with (
-            mock.patch.object(pickup, "keepalive") as keepalive_mock,
-            mock.patch.object(pickup, "execute_launch") as execute_launch,
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
-            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+            mock.patch.object(corral, "keepalive") as keepalive_mock,
+            mock.patch.object(corral, "execute_launch") as execute_launch,
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch.object(corral.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(corral.sys.stdout, "isatty", return_value=False),
         ):
             keepalive_mock.enabled.return_value = False
             keepalive_mock.new_session_ident.return_value = "xxxx"
-            pickup._dispatch_direct_launch(["claude", "--print", "hi"], registry)
+            corral._dispatch_direct_launch(["claude", "--print", "hi"], registry)
 
         registry.build_passthrough_plan.assert_called_once_with("claude", ["--print", "hi"])
         execute_launch.assert_called_once_with(plan)
@@ -266,17 +266,17 @@ class DirectLaunchProjectTests(unittest.TestCase):
             registry.ids = ("claude",)
 
             with (
-                mock.patch.dict(os.environ, {"PICKUP_PROJECT_ROOTS": str(root)}),
-                mock.patch.object(pickup, "keepalive") as keepalive_mock,
-                mock.patch.object(pickup, "execute_launch") as execute_launch,
-                mock.patch.object(pickup, "_require_tmux"),
-                mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
-                mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+                mock.patch.dict(os.environ, {"CORRAL_PROJECT_ROOTS": str(root)}),
+                mock.patch.object(corral, "keepalive") as keepalive_mock,
+                mock.patch.object(corral, "execute_launch") as execute_launch,
+                mock.patch.object(corral, "_require_tmux"),
+                mock.patch.object(corral.sys.stdin, "isatty", return_value=False),
+                mock.patch.object(corral.sys.stdout, "isatty", return_value=False),
             ):
                 projects.clear_filesystem_cache()
                 keepalive_mock.enabled.return_value = False
                 keepalive_mock.new_session_ident.return_value = "xxxx"
-                pickup._dispatch_direct_launch(["claude", "subswap"], registry)
+                corral._dispatch_direct_launch(["claude", "subswap"], registry)
 
             registry.get.assert_called_with("claude")
             runtime.build_new_session_plan.assert_called_once_with(str(proj))
@@ -284,10 +284,10 @@ class DirectLaunchProjectTests(unittest.TestCase):
             execute_launch.assert_called_once_with(new_plan)
 
     def test_opencode_subcommand_is_passthrough_not_project_mode(self) -> None:
-        """`pickup opencode run …` 的首词是子命令，必须走透传而不是项目名匹配。
+        """`corral opencode run …` 的首词是子命令，必须走透传而不是项目名匹配。
 
         回归：子命令曾把 run/stats 当成项目名去模糊匹配（实测会匹配出十几个项目、
-        要求交互选择），导致 `pickup opencode run 提示` 这种日常用法被拦死。
+        要求交互选择），导致 `corral opencode run 提示` 这种日常用法被拦死。
         """
         plan = LaunchPlan(("opencode", "run", "--auto", "提示"), None)
         registry = mock.Mock()
@@ -295,15 +295,15 @@ class DirectLaunchProjectTests(unittest.TestCase):
         registry.build_passthrough_plan.return_value = plan
 
         with (
-            mock.patch.object(pickup, "keepalive") as keepalive_mock,
-            mock.patch.object(pickup, "execute_launch") as execute_launch,
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
-            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+            mock.patch.object(corral, "keepalive") as keepalive_mock,
+            mock.patch.object(corral, "execute_launch") as execute_launch,
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch.object(corral.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(corral.sys.stdout, "isatty", return_value=False),
         ):
             keepalive_mock.enabled.return_value = False
             keepalive_mock.new_session_ident.return_value = "xxxx"
-            pickup._dispatch_direct_launch(
+            corral._dispatch_direct_launch(
                 ["opencode", "run", "提示"], registry,
             )
 
@@ -311,22 +311,22 @@ class DirectLaunchProjectTests(unittest.TestCase):
         execute_launch.assert_called_once_with(plan)
 
     def test_opencode_other_subcommand_is_passthrough_too(self) -> None:
-        """`pickup opencode stats` 同样是透传（不带 --auto），不能被当成项目名。"""
+        """`corral opencode stats` 同样是透传（不带 --auto），不能被当成项目名。"""
         plan = LaunchPlan(("opencode", "stats"), None)
         registry = mock.Mock()
         registry.resolve_id.side_effect = lambda token: token
         registry.build_passthrough_plan.return_value = plan
 
         with (
-            mock.patch.object(pickup, "keepalive") as keepalive_mock,
-            mock.patch.object(pickup, "execute_launch") as execute_launch,
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
-            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+            mock.patch.object(corral, "keepalive") as keepalive_mock,
+            mock.patch.object(corral, "execute_launch") as execute_launch,
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch.object(corral.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(corral.sys.stdout, "isatty", return_value=False),
         ):
             keepalive_mock.enabled.return_value = False
             keepalive_mock.new_session_ident.return_value = "xxxx"
-            pickup._dispatch_direct_launch(["opencode", "stats"], registry)
+            corral._dispatch_direct_launch(["opencode", "stats"], registry)
 
         registry.build_passthrough_plan.assert_called_once_with("opencode", ["stats"])
         execute_launch.assert_called_once_with(plan)
@@ -336,11 +336,11 @@ class DirectLaunchProjectTests(unittest.TestCase):
         # 直启入口会先把第一个词按别名解析成运行时 id；假 registry 原样返回即可
         registry.resolve_id.side_effect = lambda token: token
         with (
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch.object(pickup.sys, "stderr", new_callable=io.StringIO) as err,
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch.object(corral.sys, "stderr", new_callable=io.StringIO) as err,
         ):
             with self.assertRaises(SystemExit) as ctx:
-                pickup._dispatch_direct_launch(["claude", "subswap", "extra"], registry)
+                corral._dispatch_direct_launch(["claude", "subswap", "extra"], registry)
         self.assertEqual(ctx.exception.code, 1)
         self.assertIn("不接受额外参数", err.getvalue())
         registry.build_passthrough_plan.assert_not_called()
@@ -353,14 +353,14 @@ class DirectLaunchProjectTests(unittest.TestCase):
         registry.build_passthrough_plan.return_value = plan
 
         with (
-            mock.patch.object(pickup, "keepalive") as keepalive_mock,
-            mock.patch.object(pickup, "execute_launch") as execute_launch,
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
-            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+            mock.patch.object(corral, "keepalive") as keepalive_mock,
+            mock.patch.object(corral, "execute_launch") as execute_launch,
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch.object(corral.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(corral.sys.stdout, "isatty", return_value=False),
         ):
             keepalive_mock.enabled.return_value = False
-            pickup._dispatch_direct_launch(
+            corral._dispatch_direct_launch(
                 ["--no-keepalive", "codex", "--resume", "x"], registry,
             )
 
@@ -373,23 +373,23 @@ class LegacyDirectLaunchTestsUpdate(unittest.TestCase):
 
     def test_passes_through_flag_args_and_wraps_with_keepalive(self) -> None:
         plan = LaunchPlan(("claude", "--dangerously-skip-permissions", "--print", "hi"), None)
-        wrapped = LaunchPlan(("tmux", "-L", "pickup-keepalive", "new-session"), None)
+        wrapped = LaunchPlan(("tmux", "-L", "corral-keepalive", "new-session"), None)
         registry = mock.Mock()
         # 直启入口会先把第一个词按别名解析成运行时 id；假 registry 原样返回即可
         registry.resolve_id.side_effect = lambda token: token
         registry.build_passthrough_plan.return_value = plan
 
         with (
-            mock.patch.object(pickup, "keepalive") as keepalive_mock,
-            mock.patch.object(pickup, "execute_launch") as execute_launch,
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
-            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+            mock.patch.object(corral, "keepalive") as keepalive_mock,
+            mock.patch.object(corral, "execute_launch") as execute_launch,
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch.object(corral.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(corral.sys.stdout, "isatty", return_value=False),
         ):
             keepalive_mock.enabled.return_value = True
             keepalive_mock.new_session_ident.return_value = "xxxx"
             keepalive_mock.wrap_plan.return_value = wrapped
-            pickup._dispatch_direct_launch(["claude", "--print", "hi"], registry)
+            corral._dispatch_direct_launch(["claude", "--print", "hi"], registry)
 
         registry.build_passthrough_plan.assert_called_once_with("claude", ["--print", "hi"])
         keepalive_mock.wrap_plan.assert_called_once_with(plan, "claude", "xxxx")

@@ -23,7 +23,7 @@
 本域只负责运行时画面和交互：
 
 - **内嵌实时终端**（代码别名 `embed`、`EmbedPane`、`capture-pane`）：不执行 tmux attach；抓取 tmux 已经渲染好的屏幕，再把按键、粘贴和部分滚轮动作发送回原 pane。
-- **运行中(托管)**（`host_session`）：启动计划被放入专用 tmux 会话后持续运行。关闭右栏或退出 pickup 不会停止它（**内嵌自由 shell 除外**，见下条）。
+- **运行中(托管)**（`host_session`）：启动计划被放入专用 tmux 会话后持续运行。关闭右栏或退出 corral 不会停止它（**内嵌自由 shell 除外**，见下条）。
 - **内嵌自由 shell**（`models.SHELL_RUNTIME_ID`，顶栏「终端」）：托管 `$SHELL` 交互会话，可随意输入命令。与助手 deliberately 不同：**关分栏 `c` 或 shell 进程退出都会 `keepalive.kill` + 清占位**，避免保活 socket 堆积；不提供 Enter 重启；占位不进侧边栏列表。
 - **会话保活**（`keepalive`）：提供独立 tmux socket、会话命名、环境注入、状态标注和回收；本域依赖它，但不定义其回收策略。
 - **运行中(其他窗口)**（`main_screen.is_external_running`）：扫描器报 `live`、但没有 `keepalive_name`——用户自己开终端窗口直接跑起来的会话，不在保活 socket 里。**这类会话永远拿不到实时画面**：画面只存在于那个窗口自己的终端连接里，事后无法从外部接管（把已运行进程换到新终端只有 reptyr 一条路，靠 ptrace 实现，不支持 macOS；即便在 Linux 上也会抢走原窗口且全屏 TUI 助手常需手动重绘）。右栏只能给静态对话预览，必须在详情头如实写明原因（`status.running_external` + `detail.running_external`），否则用户会当成“会话已中断”。**2026-08-08 裁定：外部运行会话不得弹确认框，也不得针对同一份历史另起恢复进程**（同一份历史被两个进程写有互相覆盖风险），只能保持静态预览，等待原窗口结束后才可正常恢复；跨运行时接力只读原历史、另建目标会话，不受这条限制。
@@ -40,7 +40,7 @@
 graph TD
     A[用户选中运行中会话或启动会话] --> B[MainScreen]
     B -->|后台创建| C[embed.host_session]
-    C --> D[tmux -L pickup-keepalive]
+    C --> D[tmux -L corral-keepalive]
     D --> E[运行中(托管)助手 pane]
     B --> F[EmbedPane]
     F -->|open_channel| G[ControlChannel: tmux -C attach]
@@ -74,7 +74,7 @@ sequenceDiagram
 
 1. 用户在终端界面中打开一个会话。已有“运行中(托管)”会话直接由 `EmbedPane.focus_session()` 聚焦；需要启动的计划由 `MainScreen._embed_open()` 在后台调用 `embed.host_session()`。
 2. `host_session()` 用会话保活的专用 socket 建立 detached tmux 会话，名称来自运行时和会话标识；同时按 pane 实际宽高创建，避免先以默认终端尺寸启动造成重排。
-3. 新建时注入 `PICKUP_RUNTIME`、`PICKUP_SESSION_ID` 及旧名兼容变量。若外层终端已探得背景色且 tmux 支持，立即打开控制通道并注入颜色应答，缩短助手首轮主题检测的竞态窗口。
+3. 新建时注入 `CORRAL_RUNTIME`、`CORRAL_SESSION_ID` 及旧名兼容变量。若外层终端已探得背景色且 tmux 支持，立即打开控制通道并注入颜色应答，缩短助手首轮主题检测的竞态窗口。
 4. `EmbedPane` 打开与当前会话对应的控制通道、调整 pane 尺寸，并在后台抓帧循环中调用 `capture()`。控制通道可用时，`%output` 立即唤醒抓帧；空闲时仍低频轮询兜底。
 5. 抓到的 `capture-pane -p -e` 输出包含 SGR 样式，**也包含 tmux 原样透传的 OSC 8 超链接等非 SGR 序列**。`parse_screen()` 解析为单元格网格，`EmbedPane` 逐行比较，只刷新改变的行。首帧未到时不展示“连接中…”，有详情则继续展示详情（**必须钉在最新消息**，禁止 `to_strips(..., height=pane_h)` 顶裁出最早消息），否则展示空白终端画布。
 6. 可打印字符和特殊键转发到原 pane；粘贴使用 tmux buffer；滚轮按 pane 是否声明鼠标捕获决定转发 SGR 序列或查看应用层历史。用户切回列表不影响后台会话。
@@ -100,7 +100,7 @@ stateDiagram-v2
 ### 输入与滚动分流
 
 - 普通字符经 `send_literal()` 原样发送；特殊键经 `translate_textual_key()` 转成 tmux 键名后由 `send_key()` 发送。仅在右栏持有键盘焦点时转发。
-- **输入转发是黑名单不是白名单**：右栏持焦时，pickup **只拦截壳层键**（`Ctrl+\` 回列表、`Ctrl+Shift+B` 显隐侧栏、有选区时的 `Ctrl+C` 复制、主界面高优先级的 `Ctrl+F` 全文搜索 / `Ctrl+P` 置顶等），其余按键一律尽量译成 tmux 键名后放行；译不出但仍有 `event.character`（含 `Ctrl+_` 的 `\x1f` 等控制字节）时走 `send_literal` 兜底。禁止再写成「只转发 Ctrl+字母」——那会让 `Ctrl+/`（多数终端 ≡ `Ctrl+_`，Claude Code 撤销输入）等静默丢失。回归：`TranslateTextualKeyTests`。
+- **输入转发是黑名单不是白名单**：右栏持焦时，corral **只拦截壳层键**（`Ctrl+\` 回列表、`Ctrl+Shift+B` 显隐侧栏、有选区时的 `Ctrl+C` 复制、主界面高优先级的 `Ctrl+F` 全文搜索 / `Ctrl+P` 置顶等），其余按键一律尽量译成 tmux 键名后放行；译不出但仍有 `event.character`（含 `Ctrl+_` 的 `\x1f` 等控制字节）时走 `send_literal` 兜底。禁止再写成「只转发 Ctrl+字母」——那会让 `Ctrl+/`（多数终端 ≡ `Ctrl+_`，Claude Code 撤销输入）等静默丢失。回归：`TranslateTextualKeyTests`。
 - `Ctrl+C` 有选中文本时复制；没有选区时发送给助手中断运行，不能让终端界面自身退出。
 - **这一格没有活着的助手时，回车不转发、改为重启该会话**（`_is_restart_target()`：静态对话预览格与「会话已结束」格）。托管首帧尚未到达那种回退态**不算**——那条会话活着，回车必须原样发给助手。重启动作本身由界面层执行，见 [终端界面知识库](TERMINAL_UI_KNOWLEDGE_BASE.md) §6「已结束会话必须永远留着重启入口」。
 - 粘贴走 `set-buffer` + `paste-buffer -p`，保留 bracketed paste 语义。
@@ -139,7 +139,7 @@ stateDiagram-v2
 
 ### 主题、背景与光标的时序
 
-1. 启动 pickup 时，外层终端仍未被 Textual 接管，`theme.py` 的 `_probe_osc_colours()` 探测 OSC 10 / OSC 11 应答。
+1. 启动 corral 时，外层终端仍未被 Textual 接管，`theme.py` 的 `_probe_osc_colours()` 探测 OSC 10 / OSC 11 应答。
 2. 创建“运行中(托管)”会话时，`host_session()` 用 pane 实际尺寸启动目标助手，并记录 tmux pane 标识。
 3. 对支持 `refresh-client -r` 的 tmux，立即保持控制通道并向该 pane 报告外层颜色。此操作只会让**后续**背景色查询得到正确应答。
    - **背景色与前景色必须拆成两条独立命令报告，背景色先发**：tmux 只解析 `refresh -r` 参数里的**第一条** OSC 序列、其余整段丢弃，而探测函数返回的是「OSC 10 前景 + OSC 11 背景」拼接串——整串报告等于只注入了前景色，pane 背景停在 tmux 默认猜测（纯黑），助手一律判深色。拆分由 `theme._split_osc_report()` 负责，`report_theme()` 分两次发送。症状、逐条实测结论和可复现验证方式见 [维护指南](MAINTAINER_GUIDE.md)「托管 agent 自己的深浅色检测」条目下 2026-07-25 踩坑记录。
@@ -155,7 +155,7 @@ stateDiagram-v2
 | `embed.py` | tmux 托管、抓帧、控制通道、输入、颜色与 SGR 解析 | `host_session()`、`capture()`、`ControlChannel`、`parse_screen()` |
 | `ui/embed_pane.py` | 右栏内嵌实时终端 widget、后台抓帧、输入和滚动 | `EmbedPane`、`_capture_loop()`、`_on_key()` |
 | `ui/main_screen.py` + `ui/controllers/host_controller.py` | 终端界面挂接、异步托管启动和关闭分栏 | `MainScreen._embed_open()`、`_on_embed_hosted()`（方法定义已迁至 `host_controller.py` 的 `HostControllerMixin`，经继承仍在 `MainScreen` 上解析，符号引用不变） |
-| `src/pickup/cli.py` 等 | 启动接线、tmux 硬依赖检查、外层背景色探测 | `_require_tmux()`、`_probe_osc_colours()` |
+| `src/corral/cli.py` 等 | 启动接线、tmux 硬依赖检查、外层背景色探测 | `_require_tmux()`、`_probe_osc_colours()` |
 | `keepalive.py` | 专用 socket、命名空间、环境变量、状态标注和回收 | `_BASE_ARGV`、`_session_name()`、`annotate()` |
 | `test_embed.py` | 单元与真实 tmux 控制通道测试 | `ControlChannelProtocolTests`、`ControlChannelIntegrationTests` |
 | `selftest.sh` | 隔离 HOME / tmux 的真实终端端到端验收 | 内嵌、输入、焦点、光标、复制验证 |
@@ -187,32 +187,32 @@ stateDiagram-v2
 
 | 运行时标识 | 语义 | 兼容与改动注意 |
 |---|---|---|
-| `tmux -L pickup-keepalive` | 会话保活与内嵌实时终端共用的专用 socket | 不得改用用户默认 tmux socket，也不得影响用户手动会话 |
-| `pickup-<runtime>-<ident>` | 新建运行中(托管)会话名称 | 新建必须使用 `pickup-` 前缀 |
+| `tmux -L corral-keepalive` | 会话保活与内嵌实时终端共用的专用 socket | 不得改用用户默认 tmux socket，也不得影响用户手动会话 |
+| `corral-<runtime>-<ident>` | 新建运行中(托管)会话名称 | 新建必须使用 `corral-` 前缀 |
 | `sc-<runtime>-<ident>` | 改名前遗留的托管会话名称 | 必须继续识别、标注和回收，不能删兼容分支 |
-| `PICKUP_RUNTIME` / `PICKUP_SESSION_ID` | 注入 pane 的运行时与会话标识 | 新名称是主路径 |
+| `CORRAL_RUNTIME` / `CORRAL_SESSION_ID` | 注入 pane 的运行时与会话标识 | 新名称是主路径 |
 | `SC_RUNTIME` / `SC_SESSION_ID` | 上述标识的旧名称 | 创建托管会话时继续注入 |
-| `PICKUP_KEEPALIVE` / `SC_KEEPALIVE` | 禁用会话保活和内嵌可用性的开关 | 任一值为 `0` 都应生效 |
-| `PICKUP_KEEPALIVE_IDLE_HOURS` / `SC_KEEPALIVE_IDLE_HOURS` | 会话保活的空闲回收时长 | 属于会话保活域，本域只需保持同一命名与兼容 |
+| `CORRAL_KEEPALIVE` / `SC_KEEPALIVE` | 禁用会话保活和内嵌可用性的开关 | 任一值为 `0` 都应生效 |
+| `CORRAL_KEEPALIVE_IDLE_HOURS` / `SC_KEEPALIVE_IDLE_HOURS` | 会话保活的空闲回收时长 | 属于会话保活域，本域只需保持同一命名与兼容 |
 
 ## §5 本域流程 / 组件 / 任务 / MQ 入口索引
 
 | 类型 | 标识 | 代码入口 | 适用场景 |
 |---|---|---|---|
-| tmux socket | `pickup-keepalive` | `keepalive._BASE_ARGV` | 隔离托管会话与用户默认 tmux 环境 |
-| 托管会话 | `pickup-*`、`sc-*` | `embed.host_session()`、`keepalive._session_name()` | 创建、接回、标注与回收同一会话 |
+| tmux socket | `corral-keepalive` | `keepalive._BASE_ARGV` | 隔离托管会话与用户默认 tmux 环境 |
+| 托管会话 | `corral-*`、`sc-*` | `embed.host_session()`、`keepalive._session_name()` | 创建、接回、标注与回收同一会话 |
 | 控制客户端 | `tmux -C attach` | `embed.ControlChannel` | 高频按键、窗口调整、事件驱动抓帧和主题报告 |
 | 抓帧通道 | `capture-pane -p -e` | `embed.capture()` | 获取 tmux 已渲染的含 SGR 画面 |
 | pane 状态查询 | `display-message` | `embed.pane_state()` | 光标、鼠标捕获、历史大小等低频状态 |
-| 输入缓冲区 | `pickup-embed` | `embed.paste()` | 多行粘贴并保留 bracketed paste |
+| 输入缓冲区 | `corral-embed` | `embed.paste()` | 多行粘贴并保留 bracketed paste |
 | 鼠标发送队列 | 每会话有界队列 | `embed.send_mouse_sequence()` | 触控板高频滚动下避免卡住终端界面 |
-| 本地异常记录 | `~/.cache/pickup/embed-error.log` | `pickup._log_embed_error()` | 抓帧线程异常后定位问题，线程继续自愈 |
+| 本地异常记录 | `~/.cache/corral/embed-error.log` | `corral._log_embed_error()` | 抓帧线程异常后定位问题，线程继续自愈 |
 
 ## §6 核心业务规则与隐性约束
 
 - **AI 易错点**【输入转发是黑名单】**右栏持焦时只拦壳层快捷键，其余一律放行**。`translate_textual_key` 必须覆盖 `Ctrl+_` / `Ctrl+/`（→ `C-_`）、带修饰方向键、`Alt+字母` 等；译不出时 EmbedPane 还要用 `event.character`（含非打印控制字节）`send_literal` 兜底。禁止退回「只转发 `Ctrl+字母`」白名单——真机事故：内嵌 Claude Code 里 `Ctrl+/` 撤销输入无效。壳层键清单：`Ctrl+\`、`Ctrl+Shift+B`、有选区的 `Ctrl+C`、主界面 `Ctrl+F` / `Ctrl+P`（priority）。回归：`TranslateTextualKeyTests`。
 - **AI 易错点**【禁止】用 tmux attach 来实现右栏显示 -> 必须以 `capture-pane` 抓画面、以输入转发操作原 pane（原因：attach 会接管终端，破坏终端界面左右分栏与多会话切换）。
-- **AI 易错点**【隐性依赖】内嵌实时终端与会话保活必须共用专用 socket 和 `pickup-*` / `sc-*` 命名空间，否则已托管会话无法被正确接回、标注或回收。
+- **AI 易错点**【隐性依赖】内嵌实时终端与会话保活必须共用专用 socket 和 `corral-*` / `sc-*` 命名空间，否则已托管会话无法被正确接回、标注或回收。
 - **AI 易错点**【禁止】把「运行中(其他窗口)」的会话当成可以直接打开的运行中会话 -> 不得弹确认框，也不得针对同一份历史另起恢复进程（2026-08-08 裁定，原因：那不是接管，而是对同一份历史另起一个恢复进程；原窗口那个还在跑，右栏冒出来的新界面看着就像"会话已中断"，两个进程还会互相覆盖历史。旧版"打开前必须确认"的表述已废止）。右栏对这类会话只能给静态预览 + 明示原因，等待原窗口结束后才可正常恢复；不要试图去"抓"它的画面——它根本不在任何 tmux 里。
 - **AI 易错点**【外部运行会话】外部窗口正在运行的会话只能保留静态预览；**不得弹确认框，也不得针对同一份历史另起恢复进程**。等待原窗口结束后再允许恢复，避免历史竞争。
 - **AI 易错点**【禁止】控制通道存活时让外部 tmux 子进程并发执行修改类命令 -> 必须走 `ControlChannel.command()`（原因：已知 tmux 服务端并发修改风险）；只读抓帧和状态查询可经 `request()`，通道失效才回退外部调用。
@@ -243,7 +243,7 @@ stateDiagram-v2
 - **AI 易错点**【禁止】自动把焦点交给静态预览格或已结束的格 -> `focus_session_key` 必须带 `only_live=True`（原因：那些格收不到输入，用户敲的字直接丢，比让他多点一下鼠标糟得多）。**但用户自己点进这类格子是允许的**，此时回车不再是「丢掉的输入」而是「重启这条会话」（见上文输入与滚动分流），改这块时别把两件事混成一条「已结束的格不处理按键」。
 - **AI 易错点**【隐性依赖】实时格持有输入时，Screen 上 `priority=True` 的翻页 / Home / End 绑定会**先于**面板拿到按键。必须靠 `MainScreen.check_action` 返回 `False` 让路，`run_action` 才会跳过派发、把键透传给托管会话。
 - **AI 易错点**【隐性依赖】`_mount_panes_async` 默认会把焦点还给原先持有焦点的列表；带着 `focus_pane=True` 的调用必须绕开这段，否则自动聚焦会在挂载后被立刻撤销。直启 `_on_direct_hosted` 必须走同一条 `focus_pane` 意图，禁止在 pane 尚未 mount 时 `set_focus` 失败就放弃——真机搜索框不可聚焦，默认焦点在侧边栏。
-- **AI 易错点**【隐性依赖】剪贴板图片粘贴走的哨兵协议（`␞PICKUP_IMG_BEGIN␞<base64>␞PICKUP_IMG_END␞`，`embed.py` 的 `_IMG_SENTINEL_BEGIN`/`_IMG_SENTINEL_END`）是与远程网页终端网关 `shell-gate`（另一仓库，`internal/server/web/enhance.js`）之间的跨仓库约定 —— 改任一侧的哨兵字符串都必须同步另一侧，否则粘贴的图片会被当成普通文本整段发给 agent，不会报错也不会落盘，只能靠肉眼发现。本域看不到 `shell-gate` 侧代码，改动前先确认对方现状。
+- **AI 易错点**【隐性依赖】剪贴板图片粘贴走的哨兵协议（`␞CORRAL_IMG_BEGIN␞<base64>␞CORRAL_IMG_END␞`，`embed.py` 的 `_IMG_SENTINEL_BEGIN`/`_IMG_SENTINEL_END`）是与远程网页终端网关 `shell-gate`（另一仓库，`internal/server/web/enhance.js`）之间的跨仓库约定 —— 改任一侧的哨兵字符串都必须同步另一侧，否则粘贴的图片会被当成普通文本整段发给 agent，不会报错也不会落盘，只能靠肉眼发现。本域看不到 `shell-gate` 侧代码，改动前先确认对方现状。
 - **AI 易错点**【上游限制】右栏 Cursor 画面**概率性地跳回更早的对话、再一路滚回最新**（2026-07-31 真机定位）：这不是抓帧采样抓到了中间态，而是 Cursor CLI 自己把已经滚走的历史整段重新打印了一遍——tmux 屏幕内容真的变了，任何 attach 的终端看到的都一样。实测证据：托管一个 Cursor 会话让它输出 400 行，回答收尾时画面在 8 秒内从最早内容一路重画回最新，中间每屏稳定停约 200ms；`pipe-pane` 抓原始字节确认它**不发同步输出**（DECSET 2026 `\e[?2026h/l` 零次），全靠 570 次 `ESC[<n>A` 光标上移重写。Cursor 官方已确认这是「CLI + tmux」已知问题并在修（触发条件：tmux 窗口重连、切 pane、终端尺寸变化，以及无明显诱因的自发重绘；历史越长重绘量越大），见 [Cursor 论坛 158881](https://forum.cursor.com/t/cursor-cli-should-limit-history-retention-to-reduce-tmux-refresh-churn/158881)。
   - 【已验证无效，别再试】给抓帧加「整屏大变化时延迟重抓确认，两帧一致才上屏」的中间态过滤：真机对照实测**没有任何改善**（不过滤 50.2% 中间态上屏 → 过滤后 54.2%）。因为重绘出来的每一屏本身就稳定停留 ~200ms，任何「等稳定」判据都会把它判成合法新画面；而真正只存在几毫秒的重写中途，25Hz 抓帧本来就几乎抓不到（同一探针实测命中 0%）。
   - 可选缓解方向（都有代价，需产品决策后再动）：调小保活 socket 的 `history-limit` 减少重绘体量（代价：右栏能往上翻的历史变少）；把 `_RESIZE_CAPTURE_HOLD_MAX` 放长到覆盖整段重绘（代价：那几秒右栏不更新，且只挡得住 resize 这一类触发）；长会话定期新开（Cursor 官方认为最有效）。
@@ -274,7 +274,7 @@ stateDiagram-v2
 
 5. 检查中文输入和复制：在支持输入法的真实终端里聚焦内嵌实时终端，输入中文并确认候选框靠近 pane 光标、提交后文字完整到达；选中画面文本后 `Ctrl+C` 应复制，而无选区时 `Ctrl+C` 应中断助手。
 
-6. 改动 tmux 最低版本、环境注入或保活配置后，额外完成完整打包验证和真实 tmux 冒烟，遵循 `docs/MAINTAINER_GUIDE.md` 的“会话保活”和“内嵌面板”章节；不要操作已有真实 `pickup-*` / `sc-*` 会话。
+6. 改动 tmux 最低版本、环境注入或保活配置后，额外完成完整打包验证和真实 tmux 冒烟，遵循 `docs/MAINTAINER_GUIDE.md` 的“会话保活”和“内嵌面板”章节；不要操作已有真实 `corral-*` / `sc-*` 会话。
 
 ### 验收问题与判定方式
 

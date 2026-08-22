@@ -12,22 +12,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from pickup import i18n
-from pickup.i18n import t
+from corral import i18n
+from corral.i18n import t
 
 i18n.set_lang("en")
 
-import pickup
-from pickup import agent_api, titles
-from pickup.models import ConversationMessage, Handoff, LaunchPlan, format_message_time
-from pickup.runtime.base import BaseRuntime
-from pickup.runtime.claude import ClaudeRuntime
-from pickup.runtime.codex import CodexRuntime
-from pickup.scan import claude as scan_claude
-from pickup.scan import codex as scan_codex
-from pickup.scan import kimi as scan_kimi
-from pickup.scan import opencode as scan_opencode
-from pickup.scan import pi as scan_pi
+import corral
+from corral import agent_api, titles
+from corral.models import ConversationMessage, Handoff, LaunchPlan, format_message_time
+from corral.runtime.base import BaseRuntime
+from corral.runtime.claude import ClaudeRuntime
+from corral.runtime.codex import CodexRuntime
+from corral.scan import claude as scan_claude
+from corral.scan import codex as scan_codex
+from corral.scan import kimi as scan_kimi
+from corral.scan import opencode as scan_opencode
+from corral.scan import pi as scan_pi
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -905,7 +905,7 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
 
     def test_title_daemon_drains_additional_pending_rounds(self) -> None:
         """持锁期间生成后再扫一轮，避免只扫一次就退出漏掉新会话。"""
-        from pickup import cli as pickup_cli
+        from corral import cli as corral_cli
 
         first = {
             "source": "claude",
@@ -925,7 +925,7 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
         runtime.id = "claude"
         scans = [{"claude": [first]}, {"claude": [first, second]}, {"claude": [first, second]}]
         runtime.scan_sessions.side_effect = lambda limit=None: scans.pop(0)["claude"]
-        registry = pickup.RuntimeRegistry((runtime,))
+        registry = corral.RuntimeRegistry((runtime,))
         refresh_calls: list[list[str]] = []
         shared_cache: dict = {}
 
@@ -947,13 +947,13 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as td,
             mock.patch.object(titles, "CACHE_DIR", td),
-            mock.patch.object(pickup_cli, "_TITLE_LOCK_FILE", os.path.join(td, "titles.lock")),
+            mock.patch.object(corral_cli, "_TITLE_LOCK_FILE", os.path.join(td, "titles.lock")),
             mock.patch.object(titles, "load_cache", side_effect=fake_load_cache),
             mock.patch.object(titles, "refresh_titles", side_effect=fake_refresh),
-            mock.patch.object(pickup_cli, "_TITLE_DRAIN_MAX_ROUNDS", 3),
+            mock.patch.object(corral_cli, "_TITLE_DRAIN_MAX_ROUNDS", 3),
         ):
             with mock.patch.object(registry, "scan_all", side_effect=scans):
-                pickup_cli._run_title_daemon(registry, limit=20)
+                corral_cli._run_title_daemon(registry, limit=20)
 
         self.assertEqual(refresh_calls, [["first"], ["second"]])
 
@@ -1367,10 +1367,10 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
                 return rollout_path
             raise OSError("not a symlink we care about")
 
-        with mock.patch("pickup.scan.codex.subprocess.check_output", side_effect=fake_check_output), \
-             mock.patch("pickup.scan.codex.sys.platform", "linux"), \
-             mock.patch("pickup.scan.codex.os.listdir", side_effect=fake_listdir), \
-             mock.patch("pickup.scan.codex.os.readlink", side_effect=fake_readlink):
+        with mock.patch("corral.scan.codex.subprocess.check_output", side_effect=fake_check_output), \
+             mock.patch("corral.scan.codex.sys.platform", "linux"), \
+             mock.patch("corral.scan.codex.os.listdir", side_effect=fake_listdir), \
+             mock.patch("corral.scan.codex.os.readlink", side_effect=fake_readlink):
             live_ids = scan_codex._live_session_ids()
 
         self.assertEqual(live_ids, {uuid: 47372})  # 判活的同时要能精确回填 pid
@@ -1393,8 +1393,8 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
                 return lsof_output.encode()
             raise AssertionError(f"unexpected command: {cmd}")
 
-        with mock.patch("pickup.scan.codex.subprocess.check_output", side_effect=fake_check_output), \
-             mock.patch("pickup.scan.codex.sys.platform", "darwin"):
+        with mock.patch("corral.scan.codex.subprocess.check_output", side_effect=fake_check_output), \
+             mock.patch("corral.scan.codex.sys.platform", "darwin"):
             live_ids = scan_codex._live_session_ids()
 
         self.assertEqual(live_ids, {uuid: 47372})  # 判活的同时要能精确回填 pid
@@ -1402,7 +1402,7 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
     def test_live_session_ids_returns_empty_when_pgrep_unavailable(self) -> None:
         # pgrep 缺失或调用失败时静默降级为空集，不抛异常。
         with mock.patch(
-            "pickup.scan.codex.subprocess.check_output", side_effect=FileNotFoundError()
+            "corral.scan.codex.subprocess.check_output", side_effect=FileNotFoundError()
         ):
             live_ids = scan_codex._live_session_ids()
 
@@ -1453,7 +1453,7 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
         self.assertEqual([s["first_user_msg"] for s in sessions], ["真实的用户问题"])
 
     def test_scan_keeps_live_session_before_first_user_message(self) -> None:
-        """pickup 新建后尚未输入的 Codex 会话也必须在下次进入时重新发现。"""
+        """corral 新建后尚未输入的 Codex 会话也必须在下次进入时重新发现。"""
         old_sessions_dir = scan_codex.SESSIONS_DIR
         old_session_index = scan_codex.SESSION_INDEX
         try:
@@ -1485,11 +1485,11 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
         self.assertEqual(sessions[0]["fallback_title"], "Codex 新会话")
 
     def test_is_ephemeral_agent_cwd(self) -> None:
-        from pickup.scan.common import is_ephemeral_agent_cwd
+        from corral.scan.common import is_ephemeral_agent_cwd
 
         self.assertTrue(is_ephemeral_agent_cwd("/tmp/oc-manager-codex/run-1"))
         self.assertTrue(is_ephemeral_agent_cwd("/var/folders/xx/oc-manager-claude/work"))
-        self.assertFalse(is_ephemeral_agent_cwd("/Users/me/Codes/pickup"))
+        self.assertFalse(is_ephemeral_agent_cwd("/Users/me/Codes/corral"))
         self.assertFalse(is_ephemeral_agent_cwd(""))
         self.assertFalse(is_ephemeral_agent_cwd("/tmp/other-project"))
 
@@ -1852,7 +1852,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             self.assertEqual(by_id["ses_old"]["pid"], 4242)
             self.assertFalse(by_id["ses_new"]["live"])
 
-    def test_live_flags_bind_full_pickup_session_env(self) -> None:
+    def test_live_flags_bind_full_corral_session_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cwd_dir = Path(td) / "workdir"
             cwd_dir.mkdir()
@@ -1872,7 +1872,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
                 db_path,
                 processes=[(77, cwd)],
                 cmdlines={77: "opencode --auto"},
-                environ={77: {"PICKUP_SESSION_ID": session_id}},
+                environ={77: {"CORRAL_SESSION_ID": session_id}},
             )
             by_id = {s["id"]: s for s in sessions}
             self.assertTrue(by_id[session_id]["live"])
@@ -1896,7 +1896,7 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
                 db_path,
                 processes=[(88, cwd)],
                 cmdlines={88: "opencode --auto"},
-                environ={88: {"PICKUP_SESSION_ID": "745659f2"}},
+                environ={88: {"CORRAL_SESSION_ID": "745659f2"}},
             )
             self.assertFalse(sessions[0]["live"])
 
@@ -1970,11 +1970,11 @@ class OpenCodeScanTests(TimezoneMixin, unittest.TestCase):
             self.assertFalse(sessions[0]["live"])
 
     def test_live_processes_degrades_when_pgrep_unavailable(self) -> None:
-        with mock.patch("pickup.scan.common.subprocess.check_output", side_effect=FileNotFoundError()):
+        with mock.patch("corral.scan.common.subprocess.check_output", side_effect=FileNotFoundError()):
             self.assertEqual(scan_opencode.live_processes("opencode"), [])
 
     def test_etime_seconds_parses_ps_formats(self) -> None:
-        from pickup.scan.common import _etime_seconds
+        from corral.scan.common import _etime_seconds
 
         self.assertEqual(_etime_seconds("14:36"), 14 * 60 + 36)
         self.assertEqual(_etime_seconds("01:14:36"), 3600 + 14 * 60 + 36)
@@ -2467,7 +2467,7 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
             self.assertEqual(by_id["session_old"]["pid"], 4242)
             self.assertFalse(by_id["session_new"]["live"])
 
-    def test_live_flags_bind_full_pickup_session_env(self) -> None:
+    def test_live_flags_bind_full_corral_session_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cwd_dir = Path(td) / "workdir"
             cwd_dir.mkdir()
@@ -2492,7 +2492,7 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
                 sessions_dir,
                 processes=[(77, cwd)],
                 cmdlines={77: "kimi -y"},
-                environ={77: {"PICKUP_SESSION_ID": session_id}},
+                environ={77: {"CORRAL_SESSION_ID": session_id}},
             )
             by_id = {s["id"]: s for s in sessions}
             self.assertTrue(by_id[session_id]["live"])
@@ -2516,7 +2516,7 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
                 sessions_dir,
                 processes=[(88, cwd)],
                 cmdlines={88: "kimi -y"},
-                environ={88: {"PICKUP_SESSION_ID": "745659f2"}},
+                environ={88: {"CORRAL_SESSION_ID": "745659f2"}},
             )
             self.assertFalse(sessions[0]["live"])
 
@@ -2873,23 +2873,23 @@ class ConversationPreviewTests(unittest.TestCase):
 
 
 class BackgroundLuminanceTests(unittest.TestCase):
-    """OSC 11 背景色应答 -> 浅/深色判定，供 pickup 自身界面配色跟随外层终端。"""
+    """OSC 11 背景色应答 -> 浅/深色判定，供 corral 自身界面配色跟随外层终端。"""
 
     def test_dark_background_detected(self) -> None:
-        self.assertFalse(pickup._background_is_light(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07"))
+        self.assertFalse(corral._background_is_light(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07"))
 
     def test_light_background_detected(self) -> None:
-        self.assertTrue(pickup._background_is_light(b"\x1b]11;rgb:ffff/ffff/ffff\x07"))
+        self.assertTrue(corral._background_is_light(b"\x1b]11;rgb:ffff/ffff/ffff\x07"))
 
     def test_two_digit_hex_channels_supported(self) -> None:
-        self.assertFalse(pickup._background_is_light(b"\x1b]11;rgb:1e/1e/2e\x07"))
+        self.assertFalse(corral._background_is_light(b"\x1b]11;rgb:1e/1e/2e\x07"))
 
     def test_picks_osc11_not_osc10_foreground(self) -> None:
         mixed = b"\x1b]10;rgb:cccc/cccc/cccc\x07\x1b]11;rgb:1e1e/1e1e/2e2e\x07"
-        self.assertFalse(pickup._background_is_light(mixed))
+        self.assertFalse(corral._background_is_light(mixed))
 
     def test_missing_or_unparsable_report_returns_none(self) -> None:
-        self.assertIsNone(pickup._background_is_light(None))
+        self.assertIsNone(corral._background_is_light(None))
 
 
 class SplitOscReportTests(unittest.TestCase):
@@ -2901,7 +2901,7 @@ class SplitOscReportTests(unittest.TestCase):
 
     def test_splits_combined_report(self) -> None:
         combined = b"\x1b]10;rgb:0000/0000/0000\x07\x1b]11;rgb:ffff/ffff/ffff\x07"
-        background, foreground = pickup.theme._split_osc_report(combined)
+        background, foreground = corral.theme._split_osc_report(combined)
         self.assertEqual(background, b"\x1b]11;rgb:ffff/ffff/ffff\x07")
         self.assertEqual(foreground, b"\x1b]10;rgb:0000/0000/0000\x07")
 
@@ -2910,18 +2910,18 @@ class SplitOscReportTests(unittest.TestCase):
         # 取 matches[-1] 的规则必须一致，否则界面与 pane 注入会各用一个颜色
         duplicated = (b"\x1b]11;rgb:0000/0000/0000\x07"
                       b"\x1b]11;rgb:ffff/ffff/ffff\x07")
-        background, _ = pickup.theme._split_osc_report(duplicated)
+        background, _ = corral.theme._split_osc_report(duplicated)
         self.assertEqual(background, b"\x1b]11;rgb:ffff/ffff/ffff\x07")
 
     def test_st_terminated_and_partial_reports(self) -> None:
-        background, foreground = pickup.theme._split_osc_report(
+        background, foreground = corral.theme._split_osc_report(
             b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\")
         self.assertEqual(background, b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\")
         self.assertIsNone(foreground)
-        self.assertEqual(pickup.theme._split_osc_report(None), (None, None))
-        self.assertEqual(pickup.theme._split_osc_report(b"rubbish"), (None, None))
-        self.assertIsNone(pickup._background_is_light(b""))
-        self.assertIsNone(pickup._background_is_light(b"garbage"))
+        self.assertEqual(corral.theme._split_osc_report(None), (None, None))
+        self.assertEqual(corral.theme._split_osc_report(b"rubbish"), (None, None))
+        self.assertIsNone(corral._background_is_light(b""))
+        self.assertIsNone(corral._background_is_light(b"garbage"))
 
 
 class TuiLayoutTests(unittest.TestCase):
@@ -2940,14 +2940,14 @@ class TuiLayoutTests(unittest.TestCase):
         claude_runtime.id = "claude"
         claude_runtime.display_name = "Claude"
         claude_runtime.scan_sessions.return_value = [session]
-        registry = pickup.RuntimeRegistry((claude_runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((claude_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         # 启动时无缓存：展示临时兜底标题，并标记为等待后台进程生成（转圈圈）。
         self.assertEqual(store.get_title(session), "这是一条很长的兜底标题")
-        self.assertIn(pickup.session_key(session), store.generating)
+        self.assertIn(corral.session_key(session), store.generating)
 
     def test_low_value_session_never_enters_generating_state(self) -> None:
         session = {
@@ -2964,14 +2964,14 @@ class TuiLayoutTests(unittest.TestCase):
         runtime.id = "claude"
         runtime.display_name = "Claude"
         runtime.scan_sessions.return_value = [session]
-        registry = pickup.RuntimeRegistry((runtime,))
+        registry = corral.RuntimeRegistry((runtime,))
 
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         self.assertEqual(store.get_title(session), "在吗")
-        self.assertNotIn(pickup.session_key(session), store.generating)
+        self.assertNotIn(corral.session_key(session), store.generating)
 
     def test_poll_cache_updates_clears_spinner_when_title_arrives(self) -> None:
         session = {
@@ -2988,19 +2988,19 @@ class TuiLayoutTests(unittest.TestCase):
         claude_runtime.id = "claude"
         claude_runtime.display_name = "Claude"
         claude_runtime.scan_sessions.return_value = [session]
-        registry = pickup.RuntimeRegistry((claude_runtime,))
-        key = pickup.session_key(session)
+        registry = corral.RuntimeRegistry((claude_runtime,))
+        key = corral.session_key(session)
 
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
         self.assertIn(key, store.generating)
 
         # 模拟后台进程把标题写进缓存：轮询应拾取它、刷新展示标题并停掉转圈圈。
         fresh_cache = {key: {"fp": titles._fingerprint(session), "title": "后台生成的标题"}}
         with (
-            mock.patch.object(pickup.SessionStore, "_cache_file_mtime", return_value=999.0),
-            mock.patch.object(pickup.titles, "load_cache", return_value=fresh_cache),
+            mock.patch.object(corral.SessionStore, "_cache_file_mtime", return_value=999.0),
+            mock.patch.object(corral.titles, "load_cache", return_value=fresh_cache),
         ):
             store.poll_cache_updates()
 
@@ -3023,11 +3023,11 @@ class TuiLayoutTests(unittest.TestCase):
         runtime.id = "claude"
         runtime.display_name = "Claude"
         runtime.scan_sessions.return_value = [session]
-        registry = pickup.RuntimeRegistry((runtime,))
-        key = pickup.session_key(session)
+        registry = corral.RuntimeRegistry((runtime,))
+        key = corral.session_key(session)
 
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
         self.assertIn(key, store.generating)
 
@@ -3041,8 +3041,8 @@ class TuiLayoutTests(unittest.TestCase):
             }
         }
         with (
-            mock.patch.object(pickup.SessionStore, "_cache_file_mtime", return_value=999.0),
-            mock.patch.object(pickup.titles, "load_cache", return_value=failed_cache),
+            mock.patch.object(corral.SessionStore, "_cache_file_mtime", return_value=999.0),
+            mock.patch.object(corral.titles, "load_cache", return_value=failed_cache),
         ):
             store.poll_cache_updates()
 
@@ -3050,9 +3050,9 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertNotIn(key, store.generating)
         self.assertTrue(store.dirty.is_set())
 
-        # 模拟重新启动 pickup：冷却期内的失败终态不能再次进入待生成队列。
-        with mock.patch.object(pickup.titles, "load_cache", return_value=failed_cache):
-            restarted = pickup.SessionStore(limit=20, registry=registry)
+        # 模拟重新启动 corral：冷却期内的失败终态不能再次进入待生成队列。
+        with mock.patch.object(corral.titles, "load_cache", return_value=failed_cache):
+            restarted = corral.SessionStore(limit=20, registry=registry)
             restarted.load()
         self.assertNotIn(key, restarted.generating)
         self.assertFalse(titles.resolve_initial_title(session, failed_cache)[1])
@@ -3113,15 +3113,15 @@ class TuiLayoutTests(unittest.TestCase):
         runtime.id = "claude"
         runtime.display_name = "Claude"
         runtime.scan_sessions.return_value = [session]
-        registry = pickup.RuntimeRegistry((runtime,))
+        registry = corral.RuntimeRegistry((runtime,))
         spawned: list[int] = []
 
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store._title_spawn_fn = spawned.append
             store.load()
 
-        self.assertIn(pickup.session_key(session), store.generating)
+        self.assertIn(corral.session_key(session), store.generating)
         self.assertEqual(spawned, [20])
 
         # 防抖：紧接着再请求不应重复拉起。
@@ -3142,20 +3142,20 @@ class TuiLayoutTests(unittest.TestCase):
         runtime.id = "claude"
         runtime.display_name = "Claude"
         runtime.scan_sessions.return_value = [session]
-        registry = pickup.RuntimeRegistry((runtime,))
+        registry = corral.RuntimeRegistry((runtime,))
         spawned: list[int] = []
 
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store._title_spawn_fn = spawned.append
             store._last_title_spawn_at = 0.0
             store.load()
         spawned.clear()
         store._last_title_spawn_at = 0.0
-        store._generating_since = time.time() - pickup.store._TITLE_STALE_SPAWN_SECONDS - 1
+        store._generating_since = time.time() - corral.store._TITLE_STALE_SPAWN_SECONDS - 1
 
         with mock.patch.object(
-            pickup.SessionStore, "_cache_file_mtime", return_value=store._cache_mtime,
+            corral.SessionStore, "_cache_file_mtime", return_value=store._cache_mtime,
         ):
             store.poll_cache_updates()
 
@@ -3176,16 +3176,16 @@ class TuiLayoutTests(unittest.TestCase):
         runtime.id = "claude"
         runtime.display_name = "Claude"
         runtime.scan_sessions.return_value = [session]
-        runtime.load_conversation.return_value = [pickup.ConversationMessage("user", "问题")]
-        registry = pickup.RuntimeRegistry((runtime,))
+        runtime.load_conversation.return_value = [corral.ConversationMessage("user", "问题")]
+        registry = corral.RuntimeRegistry((runtime,))
 
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         runtime.load_conversation.assert_not_called()
-        self.assertEqual(store.get_conversation(session), [pickup.ConversationMessage("user", "问题")])
-        self.assertEqual(store.get_conversation(session), [pickup.ConversationMessage("user", "问题")])
+        self.assertEqual(store.get_conversation(session), [corral.ConversationMessage("user", "问题")])
+        self.assertEqual(store.get_conversation(session), [corral.ConversationMessage("user", "问题")])
         runtime.load_conversation.assert_called_once_with(session)
 
     def test_conversation_cache_invalidates_when_history_file_mtime_changes(self) -> None:
@@ -3210,13 +3210,13 @@ class TuiLayoutTests(unittest.TestCase):
             runtime.display_name = "Claude"
             runtime.scan_sessions.return_value = [session]
             runtime.load_conversation.side_effect = [
-                [pickup.ConversationMessage("assistant", "旧内容")],
-                [pickup.ConversationMessage("assistant", "新内容")],
+                [corral.ConversationMessage("assistant", "旧内容")],
+                [corral.ConversationMessage("assistant", "新内容")],
             ]
-            registry = pickup.RuntimeRegistry((runtime,))
+            registry = corral.RuntimeRegistry((runtime,))
 
-            with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-                store = pickup.SessionStore(limit=20, registry=registry)
+            with mock.patch.object(corral.titles, "load_cache", return_value={}):
+                store = corral.SessionStore(limit=20, registry=registry)
                 store.load()
 
             self.assertEqual(store.get_conversation(session)[0].text, "旧内容")
@@ -3256,12 +3256,12 @@ class TuiLayoutTests(unittest.TestCase):
             runtime.display_name = "Claude"
             runtime.scan_sessions.return_value = [session]
             runtime.load_conversation.side_effect = [
-                [pickup.ConversationMessage("assistant", "旧内容")],
-                [pickup.ConversationMessage("assistant", "WAL 新内容")],
+                [corral.ConversationMessage("assistant", "旧内容")],
+                [corral.ConversationMessage("assistant", "WAL 新内容")],
             ]
-            registry = pickup.RuntimeRegistry((runtime,))
-            with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-                store = pickup.SessionStore(limit=20, registry=registry)
+            registry = corral.RuntimeRegistry((runtime,))
+            with mock.patch.object(corral.titles, "load_cache", return_value={}):
+                store = corral.SessionStore(limit=20, registry=registry)
                 store.load()
 
             self.assertEqual(store.get_conversation(session)[0].text, "旧内容")
@@ -3294,12 +3294,12 @@ class TuiLayoutTests(unittest.TestCase):
             runtime.display_name = "OpenCode"
             runtime.scan_sessions.return_value = [session]
             runtime.load_conversation.side_effect = [
-                [pickup.ConversationMessage("user", "旧内容")],
-                [pickup.ConversationMessage("user", "新内容")],
+                [corral.ConversationMessage("user", "旧内容")],
+                [corral.ConversationMessage("user", "新内容")],
             ]
-            registry = pickup.RuntimeRegistry((runtime,))
-            with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-                store = pickup.SessionStore(limit=20, registry=registry)
+            registry = corral.RuntimeRegistry((runtime,))
+            with mock.patch.object(corral.titles, "load_cache", return_value={}):
+                store = corral.SessionStore(limit=20, registry=registry)
                 store.load()
 
             self.assertEqual(store.get_conversation(session)[0].text, "旧内容")
@@ -3344,15 +3344,15 @@ class TuiLayoutTests(unittest.TestCase):
             runtime.display_name = "Claude"
             runtime.scan_sessions.return_value = [session]
             runtime.load_conversation.return_value = [
-                pickup.ConversationMessage("user", "运行中的提问"),
+                corral.ConversationMessage("user", "运行中的提问"),
             ]
-            registry = pickup.RuntimeRegistry((runtime,))
-            with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-                store = pickup.SessionStore(limit=20, registry=registry)
+            registry = corral.RuntimeRegistry((runtime,))
+            with mock.patch.object(corral.titles, "load_cache", return_value={}):
+                store = corral.SessionStore(limit=20, registry=registry)
                 store.load()
 
-            # store 模块里是 `from pickup.cache import get_cache`，必须打在 store 上
-            with mock.patch("pickup.store.get_cache") as get_cache:
+            # store 模块里是 `from corral.cache import get_cache`，必须打在 store 上
+            with mock.patch("corral.store.get_cache") as get_cache:
                 get_cache.return_value.get_conversation.return_value = None
                 store.get_conversation(session)
                 get_cache.return_value.put_conversation.assert_not_called()
@@ -3365,51 +3365,51 @@ class TuiLayoutTests(unittest.TestCase):
 
     def test_format_relative_time_thresholds(self) -> None:
         now = 1_000_000.0
-        self.assertEqual(pickup._format_relative_time(now - 5, now), "just now")
-        self.assertEqual(pickup._format_relative_time(now + 100, now), "just now")  # 时钟漂移/未来
-        self.assertEqual(pickup._format_relative_time(now - 179, now), "just now")  # 3 分钟内
-        self.assertEqual(pickup._format_relative_time(now - 180, now), "3m ago")
-        self.assertEqual(pickup._format_relative_time(now - 3 * 3600, now), "3h ago")
+        self.assertEqual(corral._format_relative_time(now - 5, now), "just now")
+        self.assertEqual(corral._format_relative_time(now + 100, now), "just now")  # 时钟漂移/未来
+        self.assertEqual(corral._format_relative_time(now - 179, now), "just now")  # 3 分钟内
+        self.assertEqual(corral._format_relative_time(now - 180, now), "3m ago")
+        self.assertEqual(corral._format_relative_time(now - 3 * 3600, now), "3h ago")
         # 超过一天退回绝对日期时间（沿用 MM-DD HH:MM）
         old = now - 3 * 86400
         self.assertEqual(
-            pickup._format_relative_time(old, now),
-            pickup.datetime.fromtimestamp(old).strftime("%m-%d %H:%M"),
+            corral._format_relative_time(old, now),
+            corral.datetime.fromtimestamp(old).strftime("%m-%d %H:%M"),
         )
 
     def test_time_brightness_tier_steps_by_age(self) -> None:
         """侧边栏时间行的亮度分档：半小时 / 三小时 / 一天为界，越旧越暗。"""
         now = 1_000_000.0
-        self.assertEqual(pickup._time_brightness_tier(now - 5, now), "fresh")
-        self.assertEqual(pickup._time_brightness_tier(now + 100, now), "fresh")  # 时钟漂移/未来
-        self.assertEqual(pickup._time_brightness_tier(now - 1799, now), "fresh")
-        self.assertEqual(pickup._time_brightness_tier(now - 1801, now), "recent")
-        self.assertEqual(pickup._time_brightness_tier(now - 4 * 3600, now), "today")
-        self.assertEqual(pickup._time_brightness_tier(now - 3 * 86400, now), "old")
-        self.assertEqual(pickup._time_brightness_tier(0, now), "old")  # 缺时间戳按最旧
+        self.assertEqual(corral._time_brightness_tier(now - 5, now), "fresh")
+        self.assertEqual(corral._time_brightness_tier(now + 100, now), "fresh")  # 时钟漂移/未来
+        self.assertEqual(corral._time_brightness_tier(now - 1799, now), "fresh")
+        self.assertEqual(corral._time_brightness_tier(now - 1801, now), "recent")
+        self.assertEqual(corral._time_brightness_tier(now - 4 * 3600, now), "today")
+        self.assertEqual(corral._time_brightness_tier(now - 3 * 86400, now), "old")
+        self.assertEqual(corral._time_brightness_tier(0, now), "old")  # 缺时间戳按最旧
 
     def test_fit_cell_uses_terminal_display_width(self) -> None:
-        self.assertEqual(pickup._text_width("标题"), 4)
-        self.assertEqual(pickup._fit_cell("标题", 6), "标题  ")
-        self.assertEqual(pickup._fit_cell("标题很长", 5), "标题 ")
-        self.assertEqual(pickup._text_width(pickup._fit_cell("✅完成", 8)), 8)
+        self.assertEqual(corral._text_width("标题"), 4)
+        self.assertEqual(corral._fit_cell("标题", 6), "标题  ")
+        self.assertEqual(corral._fit_cell("标题很长", 5), "标题 ")
+        self.assertEqual(corral._text_width(corral._fit_cell("✅完成", 8)), 8)
 
         mixed = "काe\u0301好🙂"
-        self.assertEqual(pickup._text_width(mixed), 6)
-        self.assertEqual(pickup._fit_cell(mixed, 4), "काe\u0301好")
+        self.assertEqual(corral._text_width(mixed), 6)
+        self.assertEqual(corral._fit_cell(mixed, 4), "काe\u0301好")
 
         contextual_emoji = "👨\u200d💻"
-        self.assertEqual(pickup._text_width(contextual_emoji), 2)
-        self.assertEqual(pickup._fit_cell(contextual_emoji + "x", 2), contextual_emoji)
-        self.assertEqual(pickup._wrap_preview_text(contextual_emoji + "x", 2), [contextual_emoji, "x"])
+        self.assertEqual(corral._text_width(contextual_emoji), 2)
+        self.assertEqual(corral._fit_cell(contextual_emoji + "x", 2), contextual_emoji)
+        self.assertEqual(corral._wrap_preview_text(contextual_emoji + "x", 2), [contextual_emoji, "x"])
 
     def test_fit_cell_ellipsis_keeps_display_width(self) -> None:
-        fitted = pickup._fit_cell("标题很长需要省略", 8, ellipsis=True)
+        fitted = corral._fit_cell("标题很长需要省略", 8, ellipsis=True)
         self.assertTrue(fitted.rstrip().endswith("..."))
-        self.assertEqual(pickup._text_width(fitted), 8)
-        short = pickup._fit_cell("短", 8, ellipsis=True)
+        self.assertEqual(corral._text_width(fitted), 8)
+        short = corral._fit_cell("短", 8, ellipsis=True)
         self.assertEqual(short.rstrip(), "短")
-        self.assertEqual(pickup._text_width(short), 8)
+        self.assertEqual(corral._text_width(short), 8)
 
     @staticmethod
     def _preview_text(messages, runtime_name, width, **kw):
@@ -3418,7 +3418,7 @@ class TuiLayoutTests(unittest.TestCase):
 
         from rich.console import Console
 
-        blocks = pickup._preview_blocks(messages, runtime_name, width, **kw)
+        blocks = corral._preview_blocks(messages, runtime_name, width, **kw)
         console = Console(width=width, file=io.StringIO(), color_system=None)
         for block in blocks:
             console.print(block)
@@ -3426,10 +3426,10 @@ class TuiLayoutTests(unittest.TestCase):
 
     def test_preview_renders_messages_as_chronological_chat(self) -> None:
         messages = [
-            pickup.ConversationMessage("user", "请分析启动速度"),
-            pickup.ConversationMessage("assistant", "主要耗时来自历史扫描"),
-            pickup.ConversationMessage("user", "再增加聊天记录预览"),
-            pickup.ConversationMessage("assistant", "已经完成实现和验证"),
+            corral.ConversationMessage("user", "请分析启动速度"),
+            corral.ConversationMessage("assistant", "主要耗时来自历史扫描"),
+            corral.ConversationMessage("user", "再增加聊天记录预览"),
+            corral.ConversationMessage("assistant", "已经完成实现和验证"),
         ]
 
         lines = self._preview_text(messages, "Codex", 40)
@@ -3439,17 +3439,17 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertEqual(lines[1], "请分析启动速度")
         self.assertEqual(sum(1 for line in lines if line == "● You"), 2)
         self.assertEqual(sum(1 for line in lines if line == "◆ Codex"), 2)
-        self.assertTrue(all(pickup._text_width(line) <= 40 for line in lines))
+        self.assertTrue(all(corral._text_width(line) <= 40 for line in lines))
 
     def test_preview_separates_messages_with_a_rule_not_a_blank_line(self) -> None:
         """消息之间用横线分隔（取后一条消息的角色色），不再是看不出边界的空行。"""
         from rich.text import Text
 
         messages = [
-            pickup.ConversationMessage("user", "第一条"),
-            pickup.ConversationMessage("assistant", "第二条"),
+            corral.ConversationMessage("user", "第一条"),
+            corral.ConversationMessage("assistant", "第二条"),
         ]
-        blocks = pickup._preview_blocks(
+        blocks = corral._preview_blocks(
             messages, "Codex", 24, assistant_style="bold #D97757",
         )
         rules = [
@@ -3457,7 +3457,7 @@ class TuiLayoutTests(unittest.TestCase):
             if isinstance(b, Text) and set(b.plain) == {"─"}
         ]
         self.assertEqual(len(rules), 1, "两条消息之间恰好一条分隔线，首条之前不画")
-        self.assertEqual(pickup._text_width(rules[0].plain), 22)
+        self.assertEqual(corral._text_width(rules[0].plain), 22)
         self.assertEqual(
             str(rules[0].style), "dim #D97757",
             "分隔线取后一条消息的角色色并压暗",
@@ -3466,14 +3466,14 @@ class TuiLayoutTests(unittest.TestCase):
     def test_preview_puts_timestamp_on_the_role_line_only_when_available(self) -> None:
         ts = 1_780_000_000.0
         messages = [
-            pickup.ConversationMessage("user", "带时间戳的消息", ts),
-            pickup.ConversationMessage("assistant", "老格式缺时间戳的消息"),
+            corral.ConversationMessage("user", "带时间戳的消息", ts),
+            corral.ConversationMessage("assistant", "老格式缺时间戳的消息"),
         ]
 
         lines = self._preview_text(messages, "Claude", 40)
 
         # 时间戳挂在角色抬头行，不再跟正文抢首行宽度
-        self.assertEqual(lines[0], f"● You  · {pickup.format_message_time(ts)}")
+        self.assertEqual(lines[0], f"● You  · {corral.format_message_time(ts)}")
         self.assertIn("带时间戳的消息", lines)
         self.assertIn("◆ Claude", lines)
         self.assertIn("老格式缺时间戳的消息", lines)
@@ -3481,8 +3481,8 @@ class TuiLayoutTests(unittest.TestCase):
     def test_preview_wraps_body_full_width_without_role_indent(self) -> None:
         """正文顶格折行、吃满整格宽度，续行不再按「角色: 」前缀缩进。"""
         messages = [
-            pickup.ConversationMessage("user", "这是一条需要折行的很长很长的用户消息内容"),
-            pickup.ConversationMessage("assistant", "这是一条需要折行的很长很长的助手回复内容"),
+            corral.ConversationMessage("user", "这是一条需要折行的很长很长的用户消息内容"),
+            corral.ConversationMessage("assistant", "这是一条需要折行的很长很长的助手回复内容"),
         ]
         lines = self._preview_text(messages, "Codex", 24)
         bodies = [
@@ -3491,12 +3491,12 @@ class TuiLayoutTests(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(bodies), 4, "两条消息都应折成多行")
         self.assertFalse(any(line.startswith(" ") for line in bodies), "正文行不得有缩进")
-        self.assertTrue(all(pickup._text_width(line) <= 24 for line in lines))
+        self.assertTrue(all(corral._text_width(line) <= 24 for line in lines))
 
     def test_preview_renders_markdown_structure(self) -> None:
         """正文按 Markdown 排版：标题去掉 #、列表变项目符号、反引号不再露出来。"""
         messages = [
-            pickup.ConversationMessage(
+            corral.ConversationMessage(
                 "assistant",
                 "### 结论\n\n用的是 `getAccountSetting`，**已确认**。\n\n- 第一点\n- 第二点\n",
             ),
@@ -3517,10 +3517,10 @@ class TuiLayoutTests(unittest.TestCase):
         整条消息；`_markdown_renderable` 因此关掉了 HTML 解析。
         """
         messages = [
-            pickup.ConversationMessage(
+            corral.ConversationMessage(
                 "assistant", "<system-reminder>\n这段必须还在\n</system-reminder>",
             ),
-            pickup.ConversationMessage("user", "报错 <urlopen error> 出现了"),
+            corral.ConversationMessage("user", "报错 <urlopen error> 出现了"),
         ]
         body = "\n".join(self._preview_text(messages, "Claude", 60))
         self.assertIn("这段必须还在", body)
@@ -3530,7 +3530,7 @@ class TuiLayoutTests(unittest.TestCase):
     def test_preview_ends_with_END_marker_and_blank_guard_lines(self) -> None:
         """预览尾部三行：空行 → 居中结尾标记 → 空行。"""
         messages = [
-            pickup.ConversationMessage("user", "最后一条"),
+            corral.ConversationMessage("user", "最后一条"),
         ]
         lines = self._preview_text(messages, "Codex", 40)
         self.assertIn(t("detail.preview_end"), lines[-2])
@@ -3572,9 +3572,9 @@ class TuiLayoutTests(unittest.TestCase):
         claude_runtime.display_name = "Claude"
         claude_runtime.scan_signature.return_value = None
         claude_runtime.scan_sessions.side_effect = [first, second]
-        registry = pickup.RuntimeRegistry((claude_runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((claude_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
             self.assertEqual([s["id"] for s in store.all_sessions()], ["a", "b", "c"])
 
@@ -3614,9 +3614,9 @@ class TuiLayoutTests(unittest.TestCase):
         runtime.display_name = "Codex"
         runtime.scan_signature.return_value = None
         runtime.scan_sessions.side_effect = [first, second]
-        registry = pickup.RuntimeRegistry((runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
             self.assertEqual([s["id"] for s in store.all_sessions()], ["keep"])
             changed = store.refresh()
@@ -3632,16 +3632,16 @@ class TuiLayoutTests(unittest.TestCase):
         session = {
             "source": "claude", "id": "s0", "short_id": "s0", "mtime": 1.0,
             "size_bytes": 1, "size_kb": 1, "native_title": None, "fallback_title": "t",
-            "cwd": "/tmp", "live": True, "pid": 99, "keepalive_name": "pickup-claude-s0",
+            "cwd": "/tmp", "live": True, "pid": 99, "keepalive_name": "corral-claude-s0",
         }
         claude_runtime = mock.Mock()
         claude_runtime.id = "claude"
         claude_runtime.display_name = "Claude"
         claude_runtime.scan_signature.return_value = None
         claude_runtime.scan_sessions.return_value = [dict(session)]
-        registry = pickup.RuntimeRegistry((claude_runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((claude_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         store.mark_hosted("claude:s0", None)
@@ -3657,7 +3657,7 @@ class TuiLayoutTests(unittest.TestCase):
             "cwd": "/tmp", "live": True, "pid": 99,
         }
         claude_runtime.scan_sessions.return_value = [still_live]
-        with mock.patch.object(pickup.liveness, "annotate"):
+        with mock.patch.object(corral.liveness, "annotate"):
             store.refresh()
         current = store.find_session("claude:s0")
         self.assertFalse(current.get("live"))
@@ -3665,7 +3665,7 @@ class TuiLayoutTests(unittest.TestCase):
 
         dead = dict(still_live, live=False, pid=None)
         claude_runtime.scan_sessions.return_value = [dead]
-        with mock.patch.object(pickup.liveness, "annotate"):
+        with mock.patch.object(corral.liveness, "annotate"):
             store.refresh()
         self.assertNotIn("claude:s0", store._force_ended)
         self.assertFalse(store.find_session("claude:s0").get("live"))
@@ -3677,39 +3677,39 @@ class TuiLayoutTests(unittest.TestCase):
         cursor_runtime.display_name = "Cursor"
         cursor_runtime.scan_signature.return_value = None
         cursor_runtime.scan_sessions.return_value = []
-        registry = pickup.RuntimeRegistry((cursor_runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((cursor_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         provisional = store.register_hosted_session(
             runtime_id="cursor",
-            keepalive_name="pickup-cursor-abcd1234",
+            keepalive_name="corral-cursor-abcd1234",
             title="接力自 Claude",
             cwd="/tmp/proj",
         )
-        key = pickup.session_key(provisional)
-        self.assertEqual(provisional.get("keepalive_name"), "pickup-cursor-abcd1234")
+        key = corral.session_key(provisional)
+        self.assertEqual(provisional.get("keepalive_name"), "corral-cursor-abcd1234")
         self.assertTrue(provisional.get("provisional"))
         self.assertEqual(store.find_session(key)["fallback_title"], "接力自 Claude")
 
-        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
-            pickup.liveness, "is_alive", return_value=True
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "is_alive", return_value=True
         ):
             store.refresh()
         kept = store.find_session(key)
         self.assertIsNotNone(kept)
-        self.assertEqual(kept.get("keepalive_name"), "pickup-cursor-abcd1234")
+        self.assertEqual(kept.get("keepalive_name"), "corral-cursor-abcd1234")
 
         real = {
             "source": "cursor", "id": "real-uuid", "short_id": "realuuid", "mtime": 9.0,
             "size_bytes": 1, "size_kb": 1, "native_title": "真会话", "fallback_title": "真会话",
             "cwd": "/tmp/proj", "live": True, "pid": 42,
-            "keepalive_name": "pickup-cursor-abcd1234",
+            "keepalive_name": "corral-cursor-abcd1234",
         }
         cursor_runtime.scan_sessions.return_value = [real]
-        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
-            pickup.liveness, "is_alive", return_value=True
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "is_alive", return_value=True
         ):
             store.refresh()
         self.assertIsNone(store.find_session(key))
@@ -3727,19 +3727,19 @@ class TuiLayoutTests(unittest.TestCase):
         pi_runtime.display_name = "Pi"
         pi_runtime.scan_signature.return_value = None
         pi_runtime.scan_sessions.return_value = []
-        registry = pickup.RuntimeRegistry((pi_runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((pi_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         provisional = store.register_hosted_session(
             runtime_id="pi",
-            keepalive_name="pickup-pi-abcd1234",
+            keepalive_name="corral-pi-abcd1234",
             title="新Pi会话",
             cwd="/tmp/proj",
             ident="abcd1234",
         )
-        old_key = pickup.session_key(provisional)
+        old_key = corral.session_key(provisional)
         real = {
             "source": "pi", "id": "019ffa0b-6679-7e5e-bfd9-1615e07cf643",
             "short_id": "019ffa0b6679", "mtime": 9.0,
@@ -3747,18 +3747,18 @@ class TuiLayoutTests(unittest.TestCase):
             "fallback_title": "真会话", "cwd": "/tmp/proj", "live": False, "pid": None,
         }
         pi_runtime.scan_sessions.return_value = [real]
-        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
-            pickup.liveness, "is_alive", return_value=True
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "is_alive", return_value=True
         ):
             store.refresh()
         self.assertIsNone(store.find_session(old_key))
         claimed = store.find_session("pi:019ffa0b-6679-7e5e-bfd9-1615e07cf643")
         self.assertIsNotNone(claimed)
-        self.assertEqual(claimed.get("keepalive_name"), "pickup-pi-abcd1234")
+        self.assertEqual(claimed.get("keepalive_name"), "corral-pi-abcd1234")
         self.assertNotIn(old_key, store._provisional)
         self.assertEqual(
             store.hosted.get("pi:019ffa0b-6679-7e5e-bfd9-1615e07cf643"),
-            "pickup-pi-abcd1234",
+            "corral-pi-abcd1234",
         )
 
     def test_pi_two_newcomers_same_cwd_do_not_cross_claim(self) -> None:
@@ -3768,21 +3768,21 @@ class TuiLayoutTests(unittest.TestCase):
         pi_runtime.display_name = "Pi"
         pi_runtime.scan_signature.return_value = None
         pi_runtime.scan_sessions.return_value = []
-        registry = pickup.RuntimeRegistry((pi_runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((pi_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         first = store.register_hosted_session(
             runtime_id="pi",
-            keepalive_name="pickup-pi-aaa11111",
+            keepalive_name="corral-pi-aaa11111",
             title="Pi A",
             cwd="/tmp/proj",
             ident="aaa11111",
         )
         second = store.register_hosted_session(
             runtime_id="pi",
-            keepalive_name="pickup-pi-bbb22222",
+            keepalive_name="corral-pi-bbb22222",
             title="Pi B",
             cwd="/tmp/proj",
             ident="bbb22222",
@@ -3798,41 +3798,41 @@ class TuiLayoutTests(unittest.TestCase):
             "cwd": "/tmp/proj", "live": False,
         }
         pi_runtime.scan_sessions.return_value = [real_a, real_b]
-        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
-            pickup.liveness, "is_alive", return_value=True
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "is_alive", return_value=True
         ):
             store.refresh()
-        self.assertIsNotNone(store.find_session(pickup.session_key(first)))
-        self.assertIsNotNone(store.find_session(pickup.session_key(second)))
+        self.assertIsNotNone(store.find_session(corral.session_key(first)))
+        self.assertIsNotNone(store.find_session(corral.session_key(second)))
         self.assertIsNotNone(store.find_session("pi:uuid-a"))
         self.assertIsNotNone(store.find_session("pi:uuid-b"))
         self.assertIsNone(store.find_session("pi:uuid-a").get("keepalive_name"))
         self.assertIsNone(store.find_session("pi:uuid-b").get("keepalive_name"))
 
     def test_pi_session_dir_newcomers_claim_without_crossing(self) -> None:
-        """同 cwd 两个占位卡按 pickup-<ident> 目录各领各的真实卡，不再因两条新卡放弃。"""
-        from pickup.scan.pi import hosted_session_dir
+        """同 cwd 两个占位卡按 corral-<ident> 目录各领各的真实卡，不再因两条新卡放弃。"""
+        from corral.scan.pi import hosted_session_dir
 
         pi_runtime = mock.Mock()
         pi_runtime.id = "pi"
         pi_runtime.display_name = "Pi"
         pi_runtime.scan_signature.return_value = None
         pi_runtime.scan_sessions.return_value = []
-        registry = pickup.RuntimeRegistry((pi_runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((pi_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         first = store.register_hosted_session(
             runtime_id="pi",
-            keepalive_name="pickup-pi-aaa11111",
+            keepalive_name="corral-pi-aaa11111",
             title="Pi A",
             cwd="/tmp/proj",
             ident="aaa11111",
         )
         second = store.register_hosted_session(
             runtime_id="pi",
-            keepalive_name="pickup-pi-bbb22222",
+            keepalive_name="corral-pi-bbb22222",
             title="Pi B",
             cwd="/tmp/proj",
             ident="bbb22222",
@@ -3856,16 +3856,16 @@ class TuiLayoutTests(unittest.TestCase):
             "cwd": "/tmp/proj", "live": False, "path": path_b,
         }
         pi_runtime.scan_sessions.return_value = [real_a, real_b]
-        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
-            pickup.liveness, "is_alive", return_value=True
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "is_alive", return_value=True
         ):
             store.refresh()
-        self.assertIsNone(store.find_session(pickup.session_key(first)))
-        self.assertIsNone(store.find_session(pickup.session_key(second)))
+        self.assertIsNone(store.find_session(corral.session_key(first)))
+        self.assertIsNone(store.find_session(corral.session_key(second)))
         claimed_a = store.find_session("pi:uuid-a")
         claimed_b = store.find_session("pi:uuid-b")
-        self.assertEqual(claimed_a.get("keepalive_name"), "pickup-pi-aaa11111")
-        self.assertEqual(claimed_b.get("keepalive_name"), "pickup-pi-bbb22222")
+        self.assertEqual(claimed_a.get("keepalive_name"), "corral-pi-aaa11111")
+        self.assertEqual(claimed_b.get("keepalive_name"), "corral-pi-bbb22222")
 
     def test_pi_same_ident_after_session_id_does_not_duplicate(self) -> None:
         """`--session-id` 让落盘 id 与占位 ident 相同时，只留一张卡。"""
@@ -3874,33 +3874,33 @@ class TuiLayoutTests(unittest.TestCase):
         pi_runtime.display_name = "Pi"
         pi_runtime.scan_signature.return_value = None
         pi_runtime.scan_sessions.return_value = []
-        registry = pickup.RuntimeRegistry((pi_runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((pi_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
 
         provisional = store.register_hosted_session(
             runtime_id="pi",
-            keepalive_name="pickup-pi-abcd1234",
+            keepalive_name="corral-pi-abcd1234",
             title="新Pi会话",
             cwd="/tmp/proj",
             ident="abcd1234",
         )
-        key = pickup.session_key(provisional)
+        key = corral.session_key(provisional)
         real = {
             "source": "pi", "id": "abcd1234", "short_id": "abcd1234", "mtime": 9.0,
             "size_bytes": 1, "size_kb": 1, "native_title": "真会话",
             "fallback_title": "真会话", "cwd": "/tmp/proj", "live": False,
         }
         pi_runtime.scan_sessions.return_value = [real]
-        with mock.patch.object(pickup.liveness, "annotate"), mock.patch.object(
-            pickup.liveness, "is_alive", return_value=True
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "is_alive", return_value=True
         ):
             store.refresh()
         found = store.find_session(key)
         self.assertIsNotNone(found)
         self.assertFalse(found.get("provisional"))
-        self.assertEqual(found.get("keepalive_name"), "pickup-pi-abcd1234")
+        self.assertEqual(found.get("keepalive_name"), "corral-pi-abcd1234")
         self.assertNotIn(key, store._provisional)
         self.assertEqual(len([s for s in store.all_sessions() if s.get("source") == "pi"]), 1)
 
@@ -3920,21 +3920,21 @@ class TuiLayoutTests(unittest.TestCase):
         claude_runtime.display_name = "Claude"
         claude_runtime.scan_signature.return_value = None
         claude_runtime.scan_sessions.return_value = [dict(session)]
-        registry = pickup.RuntimeRegistry((claude_runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}):
-            store = pickup.SessionStore(limit=20, registry=registry)
+        registry = corral.RuntimeRegistry((claude_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
             store.load()
-        store.hosted["claude:s1"] = "pickup-claude-s1"
+        store.hosted["claude:s1"] = "corral-claude-s1"
         # 去掉 keepalive_name，迫使走 hosted + embed.is_alive 分支
         store.find_session("claude:s1").pop("keepalive_name", None)
         claude_runtime.scan_sessions.return_value = [dict(session)]
         with (
-            mock.patch.object(pickup.liveness, "annotate"),
-            mock.patch("pickup.store.liveness.is_alive", return_value=True) as alive,
+            mock.patch.object(corral.liveness, "annotate"),
+            mock.patch("corral.store.liveness.is_alive", return_value=True) as alive,
         ):
             store.refresh()
-        alive.assert_called_with("pickup-claude-s1")
-        self.assertEqual(store.find_session("claude:s1").get("keepalive_name"), "pickup-claude-s1")
+        alive.assert_called_with("corral-claude-s1")
+        self.assertEqual(store.find_session("claude:s1").get("keepalive_name"), "corral-claude-s1")
 
 
 class NavStub:
@@ -3947,10 +3947,10 @@ class NavStub:
 
 class ProjectSidebarTests(unittest.TestCase):
     def test_normalize_cwd_trailing_slash_and_empty(self) -> None:
-        self.assertEqual(pickup._normalize_cwd("/a/b/"), "/a/b")
-        self.assertEqual(pickup._normalize_cwd(""), "")
-        self.assertEqual(pickup._normalize_cwd(None), "")
-        self.assertEqual(pickup._normalize_cwd("/"), "")
+        self.assertEqual(corral._normalize_cwd("/a/b/"), "/a/b")
+        self.assertEqual(corral._normalize_cwd(""), "")
+        self.assertEqual(corral._normalize_cwd(None), "")
+        self.assertEqual(corral._normalize_cwd("/"), "")
 
     def test_project_groups_sorted_by_count_then_latest_mtime(self) -> None:
         sessions_by_source = {
@@ -3961,7 +3961,7 @@ class ProjectSidebarTests(unittest.TestCase):
                 {"cwd": "/a/z", "mtime": 1},
             ],
         }
-        groups = pickup._project_groups(sessions_by_source)
+        groups = corral._project_groups(sessions_by_source)
         keys = [g["cwd_key"] for g in groups]
 
         # 会话数最多的项目排第一；会话数相同的项目按最近会话时间倒序。
@@ -3974,7 +3974,7 @@ class ProjectSidebarTests(unittest.TestCase):
             "claude": [{"cwd": "/a/x", "mtime": 1}],
             "codex": [{"cwd": "/a/x", "mtime": 2}],
         }
-        groups = pickup._project_groups(sessions_by_source)
+        groups = corral._project_groups(sessions_by_source)
 
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["count"], 2)
@@ -3982,44 +3982,44 @@ class ProjectSidebarTests(unittest.TestCase):
 
     def test_project_groups_labels_empty_and_root_cwd_as_unknown(self) -> None:
         sessions_by_source = {"claude": [{"cwd": "", "mtime": 1}, {"cwd": "/", "mtime": 2}]}
-        groups = pickup._project_groups(sessions_by_source)
+        groups = corral._project_groups(sessions_by_source)
 
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["cwd_key"], "")
-        self.assertEqual(groups[0]["label"], pickup.UNKNOWN_PROJECT_LABEL)
+        self.assertEqual(groups[0]["label"], corral.UNKNOWN_PROJECT_LABEL)
         self.assertEqual(groups[0]["count"], 2)
 
     def test_session_store_projects_resolves_project_groups(self) -> None:
         """SessionStore.projects 合并会话 cwd（并可扫 git 根），不能 NameError 闪退。"""
-        from pickup import projects as projects_mod
-        from pickup.store import SessionStore
+        from corral import projects as projects_mod
+        from corral.store import SessionStore
 
         runtime = mock.Mock(id="claude", display_name="Claude")
         runtime.scan_signature.return_value = None
         runtime.scan_sessions.return_value = []
-        registry = pickup.RuntimeRegistry((runtime,))
-        with mock.patch.object(pickup.titles, "load_cache", return_value={}), mock.patch.object(
-            pickup.liveness, "annotate"
+        registry = corral.RuntimeRegistry((runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}), mock.patch.object(
+            corral.liveness, "annotate"
         ):
             store = SessionStore(limit=5, registry=registry)
         store.sessions = {
             "claude": [{"cwd": "/proj/a", "mtime": 3}, {"cwd": "/proj/b", "mtime": 1}],
         }
         # 跳过真实家目录 git 扫描，只断言会话源聚合。
-        with mock.patch.dict(os.environ, {"PICKUP_PROJECT_ROOTS": ""}):
+        with mock.patch.dict(os.environ, {"CORRAL_PROJECT_ROOTS": ""}):
             projects_mod.clear_filesystem_cache()
             groups = store.projects()
         self.assertEqual([g["cwd_key"] for g in groups], ["/proj/a", "/proj/b"])
         self.assertEqual(groups[0]["count"], 1)
 
     def test_disambiguate_adds_parent_only_on_conflict(self) -> None:
-        labels = pickup._disambiguate_labels(["/a/x/cli", "/b/y/app"])
+        labels = corral._disambiguate_labels(["/a/x/cli", "/b/y/app"])
         self.assertEqual(labels["/a/x/cli"], "cli")
         self.assertEqual(labels["/b/y/app"], "app")
 
     def test_disambiguate_climbs_multiple_levels(self) -> None:
         # 两个同名 cli 目录连上一级目录名也相同，需要继续向上爬升才能唯一区分。
-        labels = pickup._disambiguate_labels(["/a/p/cli", "/b/p/cli"])
+        labels = corral._disambiguate_labels(["/a/p/cli", "/b/p/cli"])
         self.assertEqual(labels["/a/p/cli"], "a/p/cli")
         self.assertEqual(labels["/b/p/cli"], "b/p/cli")
         self.assertNotEqual(labels["/a/p/cli"], labels["/b/p/cli"])
@@ -4029,34 +4029,34 @@ class ProjectSidebarTests(unittest.TestCase):
             {"cwd": "/a/x/cli", "mtime": 1},
             {"cwd": "/b/y/cli", "mtime": 2},
         ]
-        filtered = pickup._filter_sessions(sessions, "/a/x/cli")
+        filtered = corral._filter_sessions(sessions, "/a/x/cli")
 
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["cwd"], "/a/x/cli")
 
     def test_filter_sessions_none_key_returns_unfiltered(self) -> None:
         sessions = [{"cwd": "/a/x", "mtime": 1}]
-        self.assertEqual(pickup._filter_sessions(sessions, None), sessions)
+        self.assertEqual(corral._filter_sessions(sessions, None), sessions)
 
     def test_fuzzy_match_case_insensitive_substring_and_subsequence(self) -> None:
-        self.assertTrue(pickup._fuzzy_match("proxy", "ProxyAgent"))
-        self.assertTrue(pickup._fuzzy_match("PROXY", "ProxyAgent"))
-        self.assertTrue(pickup._fuzzy_match("pxy", "ProxyAgent"))
-        self.assertTrue(pickup._fuzzy_match("界面", "侧边栏界面打磨"))
-        self.assertFalse(pickup._fuzzy_match("zzz", "ProxyAgent"))
-        self.assertTrue(pickup._fuzzy_match("", "anything"))
+        self.assertTrue(corral._fuzzy_match("proxy", "ProxyAgent"))
+        self.assertTrue(corral._fuzzy_match("PROXY", "ProxyAgent"))
+        self.assertTrue(corral._fuzzy_match("pxy", "ProxyAgent"))
+        self.assertTrue(corral._fuzzy_match("界面", "侧边栏界面打磨"))
+        self.assertFalse(corral._fuzzy_match("zzz", "ProxyAgent"))
+        self.assertTrue(corral._fuzzy_match("", "anything"))
 
     def test_filter_sessions_by_query_matches_project_and_title(self) -> None:
         sessions = [
             {"source": "claude", "id": "1", "cwd": "/x/ProxyAgent", "fallback_title": "节点"},
-            {"source": "claude", "id": "2", "cwd": "/x/pickup", "fallback_title": "界面打磨"},
+            {"source": "claude", "id": "2", "cwd": "/x/corral", "fallback_title": "界面打磨"},
             {"source": "claude", "id": "3", "cwd": "/x/other", "fallback_title": "无关"},
         ]
-        by_project = pickup._filter_sessions_by_query(sessions, "pRoXy")
+        by_project = corral._filter_sessions_by_query(sessions, "pRoXy")
         self.assertEqual([s["id"] for s in by_project], ["1"])
-        by_title = pickup._filter_sessions_by_query(sessions, "界面")
+        by_title = corral._filter_sessions_by_query(sessions, "界面")
         self.assertEqual([s["id"] for s in by_title], ["2"])
-        self.assertEqual(pickup._filter_sessions_by_query(sessions, ""), sessions)
+        self.assertEqual(corral._filter_sessions_by_query(sessions, ""), sessions)
 
     def test_new_session_cwd_uses_unique_project_from_query(self) -> None:
         store = mock.Mock()
@@ -4069,7 +4069,7 @@ class ProjectSidebarTests(unittest.TestCase):
         nav = NavStub(project_query="proj/a")
         session = {"cwd": "/proj/other"}
 
-        self.assertEqual(pickup._new_session_cwd(store, nav, session), "/proj/a")
+        self.assertEqual(corral._new_session_cwd(store, nav, session), "/proj/a")
 
     def test_new_session_cwd_falls_back_to_session_cwd_when_query_ambiguous(self) -> None:
         store = mock.Mock()
@@ -4081,45 +4081,45 @@ class ProjectSidebarTests(unittest.TestCase):
         nav = NavStub(project_query="proj")
         session = {"cwd": "/proj/session"}
 
-        self.assertEqual(pickup._new_session_cwd(store, nav, session), "/proj/session")
+        self.assertEqual(corral._new_session_cwd(store, nav, session), "/proj/session")
 
     def test_new_session_cwd_falls_back_to_session_cwd_when_empty_query(self) -> None:
         store = mock.Mock()
         nav = NavStub()
         session = {"cwd": "/proj/session"}
 
-        self.assertEqual(pickup._new_session_cwd(store, nav, session), "/proj/session")
+        self.assertEqual(corral._new_session_cwd(store, nav, session), "/proj/session")
 
     def test_new_session_cwd_none_without_project_or_session(self) -> None:
         store = mock.Mock()
         nav = NavStub()
 
-        self.assertIsNone(pickup._new_session_cwd(store, nav, None))
+        self.assertIsNone(corral._new_session_cwd(store, nav, None))
 
 
 class TmuxRequirementTests(unittest.TestCase):
     def test_supported_version_passes(self) -> None:
         with (
-            mock.patch.object(pickup.shutil, "which", return_value="/usr/bin/tmux"),
-            mock.patch.object(pickup.embed, "_tmux_version", return_value=(3, 2)),
+            mock.patch.object(corral.shutil, "which", return_value="/usr/bin/tmux"),
+            mock.patch.object(corral.embed, "_tmux_version", return_value=(3, 2)),
         ):
-            pickup._require_tmux()
+            corral._require_tmux()
 
     def test_unparseable_version_does_not_block(self) -> None:
         with (
-            mock.patch.object(pickup.shutil, "which", return_value="/usr/bin/tmux"),
-            mock.patch.object(pickup.embed, "_tmux_version", return_value=None),
+            mock.patch.object(corral.shutil, "which", return_value="/usr/bin/tmux"),
+            mock.patch.object(corral.embed, "_tmux_version", return_value=None),
         ):
-            pickup._require_tmux()
+            corral._require_tmux()
 
     def test_old_version_reports_required_and_current_versions(self) -> None:
         with (
-            mock.patch.object(pickup.shutil, "which", return_value="/usr/bin/tmux"),
-            mock.patch.object(pickup.embed, "_tmux_version", return_value=(3, 1)),
+            mock.patch.object(corral.shutil, "which", return_value="/usr/bin/tmux"),
+            mock.patch.object(corral.embed, "_tmux_version", return_value=(3, 1)),
             mock.patch("builtins.print") as print_mock,
             self.assertRaises(SystemExit) as ctx,
         ):
-            pickup._require_tmux()
+            corral._require_tmux()
 
         self.assertEqual(ctx.exception.code, 1)
         output = " ".join(str(call) for call in print_mock.call_args_list)
@@ -4128,7 +4128,7 @@ class TmuxRequirementTests(unittest.TestCase):
 
 
 class DirectLaunchTests(unittest.TestCase):
-    """`pickup claude [参数…]` / `pickup codex [参数…]` 直启透传子命令的分发逻辑。
+    """`corral claude [参数…]` / `corral codex [参数…]` 直启透传子命令的分发逻辑。
 
     裸位置参数已改为项目名匹配（见 test_projects.DirectLaunchProjectTests）；
     透传用例的首参必须以 `-` 开头。
@@ -4143,21 +4143,21 @@ class DirectLaunchTests(unittest.TestCase):
 
     def test_passes_through_args_and_wraps_with_keepalive_by_default(self) -> None:
         plan = LaunchPlan(("claude", "--dangerously-skip-permissions", "--print", "hi"), None)
-        wrapped = LaunchPlan(("tmux", "-L", "pickup-keepalive", "new-session", "-A", "-s", "sc-claude-xxxx"), None)
+        wrapped = LaunchPlan(("tmux", "-L", "corral-keepalive", "new-session", "-A", "-s", "sc-claude-xxxx"), None)
         registry = self._registry_returning(plan)
 
         with (
-            mock.patch.object(pickup, "keepalive") as keepalive_mock,
-            mock.patch.object(pickup, "execute_launch") as execute_launch,
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
-            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+            mock.patch.object(corral, "keepalive") as keepalive_mock,
+            mock.patch.object(corral, "execute_launch") as execute_launch,
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch.object(corral.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(corral.sys.stdout, "isatty", return_value=False),
         ):
             keepalive_mock.enabled.return_value = True
             keepalive_mock.new_session_ident.return_value = "xxxx"
             keepalive_mock.wrap_plan.return_value = wrapped
 
-            pickup._dispatch_direct_launch(["claude", "--print", "hi"], registry)
+            corral._dispatch_direct_launch(["claude", "--print", "hi"], registry)
 
         registry.build_passthrough_plan.assert_called_once_with("claude", ["--print", "hi"])
         keepalive_mock.enabled.assert_called_once_with(False)
@@ -4169,15 +4169,15 @@ class DirectLaunchTests(unittest.TestCase):
         registry = self._registry_returning(plan)
 
         with (
-            mock.patch.object(pickup, "keepalive") as keepalive_mock,
-            mock.patch.object(pickup, "execute_launch") as execute_launch,
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
-            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+            mock.patch.object(corral, "keepalive") as keepalive_mock,
+            mock.patch.object(corral, "execute_launch") as execute_launch,
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch.object(corral.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(corral.sys.stdout, "isatty", return_value=False),
         ):
             keepalive_mock.enabled.return_value = False
 
-            pickup._dispatch_direct_launch(["--no-keepalive", "codex", "--resume", "x"], registry)
+            corral._dispatch_direct_launch(["--no-keepalive", "codex", "--resume", "x"], registry)
 
         registry.build_passthrough_plan.assert_called_once_with("codex", ["--resume", "x"])
         keepalive_mock.enabled.assert_called_once_with(True)
@@ -4189,16 +4189,16 @@ class DirectLaunchTests(unittest.TestCase):
         registry = self._registry_returning(plan)
 
         with (
-            mock.patch.object(pickup, "keepalive") as keepalive_mock,
-            mock.patch.object(pickup, "execute_launch", side_effect=pickup.LaunchError("未找到 claude 命令")),
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch.object(pickup.sys.stdin, "isatty", return_value=False),
-            mock.patch.object(pickup.sys.stdout, "isatty", return_value=False),
+            mock.patch.object(corral, "keepalive") as keepalive_mock,
+            mock.patch.object(corral, "execute_launch", side_effect=corral.LaunchError("未找到 claude 命令")),
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch.object(corral.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(corral.sys.stdout, "isatty", return_value=False),
         ):
             keepalive_mock.enabled.return_value = False
 
             with self.assertRaises(SystemExit) as ctx:
-                pickup._dispatch_direct_launch(["claude"], registry)
+                corral._dispatch_direct_launch(["claude"], registry)
 
         self.assertEqual(ctx.exception.code, 1)
 
@@ -4209,30 +4209,30 @@ class DirectLaunchTests(unittest.TestCase):
         registry = self._registry_returning(plan)
 
         with (
-            mock.patch.object(pickup.sys, "stdin") as stdin_mock,
-            mock.patch.object(pickup.sys, "stdout") as stdout_mock,
-            mock.patch.object(pickup, "keepalive") as keepalive_mock,
-            mock.patch.object(pickup.embed, "available", return_value=True),
-            mock.patch.object(pickup, "SessionStore") as store_cls,
-            mock.patch.object(pickup, "_spawn_title_daemon"),
-            mock.patch.object(pickup, "_probe_osc_colours", return_value=None),
-            mock.patch.object(pickup, "_require_tmux"),
-            mock.patch("pickup.ui.app.run_app", return_value=None) as run_app,
-            mock.patch.object(pickup.embed, "close_channel"),
-            mock.patch.object(pickup, "execute_launch") as execute_launch,
+            mock.patch.object(corral.sys, "stdin") as stdin_mock,
+            mock.patch.object(corral.sys, "stdout") as stdout_mock,
+            mock.patch.object(corral, "keepalive") as keepalive_mock,
+            mock.patch.object(corral.embed, "available", return_value=True),
+            mock.patch.object(corral, "SessionStore") as store_cls,
+            mock.patch.object(corral, "_spawn_title_daemon"),
+            mock.patch.object(corral, "_probe_osc_colours", return_value=None),
+            mock.patch.object(corral, "_require_tmux"),
+            mock.patch("corral.ui.app.run_app", return_value=None) as run_app,
+            mock.patch.object(corral.embed, "close_channel"),
+            mock.patch.object(corral, "execute_launch") as execute_launch,
         ):
             stdin_mock.isatty.return_value = True
             stdout_mock.isatty.return_value = True
             keepalive_mock.new_session_ident.return_value = "xxxx"
 
-            pickup._dispatch_direct_launch(["claude"], registry)
+            corral._dispatch_direct_launch(["claude"], registry)
 
         store_cls.return_value.load.assert_called_once_with()
         run_app.assert_called_once()
         args = run_app.call_args.args
         self.assertIs(args[0], store_cls.return_value)
         self.assertIs(args[1], True)
-        self.assertEqual(args[2], pickup._DirectLaunch(plan, "claude", "xxxx"))
+        self.assertEqual(args[2], corral._DirectLaunch(plan, "claude", "xxxx"))
         execute_launch.assert_not_called()
         keepalive_mock.wrap_plan.assert_not_called()
 
@@ -4586,7 +4586,7 @@ class AgentApiTests(unittest.TestCase):
         self.assertEqual(result["data"]["pid"], 999)
 
     def test_describe_list_and_search_document_live_flag_and_new_fields(self) -> None:
-        # pickup describe 的输出与实现同源，改完命令必须同步这里，防止参数/字段说明漂移。
+        # corral describe 的输出与实现同源，改完命令必须同步这里，防止参数/字段说明漂移。
         args = mock.Mock(target="list")
         result = agent_api.cmd_describe(args, registry=None)
         list_flags = [flag for arg in result["data"]["args"] for flag in arg["flags"]]
@@ -4639,7 +4639,7 @@ class CursorScanTests(unittest.TestCase):
         return d
 
     def test_scan_sessions_reads_meta_and_prompt_history(self) -> None:
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -4680,7 +4680,7 @@ class CursorScanTests(unittest.TestCase):
 
     def test_scan_filters_self_generated_title_sessions(self) -> None:
         """标题生成 `agent -p` 落盘会话必须过滤 PROMPT_MARKER（首条/fallback/原生标题）。"""
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -4725,7 +4725,7 @@ class CursorScanTests(unittest.TestCase):
 
     def test_scan_filters_subagent_sessions(self) -> None:
         """Cursor subagent 即使带 title/cwd/prompt 也不得进入列表。"""
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -4758,7 +4758,7 @@ class CursorScanTests(unittest.TestCase):
         self.assertEqual([s["id"] for s in sessions], ["parent-chat-id-0001-0002-0003-000000000001"])
 
     def test_load_conversation_extracts_user_query_and_assistant(self) -> None:
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             chat = Path(td) / "chat"
@@ -4803,7 +4803,7 @@ class CursorScanTests(unittest.TestCase):
 
         真机：预览和小窗都缺最后几条；主库几乎空时甚至读不到 blobs 表。
         """
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             chat = Path(td) / "chat"
@@ -4869,7 +4869,7 @@ class CursorScanTests(unittest.TestCase):
         真机故障演进：cwd→最新会话兜底会把空壳/接力进程绑到同目录更早的历史，
         侧边栏标题对、右栏却是另一场对话或空白欢迎页。
         """
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -4938,7 +4938,7 @@ class CursorScanTests(unittest.TestCase):
 
     def test_live_flags_do_not_bind_blank_agent_to_older_cwd_history(self) -> None:
         """无 resume、未打开 store.db 的空壳 agent 不得冒充同目录历史会话。"""
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -4968,7 +4968,7 @@ class CursorScanTests(unittest.TestCase):
             ), mock.patch.object(
                 scan_cursor,
                 "process_environ",
-                return_value={"PICKUP_SESSION_ID": "01a1d8c7"},  # 空白新建临时 id
+                return_value={"CORRAL_SESSION_ID": "01a1d8c7"},  # 空白新建临时 id
             ):
                 sessions = scan_cursor.scan_sessions(limit=10)
 
@@ -4976,9 +4976,9 @@ class CursorScanTests(unittest.TestCase):
             self.assertFalse(sessions[0]["live"])
             self.assertIsNone(sessions[0]["pid"])
 
-    def test_live_flags_bind_via_pickup_session_env(self) -> None:
-        """托管注入的完整 PICKUP_SESSION_ID 可在无 resume / 尚未打开 db 时精确绑定。"""
-        from pickup.scan import cursor as scan_cursor
+    def test_live_flags_bind_via_corral_session_env(self) -> None:
+        """托管注入的完整 CORRAL_SESSION_ID 可在无 resume / 尚未打开 db 时精确绑定。"""
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -5007,7 +5007,7 @@ class CursorScanTests(unittest.TestCase):
             ), mock.patch.object(
                 scan_cursor,
                 "process_environ",
-                return_value={"PICKUP_SESSION_ID": chat_id},
+                return_value={"CORRAL_SESSION_ID": chat_id},
             ):
                 sessions = scan_cursor.scan_sessions(limit=10)
 
@@ -5015,7 +5015,7 @@ class CursorScanTests(unittest.TestCase):
             self.assertEqual(sessions[0]["pid"], 55021)
 
     def test_resume_id_from_cmdline_parses_equals_and_skips_minus_one(self) -> None:
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         self.assertEqual(
             scan_cursor._resume_id_from_cmdline(
@@ -5029,10 +5029,10 @@ class CursorScanTests(unittest.TestCase):
     def test_live_flags_prefer_blank_host_over_secondary_resume(self) -> None:
         """同一 chat 并存无 resume 托管与二次 --resume 时，live pid 绑前者。
 
-        否则 annotate 会挂到 pickup-cursor-<uuid>，占位卡 pickup-cursor-<8位>
+        否则 annotate 会挂到 corral-cursor-<uuid>，占位卡 corral-cursor-<8位>
         退不掉，侧边栏双卡。
         """
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -5043,7 +5043,7 @@ class CursorScanTests(unittest.TestCase):
                 root,
                 "ws1",
                 chat_id,
-                title="Pickup Session Issue",
+                title="Corral Session Issue",
                 cwd=cwd,
                 updated_ms=1_700_000_000_000,
                 prompts=["奇怪的现象"],
@@ -5082,7 +5082,7 @@ class CursorScanTests(unittest.TestCase):
             self.assertEqual(sessions[0]["pid"], blank_pid)
 
     def test_chat_ids_from_open_paths_dedupes_wal_shm(self) -> None:
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         chat_id = "8150d335-b9dd-445c-8ed4-32b0276406fa"
         paths = [
@@ -5095,7 +5095,7 @@ class CursorScanTests(unittest.TestCase):
 
     def test_is_cursor_agent_cmdline_accepts_wrapper_skips_worker(self) -> None:
         """Cursor agent 判活必须认 wrapper/cmdline，并排除 worker-server。"""
-        from pickup.scan.common import is_cursor_agent_cmdline
+        from corral.scan.common import is_cursor_agent_cmdline
 
         self.assertTrue(
             is_cursor_agent_cmdline(
@@ -5120,7 +5120,7 @@ class CursorScanTests(unittest.TestCase):
         self.assertFalse(is_cursor_agent_cmdline(""))
 
     def test_is_pi_cmdline_accepts_node_wrapper_skips_title_generator(self) -> None:
-        from pickup.scan.common import is_pi_cmdline
+        from corral.scan.common import is_pi_cmdline
 
         self.assertTrue(is_pi_cmdline("pi --approve"))
         self.assertTrue(
@@ -5139,10 +5139,10 @@ class CursorScanTests(unittest.TestCase):
         真机（2026-07-23）：Cursor agent 的 /proc/pid/comm=MainThread，侧边栏
         live 全灭 → 占位卡无法退役 → 同一会话双卡（临时 id + 真实 UUID）。
         """
-        from pickup.scan import common
+        from corral.scan import common
 
         agent_pid = 424242
-        cwd = "/tmp/pickup-agent-live-test"
+        cwd = "/tmp/corral-agent-live-test"
 
         def fake_check_output(argv, **kwargs):
             if argv[:2] == ["pgrep", "-x"]:
@@ -5235,7 +5235,7 @@ class DeleteSessionScanTests(unittest.TestCase):
             self.assertTrue((other_dir / "state.json").exists())
 
     def test_cursor_delete_session_removes_whole_chat_dir(self) -> None:
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -5254,7 +5254,7 @@ class DeleteSessionScanTests(unittest.TestCase):
             self.assertTrue(other_dir.exists())
 
     def test_cursor_delete_session_accepts_dir_path_when_no_store_db(self) -> None:
-        from pickup.scan import cursor as scan_cursor
+        from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
             target_dir = Path(td) / "ws1" / "target-chat"
@@ -5407,7 +5407,7 @@ class PiScanTests(unittest.TestCase):
             new_ids = [f"new{index}" for index in range(4)]
             for index, session_id in enumerate(new_ids):
                 path = (
-                    heap_dir / f"pickup-aaa{index}"
+                    heap_dir / f"corral-aaa{index}"
                     / f"2026-08-2{index}T00-00-00-000Z_{session_id}.jsonl"
                 )
                 _write_jsonl(path, [
@@ -5522,7 +5522,7 @@ class PiScanTests(unittest.TestCase):
                 td,
                 processes=[(1988097, os.path.realpath(cwd))],
                 cmdlines={1988097: f"pi --approve --session-id {hosted_id}"},
-                environ={1988097: {"PICKUP_SESSION_ID": hosted_id}},
+                environ={1988097: {"CORRAL_SESSION_ID": hosted_id}},
                 open_paths={1988097: [str(switched)]},
             )
             by_id = {item["id"]: item for item in sessions}
@@ -5548,7 +5548,7 @@ class PiScanTests(unittest.TestCase):
                 td,
                 processes=[(1988097, os.path.realpath(cwd))],
                 cmdlines={1988097: "pi"},
-                environ={1988097: {"PICKUP_SESSION_ID": hosted_id}},
+                environ={1988097: {"CORRAL_SESSION_ID": hosted_id}},
                 open_paths={1988097: [str(switched)]},
             )
             by_id = {item["id"]: item for item in first}
@@ -5558,7 +5558,7 @@ class PiScanTests(unittest.TestCase):
                 td,
                 processes=[(1988097, os.path.realpath(cwd))],
                 cmdlines={1988097: "pi"},
-                environ={1988097: {"PICKUP_SESSION_ID": hosted_id}},
+                environ={1988097: {"CORRAL_SESSION_ID": hosted_id}},
                 open_paths={1988097: []},
             )
             by_id = {item["id"]: item for item in second}
@@ -5589,7 +5589,7 @@ class PiScanTests(unittest.TestCase):
                 scan_pi, "open_file_paths", return_value={33: []}
             ), mock.patch.object(
                 scan_pi, "process_environ",
-                return_value={"PICKUP_SESSION_ID": "abcd1234"},
+                return_value={"CORRAL_SESSION_ID": "abcd1234"},
             ):
                 sessions = scan_pi.scan_sessions(limit=10)
             self.assertEqual(len(sessions), 1)
@@ -5734,7 +5734,7 @@ class PiScanTests(unittest.TestCase):
                 str(sessions_dir),
                 processes=[(22, cwd), (11, cwd)],  # 坏记忆的 pid 先处理，才能暴露优先级问题
                 cmdlines={11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
-                environ={11: {"PICKUP_SESSION_ID": "pi-first"}, 22: {"PICKUP_SESSION_ID": "pi-second"}},
+                environ={11: {"CORRAL_SESSION_ID": "pi-first"}, 22: {"CORRAL_SESSION_ID": "pi-second"}},
                 starts={11: first_ts - 10, 22: second_ts - 10},
             )
             by_id = {item["id"]: item for item in sessions}
@@ -5744,7 +5744,7 @@ class PiScanTests(unittest.TestCase):
 
     def test_disk_live_map_prunes_impossible_override(self) -> None:
         """pi-live-pids.json 里已落盘的坏记忆，重新加载时必须剔除并回写磁盘，
-        否则每次重启 pickup 都会再次串台。
+        否则每次重启 corral 都会再次串台。
         """
         with tempfile.TemporaryDirectory() as cache_dir, tempfile.TemporaryDirectory() as td:
             cwd_dir = Path(td) / "proj"
@@ -5758,13 +5758,13 @@ class PiScanTests(unittest.TestCase):
             self._write_pi_session(sessions_dir, "pi-second", cwd, second_created, "快速MVP")
             first_ts = datetime(2023, 11, 14, 22, 15, 0, tzinfo=timezone.utc).timestamp()
             second_ts = datetime(2023, 11, 14, 22, 16, 40, tzinfo=timezone.utc).timestamp()
-            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+            with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": cache_dir}):
                 scan_pi._write_live_map({scan_pi._persist_key(22, second_ts - 10): "pi-first"})
                 self._scan_with_live(
                     str(sessions_dir),
                     processes=[(22, cwd), (11, cwd)],
                     cmdlines={11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
-                    environ={11: {"PICKUP_SESSION_ID": "pi-first"}, 22: {"PICKUP_SESSION_ID": "pi-second"}},
+                    environ={11: {"CORRAL_SESSION_ID": "pi-first"}, 22: {"CORRAL_SESSION_ID": "pi-second"}},
                     starts={11: first_ts - 10, 22: second_ts - 10},
                 )
                 self.assertEqual(scan_pi._read_live_map(), {})
@@ -5776,7 +5776,7 @@ class PiScanTests(unittest.TestCase):
                     str(sessions_dir),
                     processes=[(11, cwd), (22, cwd)],
                     cmdlines={11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
-                    environ={11: {"PICKUP_SESSION_ID": "pi-first"}, 22: {"PICKUP_SESSION_ID": "pi-second"}},
+                    environ={11: {"CORRAL_SESSION_ID": "pi-first"}, 22: {"CORRAL_SESSION_ID": "pi-second"}},
                     starts={11: first_ts - 10, 22: second_ts - 10},
                 )
                 by_id = {item["id"]: item for item in sessions}
@@ -5801,7 +5801,7 @@ class PiScanTests(unittest.TestCase):
             starts = {11: first_ts - 10, 22: first_ts - 5}
             base_env = {
                 "cmdlines": {11: "pi --approve --session-id pi-first", 22: "pi --approve --session-id pi-second"},
-                "environ": {11: {"PICKUP_SESSION_ID": "pi-first"}, 22: {"PICKUP_SESSION_ID": "pi-second"}},
+                "environ": {11: {"CORRAL_SESSION_ID": "pi-first"}, 22: {"CORRAL_SESSION_ID": "pi-second"}},
             }
             # 预热轮：记住两份采样基线（写字节/mtime），保证下一轮错位信号能触发。
             os.utime(first_path, (time.time() + 50, time.time() + 50))
@@ -5829,7 +5829,7 @@ class PiScanTests(unittest.TestCase):
     def test_follow_idle_claim_yields_to_free_process_in_same_cwd(self) -> None:
         """同目录裸 pi 新开的会话不能被空闲的托管进程认领成自己的 /new 结果。
 
-        真实事故：pickup 托管的 Pi 会话 A 空闲者，用户在另一终端裸 `pi` 开了会
+        真实事故：corral 托管的 Pi 会话 A 空闲者，用户在另一终端裸 `pi` 开了会
         话 B；空闲认领把 B 抢给 A 的进程并写入持久记忆，随后 annotate 把 A 那
         格的托管名贴到 B 头上，右栏 A 格的 Your prompts 小窗串台成 B 的提问。
         """
@@ -5843,7 +5843,7 @@ class PiScanTests(unittest.TestCase):
             self._write_pi_session(sessions_dir, "bbbb2222", cwd, "2023-11-14T22:40:00.000Z", "B 的提问")
             hosted_start = datetime(2023, 11, 14, 22, 14, 50, tzinfo=timezone.utc).timestamp()
             free_start = datetime(2023, 11, 14, 22, 39, 50, tzinfo=timezone.utc).timestamp()
-            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+            with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": cache_dir}):
                 sessions = self._scan_with_live(
                     str(sessions_dir),
                     processes=[(11, cwd), (22, cwd)],
@@ -5868,7 +5868,7 @@ class PiScanTests(unittest.TestCase):
             self._write_pi_session(sessions_dir, "aaaa1111", cwd, "2023-11-14T22:15:00.000Z", "旧会话提问")
             self._write_pi_session(sessions_dir, "01a0new1", cwd, "2023-11-14T22:40:00.000Z", "/new 后提问")
             started = datetime(2023, 11, 14, 22, 14, 50, tzinfo=timezone.utc).timestamp()
-            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+            with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": cache_dir}):
                 sessions = self._scan_with_live(
                     str(sessions_dir),
                     processes=[(11, cwd)],
@@ -5896,7 +5896,7 @@ class PiScanTests(unittest.TestCase):
             self._write_pi_session(sessions_dir, "bbbb2222", cwd, "2023-11-14T22:40:00.000Z", "B 的提问")
             hosted_start = datetime(2023, 11, 14, 22, 14, 50, tzinfo=timezone.utc).timestamp()
             free_start = datetime(2023, 11, 14, 22, 39, 50, tzinfo=timezone.utc).timestamp()
-            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+            with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": cache_dir}):
                 scan_pi._write_live_map({scan_pi._persist_key(11, hosted_start): "bbbb2222"})
                 sessions = self._scan_with_live(
                     str(sessions_dir),
@@ -5916,7 +5916,7 @@ class PiScanTests(unittest.TestCase):
             safe = stripped.replace("/", "-").replace("\\", "-").replace(":", "-")
             self.assertEqual(encoded, f"--{safe}--")
             hosted = scan_pi.hosted_session_dir(td, "abcd1234")
-            self.assertTrue(hosted.endswith(os.path.join(encoded, "pickup-abcd1234")))
+            self.assertTrue(hosted.endswith(os.path.join(encoded, "corral-abcd1234")))
             self.assertTrue(scan_pi.is_hosted_isolation_dir(hosted))
             self.assertFalse(scan_pi.is_hosted_isolation_dir(td))
 
@@ -5927,8 +5927,8 @@ class PiScanTests(unittest.TestCase):
             cwd_dir.mkdir()
             cwd = os.path.realpath(str(cwd_dir))
             sessions_dir = Path(td) / "sessions"
-            dir_a = sessions_dir / "pickup-aaaa1111"
-            dir_b = sessions_dir / "pickup-bbbb2222"
+            dir_a = sessions_dir / "corral-aaaa1111"
+            dir_b = sessions_dir / "corral-bbbb2222"
             dir_a.mkdir(parents=True)
             dir_b.mkdir()
             self._write_pi_session(dir_a, "sess-a", cwd, "2023-11-14T22:15:00.000Z", "A 的提问")
@@ -5953,13 +5953,13 @@ class PiScanTests(unittest.TestCase):
             cwd_dir.mkdir()
             cwd = os.path.realpath(str(cwd_dir))
             sessions_dir = Path(td) / "sessions"
-            dir_a = sessions_dir / "pickup-aaaa1111"
+            dir_a = sessions_dir / "corral-aaaa1111"
             dir_a.mkdir(parents=True)
             self._write_pi_session(dir_a, "aaaa1111", cwd, "2023-11-14T22:15:00.000Z", "A 的提问")
             self._write_pi_session(sessions_dir, "bbbb2222", cwd, "2023-11-14T22:40:00.000Z", "B 的提问")
             hosted_start = datetime(2023, 11, 14, 22, 14, 50, tzinfo=timezone.utc).timestamp()
             free_start = datetime(2023, 11, 14, 22, 39, 50, tzinfo=timezone.utc).timestamp()
-            with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": cache_dir}):
+            with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": cache_dir}):
                 sessions = self._scan_with_live(
                     str(sessions_dir),
                     processes=[(11, cwd), (22, cwd)],
@@ -5967,7 +5967,7 @@ class PiScanTests(unittest.TestCase):
                     environ={
                         11: {
                             scan_pi.PI_SESSION_DIR_ENV: os.path.realpath(str(dir_a)),
-                            "PICKUP_SESSION_ID": "aaaa1111",
+                            "CORRAL_SESSION_ID": "aaaa1111",
                         },
                     },
                     starts={11: hosted_start, 22: free_start},
@@ -5983,7 +5983,7 @@ class PiScanTests(unittest.TestCase):
             cwd_dir.mkdir()
             cwd = os.path.realpath(str(cwd_dir))
             sessions_dir = Path(td) / "sessions"
-            dir_a = sessions_dir / "pickup-aaaa1111"
+            dir_a = sessions_dir / "corral-aaaa1111"
             dir_a.mkdir(parents=True)
             self._write_pi_session(sessions_dir, "bbbb2222", cwd, "2023-11-14T22:40:00.000Z", "B 的提问")
             sessions = self._scan_with_live(
@@ -6003,7 +6003,7 @@ class PiScanTests(unittest.TestCase):
             cwd_dir.mkdir()
             cwd = os.path.realpath(str(cwd_dir))
             sessions_dir = Path(td) / "sessions"
-            hosted = sessions_dir / "pickup-aaaa1111"
+            hosted = sessions_dir / "corral-aaaa1111"
             hosted.mkdir(parents=True)
             old = self._write_pi_session(
                 hosted, "aaaa1111", cwd, "2023-11-14T22:15:00.000Z", "旧提问",
@@ -6032,7 +6032,7 @@ class PiScanTests(unittest.TestCase):
             cwd_dir.mkdir()
             cwd = os.path.realpath(str(cwd_dir))
             sessions_dir = Path(td) / "sessions"
-            hosted = sessions_dir / "pickup-oldident"
+            hosted = sessions_dir / "corral-oldident"
             hosted.mkdir(parents=True)
             path = self._write_pi_session(
                 hosted, "uuid-resume", cwd, "2023-11-14T22:15:00.000Z", "恢复这份",
@@ -6161,7 +6161,7 @@ class PiScanTests(unittest.TestCase):
 class StartupLatencyTests(unittest.TestCase):
     """首屏延迟测量：改动扫描/界面/标题相关代码后必须跑这个用例并如实汇报耗时。
 
-    见 AGENTS.md「验证要求」：pickup 首屏（启动到首次渲染）延迟目标 ≤1s，
+    见 AGENTS.md「验证要求」：corral 首屏（启动到首次渲染）延迟目标 ≤1s，
     界面层改用 Textual 后这条已从硬性红线放宽为非阻断项——但仍要求实测并
     汇报数值，不能不测。这里只做粗粒度的灾难性回归防护（>5s 才真正判定失败，
     比如不小心引入了一次同步网络调用），1s 目标本身只打印不作为断言依据：
@@ -6173,7 +6173,7 @@ class StartupLatencyTests(unittest.TestCase):
     """
 
     def test_scan_all_first_screen_latency(self) -> None:
-        from pickup.runtime import default_registry
+        from corral.runtime import default_registry
 
         has_data = os.path.isdir(scan_claude.PROJECTS_DIR) or bool(scan_codex._find_all_session_files())
         if not has_data:

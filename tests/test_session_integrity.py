@@ -6,12 +6,12 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from pickup import split_layout
-from pickup.ui.controllers.layout_controller import (
+from corral import split_layout
+from corral.ui.controllers.layout_controller import (
     LayoutControllerMixin,
     _preserve_missing_group_members,
 )
-from pickup.ui.main_screen import MainScreen
+from corral.ui.main_screen import MainScreen
 
 
 class SplitGroupIntegrityTests(unittest.TestCase):
@@ -77,7 +77,7 @@ class SplitGroupIntegrityTests(unittest.TestCase):
                 pass
 
         controller = Controller()
-        with mock.patch("pickup.observe.event") as event:
+        with mock.patch("corral.observe.event") as event:
             controller._show_session_group("cursor:a", include_inactive=True)
 
         self.assertEqual(controller.focus_updates, 1)

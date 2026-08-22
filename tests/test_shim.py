@@ -1,4 +1,4 @@
-"""命令拦截（pickup shim）的安装、卸载、放行判定与脚本语法测试。"""
+"""命令拦截（corral shim）的安装、卸载、放行判定与脚本语法测试。"""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup import shim
-from pickup.runtime import default_registry
-from pickup.runtime.claude import ClaudeRuntime
+from corral import shim
+from corral.runtime import default_registry
+from corral.runtime.claude import ClaudeRuntime
 
 
 class ShimTargetTableTests(unittest.TestCase):
@@ -112,26 +112,27 @@ class ShimScriptRenderTests(unittest.TestCase):
 
     def test_posix_script_has_every_passthrough_guard(self):
         script = shim.render_script("bash", self.targets)
-        for guard in ("PICKUP_SHIM_ACTIVE", "PICKUP_RUNTIME", "SC_RUNTIME",
-                      "[ -t 0 ]", "command -v pickup"):
+        for guard in ("CORRAL_SHIM_ACTIVE", "CORRAL_RUNTIME", "PICKUP_SHIM_ACTIVE",
+                      "PICKUP_RUNTIME", "SC_RUNTIME",
+                      "[ -t 0 ]", "command -v corral"):
             self.assertIn(guard, script, f"缺少放行判据：{guard}")
         self.assertNotIn("${TMUX:-}", script)
         self.assertNotIn("${STY:-}", script)
 
-    def test_posix_script_routes_to_pickup_with_recursion_guard(self):
+    def test_posix_script_routes_to_corral_with_recursion_guard(self):
         script = shim.render_script("bash", self.targets)
-        self.assertIn('PICKUP_SHIM_ACTIVE=1 command pickup claude "$@"', script)
+        self.assertIn('CORRAL_SHIM_ACTIVE=1 PICKUP_SHIM_ACTIVE=1 command corral claude "$@"', script)
         self.assertIn('command claude "$@"', script)
 
     def test_fish_script_uses_fish_syntax(self):
         script = shim.render_script("fish", self.targets)
         self.assertIn("status is-interactive", script)
         self.assertIn("function claude --wraps claude", script)
-        self.assertIn("env PICKUP_SHIM_ACTIVE=1 pickup claude $argv", script)
+        self.assertIn("env CORRAL_SHIM_ACTIVE=1 PICKUP_SHIM_ACTIVE=1 corral claude $argv", script)
         self.assertNotIn('"$@"', script)
 
     def test_headless_flags_are_listed_for_passthrough(self):
-        """pickup 自己用 `claude -p` 生成标题，这条放行丢了会打断标题生成。"""
+        """corral 自己用 `claude -p` 生成标题，这条放行丢了会打断标题生成。"""
         script = shim.render_script("bash", self.targets)
         self.assertIn("-p", shim.COMMON_PASSTHROUGH)
         self.assertIn("--print", shim.COMMON_PASSTHROUGH)
@@ -142,7 +143,7 @@ class ShimScriptRenderTests(unittest.TestCase):
     def test_pi_routes_interactive_commands_and_passes_management_calls_through(self):
         pi = next(target for target in shim.TARGETS if target.command == "pi")
         script = shim.render_script("bash", (pi,))
-        self.assertIn('PICKUP_SHIM_ACTIVE=1 command pickup pi "$@"', script)
+        self.assertIn('CORRAL_SHIM_ACTIVE=1 PICKUP_SHIM_ACTIVE=1 command corral pi "$@"', script)
         self.assertIn(
             '"install remove uninstall update list config auth --export --list-models"',
             script,
@@ -155,7 +156,7 @@ class ShimScriptSyntaxTests(unittest.TestCase):
 
     def _write(self, shell: str) -> Path:
         targets = shim.TARGETS
-        path = Path(self.tmp.name) / ("pickup-shim.fish" if shell == "fish" else "pickup-shim.sh")
+        path = Path(self.tmp.name) / ("corral-shim.fish" if shell == "fish" else "corral-shim.sh")
         path.write_text(shim.render_script(shell, targets), encoding="utf-8")
         return path
 
@@ -192,12 +193,12 @@ class ShimBehaviourTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.bin = root / "bin"
         self.bin.mkdir()
-        for name in ("claude", "pi", "agent", "pickup"):
+        for name in ("claude", "pi", "agent", "corral"):
             fake = self.bin / name
             fake.write_text(f'#!/usr/bin/env bash\necho "{name} $*"\n', encoding="utf-8")
             fake.chmod(0o755)
         targets = tuple(t for t in shim.TARGETS if t.command in {"claude", "pi", "agent"})
-        self.script = root / "pickup-shim.sh"
+        self.script = root / "corral-shim.sh"
         self.script.write_text(shim.render_script("bash", targets), encoding="utf-8")
 
     def tearDown(self):
@@ -259,89 +260,89 @@ class ShimBehaviourTests(unittest.TestCase):
             proc.wait(timeout=15)
         return b"".join(chunks).decode("utf-8", "replace")
 
-    def test_interactive_bare_command_is_routed_through_pickup(self):
+    def test_interactive_bare_command_is_routed_through_corral(self):
         out = self._run_on_pty("claude")
-        self.assertIn("pickup claude", out)
+        self.assertIn("corral claude", out)
 
-    def test_pi_interactive_command_is_routed_through_pickup(self):
+    def test_pi_interactive_command_is_routed_through_corral(self):
         out = self._run_on_pty("pi")
-        self.assertIn("pickup pi", out)
+        self.assertIn("corral pi", out)
 
     def test_pi_management_command_passes_through(self):
         out = self._run_on_pty("pi --list-models")
         self.assertIn("pi --list-models", out)
-        self.assertNotIn("pickup pi", out)
+        self.assertNotIn("corral pi", out)
 
     def test_pi_recursion_guard_passes_through(self):
-        out = self._run_on_pty("pi", env={"PICKUP_SHIM_ACTIVE": "1"})
+        out = self._run_on_pty("pi", env={"CORRAL_SHIM_ACTIVE": "1"})
         self.assertIn("pi ", out)
-        self.assertNotIn("pickup pi", out)
+        self.assertNotIn("corral pi", out)
 
     def test_interactive_headless_flag_still_reaches_the_real_command(self):
         out = self._run_on_pty("claude -p 标题")
         self.assertIn("claude -p 标题", out)
-        self.assertNotIn("pickup claude", out)
+        self.assertNotIn("corral claude", out)
 
     def test_interactive_inside_managed_session_is_not_nested(self):
-        out = self._run_on_pty("claude", env={"PICKUP_RUNTIME": "claude"})
-        self.assertNotIn("pickup claude", out)
+        out = self._run_on_pty("claude", env={"CORRAL_RUNTIME": "claude"})
+        self.assertNotIn("corral claude", out)
 
     def test_non_tty_invocation_falls_back_to_the_real_command(self):
-        # 管道场景：stdout 不是终端，必须直接跑真身而不是绕道 pickup。
+        # 管道场景：stdout 不是终端，必须直接跑真身而不是绕道 corral。
         out = self._run("claude 你好 | cat", tty=True)
         self.assertIn("claude 你好", out)
-        self.assertNotIn("pickup", out)
+        self.assertNotIn("corral", out)
 
     def test_already_managed_session_passes_through(self):
-        out = self._run("claude", tty=True, env={"PICKUP_RUNTIME": "claude"})
+        out = self._run("claude", tty=True, env={"CORRAL_RUNTIME": "claude"})
         self.assertIn("claude", out)
-        self.assertNotIn("pickup claude", out)
+        self.assertNotIn("corral claude", out)
 
     def test_recursion_guard_passes_through(self):
-        out = self._run("claude", tty=True, env={"PICKUP_SHIM_ACTIVE": "1"})
-        self.assertNotIn("pickup claude", out)
+        out = self._run("claude", tty=True, env={"CORRAL_SHIM_ACTIVE": "1"})
+        self.assertNotIn("corral claude", out)
 
     def test_interactive_prompt_containing_a_subcommand_word_is_still_hosted(self):
         """`update` 只在第一个位置参数时才算管理子命令，提示词里出现不该放行。"""
         out = self._run_on_pty("claude please update the docs")
-        self.assertIn("pickup claude", out)
+        self.assertIn("corral claude", out)
 
-    def test_agent_interactive_command_is_routed_through_pickup(self):
+    def test_agent_interactive_command_is_routed_through_corral(self):
         out = self._run_on_pty("agent")
-        self.assertIn("pickup cursor", out)
+        self.assertIn("corral cursor", out)
 
     def test_agent_about_passes_through(self):
         out = self._run_on_pty("agent about")
         self.assertIn("agent about", out)
-        self.assertNotIn("pickup cursor", out)
+        self.assertNotIn("corral cursor", out)
 
     def test_agent_list_models_flag_passes_through(self):
         out = self._run_on_pty("agent --list-models")
         self.assertIn("agent --list-models", out)
-        self.assertNotIn("pickup cursor", out)
+        self.assertNotIn("corral cursor", out)
 
     def test_own_tmux_still_hosts_interactive_commands(self):
-        """用户自己的 tmux 不是 pickup 托管层，必须照常拦截。"""
+        """用户自己的 tmux 不是 corral 托管层，必须照常拦截。"""
         out = self._run_on_pty("claude", env={"TMUX": "/tmp/tmux-0/default,1,0"})
-        self.assertIn("pickup claude", out)
+        self.assertIn("corral claude", out)
 
     def test_legacy_sc_runtime_guard_passes_through(self):
         out = self._run_on_pty("claude", env={"SC_RUNTIME": "claude"})
-        self.assertNotIn("pickup claude", out)
+        self.assertNotIn("corral claude", out)
 
     def test_headless_flag_passes_through(self):
         out = self._run('claude -p "生成标题" | cat', tty=True)
         self.assertIn("claude -p", out)
-        self.assertNotIn("pickup", out)
+        self.assertNotIn("corral", out)
 
     def test_management_subcommand_passes_through(self):
         out = self._run("claude update | cat", tty=True)
         self.assertIn("claude update", out)
-        self.assertNotIn("pickup", out)
+        self.assertNotIn("corral", out)
 
-    def test_missing_pickup_falls_back_to_the_real_command(self):
-        """pickup 被卸载后，用户的 claude 必须照常可用。"""
-        (self.bin / "pickup").unlink()
+    def test_missing_corral_falls_back_to_the_real_command(self):
+        """corral 被卸载后，用户的 claude 必须照常可用。"""
+        (self.bin / "corral").unlink()
         out = self._run("claude | cat", tty=True)
         self.assertIn("claude", out)
 
@@ -353,7 +354,7 @@ class ShimInstallTests(unittest.TestCase):
         self.home.mkdir()
         self.env = mock.patch.dict(os.environ, {
             "HOME": str(self.home),
-            "PICKUP_CACHE_DIR": str(Path(self.tmp.name) / "cache"),
+            "CORRAL_CACHE_DIR": str(Path(self.tmp.name) / "cache"),
             "SHELL": "/bin/bash",
         }, clear=False)
         self.env.start()

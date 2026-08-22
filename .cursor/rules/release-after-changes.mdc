@@ -9,12 +9,12 @@ alwaysApply: true
 
 ## 流程
 
-1. 同步 bump：`pyproject.toml`、`Cargo.toml`、`Cargo.lock`、`src/pickup/__init__.py`（补丁位递增）
-2. 跑验证：`python3 -m compileall -q src/pickup tests` 与相关单测
+1. 同步 bump：`pyproject.toml`、`Cargo.toml`、`Cargo.lock`、`src/corral/__init__.py`（补丁位递增）
+2. 跑验证：`python3 -m compileall -q src/corral tests` 与相关单测
 3. 提交：`release: vX.Y.Z <简述>`
 4. 打 annotated tag：`git tag -a vX.Y.Z -m "vX.Y.Z"`
 5. 推送：`git push github main` + tag，以及 `origin` 同名分支与 tag
-6. `gh release create vX.Y.Z --repo x0c/pickup --title vX.Y.Z --notes ...`
+6. `gh release create vX.Y.Z --repo x0c/corral --title vX.Y.Z --notes ...`
 7. 核对 `releases/latest` 的 `tag_name` 等于刚发的版本
 
 细则见 `docs/MAINTAINER_GUIDE.md`「开源发布」。纯文档/规则整理且无产品行为变化时可不发版；有疑义时默认发版。

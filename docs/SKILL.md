@@ -1,11 +1,11 @@
 ---
-name: pickup
-description: Query local Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi session history through the `pickup` CLI — list recent sessions, search by topic, read a session's conversation, export a shareable transcript with tool calls and thinking, or build a handoff context package to continue interrupted work. Read-only, no side effects.
+name: corral
+description: Query local Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi session history through the `corral` CLI — list recent sessions, search by topic, read a session's conversation, export a shareable transcript with tool calls and thinking, or build a handoff context package to continue interrupted work. Read-only, no side effects.
 ---
 
-# pickup：本地编程会话数据接口
+# corral：本地编程会话数据接口
 
-`pickup` 扫描本机 `~/.claude/projects/`、`~/.codex/sessions/`、`~/.kimi-code/sessions/`、`~/.cursor/chats/` 和 OpenCode 的
+`corral` 扫描本机 `~/.claude/projects/`、`~/.codex/sessions/`、`~/.kimi-code/sessions/`、`~/.cursor/chats/` 和 OpenCode 的
 SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的会话历史，为大模型 Agent
 提供结构化查询命令。**这些命令只读、无副作用**：不会拉起新会话、不会自动接续任务、不会修改
 任何历史文件。拿到数据之后要做什么（继续任务、汇总给用户、转发给另一个 Agent）由调用方决定。
@@ -28,20 +28,20 @@ SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的
 
 ## 命令
 
-跑 `pickup describe` 获取全部命令的机器可读参数说明（与实现同源，不会漂移）；
-`pickup describe <command>` 看单个命令的完整参数和输出字段。
+跑 `corral describe` 获取全部命令的机器可读参数说明（与实现同源，不会漂移）；
+`corral describe <command>` 看单个命令的完整参数和输出字段。
 
 | 命令 | 用途 |
 | --- | --- |
-| `pickup list [--runtime R] [--limit N] [--top N] [--compact] [--status S] [--cwd 子串] [--live] [--fields a,b]` | 结构化列出会话 |
-| `pickup search <关键词...> [--deep] [--runtime R] [--limit N] [--top N] [--compact] [--live] [--fields a,b]` | 按主题找会话 |
-| `pickup show <会话> [--messages N \| --full] [--compact] [--out 路径] [--fields a,b]` | 会话详情 + 对话内容 |
-| `pickup share <会话> [--out 路径] [--compact]` | 导出含 thinking / 工具调用的统一 transcript，给其他 Agent 做元认知 |
-| `pickup export [--since T] [--until T] [--runtime R] [--status S] [--cwd 子串] [--limit N] [--out 路径] [--compact]` | 导出某时间范围内所有会话的完整对话，合并为一个 JSON |
-| `pickup context <会话>` | 生成接续该会话所需的上下文数据包 |
-| `pickup plan continue <会话> --instruction <文本>` | 生成带新指令的非交互式原生续接计划；只返回数据，不执行 |
-| `pickup describe [command]` | 查看命令 / 参数 / 输出字段说明 |
-| `pickup diagnose` | 只读诊断：events.log / embed-error.log / `last_error` / 截图目录 / tmux / 配色自检 / **安装路径**（`package_file`、`install_channel`、`stale_source_warning`）；不启动 TUI |
+| `corral list [--runtime R] [--limit N] [--top N] [--compact] [--status S] [--cwd 子串] [--live] [--fields a,b]` | 结构化列出会话 |
+| `corral search <关键词...> [--deep] [--runtime R] [--limit N] [--top N] [--compact] [--live] [--fields a,b]` | 按主题找会话 |
+| `corral show <会话> [--messages N \| --full] [--compact] [--out 路径] [--fields a,b]` | 会话详情 + 对话内容 |
+| `corral share <会话> [--out 路径] [--compact]` | 导出含 thinking / 工具调用的统一 transcript，给其他 Agent 做元认知 |
+| `corral export [--since T] [--until T] [--runtime R] [--status S] [--cwd 子串] [--limit N] [--out 路径] [--compact]` | 导出某时间范围内所有会话的完整对话，合并为一个 JSON |
+| `corral context <会话>` | 生成接续该会话所需的上下文数据包 |
+| `corral plan continue <会话> --instruction <文本>` | 生成带新指令的非交互式原生续接计划；只返回数据，不执行 |
+| `corral describe [command]` | 查看命令 / 参数 / 输出字段说明 |
+| `corral diagnose` | 只读诊断：events.log / embed-error.log / `last_error` / 截图目录 / tmux / 配色自检 / **安装路径**（`package_file`、`install_channel`、`stale_source_warning`）；不启动 TUI |
 
 
 ### 会话标识（`<会话>` 参数）
@@ -49,50 +49,50 @@ SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的
 支持完整会话 ID、ID 前缀（如 `8892cd3d`）、或带运行时限定的 `runtime:id`（如 `claude:8892cd3d`、
 `opencode:ses_0ae26219`、`kimi:session_ef8275b0`、`cursor:<chat-uuid>`）。
 前缀在多个运行时之间重复时会返回退出码 5（`ambiguous`），`error.next_commands` 里给出具体候选
-的 `pickup show runtime:id` 命令，照着执行即可消歧。
+的 `corral show runtime:id` 命令，照着执行即可消歧。
 
 ## 典型流程
 
 **按主题找到会话并接续未完成的工作：**
 
 ```bash
-pickup search 天气 app                    # 快速搜标题/首尾消息/工作目录
-pickup search 天气 app --top 3 --compact  # 只取最相关的 3 条，减少 token
-pickup search 天气 app --deep             # 快速搜没结果时，搜全部对话内容（较慢）
-pickup show <候选会话的 short_id>          # 确认是不是要找的那次会话
-pickup share <候选会话> --out /tmp/pickup-share.json  # 含工具调用与 thinking 的统一 transcript
-pickup show <候选会话> --full --out /tmp/pickup-session.json  # 纯文本对话（不含工具调用）
-pickup context <会话>                     # 拿到 history_path / suggested_prompt / resume_command
-pickup plan continue <会话> --instruction "继续完成剩余工作并汇报结果" # 只生成外部执行器可运行的计划
+corral search 天气 app                    # 快速搜标题/首尾消息/工作目录
+corral search 天气 app --top 3 --compact  # 只取最相关的 3 条，减少 token
+corral search 天气 app --deep             # 快速搜没结果时，搜全部对话内容（较慢）
+corral show <候选会话的 short_id>          # 确认是不是要找的那次会话
+corral share <候选会话> --out /tmp/corral-share.json  # 含工具调用与 thinking 的统一 transcript
+corral show <候选会话> --full --out /tmp/corral-session.json  # 纯文本对话（不含工具调用）
+corral context <会话>                     # 拿到 history_path / suggested_prompt / resume_command
+corral plan continue <会话> --instruction "继续完成剩余工作并汇报结果" # 只生成外部执行器可运行的计划
 ```
 
-`pickup context` 返回的 `resume_command` 是同运行时原生恢复该会话的 shell 命令（可能为 `null`，
+`corral context` 返回的 `resume_command` 是同运行时原生恢复该会话的 shell 命令（可能为 `null`，
 比如原历史文件已被删除）；`suggested_prompt` 是跨运行时接力时可以直接复用的首条提示词，内含
 原会话历史文件路径、格式提示和从原会话自动提取的对话摘录（原始需求 + 最近数条对话，
 截断版）——摘录给目标运行时一个任务与进展锚点，原始历史文件仍是权威来源，目标运行时应以摘录
 为线索去读取历史、判断已完成和未完成的部分。
 
-`pickup plan continue` 用于调用方需要把同运行时续接交给后台执行器时。它会依据运行时适配器返回
+`corral plan continue` 用于调用方需要把同运行时续接交给后台执行器时。它会依据运行时适配器返回
 `session_ref`、`runtime`、原 `cwd`、能力边界和 `launch`；其中 `launch.argv` 是**参数数组**，新指令
 作为一个独立元素保留，调用方必须以 `execve` / `subprocess` 的 argv 形式执行，不能重新拼成 shell
 字符串。`launch.cwd` 为 `null` 时表示原目录已不可用，调用方应自行拒绝或选择安全的工作目录。
 
 该命令同样只读：不会启动 CLI、不会写入原会话历史、不会创建新会话，也不会消耗模型额度。返回的
-`capabilities.execution=external_only` 明确表示执行责任属于调用方；`pickup` 不提供执行、停止或向运行中
+`capabilities.execution=external_only` 明确表示执行责任属于调用方；`corral` 不提供执行、停止或向运行中
 会话下发消息的能力。内置 Claude/Codex 计划使用各自的非交互式原生续接入口，以便外部后台任务接收
 完成输出；人类在 TUI 中的原生交互恢复行为不受影响。
 
 **列出某个项目最近的会话：**
 
 ```bash
-pickup list --cwd my-weather-app --limit 20
-pickup list --cwd my-weather-app --limit 80 --top 5 --compact
+corral list --cwd my-weather-app --limit 20
+corral list --cwd my-weather-app --limit 80 --top 5 --compact
 ```
 
 **只要还没回复的会话：**
 
 ```bash
-pickup list --status pending
+corral list --status pending
 ```
 
 ## 管家编排典型流程
@@ -100,24 +100,24 @@ pickup list --status pending
 **找到当前正在运行的 CodingAgent,判断能不能直接下指令:**
 
 ```bash
-pickup list --live --compact                 # 一步拿到「现在有哪些会话进程真的在跑」
-pickup list --live --status pending --compact # 更进一步：正在跑、且已在等你回复的
+corral list --live --compact                 # 一步拿到「现在有哪些会话进程真的在跑」
+corral list --live --status pending --compact # 更进一步：正在跑、且已在等你回复的
 ```
 
 `live` 是按进程真实判活（pid 存活/写文件锁定），不是文件时间推断；`status` 是最后一轮角色推断的
 会话内容状态。两者组合判断能不能打扰：`live=true` 且 `status=done` 说明进程还开着但已经把当前
 任务处理完，可以直接接着聊；`live=true` 且 `status=pending` 说明正忙着等你回复，插话前先看
 `last_user`/`last_agent` 摘要搞清楚它在问什么。`live=false` 的会话只能走 `resume_command` 重新
-拉起一个进程，不能"接管"——pickup 不提供向运行中进程注入输入的能力（本文档开头即说明：pickup 只读、无
+拉起一个进程，不能"接管"——corral 不提供向运行中进程注入输入的能力（本文档开头即说明：corral 只读、无
 副作用,拿到数据后要做什么由调用方决定）。
 
-`keepalive=true` 的会话额外要注意：它的进程挂在 pickup 的后台保活层里，`live` 通常也是 `true`，但
+`keepalive=true` 的会话额外要注意：它的进程挂在 corral 的后台保活层里，`live` 通常也是 `true`，但
 `resume_command` 此时不安全——执行它会另起一个和保活进程抢同一份会话文件的新进程。这种会话只能
-由人类回到 `pickup` TUI 按 Enter 接回现场，管家 Agent 判断"能不能直接下指令"时应把 `keepalive=true`
+由人类回到 `corral` TUI 按 Enter 接回现场，管家 Agent 判断"能不能直接下指令"时应把 `keepalive=true`
 当作"这条会话已经有人在管，只能提示人类去接，不要建议或代为执行 resume_command"的信号。
 
 `list`/`search` 默认输出已经带 `last_user`/`last_agent`（最近一轮真人消息和助手回复，硬截断精简），
-多数情况下看这两个字段就够判断"这条会话在干嘛"，不必为每条候选都跑一次 `pickup show`。
+多数情况下看这两个字段就够判断"这条会话在干嘛"，不必为每条候选都跑一次 `corral show`。
 
 ## 字段说明要点
 
@@ -127,21 +127,21 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
   id 精确绑定，同一目录可同时标多条；`opencode run` 不算运行中。Kimi 用命令行 `-S`/`--session`
   或完整托管会话 id 精确绑定，同一目录可同时标多条；`kimi -p` / `server` / `web` 不算运行中），
   不是根据文件时间猜的。
-  `pid` 只在 `live=true` 时非空，供调用方定位/给该进程发信号；pickup 本身不提供拉起/接管等副作用
+  `pid` 只在 `live=true` 时非空，供调用方定位/给该进程发信号；corral 本身不提供拉起/接管等副作用
   命令，`pid` 只是可见性。
-- `keepalive`：会话是否正挂在 pickup 自己的后台保活（tmux）里（人类在 `pickup` TUI 里用 Enter/`a` 启动会话时
+- `keepalive`：会话是否正挂在 corral 自己的后台保活（tmux）里（人类在 `corral` TUI 里用 Enter/`a` 启动会话时
   默认会经过这层，SSH 断开也不中断）。为 `true` 时该会话的进程实际跑在保活层里，`resume_command`
-  会另起一个直接抢同一份会话文件的新进程，不应该在这种情况下使用；pickup 不提供从命令行直接"接管"
-  保活会话的能力（这属于交互式 TUI 的 Enter 键行为），调用方需要接管时只能提示人类回到 `pickup` TUI 操作。
+  会另起一个直接抢同一份会话文件的新进程，不应该在这种情况下使用；corral 不提供从命令行直接"接管"
+  保活会话的能力（这属于交互式 TUI 的 Enter 键行为），调用方需要接管时只能提示人类回到 `corral` TUI 操作。
 - `last_user` / `last_agent`：最后一条真人消息和助手最后一轮回复的硬截断摘要（约 120 字），用于
-  快速判断会话在干嘛；需要完整对话仍然用 `pickup show`。
+  快速判断会话在干嘛；需要完整对话仍然用 `corral show`。
 - `status`：英文枚举 `done` / `pending` / `aborted` / `unknown`，程序判断用这个字段，不要解析
   `status_tag`（中文 + emoji，只给人看）。
 - `resumable` / `resume_command`：是否能生成同运行时原生恢复命令，以及可直接执行的恢复命令；这些字段
   只基于扫描结果和运行时适配器生成，不会额外读取会话全文。
 - `session_ref` / `launch`：仅 `plan continue` 返回。`session_ref` 是带运行时的唯一标识；`launch.argv`
   是不经 shell 解释的启动参数数组，`launch.cwd` 是推荐工作目录。不要把 `argv` 拼为 `resume_command`
-  风格的字符串，也不要让 `pickup` 代为执行。
+  风格的字符串，也不要让 `corral` 代为执行。
 - `score` / `matched_via` / `matched_fields`：仅 `search` 返回。`score` 是相关性分数，排序先按分数倒序，
   再按更新时间倒序；`matched_via` 是 `quick` 或 `deep`，兼容旧调用方；`matched_fields` 是命中的字段
   列表，如 `title`、`first_user_msg`、`conversation`。
@@ -157,23 +157,23 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
   `--fields` 指名，不能只传 `--compact` 就假设拿得到。
 - `show --full` 可能很大；需要完整历史时优先加 `--out <path>`，stdout 会只返回输出文件路径、字节数
   和消息数量，完整 JSON envelope 写在该文件里。
-- `pickup export` 是「按时间范围批量拿完整对话」的入口：等价于对区间内每条会话跑一次 `show --full`，
+- `corral export` 是「按时间范围批量拿完整对话」的入口：等价于对区间内每条会话跑一次 `show --full`，
   再按最后更新时间正序合并成一个 JSON（`data.sessions[]`，每条含 `list` 全部字段 + `messages` 完整
   对话）。`--since`/`--until` 均为闭区间，任一侧省略即无界；时间可写 `2026-07-20`、`'2026-07-20 15:30'`、
   相对量 `7d`/`24h`/`30m`（距今）或 Unix 时间戳；只给日期时 `--until` 自动补到当天 23:59:59。范围内会话
   多时合并结果可达数 MB，**强烈建议加 `--out <path>`**——stdout 只回文件路径、字节数、会话数与消息总数，
   完整内容写在文件里。时间过滤按会话的 `mtime`（最后更新时间）判定。
-- `pickup share` 是给其他 Agent 做元认知 / 迭代用的统一 transcript：`data.schema` 为 `pickup.share/v1`，
+- `corral share` 是给其他 Agent 做元认知 / 迭代用的统一 transcript：`data.schema` 为 `corral.share/v1`，
   `data.events[]` 按原始历史顺序包含 `user_message` / `assistant_message` / `thinking` / `tool_call` /
   `tool_result`（工具参数与结果不截断）。**不要用 `show`/`export` 的 `messages` 充当这一用途**——那两条
   命令仍然只出纯文本。大结果同样优先 `--out`。`tool_result.status` 在 Claude 认 `is_error`、OpenCode 认
   `state.status`、Pi 认 `isError`；Kimi 目前只按 output 正文启发式，`isError=true` 仍可能是 `ok`。
-  TUI 高级操作「导出会话」写出同一份 envelope 到 `~/.cache/pickup/share/`（尊重 `PICKUP_CACHE_DIR`），
+  TUI 高级操作「导出会话」写出同一份 envelope 到 `~/.cache/corral/share/`（尊重 `CORRAL_CACHE_DIR`），
   并把绝对路径复制到剪贴板。
 
 ## 拿会话数据做总结 / 周报时的边界（必读）
 
-`pickup` 交出来的是**对话记录**，不是工作成果台账。下面 5 条是设计使然、不会改的产品边界；
+`corral` 交出来的是**对话记录**，不是工作成果台账。下面 5 条是设计使然、不会改的产品边界；
 用 `show` / `export` 的结果做周报、日报、工作总结前必须先按这些边界校正，否则结论会失真。
 括号内是本机真实数据实测值（2026-08-01），供判断量级用。
 
@@ -183,7 +183,7 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
    导出后只剩约 19.6 万字符纯文本，被丢弃的 1683 次工具调用里含 361 次改文件、73 次新建文件、
    837 次命令执行（其中 46 条是完整的 git 提交 / 打标签 / 推送，提交说明本身就是最好的成果素材）。
    **后果**：只看 `show`/`export` 时，"索引已落地""改完了"这类话只是**口述**，无法据此核实真的改了、改了哪些文件。
-   **怎么办**：需要工具调用、thinking 或改码证据时，用 `pickup share <会话>`（统一事件流，含 `tool_call` /
+   **怎么办**：需要工具调用、thinking 或改码证据时，用 `corral share <会话>`（统一事件流，含 `tool_call` /
    `tool_result` / `thinking`）；或用 `history_path` 自己去读原始历史文件（`context` 的
    `history_reading_hint` 说明该运行时的格式），或按下面第 5 条走 git 侧自查。
    `show`/`export` 的纯文本契约本身不会改。
@@ -208,7 +208,7 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
    - Codex 的 `Implement the plan.`（整句）、`<skill>…` 全文展开、`<turn_aborted>`、
      `<subagent_notification>`；
    - OpenConductor 角色提示（`你是 OpenConductor 的…`、`【权威对话账本`、带 `用户最新补充` 的 `原始任务：`）；
-   - **pickup 自己生成的跨运行时接力提示词**，特征是以 `任务：` 开头且含 `你正在接力一个来自 … 的会话`。
+   - **corral 自己生成的跨运行时接力提示词**，特征是以 `任务：` 开头且含 `你正在接力一个来自 … 的会话`。
 
    `$doc-update`、`/grilling` 和带 `<image>` 配文的提问是真人输入，不要当注入丢掉。
 
@@ -217,50 +217,50 @@ pickup list --live --status pending --compact # 更进一步：正在跑、且�
 
    **后果**：不过滤会把这些当成真人需求，凭空多出一堆"用户要求"。汇总前按上述特征剔除。
 
-5. **没有任何成果结构化字段。** 不提供 commits / PR / 变更文件列表，也不会有——`pickup` 只负责把
+5. **没有任何成果结构化字段。** 不提供 commits / PR / 变更文件列表，也不会有——`corral` 只负责把
    会话数据交出来（见本文档开头的只读约定）。所以"做完了"只能从对话文字推断，很容易把
    **计划了**写成**做完了**。
-   **怎么办**：真实成果去代码仓库侧取，用 `pickup` 提供的 `cwd` 和 `mtime` 做锚点即可对齐：
+   **怎么办**：真实成果去代码仓库侧取，用 `corral` 提供的 `cwd` 和 `mtime` 做锚点即可对齐：
 
    ```bash
    # 1. 圈出时间范围内涉及哪些工作目录（export 没有 --fields，落盘后再取需要的字段）
-   pickup export --since 7d --out /tmp/week.json
+   corral export --since 7d --out /tmp/week.json
    python3 -c "import json;d=json.load(open('/tmp/week.json'))['data'];\
    print('\n'.join(sorted({s['cwd'] for s in d['sessions'] if s.get('cwd')})))"
    # 2. 再到各工作目录用 git 拿可核验的成果
    git -C <上一步列出的目录> log --since=7.days --stat
    ```
 
-   两边对齐后，git 侧给"实际改了什么"，`pickup` 侧给"为什么改、当时在讨论什么"。
+   两边对齐后，git 侧给"实际改了什么"，`corral` 侧给"为什么改、当时在讨论什么"。
 
 ## 与 OpenConductor 项目关联
 
-`pickup` 只提供 `cwd` / `cwd_display`（会话当时的原始工作目录），**不提供、也不应该提供**任何
+`corral` 只提供 `cwd` / `cwd_display`（会话当时的原始工作目录），**不提供、也不应该提供**任何
 "项目 ID"字段：OpenConductor 的项目标识是项目根目录（通常是含 `.git` 的目录）绝对路径的 SHA1
-摘要（形如 `proj_a1b2c3d4e5f6a7b8`），既算不出来（`pickup` 不知道 OpenConductor 的项目扫描结果），
+摘要（形如 `proj_a1b2c3d4e5f6a7b8`），既算不出来（`corral` 不知道 OpenConductor 的项目扫描结果），
 也不能直接由 cwd 推导（会话当时的 cwd 可能是项目子目录，不等于项目根目录）。
 
 调用方（如需要把某条会话关联到 OpenConductor 已注册项目的管家 Agent）应该：
 
 1. 调 `oc projects --json`，拿到项目列表，每项含 `id`（`proj_` 前缀的项目标识）和 `path`（项目根目录绝对路径）。
-2. 用 `pickup` 返回的 `cwd` 去匹配：`cwd` 等于某个 `path`，或 `cwd` 位于该 `path` 之下（前缀匹配），命中的
+2. 用 `corral` 返回的 `cwd` 去匹配：`cwd` 等于某个 `path`，或 `cwd` 位于该 `path` 之下（前缀匹配），命中的
    那一项的 `id` 就是要用的项目标识。
-3. 不要在 `pickup` 侧本地计算或猜测这个 ID——匹配逻辑属于调用方职责，不属于 `pickup`。
+3. 不要在 `corral` 侧本地计算或猜测这个 ID——匹配逻辑属于调用方职责，不属于 `corral`。
 
 ## 非 Agent 用法
 
-不带子命令直接运行 `pickup` 会打开交互式终端 TUI，需要真实终端，供人类手动选择会话；在非真实
-终端环境下会自动退化为 JSON 列表（等价于 `pickup list`）。旧版 `pickup --json` 参数仍然保留，但字段
-少于 `pickup list`（没有 `status` 英文枚举、`short_id` 等），新集成建议直接用本文档的子命令。
+不带子命令直接运行 `corral` 会打开交互式终端 TUI，需要真实终端，供人类手动选择会话；在非真实
+终端环境下会自动退化为 JSON 列表（等价于 `corral list`）。旧版 `corral --json` 参数仍然保留，但字段
+少于 `corral list`（没有 `status` 英文枚举、`short_id` 等），新集成建议直接用本文档的子命令。
 
 ## 界面异常排查（只读）
 
 TUI 卡顿、侧边栏不刷新、内嵌面板异常时：
 
-1. 先跑 `pickup diagnose`，看 `data.last_error`（最近一次完整 traceback；无记录则为 null）。
-2. 读 `~/.cache/pickup/events.log`（JSON 行：`scan_all` / `list_rebuild` / `host_session` / `capture_slow` / `error`）。
-3. 需要更多历史时再读 `~/.cache/pickup/embed-error.log`（后台线程 + 致命闪退的完整栈）。
-4. 真机 TUI 内按 **F12** 导出当前画面到 `~/.cache/pickup/screenshots/`（勿把含真实对话的截图提交仓库）。
-5. 需要细日志时设 `PICKUP_DEBUG=1` 后重启 TUI。
+1. 先跑 `corral diagnose`，看 `data.last_error`（最近一次完整 traceback；无记录则为 null）。
+2. 读 `~/.cache/corral/events.log`（JSON 行：`scan_all` / `list_rebuild` / `host_session` / `capture_slow` / `error`）。
+3. 需要更多历史时再读 `~/.cache/corral/embed-error.log`（后台线程 + 致命闪退的完整栈）。
+4. 真机 TUI 内按 **F12** 导出当前画面到 `~/.cache/corral/screenshots/`（勿把含真实对话的截图提交仓库）。
+5. 需要细日志时设 `CORRAL_DEBUG=1` 后重启 TUI。
 
 <!-- 该文档整理/压缩于 2026-08-08 -->

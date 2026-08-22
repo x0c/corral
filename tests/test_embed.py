@@ -1,4 +1,4 @@
-"""pickup.embed.py 的单元测试：tmux 命令拼装、SGR 画面解析、Cell→Style 映射、按键翻译。
+"""corral.embed.py 的单元测试：tmux 命令拼装、SGR 画面解析、Cell→Style 映射、按键翻译。
 
 tmux 子进程一律 mock，不需要真实 tmux，可在无终端环境跑。
 """
@@ -17,8 +17,8 @@ import time
 import unittest
 import unittest.mock as mock
 
-from pickup import embed, liveness
-from pickup.models import LaunchPlan
+from corral import embed, liveness
+from corral.models import LaunchPlan
 
 
 def _run_completed_ok(*_args, **_kwargs):
@@ -114,13 +114,15 @@ class AvailableTests(unittest.TestCase):
     def test_unavailable_when_explicitly_disabled(self):
         with mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
             self.assertFalse(embed.available(disabled_flag=True))
-            with mock.patch.dict("os.environ", {"PICKUP_KEEPALIVE": "0"}, clear=True):
+            with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE": "0"}, clear=True):
                 self.assertFalse(embed.available())
             with mock.patch.dict("os.environ", {"SC_KEEPALIVE": "0"}, clear=True):
                 self.assertFalse(embed.available())
+            with mock.patch.dict("os.environ", {"PICKUP_KEEPALIVE": "0"}, clear=True):
+                self.assertFalse(embed.available())
 
     def test_ignores_tmux_env_nesting(self):
-        # 用户在自己的 tmux 里跑 pickup 时 keepalive.enabled() 会关闭，但内嵌不 attach，
+        # 用户在自己的 tmux 里跑 corral 时 keepalive.enabled() 会关闭，但内嵌不 attach，
         # TMUX/STY 不影响可用性。
         with mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
                 mock.patch.dict("os.environ", {"TMUX": "/tmp/tmux-1000/default,1,0"}, clear=True):
@@ -134,20 +136,21 @@ class HostSessionTests(unittest.TestCase):
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
             name = embed.host_session(plan, "claude", "0123456789abcdef", 120, 40)
-        self.assertEqual(name, "pickup-claude-01234567")
+        self.assertEqual(name, "corral-claude-01234567")
         argv = run.call_args.args[0]
-        self.assertEqual(argv[:3], ["tmux", "-L", "pickup-keepalive"])
+        self.assertEqual(argv[:3], ["tmux", "-L", "corral-keepalive"])
         self.assertIn("-f", argv)
         joined = " ".join(argv)
-        self.assertIn("new-session -d -P -F #{pane_id} -s pickup-claude-01234567 -x 120 -y 40", joined)
+        self.assertIn("new-session -d -P -F #{pane_id} -s corral-claude-01234567 -x 120 -y 40", joined)
         self.assertIn("-c /tmp/work", joined)
-        for env_pair in ("PICKUP_RUNTIME=claude", "PICKUP_SESSION_ID=0123456789abcdef",
+        for env_pair in ("CORRAL_RUNTIME=claude", "CORRAL_SESSION_ID=0123456789abcdef",
+                         "PICKUP_RUNTIME=claude", "PICKUP_SESSION_ID=0123456789abcdef",
                          "SC_RUNTIME=claude", "SC_SESSION_ID=0123456789abcdef"):
             self.assertIn(f"-e {env_pair}", joined)
         self.assertEqual(argv[-2:], ["--resume", "abc"])
 
     def test_pi_new_session_argv_includes_session_id(self):
-        from pickup.scan.pi import PI_SESSION_DIR_ENV, hosted_session_dir
+        from corral.scan.pi import PI_SESSION_DIR_ENV, hosted_session_dir
 
         plan = LaunchPlan(argv=("pi", "--approve"), cwd="/tmp/work")
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok) as run, \
@@ -175,7 +178,7 @@ class HostSessionTests(unittest.TestCase):
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
             self.assertEqual(embed.host_session(plan, "claude", "0123456789abcdef", 80, 24),
-                             "pickup-claude-01234567")
+                             "corral-claude-01234567")
 
     def test_create_failure_raises_embed_error(self):
         plan = LaunchPlan(argv=("claude",), cwd=None)
@@ -217,25 +220,25 @@ class SessionIoTests(unittest.TestCase):
         """
         embed._alive_marks.clear()
         with mock.patch.object(embed.subprocess, "check_output", return_value=b"frame"):
-            embed.capture("pickup-claude-cache")
+            embed.capture("corral-claude-cache")
         with mock.patch.object(liveness.subprocess, "run",
                                side_effect=AssertionError("命中缓存时不该再 fork")):
-            self.assertTrue(embed.is_alive("pickup-claude-cache", max_age=3.0))
+            self.assertTrue(embed.is_alive("corral-claude-cache", max_age=3.0))
 
     def test_stale_alive_evidence_falls_back_to_real_check(self):
-        embed._alive_marks["pickup-claude-old"] = time.monotonic() - 30
+        embed._alive_marks["corral-claude-old"] = time.monotonic() - 30
         with mock.patch.object(liveness.shutil, "which", return_value="/usr/bin/tmux"), \
                 mock.patch.object(liveness.subprocess, "run", side_effect=_run_completed_ok):
-            self.assertTrue(embed.is_alive("pickup-claude-old", max_age=3.0))
+            self.assertTrue(embed.is_alive("corral-claude-old", max_age=3.0))
 
     def test_death_check_never_uses_cache(self):
         """判定「会话是否已结束」必须真问一次，缓存不能给死会话续命。"""
-        embed._alive_marks["pickup-claude-dead"] = time.monotonic()
+        embed._alive_marks["corral-claude-dead"] = time.monotonic()
         with mock.patch.object(liveness.shutil, "which", return_value="/usr/bin/tmux"), \
                 mock.patch.object(liveness.subprocess, "run",
                                   side_effect=subprocess.CalledProcessError(1, [])):
-            self.assertFalse(embed.is_alive("pickup-claude-dead"))
-        self.assertNotIn("pickup-claude-dead", embed._alive_marks)
+            self.assertFalse(embed.is_alive("corral-claude-dead"))
+        self.assertNotIn("corral-claude-dead", embed._alive_marks)
 
     def test_send_literal_and_key(self):
         calls = []
@@ -263,7 +266,7 @@ class SessionIoTests(unittest.TestCase):
         with mock.patch.object(embed.subprocess, "run", side_effect=run_side_effect):
             embed.paste("sc-claude-1", "line1\nline2")
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0][3:6], ["set-buffer", "-b", "pickup-embed"])
+        self.assertEqual(calls[0][3:6], ["set-buffer", "-b", "corral-embed"])
         self.assertEqual(calls[0][-1], "line1\nline2")
         self.assertEqual(calls[1][3:6], ["paste-buffer", "-p", "-d"])
         self.assertEqual(calls[1][-1], "sc-claude-1")
@@ -297,7 +300,7 @@ class SessionIoTests(unittest.TestCase):
 
     def test_resize_skips_below_minimum(self):
         with mock.patch.object(embed.subprocess, "run") as run:
-            embed.resize("pickup-claude-x", 20, 18)
+            embed.resize("corral-claude-x", 20, 18)
         run.assert_not_called()
 
 
@@ -305,6 +308,12 @@ class ImagePasteTests(unittest.TestCase):
     """浏览器增强脚本裹哨兵的图片粘贴：识别、落盘、送路径进 pane。"""
 
     def test_extract_pasted_image_roundtrip(self):
+        raw = b"\xff\xd8\xfffake-jpeg-bytes"
+        b64 = base64.b64encode(raw).decode()
+        wrapped = f"␞CORRAL_IMG_BEGIN␞{b64}␞CORRAL_IMG_END␞"
+        self.assertEqual(embed.extract_pasted_image(wrapped), raw)
+
+    def test_extract_pasted_image_accepts_pickup_sentinel(self):
         raw = b"\xff\xd8\xfffake-jpeg-bytes"
         b64 = base64.b64encode(raw).decode()
         wrapped = f"␞PICKUP_IMG_BEGIN␞{b64}␞PICKUP_IMG_END␞"
@@ -315,19 +324,19 @@ class ImagePasteTests(unittest.TestCase):
         self.assertIsNone(embed.extract_pasted_image(""))
 
     def test_extract_pasted_image_none_for_bad_base64(self):
-        wrapped = "␞PICKUP_IMG_BEGIN␞***not-base64***␞PICKUP_IMG_END␞"
+        wrapped = "␞CORRAL_IMG_BEGIN␞***not-base64***␞CORRAL_IMG_END␞"
         self.assertIsNone(embed.extract_pasted_image(wrapped))
 
     def test_extract_pasted_image_rejects_non_image_payload(self):
         raw = b"not-an-image"
         b64 = base64.b64encode(raw).decode()
-        wrapped = f"␞PICKUP_IMG_BEGIN␞{b64}␞PICKUP_IMG_END␞"
+        wrapped = f"␞CORRAL_IMG_BEGIN␞{b64}␞CORRAL_IMG_END␞"
         self.assertIsNone(embed.extract_pasted_image(wrapped))
 
     def test_extract_pasted_image_rejects_oversized_payload(self):
         # 只撑大 base64 文本长度，避免真的分配 8MB+ 解码缓冲
         payload = "A" * (embed._MAX_IMAGE_B64_CHARS + 1)
-        wrapped = f"␞PICKUP_IMG_BEGIN␞{payload}␞PICKUP_IMG_END␞"
+        wrapped = f"␞CORRAL_IMG_BEGIN␞{payload}␞CORRAL_IMG_END␞"
         self.assertIsNone(embed.extract_pasted_image(wrapped))
 
     def test_pane_cwd_parses_display_message(self):
@@ -944,11 +953,11 @@ class GridToTextTests(unittest.TestCase):
 class ControlChannelIntegrationTests(unittest.TestCase):
     """真 tmux 上的控制通道端到端：命令下发、%output 事件、copy-mode、主题注入、死亡检测。
 
-    用独立 socket（pickup-test-ctl），与 pickup-keepalive 上的真实会话完全隔离；
+    用独立 socket（corral-test-ctl），与 corral-keepalive 上的真实会话完全隔离；
     通过 patch keepalive._BASE_ARGV 让 embed 的全部 tmux 调用指向测试 socket。
     """
 
-    SOCKET = "pickup-test-ctl"
+    SOCKET = "corral-test-ctl"
     SESSION = "ctl-it"
 
     @classmethod
@@ -966,6 +975,11 @@ class ControlChannelIntegrationTests(unittest.TestCase):
                                     ("tmux", "-L", self.SOCKET))
         patcher.start()
         self.addCleanup(patcher.stop)
+        argv_patcher = mock.patch.object(
+            embed.keepalive, "tmux_argv", lambda name=None: ("tmux", "-L", self.SOCKET),
+        )
+        argv_patcher.start()
+        self.addCleanup(argv_patcher.stop)
         self.addCleanup(embed.close_channel)
         time.sleep(0.3)  # 等 shell 就绪，避免首批按键被 init 吃掉
 
@@ -1129,7 +1143,8 @@ class ControlChannelIntegrationTests(unittest.TestCase):
         """
         subprocess.run(["tmux", "-L", self.SOCKET, "kill-session", "-t", self.SESSION],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        with mock.patch.object(embed.keepalive, "_BASE_ARGV", ("tmux", "-L", self.SOCKET)):
+        with mock.patch.object(embed.keepalive, "_BASE_ARGV", ("tmux", "-L", self.SOCKET)), \
+             mock.patch.object(embed.keepalive, "tmux_argv", lambda name=None: ("tmux", "-L", self.SOCKET)):
             probe_script = (
                 "import os,sys,termios,tty,select,time;"
                 "fd=sys.stdin.fileno();old=termios.tcgetattr(fd);tty.setraw(fd);"

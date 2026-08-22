@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for improving `pickup`.
+Thanks for improving `corral`.
 
 ## Development Setup
 
@@ -16,7 +16,7 @@ The project keeps runtime dependencies minimal: the UI layer is built on [Textua
 Run:
 
 ```bash
-python3 -m compileall -q src/pickup tests
+python3 -m compileall -q src/corral tests
 python3 -m unittest discover -s tests -v
 ```
 
@@ -24,7 +24,7 @@ For TUI changes, also run a real terminal smoke test. Avoid committing captured 
 
 ## Design Boundaries
 
-- Keep runtime-specific behavior inside the matching adapter in `src/pickup/runtime/`.
+- Keep runtime-specific behavior inside the matching adapter in `src/corral/runtime/`.
 - Keep `cli` / `store` / `display` / `theme` focused on entry, session display, user selection, and launch orchestration — do not assemble per-runtime argv outside adapters.
 - Use native resume for the same runtime.
 - Use source-runtime handoff data plus target-runtime launch plans for cross-runtime handoff.

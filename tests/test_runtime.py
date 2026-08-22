@@ -7,11 +7,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup import titles
-from pickup.i18n import t
-from pickup.models import Handoff, LaunchPlan, LaunchRequest, NewSessionRequest, session_key
-from pickup.runtime import BaseRuntime, LaunchError, RuntimeRegistry, default_registry
-from pickup.runtime import pi as runtime_pi
+from corral import titles
+from corral.i18n import t
+from corral.models import Handoff, LaunchPlan, LaunchRequest, NewSessionRequest, session_key
+from corral.runtime import BaseRuntime, LaunchError, RuntimeRegistry, default_registry
+from corral.runtime import pi as runtime_pi
 
 
 def _prepare_copy_request(registry: RuntimeRegistry, session, title: str):
@@ -581,7 +581,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_scan_all_isolates_exception_from_one_runtime(self) -> None:
         # 单个运行时的扫描异常（如某条真实会话记录触发未预料的解析 bug）不能
-        # 拖垮其余运行时的结果，也不能让 pickup 首屏直接崩溃退出。
+        # 拖垮其余运行时的结果，也不能让 corral 首屏直接崩溃退出。
         registry = RuntimeRegistry((FakeRuntime(), BrokenRuntime()))
 
         scanned = registry.scan_all(limit=10)

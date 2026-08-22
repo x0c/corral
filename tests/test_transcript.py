@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pickup.transcript import SCHEMA_ID, count_events, load_events
+from corral.transcript import SCHEMA_ID, count_events, load_events
 
 
 def _write_jsonl(path: Path, entries: list[dict]) -> None:
@@ -70,7 +70,7 @@ class TranscriptUtilityTests(unittest.TestCase):
         self.assertEqual(counts["user_message"], 1)
         self.assertEqual(counts["assistant_message"], 2)
         self.assertEqual(counts["tool_call"], 1)
-        self.assertEqual(SCHEMA_ID, "pickup.share/v1")
+        self.assertEqual(SCHEMA_ID, "corral.share/v1")
 
 
 class ClaudeTranscriptTests(unittest.TestCase):

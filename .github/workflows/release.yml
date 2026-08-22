@@ -84,11 +84,11 @@ jobs:
         run: |
           set -euo pipefail
           version="${VERSION#v}"
-          download_url="https://github.com/x0c/pickup/archive/refs/tags/${VERSION}.tar.gz"
+          download_url="https://github.com/x0c/corral/archive/refs/tags/${VERSION}.tar.gz"
           sha256=$(curl -fsSL "$download_url" | sha256sum | cut -d' ' -f1)
           git clone "https://x-access-token:${COMMITTER_TOKEN}@github.com/x0c/homebrew-tap.git" tap
           cd tap
-          formula="Formula/pickup.rb"
+          formula="Formula/corral.rb"
           # 排队积压时，旧 tag 的任务可能在新版本发布之后才轮到执行；直接改写会把
           # 配方倒退回旧版本，用户 brew upgrade 反而降级。比一次版本号再决定。
           if ! VERSION="$version" python3 - "$formula" <<'PY'
@@ -114,14 +114,14 @@ jobs:
           fi
           python3 - <<'PY'
           from pathlib import Path
-          path = Path("Formula/pickup.rb")
+          path = Path("Formula/corral.rb")
           text = path.read_text()
           old = "    virtualenv_install_with_resources\n"
           new = """    venv = virtualenv_create(libexec, \"python3.12\")
               venv.pip_install resources
               system \"maturin\", \"build\", \"--release\", \"--interpreter\", libexec/\"bin/python\", \"--out\", \"dist\"
               venv.pip_install Dir[\"dist/*.whl\"].first
-              bin.install_symlink libexec/\"bin/pickup\"
+              bin.install_symlink libexec/\"bin/corral\"
           """
           if old in text:
               path.write_text(text.replace(old, new))
@@ -130,5 +130,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$formula"
-          git commit -m "pickup ${version}"
+          git commit -m "corral ${version}"
           git push origin main

@@ -11,12 +11,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup import agent_api, titles
-from pickup.models import ConversationMessage, Handoff, LaunchPlan
-from pickup.runtime import RuntimeRegistry
-from pickup.runtime.base import BaseRuntime, LaunchError
-from pickup.runtime.claude import ClaudeRuntime
-from pickup.runtime.codex import CodexRuntime
+from corral import agent_api, titles
+from corral.models import ConversationMessage, Handoff, LaunchPlan
+from corral.runtime import RuntimeRegistry
+from corral.runtime.base import BaseRuntime, LaunchError
+from corral.runtime.claude import ClaudeRuntime
+from corral.runtime.codex import CodexRuntime
 
 
 class FakeRuntime(BaseRuntime):
@@ -335,7 +335,7 @@ class AgentApiTests(unittest.TestCase):
             registry,
         )
         data = share["data"]
-        self.assertEqual(data["schema"], "pickup.share/v1")
+        self.assertEqual(data["schema"], "corral.share/v1")
         self.assertEqual([e["type"] for e in data["events"]], [
             "user_message", "thinking", "assistant_message", "tool_call", "tool_result",
         ])
@@ -363,20 +363,20 @@ class AgentApiTests(unittest.TestCase):
         self.assertNotIn("events", result["data"])
         with open(out_path, encoding="utf-8") as fp:
             envelope = json.load(fp)
-        self.assertEqual(envelope["data"]["schema"], "pickup.share/v1")
+        self.assertEqual(envelope["data"]["schema"], "corral.share/v1")
         self.assertIn("events", envelope["data"])
 
     def test_export_share_to_cache_writes_envelope(self) -> None:
-        cache = Path(self._tmpdir.name) / "pickup-cache"
+        cache = Path(self._tmpdir.name) / "corral-cache"
         cache.mkdir()
-        with mock.patch.dict(os.environ, {"PICKUP_CACHE_DIR": str(cache)}):
+        with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": str(cache)}):
             path = agent_api.export_share_to_cache(self.session, self.registry)
         self.assertTrue(os.path.commonpath([path, str(cache)]) == str(cache))
         self.assertTrue(path.endswith(".json"))
         with open(path, encoding="utf-8") as fp:
             envelope = json.load(fp)
         self.assertTrue(envelope["ok"])
-        self.assertEqual(envelope["data"]["schema"], "pickup.share/v1")
+        self.assertEqual(envelope["data"]["schema"], "corral.share/v1")
         self.assertIn("events", envelope["data"])
 
     def test_describe_includes_share(self) -> None:
@@ -515,7 +515,7 @@ class AgentApiTests(unittest.TestCase):
         self.assertIn("version", data)
 
     def test_diagnose_includes_last_error_from_embed_log(self) -> None:
-        from pickup import observe
+        from corral import observe
 
         with tempfile.TemporaryDirectory() as cache:
             events = os.path.join(cache, "events.log")
@@ -621,11 +621,11 @@ class RuntimeContinuationPlanTests(unittest.TestCase):
 
 
 class SubprocessIntegrationTests(unittest.TestCase):
-    """通过真实子进程验证 `python -m pickup` 的旧接口回归和非 TTY 自动降级；较慢，单独分组。"""
+    """通过真实子进程验证 `python -m corral` 的旧接口回归和非 TTY 自动降级；较慢，单独分组。"""
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [sys.executable, "-m", "pickup", *args],
+            [sys.executable, "-m", "corral", *args],
             cwd=str(Path(__file__).resolve().parent.parent),
             capture_output=True,
             text=True,

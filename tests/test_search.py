@@ -1,4 +1,4 @@
-"""全文搜索索引（`pickup.search`）的纯逻辑测试。
+"""全文搜索索引（`corral.search`）的纯逻辑测试。
 
 这一层不碰 Textual：索引怎么建、命中行怎么挑、高亮区间算得对不对、长行怎么
 开窗、排序是不是按会话时间由新到旧，全部在这里锁死。弹窗的交互行为在
@@ -10,8 +10,8 @@ from __future__ import annotations
 import time
 import unittest
 
-from pickup.models import ConversationMessage
-from pickup.search import ConversationIndex, split_keywords
+from corral.models import ConversationMessage
+from corral.search import ConversationIndex, split_keywords
 
 
 def _session(session_id: str, *, title: str, cwd: str = "/tmp/demo", mtime: float | None = None):
@@ -63,7 +63,7 @@ class SplitKeywordsTests(unittest.TestCase):
 class ConversationIndexTests(unittest.TestCase):
     def setUp(self) -> None:
         self.sessions = [
-            _session("a", title="侧边栏改造", cwd="/Users/x/pickup", mtime=300),
+            _session("a", title="侧边栏改造", cwd="/Users/x/corral", mtime=300),
             _session("b", title="字幕优化", cwd="/Users/x/LiveCaption", mtime=200),
             _session("c", title="节点选择", cwd="/Users/x/ProxyAgent", mtime=100),
         ]
@@ -137,7 +137,7 @@ class ConversationIndexTests(unittest.TestCase):
 
     def test_results_sorted_by_session_time_newest_first(self) -> None:
         for messages in self.conversations.values():
-            messages.append(ConversationMessage("user", "共同关键词 pickup", 9.0))
+            messages.append(ConversationMessage("user", "共同关键词 corral", 9.0))
         self.index.refresh(self.store)
         matches = self.index.search(self.sessions, "共同关键词")
         self.assertEqual([m.session["id"] for m in matches], ["a", "b", "c"])
@@ -193,7 +193,7 @@ class ConversationIndexTests(unittest.TestCase):
 
     def test_windowed_line_stays_within_the_character_budget(self) -> None:
         """开窗后的行（含两端省略号）不能超过预算，否则窄终端会硬截掉正文。"""
-        from pickup.search import _MAX_LINE_CHARS
+        from corral.search import _MAX_LINE_CHARS
 
         body = "前" * 500 + "关键词" + "后" * 500
         self.conversations["a"] = [ConversationMessage("user", body, 1.0)]

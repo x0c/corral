@@ -1,4 +1,4 @@
-"""Cursor 观察器在 pickup 顶层命令入口的分发测试。"""
+"""Cursor 观察器在 corral 顶层命令入口的分发测试。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup import cli
+from corral import cli
 
 
 class CursorObserverCliIntegrationTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class CursorObserverCliIntegrationTests(unittest.TestCase):
             os.environ,
             {
                 "HOME": str(self.home),
-                "PICKUP_CACHE_DIR": str(Path(self.temp.name) / "cache"),
+                "CORRAL_CACHE_DIR": str(Path(self.temp.name) / "cache"),
                 "XDG_CACHE_HOME": str(Path(self.temp.name) / "xdg"),
             },
             clear=False,
@@ -34,7 +34,7 @@ class CursorObserverCliIntegrationTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_public_command_is_forwarded_without_tui_or_other_dispatch(self):
-        with mock.patch.object(cli.sys, "argv", ["pickup", "observer", "install", "cursor"]), \
+        with mock.patch.object(cli.sys, "argv", ["corral", "observer", "install", "cursor"]), \
              mock.patch.object(cli.cursor_observer, "cli_main", return_value=4) as observer_main, \
              mock.patch.object(cli.observe, "install_crash_hooks") as crash_hooks, \
              mock.patch.object(cli.agent_api, "dispatch") as agent_dispatch, \
@@ -53,7 +53,7 @@ class CursorObserverCliIntegrationTests(unittest.TestCase):
         with mock.patch.object(
             cli.sys,
             "argv",
-            ["pickup", "observer", "install", "cursor", "--dry-run", "--json"],
+            ["corral", "observer", "install", "cursor", "--dry-run", "--json"],
         ), mock.patch.object(cli.sys, "stdout", output), self.assertRaises(SystemExit) as raised:
             cli.main()
 
@@ -68,7 +68,7 @@ class CursorObserverCliIntegrationTests(unittest.TestCase):
         with mock.patch.object(
             cli.sys,
             "argv",
-            ["pickup", "observer", "status", "unknown", "--json"],
+            ["corral", "observer", "status", "unknown", "--json"],
         ), mock.patch.object(cli.sys, "stdout", output), self.assertRaises(SystemExit) as raised:
             cli.main()
 
@@ -82,7 +82,7 @@ class CursorObserverCliIntegrationTests(unittest.TestCase):
             "prompt": "不应出现在输出或日志里的正文",
         }
         stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch.object(cli.sys, "argv", ["pickup", "_cursor-hook"]), \
+        with mock.patch.object(cli.sys, "argv", ["corral", "_cursor-hook"]), \
              mock.patch.object(cli.sys, "stdin", io.StringIO(json.dumps(payload))), \
              mock.patch.object(cli.sys, "stdout", stdout), \
              mock.patch.object(cli.sys, "stderr", stderr), \
@@ -103,7 +103,7 @@ class CursorObserverCliIntegrationTests(unittest.TestCase):
 
     def test_hidden_hook_malformed_json_returns_empty_json_and_zero(self):
         stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch.object(cli.sys, "argv", ["pickup", "_cursor-hook"]), \
+        with mock.patch.object(cli.sys, "argv", ["corral", "_cursor-hook"]), \
              mock.patch.object(cli.sys, "stdin", io.StringIO("{broken")), \
              mock.patch.object(cli.sys, "stdout", stdout), \
              mock.patch.object(cli.sys, "stderr", stderr), \
@@ -120,7 +120,7 @@ class CursorObserverCliIntegrationTests(unittest.TestCase):
 
     def test_hidden_hook_write_failure_returns_empty_json_and_zero(self):
         stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch.object(cli.sys, "argv", ["pickup", "_cursor-hook"]), \
+        with mock.patch.object(cli.sys, "argv", ["corral", "_cursor-hook"]), \
              mock.patch.object(
                  cli.sys,
                  "stdin",

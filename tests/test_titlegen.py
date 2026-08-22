@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from pickup import titlegen, titles
+from corral import titlegen, titles
 
 
 class _FakeProc:
@@ -466,7 +466,7 @@ class SaveCacheAtomicWriteTests(unittest.TestCase):
         self.addCleanup(self._tmpdir.cleanup)
         self._patch_dir = mock.patch.object(titles, "CACHE_DIR", self._tmpdir.name)
         self._patch_file = mock.patch.object(
-            titles, "CACHE_FILE", os.path.join(self._tmpdir.name, "pickup.titles.json")
+            titles, "CACHE_FILE", os.path.join(self._tmpdir.name, "corral.titles.json")
         )
         self._patch_dir.start()
         self._patch_file.start()
@@ -480,7 +480,7 @@ class SaveCacheAtomicWriteTests(unittest.TestCase):
             titles.load_cache(), {"claude:s1": {"fp": "v3:100", "title": "修复登录报错"}}
         )
         leftovers = [
-            name for name in os.listdir(self._tmpdir.name) if name != "pickup.titles.json"
+            name for name in os.listdir(self._tmpdir.name) if name != "corral.titles.json"
         ]
         self.assertEqual(leftovers, [])
 

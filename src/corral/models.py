@@ -1,0 +1,256 @@
+"""跨运行时共享的数据模型。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Literal, TypedDict
+
+from corral.i18n import t
+
+
+class _SessionInfoRequired(TypedDict):
+    """所有运行时扫描器必须返回的统一会话结构。"""
+
+    source: str
+    id: str
+    short_id: str
+    cwd: str
+    cwd_display: str
+    mtime: float
+    display_time: str
+    time_source: str
+    event_time: float | None
+    file_mtime: float
+    size_bytes: int
+    size_kb: float
+    native_title: str | None
+    fallback_title: str
+    status_tag: str
+    live: bool
+    pid: int | None
+    first_user_msg: str
+    last_user_msg: str
+    last_agent_msg: str
+    path: str
+
+
+class SessionInfo(_SessionInfoRequired, total=False):
+    """在必填字段之外，追加运行时私有或运行期才由 SessionStore 注入、
+    scan_sessions() 不一定产出的可选字段。
+
+    - ``thread_source``：目前只有 Codex 扫描器产出（子 agent 线程来源标记）。
+    - ``keepalive_name`` / ``provisional``：扫描完成后由 SessionStore 的保活
+      匹配 / 占位卡逻辑注入，不是扫描器的原始产出。
+    - ``attention_kind`` / ``attention_token`` / ``attention_updated_at``：
+      扫描完成后由 SessionStore 的关注态 reconcile 注入（见 attention.py
+      ``AttentionState``；这里用 str 而非其 Literal 类型，避免 models.py
+      反向依赖 attention.py 造成循环导入）。
+    """
+
+    thread_source: str | None
+    keepalive_name: str
+    provisional: bool
+    attention_kind: str
+    attention_token: str | None
+    attention_updated_at: float
+
+
+_STALE_MTIME_GAP_SECONDS = 3600
+
+
+def effective_session_time(file_mtime: float, event_time: float | None) -> tuple[float, str]:
+    """修正与真实对话内容脱节的文件 mtime，供各运行时扫描器共用。
+
+    文件 mtime 最符合“最近被续接/写入”的直觉，正常续接必然写入带时间戳的
+    对话条目，二者基本一致。但运行时会在会话驻留/被重新打开时追加没有时间
+    戳的元数据条目（如 Claude Code 的 last-prompt、ai-title、mode、
+    permission-mode），把文件 mtime 顶到“现在”而不产生任何新对话内容；
+    Syncthing、复制、批量元数据刷新也有同样效果。当 mtime 比会话内部最后
+    一条真实事件的时间新出一个多小时以上的 gap 时，判定 mtime 不可信，回退
+    到事件时间。
+    """
+    if event_time is not None and file_mtime - event_time > _STALE_MTIME_GAP_SECONDS:
+        return event_time, "event_time_stale_mtime"
+    return file_mtime, "file_mtime"
+
+
+def make_session_info(
+    *,
+    source: str,
+    id: str,
+    short_id: str,
+    cwd: str,
+    mtime: float,
+    time_source: str,
+    event_time: float | None,
+    file_mtime: float,
+    size_bytes: int,
+    native_title: str | None,
+    fallback_title: str,
+    status_tag: str,
+    path: str,
+    first_user_msg: str | None = "",
+    last_user_msg: str | None = "",
+    last_agent_msg: str | None = "",
+    **extra: object,
+) -> SessionInfo:
+    """拼装一条统一结构的会话信息，收敛 5 份扫描器里逐字重复的字典拼装。
+
+    只收「5 个运行时的 `_build_session_info` 后半段完全相同」的那部分：
+    `cwd_display`/`display_time`/`size_kb` 的派生、`live`/`pid` 的扫描期占位
+    （由各 `scan_sessions()` 事后统一按 `_live_session_ids()` 等回填，行为不变）、
+    以及三条预览文本的 `[:300]` 截断。`mtime`/`time_source`/`event_time` 等
+    「各运行时算法不同」的字段仍由调用方算好后传入，工厂不重新推导。
+
+    `short_id` 故意不在工厂里派生：5 个运行时的截断规则互不相同
+    （`[:8]` / `[:12]` / 去横线 / 去 `session_` 前缀），塞进工厂反而会把
+    运行时私有规则错误地统一掉。
+
+    `**extra` 收运行时私有字段（目前只有 Codex 的 `thread_source`），原样并入
+    结果——不在这层做白名单校验，交给 `SessionInfo`（`total=False` 部分）和
+    `tests/test_contracts.py` 的字段契约测试兜底。
+    """
+    from corral.scan.common import shorten_cwd  # 延迟导入，避免 models.py 反向依赖 scan 包
+
+    session: SessionInfo = {
+        "source": source,
+        "id": id,
+        "short_id": short_id,
+        "cwd": cwd,
+        "cwd_display": shorten_cwd(cwd),
+        "mtime": mtime,
+        "display_time": format_message_time(mtime),
+        "time_source": time_source,
+        "event_time": event_time,
+        "file_mtime": file_mtime,
+        "size_bytes": size_bytes,
+        "size_kb": round(size_bytes / 1024, 1),
+        "native_title": native_title,
+        "fallback_title": fallback_title,
+        "status_tag": status_tag,
+        "live": False,  # scan_sessions 统一按各运行时的判活逻辑回填
+        "pid": None,  # 同上，运行中会话的进程号
+        "first_user_msg": (first_user_msg or "")[:300],
+        "last_user_msg": (last_user_msg or "")[:300],
+        "last_agent_msg": (last_agent_msg or "")[:300],
+        "path": path,
+    }
+    session.update(extra)  # type: ignore[typeddict-item]
+    return session
+
+
+def format_message_time(timestamp: float) -> str:
+    """格式化单条消息的发送时间，供预览页使用；与列表页时间格式保持一致。"""
+    return datetime.fromtimestamp(timestamp).strftime("%m-%d %H:%M")
+
+
+SHELL_RUNTIME_ID = "shell"
+
+
+def is_shell_session(session: SessionInfo | dict) -> bool:
+    """内嵌自由 shell 分屏占位，不是 AI 助手会话。"""
+    return str(session.get("source") or "") == SHELL_RUNTIME_ID
+
+
+def session_key(session: SessionInfo | dict) -> str:
+    """返回跨运行时唯一的会话键，避免不同运行时的 ID 相互覆盖。"""
+    runtime_id = str(session.get("source") or "unknown")
+    return f"{runtime_id}:{session['id']}"
+
+
+def parse_session_key(key: str) -> tuple[str, str]:
+    """拆出 ``runtime:id``；没有冒号时 runtime 视为 unknown。"""
+    runtime_id, sep, session_id = str(key or "").partition(":")
+    if not sep:
+        return "unknown", runtime_id
+    return runtime_id, session_id
+
+
+@dataclass(frozen=True)
+class ConversationMessage:
+    """从运行时私有历史中提取出的单条用户消息或最终答复。
+
+    Monitor/task-notification 等系统注入事件（原始记录里也挂在 user 轮次下，但不是真人
+    输入）价值很低，在各运行时的 `load_conversation` 里就地过滤掉，不进入这个类型。
+    """
+
+    role: Literal["user", "assistant"]
+    text: str
+    timestamp: float | None = None  # 该条消息的原始发送时间；老格式历史解析不出时留空，预览不标注
+
+
+@dataclass(frozen=True)
+class Handoff:
+    """源运行时导出的统一接力信息。
+
+    conversation_digest 是从原会话提取的对话摘录（预渲染文本块，构建逻辑见
+    BaseRuntime.export_handoff）：标题只有十几个字，摘录给目标 agent 一个可靠的
+    任务与进展锚点，避免它对任务的全部理解都押在自己冷启动解析原始 JSONL 上。
+    原始历史文件仍是权威来源；摘录构建失败时留空串，接力照常进行。
+    """
+
+    source_runtime_id: str
+    source_runtime_name: str
+    title: str
+    history_path: str
+    original_cwd: str
+    history_reading_hint: str
+    conversation_digest: str = ""
+
+    def render_prompt(self) -> str:
+        """生成目标运行时收到的首条用户提示词。"""
+        cwd = self.original_cwd or t("handoff.cwd_unknown")
+        sections = [
+            t("handoff.task", title=self.title),
+            t("handoff.intro", name=self.source_runtime_name),
+            t(
+                "handoff.history",
+                path=self.history_path,
+                cwd=cwd,
+                hint=self.history_reading_hint,
+            ),
+        ]
+        if self.conversation_digest:
+            sections.append(t("handoff.digest_intro", digest=self.conversation_digest))
+            sections.append(t("handoff.read_with_digest"))
+        else:
+            sections.append(t("handoff.read_without_digest"))
+        sections.append(t("handoff.closing"))
+        return "\n\n".join(sections)
+
+
+@dataclass(frozen=True)
+class LaunchRequest:
+    """用户在界面中确认的启动选择。
+
+    `force_new=True`：即使目标与来源是同一助手，也走「导出接力 → 新建会话」，
+    不原生恢复原会话。高级操作（`a`）用这个路径处理「原会话卡住 / 出 bug、
+    需要同助手另起一局」；侧边栏回车等入口保持默认原生恢复。
+
+    `copy_session=True`：同助手完整克隆（官方分叉或磁盘复制历史后恢复）。
+    与 `force_new` 互斥语义上优先：走分叉计划，不得 attach 到原保活窗，
+    也不得把源会话键 mark 成已托管。
+    """
+
+    session: SessionInfo
+    target_runtime_id: str
+    title: str
+    force_new: bool = False
+    copy_session: bool = False
+
+
+@dataclass(frozen=True)
+class NewSessionRequest:
+    """用户在界面中确认的“空白新会话”选择：不关联任何已有会话历史。"""
+
+    target_runtime_id: str
+    cwd: str
+
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    """可独立测试、最终交给操作系统执行的启动计划。"""
+
+    argv: tuple[str, ...]
+    cwd: str | None

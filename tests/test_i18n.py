@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from pickup import i18n
-from pickup.i18n import t
+from corral import i18n
+from corral.i18n import t
 
 
 class I18nDetectTests(unittest.TestCase):
@@ -28,11 +28,17 @@ class I18nDetectTests(unittest.TestCase):
             with self.subTest(env=env):
                 self.assertEqual(i18n.detect_lang(env), "zh")
 
-    def test_pickup_lang_overrides_system(self) -> None:
+    def test_corral_lang_overrides_system(self) -> None:
         self.assertEqual(
-            i18n.detect_lang({"PICKUP_LANG": "en", "LANG": "zh_CN.UTF-8"}),
+            i18n.detect_lang({"CORRAL_LANG": "en", "LANG": "zh_CN.UTF-8"}),
             "en",
         )
+        self.assertEqual(
+            i18n.detect_lang({"CORRAL_LANG": "zh", "LANG": "en_US.UTF-8"}),
+            "zh",
+        )
+
+    def test_pickup_lang_still_overrides(self) -> None:
         self.assertEqual(
             i18n.detect_lang({"PICKUP_LANG": "zh", "LANG": "en_US.UTF-8"}),
             "zh",

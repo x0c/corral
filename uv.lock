@@ -224,8 +224,8 @@ wheels = [
 ]
 
 [[package]]
-name = "pickup"
-version = "0.24.112"
+name = "corral"
+version = "0.24.143"
 source = { editable = "." }
 dependencies = [
     { name = "textual" },

@@ -1,4 +1,4 @@
-"""pickup.remote.sessions：会话载荷字段与置顶/搜索/删除后布局一致性。"""
+"""corral.remote.sessions：会话载荷字段与置顶/搜索/删除后布局一致性。"""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pickup import split_layout
-from pickup.remote.sessions import SessionHub
+from corral import split_layout
+from corral.remote.sessions import SessionHub
 
 
 def _session(
@@ -50,7 +50,7 @@ class SessionHubPayloadTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self._env = mock.patch.dict(
-            os.environ, {"PICKUP_CACHE_DIR": self._tmp.name}, clear=False
+            os.environ, {"CORRAL_CACHE_DIR": self._tmp.name}, clear=False
         )
         self._env.start()
         self.addCleanup(self._env.stop)

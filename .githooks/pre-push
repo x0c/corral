@@ -6,8 +6,8 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-if [ "${PICKUP_SKIP_PUSH_GATE:-0}" = "1" ]; then
-  echo "==> 跳过推送门禁（PICKUP_SKIP_PUSH_GATE=1）"
+if [ "${CORRAL_SKIP_PUSH_GATE:-0}" = "1" ]; then
+  echo "==> 跳过推送门禁（CORRAL_SKIP_PUSH_GATE=1）"
   exit 0
 fi
 
