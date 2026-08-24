@@ -25,6 +25,7 @@ from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Input
 from textual.worker import get_current_worker
 
@@ -395,10 +396,20 @@ class MainScreen(
         return self.query_one(SplitPaneArea)
 
     def update_terminal_background(self, osc_report: bytes) -> None:
-        """同步运行中终端的新背景，供现有面板和后续托管会话共同使用。"""
+        """同步运行中终端的新背景，供现有面板和后续托管会话共同使用。
+
+        报告可能在主界面刚推送、compose 还没把 SplitPaneArea 挂进 DOM 的
+        窗口期到达（v0.24.143 真机崩溃：query_one 抛 NoMatches）。此时静默
+        返回即可——self.osc_report 已更新，分屏区域挂载时 compose 会用
+        最新值初始化，不丢信息。
+        """
         self.osc_report = osc_report
         if self.embed_ok:
-            self._split_area().update_terminal_background(osc_report)
+            try:
+                area = self._split_area()
+            except NoMatches:
+                return
+            area.update_terminal_background(osc_report)
 
     def _session_is_active(self, session: dict) -> bool:
         """单条扫描快照是否仍活跃（托管 tmux 存活或扫描器报 live）。

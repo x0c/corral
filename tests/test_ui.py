@@ -677,6 +677,19 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(pane._osc_report, app.screen.osc_report)  # noqa: SLF001
             self.assertEqual(pane.styles.background.rgb, (17, 34, 51))
 
+    async def test_background_report_before_split_area_mounted_does_not_crash(self) -> None:
+        """回归：v0.24.143 真机崩溃——OSC 背景应答在主界面刚推送、
+        SplitPaneArea 还没挂进 DOM 的窗口期到达时，update_terminal_background
+        里 query_one 抛 NoMatches 直接中止整个应用。未挂载时静默返回即可，
+        报告值留在 self.osc_report，分屏区域 compose 时会拿最新值初始化。"""
+        from corral.ui.main_screen import MainScreen
+
+        store, _ = _make_store()
+        screen = MainScreen(store, embed_ok=True)
+        # 不挂载：等价于刚 push、compose 未完成的窗口期
+        screen.update_terminal_background(b"\x1b]11;rgb:fae0/fae0/fae0\x07")
+        self.assertEqual(screen.osc_report, b"\x1b]11;rgb:fae0/fae0/fae0\x07")
+
     async def test_dec_mode_notification_switches_theme_before_osc_reply(self) -> None:
         store, _ = _make_store()
         app = CorralApp(
