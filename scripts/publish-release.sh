@@ -9,8 +9,9 @@
 #
 #   1. 确保 tag 对应的 GitHub Release 存在；
 #   2. 构建**本机平台**能出的安装包 + 源码包，上传到该 Release；
-#   3. 把 Homebrew 配方指到这个 tag 的源码归档（配方本身从源码编译，不依赖上面
-#      那些附件，所以 macOS 用户即使没有预编译包也能立刻升级）。
+#   3. 重新生成 Homebrew 配方：有预编译 wheel 的平台直装（不拉 Rust），
+#      缺 wheel 的平台回退源码编译（本机出不了的平台包等 CI 补齐后重跑本
+#      脚本即可切回 wheel），所以 macOS 用户即使没等到 CI 也能立刻升级）。
 #
 # CI 之后跑完会补齐本机出不了的那部分附件（在 Linux 上发版就是 macOS 预编译包，
 # 反之亦然），并对同名附件做覆盖上传，两边不冲突。
@@ -160,45 +161,15 @@ if [ "${CORRAL_SKIP_TAP:-0}" = "1" ]; then
 else
   TOKEN="${HOMEBREW_TAP_TOKEN:-$(gh auth token)}"
   [ -n "$TOKEN" ] || die "拿不到可写 ${TAP_REPO} 的令牌"
-  ARCHIVE="https://github.com/${SOURCE_REPO}/archive/refs/tags/${TAG}.tar.gz"
-  echo "==> 计算源码归档校验和"
-  SHA="$(curl -fsSL "$ARCHIVE" | python3 -c '
-import hashlib, sys
-print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())
-')"
   WORK="$(mktemp -d)"
   git clone -q "https://x-access-token:${TOKEN}@github.com/${TAP_REPO}.git" "$WORK/tap"
-  FORMULA="$WORK/tap/Formula/corral.rb"
-  if [ ! -f "$FORMULA" ]; then
-    if [ -f "$WORK/tap/Formula/pickup.rb" ]; then
-      cp "$WORK/tap/Formula/pickup.rb" "$FORMULA"
-    else
-      rm -rf "$WORK"; die "tap 里没有 Formula/corral.rb，也没有可迁移的 Formula/pickup.rb"
-    fi
-  fi
-  # 用 python 改写而不是 sed -i：BSD sed（macOS）与 GNU sed 的 -i 参数不兼容，
-  # 而发版机大概率就是 Mac。
-  # 退出码 3 = 配方已是更新的版本，属正常跳过，不能让 set -e 把脚本带走。
+  # 配方由 scripts/homebrew_formula.py 整体生成：有预编译 wheel 的平台直装（不拉
+  # Rust），缺 wheel 的平台回退源码编译。本机出不了的平台包（如 Mac 发版时的
+  # Linux wheel）对应平台自动落到源码兜底，等 CI 补齐附件后重跑本脚本即可切回
+  # wheel。退出码 3 = 配方已是更新的版本，属正常跳过，不能让 set -e 把脚本带走。
   rc=0
-  ARCHIVE="$ARCHIVE" SHA="$SHA" VERSION="$VERSION" python3 - "$FORMULA" <<'PY' || rc=$?
-import os, pathlib, re, sys
-path = pathlib.Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-# 过渡期：若 tap 里还是 pickup 配方，改成 corral（类名、安装产物、homepage）。
-text = text.replace("class Pickup", "class Corral")
-text = re.sub(r'\bbin\.install\s+"pickup"', 'bin.install "corral"', text)
-text = text.replace('bin/"pickup"', 'bin/"corral"')
-text = text.replace("github.com/x0c/pickup", "github.com/x0c/corral")
-current = re.search(r'^  url ".*/tags/v([^"]+)\.tar\.gz"', text, re.M)
-def parts(v): return tuple(int(x) for x in re.findall(r"\d+", v))
-if current and parts(current.group(1)) > parts(os.environ["VERSION"]):
-    # 配方已经比本次要发的版本更新（例如补发旧 tag），不要往回退。
-    print(f"配方已是更新的 {current.group(1)}，跳过")
-    sys.exit(3)
-text = re.sub(r'^  url ".*"', f'  url "{os.environ["ARCHIVE"]}"', text, count=1, flags=re.M)
-text = re.sub(r'^  sha256 ".*"', f'  sha256 "{os.environ["SHA"]}"', text, count=1, flags=re.M)
-path.write_text(text, encoding="utf-8")
-PY
+  GITHUB_API_TOKEN="$TOKEN" python3 scripts/homebrew_formula.py \
+    --tag "$TAG" --tap-dir "$WORK/tap" --repo "${SOURCE_REPO}" || rc=$?
   if [ "$rc" -eq 0 ]; then
     if git -C "$WORK/tap" diff --quiet -- Formula/corral.rb; then
       echo "==> 配方已经指向 ${TAG}，无需改动"
@@ -209,7 +180,7 @@ PY
       echo "==> 配方已更新到 ${VERSION}"
     fi
   elif [ "$rc" -ne 3 ]; then
-    rm -rf "$WORK"; die "改写配方失败"
+    rm -rf "$WORK"; die "生成配方失败"
   fi
   rm -rf "$WORK"
 fi
@@ -219,7 +190,7 @@ echo "==> 收尾核对"
 gh release view "$TAG" --json tagName,assets \
   --jq '"Release \(.tagName)：\(.assets | length) 个附件"'
 curl -fsSL "https://raw.githubusercontent.com/${TAP_REPO}/main/Formula/corral.rb" \
-  | grep -E '^  url ' | sed 's/^/配方 /'
+  | grep -E '^\s*url ' | sed 's/^/配方 /'
 curl -fsSL "https://api.github.com/repos/${SOURCE_REPO}/releases/latest" \
   | python3 -c 'import json,sys; print("最新 Release：" + json.load(sys.stdin)["tag_name"])'
 if [ "${UPLOAD_FAILED:-0}" = "1" ]; then

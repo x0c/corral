@@ -5023,6 +5023,84 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: handoff_pane.has_focus)
                 self.assertFalse(list_view.has_focus)
 
+    async def test_handoff_without_history_path_keeps_tui_alive(self) -> None:
+        """回归：源会话没有历史路径时，接力是可预期拒绝，不得把 TUI 打崩。
+
+        2026-08-24 真机：刚托管的 Codex 占位卡 path 为空，按 a 选助手后
+        export_handoff 抛 LaunchError，经 @work 变成 WorkerFailed，整个界面退出。
+        """
+        from corral.runtime.base import LaunchError
+
+        cursor = mock.Mock()
+        cursor.id = "cursor"
+        cursor.display_name = "Cursor"
+        cursor.is_available.return_value = True
+        cursor.scan_sessions.return_value = []
+        store, registry = _make_store(extra_runtimes=(cursor,))
+        registry.build_launch_plan = mock.Mock(
+            side_effect=LaunchError(t("launch.no_history_path")),
+        )
+        app = CorralApp(store, embed_ok=True)
+
+        with (
+            mock.patch("corral.embed.host_session") as host_mock,
+            mock.patch.object(CorralApp, "bell"),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                list_view = app.screen.query_one(SessionListView)
+                source = list_view.selected_session()
+                self.assertIsNotNone(source)
+                source_key = corral.session_key(source)
+                main = app.screen
+                with mock.patch.object(main, "notify") as notify:
+                    await pilot.press("a")
+                    await pilot.pause()
+                    self.assertIsInstance(app.screen, RuntimePickerModal)
+                    await pilot.press("down")
+                    await pilot.press("enter")
+                    await _wait_until(lambda: type(app.screen).__name__ == "MainScreen")
+                    await pilot.pause()
+                    notify.assert_called()
+                    self.assertIn(
+                        t("launch.no_history_path"),
+                        str(notify.call_args[0][0]),
+                    )
+                host_mock.assert_not_called()
+                self.assertEqual(app.screen._host_pending, 0)
+                self.assertEqual(
+                    corral.session_key(list_view.selected_session()),
+                    source_key,
+                )
+
+    async def test_embed_open_launch_error_keeps_tui_alive(self) -> None:
+        """`_embed_open` 生成计划失败时也必须 notify + 返回，不能让调用方 worker 崩掉。"""
+        from corral.runtime.base import LaunchError
+
+        store, registry = _make_store()
+        registry.build_launch_plan = mock.Mock(
+            side_effect=LaunchError(t("launch.no_history_path")),
+        )
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            session = app.screen.query_one(SessionListView).selected_session()
+            self.assertIsNotNone(session)
+            request = corral.LaunchRequest(
+                session, "claude", "no-history", force_new=True,
+            )
+            with (
+                mock.patch("corral.embed.host_session") as host_mock,
+                mock.patch.object(app.screen, "notify") as notify,
+                mock.patch.object(app, "bell"),
+            ):
+                app.screen._embed_open(request, add_pane=True)
+            self.assertEqual(type(app.screen).__name__, "MainScreen")
+            notify.assert_called()
+            self.assertIn(t("launch.no_history_path"), str(notify.call_args[0][0]))
+            host_mock.assert_not_called()
+            self.assertEqual(app.screen._host_pending, 0)
+
     async def test_same_runtime_advanced_action_opens_new_session_split(self) -> None:
         """高级操作选同一助手：读历史后新建并旁挂，不得原生恢复原会话。"""
         store, registry = _make_store()

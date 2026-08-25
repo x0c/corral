@@ -77,58 +77,30 @@ jobs:
     needs: github-release
     runs-on: ubuntu-latest
     steps:
-      - name: Bump Homebrew formula to source release
+      - uses: actions/checkout@v4
+      - name: Regenerate Homebrew formula (wheel-first)
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ needs.github-release.outputs.tag }}
         run: |
           set -euo pipefail
           version="${VERSION#v}"
-          download_url="https://github.com/x0c/corral/archive/refs/tags/${VERSION}.tar.gz"
-          sha256=$(curl -fsSL "$download_url" | sha256sum | cut -d' ' -f1)
           git clone "https://x-access-token:${COMMITTER_TOKEN}@github.com/x0c/homebrew-tap.git" tap
-          cd tap
-          formula="Formula/corral.rb"
-          # 排队积压时，旧 tag 的任务可能在新版本发布之后才轮到执行；直接改写会把
-          # 配方倒退回旧版本，用户 brew upgrade 反而降级。比一次版本号再决定。
-          if ! VERSION="$version" python3 - "$formula" <<'PY'
-          import os, pathlib, re, sys
-          text = pathlib.Path(sys.argv[1]).read_text()
-          cur = re.search(r'^  url ".*/tags/v([^"]+)\.tar\.gz"', text, re.M)
-          def parts(v): return tuple(int(x) for x in re.findall(r"\d+", v))
-          sys.exit(1 if cur and parts(cur.group(1)) > parts(os.environ["VERSION"]) else 0)
-          PY
-          then
+          # 生成器优先用预编译 wheel（免 Rust 工具链），缺 wheel 的平台回退源码编译；
+          # 自带防回退（tap 里配方已是更新版本就跳过，退出码 3）--排队积压时旧
+          # tag 的 bump 任务晚执行也不能把版本写回去。
+          rc=0
+          GITHUB_API_TOKEN="${COMMITTER_TOKEN}" \
+            python3 scripts/homebrew_formula.py --tag "${VERSION}" --tap-dir tap || rc=$?
+          if [ "$rc" -eq 3 ]; then
             echo "配方已是更新的版本，跳过回写 ${version}"
             exit 0
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
           fi
-          sed -i \
-            -e "s#^  url \".*\"#  url \"${download_url}\"#" \
-            -e "s#^  sha256 \".*\"#  sha256 \"${sha256}\"#" \
-            "$formula"
-          if ! grep -q 'depends_on "maturin" => :build' "$formula"; then
-            sed -i '/depends_on "tmux"/a\\  depends_on "maturin" => :build' "$formula"
-          fi
-          if ! grep -q 'depends_on "rust" => :build' "$formula"; then
-            sed -i '/depends_on "maturin"/a\\  depends_on "rust" => :build' "$formula"
-          fi
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("Formula/corral.rb")
-          text = path.read_text()
-          old = "    virtualenv_install_with_resources\n"
-          new = """    venv = virtualenv_create(libexec, \"python3.12\")
-              venv.pip_install resources
-              system \"maturin\", \"build\", \"--release\", \"--interpreter\", libexec/\"bin/python\", \"--out\", \"dist\"
-              venv.pip_install Dir[\"dist/*.whl\"].first
-              bin.install_symlink libexec/\"bin/corral\"
-          """
-          if old in text:
-              path.write_text(text.replace(old, new))
-          PY
-          if git diff --quiet -- "$formula"; then exit 0; fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$formula"
-          git commit -m "corral ${version}"
-          git push origin main
+          if git -C tap diff --quiet -- Formula/corral.rb; then exit 0; fi
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C tap add Formula/corral.rb
+          git -C tap commit -m "corral ${version}"
+          git -C tap push origin main

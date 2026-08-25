@@ -61,6 +61,7 @@ flowchart TD
 `models.py` 中的 Handoff 是跨助手协议，而不是某个助手的历史格式。它携带来源助手标识与显示名、标题、绝对历史路径、原工作目录、历史阅读提示和 `conversation_digest`。
 
 - `history_path` 必须指向当前机器真实存在的历史文件；导出时转换为绝对路径。
+- **接力前缺少历史位置是可预期的拒绝，不是整个界面的致命错误。** 扫描到的临时、外部或已失效会话可能没有可交接的历史文件；此时保留原会话不动，向用户说明该会话不能接力，并让界面继续可用。禁止把这类 `LaunchError` 冒泡成未捕获后台异常而退出终端界面；也不要为了绕过校验伪造空路径或把别的会话历史塞给目标助手。
 - `original_cwd` 可以为空或已经失效，不能因此阻止接力；目标计划应通过 `usable_cwd` 决定是否采用它。
 - `history_reading_hint` 由源适配器提供，告诉目标助手怎样只读定位源历史，不应由编排层猜测。
 - OpenCode 历史数据库是共享容器，导出时还必须把会话 ID 写入阅读提示，避免目标读取错误会话。这段说明会整段塞进目标的 `--prompt`；扫描侧不得再把提问正文当命令行解析（见 [会话扫描知识库](SESSION_SCANNING_KNOWLEDGE_BASE.md) §6），改提示词也不用为了判活去回避 `session` 等词。
@@ -156,6 +157,7 @@ LaunchPlan 只包含 `argv` 参数数组和可选 `cwd`，让计划能被测试�
 13. **在适配器内接入保活实现**：适配器只生成 LaunchPlan；保活只可在计划生成之后的外层介入。
 14. **改了 render_prompt 却只测 TUI**：`corral context` 会同步变化，必须覆盖两种消费面。
 15. **为了判活去改写接力说明、删掉 `session` 等词**：错方向。OpenCode 跨助手新建本来就把整段说明放进 `--prompt`；操作系统里进程命令行是空格拼接的，扫描必须在 `--prompt` 处停扫，而不是让提示词迁就解析器。改完提示词后仍要用含这些词的原文跑扫描回归。
+16. **把缺历史路径的 `LaunchError` 冒泡出 `@work` 的 `action_handoff`**：会变成 `WorkerFailed`，Textual `_handle_exception` 整屏退出。复制会话已经 catch；接力新建的计划生成在 `_embed_open` 里，那里必须 notify + 响铃后返回，不能让异常回到 worker。典型触发是刚托管、历史还未落盘的占位卡（`path=""`）。**不要**为了消这个现象去伪造空路径、把别的会话历史塞给目标，或在 `_handle_exception` 里吞掉 `LaunchError`。也不要在 `action_handoff` 里先 `build_launch_plan` 再交给 `_embed_open`——成功路径会把对话摘录做两遍，现有捕获计划的回归会失败。真机：2026-08-24 刚托管 Codex 占位卡后按 `a` 选助手闪退。回归：`test_handoff_without_history_path_keeps_tui_alive`、`test_embed_open_launch_error_keeps_tui_alive`、`test_cross_runtime_requires_history_path`。
 
 ## §7. 验证与排查
 
@@ -174,6 +176,7 @@ python3 -m unittest -v test_session_scanning.py
 - Claude、Codex、OpenCode、Kimi、Cursor、Pi 的同助手原生恢复；
 - 双向或多目标的跨助手接力，断言目标没有错误携带原生恢复参数；
 - 源历史文件不存在时跨助手接力失败；
+- 缺少历史位置的会话尝试接力时保留终端界面和原会话，展示可理解的失败提示（`test_handoff_without_history_path_keeps_tui_alive` / `test_embed_open_launch_error_keeps_tui_alive` / `test_cross_runtime_requires_history_path`）；
 - 各助手空白新建计划不含接力提示词；
 - 不存在的工作目录降级为 `None`；
 - 新助手仅注册一次即可加入通用接力；

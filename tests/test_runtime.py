@@ -390,6 +390,16 @@ class RuntimeTests(unittest.TestCase):
             )
         self.assertEqual(str(raised.exception), t("launch.history_missing", path=missing))
 
+    def test_cross_runtime_requires_history_path(self) -> None:
+        """占位卡 / 未落盘会话 path 为空：跨助手接力必须明确拒绝，不得伪造路径。"""
+        session = self._session("claude", "", os.getcwd())
+
+        with self.assertRaises(LaunchError) as raised:
+            default_registry().build_launch_plan(
+                LaunchRequest(session, "codex", "修复会话接力")
+            )
+        self.assertEqual(str(raised.exception), t("launch.no_history_path"))
+
     def test_opencode_resume_plan(self) -> None:
         registry = default_registry()
         session = self._session("opencode", "/tmp/not-needed.db", "/tmp/not-exists")

@@ -14,6 +14,7 @@ from textual import work
 
 from corral.i18n import t
 from corral.models import SHELL_RUNTIME_ID, LaunchPlan
+from corral.runtime.base import LaunchError
 
 
 def _shell_launch_plan(cwd: str) -> LaunchPlan:
@@ -79,7 +80,13 @@ class HostControllerMixin:
                 self.notify(t("split.full", n=MAX_PANES))
                 self.app.bell()
                 return
-            plan = self.store.registry.build_launch_plan(request)
+            try:
+                plan = self.store.registry.build_launch_plan(request)
+            except LaunchError as exc:
+                # 缺历史路径等是可预期拒绝，不能冒泡成 WorkerFailed 把 TUI 打崩。
+                self.notify(t("error.launch_failed", error=exc))
+                self.app.bell()
+                return
             ident = request.session["id"] if native_resume else keepalive.new_session_ident()
         else:
             if not add_pane and area.pane_count() > 0 and not area.can_add_pane():
@@ -97,7 +104,12 @@ class HostControllerMixin:
                 self.notify(t("split.full", n=MAX_PANES))
                 self.app.bell()
                 return
-            plan = self.store.registry.build_new_session_plan(request)
+            try:
+                plan = self.store.registry.build_new_session_plan(request)
+            except LaunchError as exc:
+                self.notify(t("error.launch_failed", error=exc))
+                self.app.bell()
+                return
             ident = keepalive.new_session_ident()
 
         width, height = area.host_pane_size()

@@ -16,16 +16,20 @@ if [[ ! -f "$ROOT/pyproject.toml" || ! -f "$ROOT/src/corral/__init__.py" ]]; the
   exit 1
 fi
 
+# 改名前入口叫 pickup。只认 corral 时，旧安装会让脚本误走 pipx，装出一份
+# 非 editable 副本，随后校验失败（2026-08-23 真机）。
 entry_python() {
-  local bin shebang
-  bin="$(command -v corral 2>/dev/null || true)"
-  if [[ -n "$bin" && -f "$bin" ]]; then
-    shebang="$(sed -n '1s/^#!//p' "$bin" 2>/dev/null || true)"
-    if [[ -n "$shebang" && -x "$shebang" ]]; then
-      printf '%s\n' "$shebang"
-      return 0
+  local cmd bin shebang
+  for cmd in corral pickup; do
+    bin="$(command -v "$cmd" 2>/dev/null || true)"
+    if [[ -n "$bin" && -f "$bin" ]]; then
+      shebang="$(sed -n '1s/^#!//p' "$bin" 2>/dev/null || true)"
+      if [[ -n "$shebang" && -x "$shebang" ]]; then
+        printf '%s\n' "$shebang"
+        return 0
+      fi
     fi
-  fi
+  done
   return 1
 }
 
@@ -44,14 +48,21 @@ install_editable() {
 
 PY=""
 if PY="$(entry_python)"; then
-  echo "检测到 corral 入口解释器：$PY"
+  echo "检测到入口解释器：$PY"
   install_editable "$PY"
 elif command -v pipx >/dev/null 2>&1; then
-  echo "未找到可用的 corral shebang，改用 pipx install -e …"
-  pipx install -e "$ROOT" --force
+  echo "未找到可用的 corral/pickup shebang，改用 pipx install …"
+  # pipx 对本地路径也可能忽略 --editable，只装进 venv 副本；后面必须再 -e 一次。
+  pipx install "$ROOT" --force
   PY="$(entry_python || true)"
+  if [[ -z "${PY:-}" ]]; then
+    echo "错误：pipx 安装后仍找不到 corral 入口" >&2
+    exit 1
+  fi
+  echo "pipx 不一定保留 editable，再对该解释器做一次 -e …"
+  install_editable "$PY"
 else
-  echo "未找到 corral / pipx，改用 python3 --user editable 安装"
+  echo "未找到 corral / pickup / pipx，改用 python3 --user editable 安装"
   PY="$(command -v python3)"
   install_editable "$PY"
 fi
@@ -75,6 +86,12 @@ ok = os.path.samefile(os.path.dirname(path), r'$ROOT/src/corral') or path.starts
 print('  editable指向本仓库:', '是' if ok else '否（请检查上方 pip 输出）')
 raise SystemExit(0 if ok else 1)
 "
+
+if command -v pickup >/dev/null 2>&1 && ! command -v corral >/dev/null 2>&1; then
+  echo "警告：PATH 上仍只有旧命令 pickup=$(command -v pickup)，没有 corral。" >&2
+elif command -v pickup >/dev/null 2>&1; then
+  echo "提示：旧命令 pickup 仍在 PATH（$(command -v pickup)）。确认 corral 可用后可卸载：python3 -m pip uninstall pickup  或  pipx uninstall pickup"
+fi
 
 echo ""
 echo "正在自动启用终端命令托管："
