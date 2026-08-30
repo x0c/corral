@@ -38,6 +38,9 @@ class ClaudeRuntime(BaseRuntime):
             return self._AUTO_APPROVE_ARGS
         return ()
 
+    def scan_signature(self) -> object | None:
+        return scan_claude.scan_signature()
+
     def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
         return scan_claude.scan_sessions(limit=limit)
 

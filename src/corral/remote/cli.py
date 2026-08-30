@@ -222,6 +222,7 @@ def _print_pairing(state, code: str, public_key: bytes, local_port: int, *, mode
     else:
         print(pairing.render_fallback(url, code))
     print(t("remote.pair.valid_ten_minutes"))
+    print(t("remote.pair.trust_warning"))
 
 
 # ---------------------------------------------------------------------------

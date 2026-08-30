@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from corral import titles
 from corral.cache import get_cache
 from corral.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
-from corral.scan.common import is_ephemeral_agent_cwd
+from corral.scan.common import is_ephemeral_agent_cwd, stat_signature
 from corral.scan.common import parse_timestamp as _parse_timestamp
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects/")
@@ -432,6 +432,57 @@ def _peek_head_meta(path: str, max_lines: int = 40) -> tuple[str | None, str | N
     except OSError:
         pass
     return cwd, first_user, _is_internal_claude_session(peeked)
+
+
+def _jsonl_stat_signature() -> tuple[tuple[str, int, int], ...]:
+    """逐会话 JSONL 的 stat，不用祖先目录 mtime（追加不会冒泡）。"""
+    paths: list[str] = []
+    if not os.path.isdir(PROJECTS_DIR):
+        return ()
+    try:
+        projects = os.listdir(PROJECTS_DIR)
+    except OSError:
+        return ()
+    for proj in projects:
+        proj_base = os.path.join(PROJECTS_DIR, proj)
+        if not os.path.isdir(proj_base):
+            continue
+        try:
+            names = os.listdir(proj_base)
+        except OSError:
+            continue
+        for fname in names:
+            if fname.endswith(".jsonl"):
+                paths.append(os.path.join(proj_base, fname))
+    return stat_signature(paths)
+
+
+def _live_pid_file_snapshot() -> tuple[int, ...]:
+    """仍存活的 Claude pid 文件集合；进程退出会改变签名，避免 live 冻住。"""
+    pids: list[int] = []
+    if not os.path.isdir(SESSIONS_DIR):
+        return ()
+    try:
+        names = os.listdir(SESSIONS_DIR)
+    except OSError:
+        return ()
+    for fname in names:
+        if not fname.endswith(".json"):
+            continue
+        try:
+            pid = int(fname[: -len(".json")])
+        except ValueError:
+            continue
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+        pids.append(pid)
+    return tuple(sorted(pids))
+
+
+def scan_signature() -> tuple | None:
+    return (_jsonl_stat_signature(), _live_pid_file_snapshot())
 
 
 def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:

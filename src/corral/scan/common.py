@@ -221,6 +221,84 @@ def _pids_for_process_name(process_name: str) -> list[int]:
     return found
 
 
+def live_pid_snapshot(process_name: str) -> tuple[int, ...]:
+    """廉价进程快照：只做 pgrep / cmdline 兜底，不查 cwd、不调 lsof。
+
+    供各运行时 ``scan_signature`` 判断「有没有进程启停」。cwd / 打开文件仍走
+    ``live_processes``，且按 pid 集合缓存，避免后台重扫每 3 秒对每个 pid 再 fork
+    一次 ``lsof``（本机 15 个 Cursor agent 曾测到单轮 ~800ms）。
+    """
+    return tuple(sorted(_pids_for_process_name(process_name)))
+
+
+def stat_signature(paths) -> tuple[tuple[str, int, int], ...]:
+    """文件级元数据签名：``(path, mtime_ns, size)`` 排序元组，缺文件跳过。
+
+    这是多层历史目录上唯一可靠的廉价预检——祖先目录 mtime 不会因既有文件追加
+    而冒泡，禁止拿父目录 mtime 当 ``scan_signature``。
+    """
+    rows: list[tuple[str, int, int]] = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        rows.append((path, st.st_mtime_ns, st.st_size))
+    rows.sort()
+    return tuple(rows)
+
+
+_LIVE_CWD_CACHE: dict[str, tuple[tuple[int, ...], list[tuple[int, str]]]] = {}
+
+
+def clear_live_cwd_cache() -> None:
+    """测试用：清掉按 pid 集缓存的 cwd，避免用例之间串味。"""
+    _LIVE_CWD_CACHE.clear()
+
+
+def _cwds_for_pids(pids: list[int]) -> list[tuple[int, str]]:
+    """解析一批 pid 的 cwd；macOS 必须一次合并 lsof，禁止逐 pid fork。"""
+    if not pids:
+        return []
+    found: list[tuple[int, str]] = []
+    if sys.platform.startswith("linux"):
+        for pid in pids:
+            try:
+                cwd = os.readlink(f"/proc/{pid}/cwd")
+            except OSError:
+                continue
+            found.append((pid, os.path.realpath(cwd)))
+        return found
+    if sys.platform != "darwin":
+        return []
+    try:
+        proc = subprocess.run(
+            ["lsof", "-a", "-d", "cwd", "-Fn", "-p", ",".join(str(pid) for pid in pids)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, OSError):
+        return []
+    current: int | None = None
+    by_pid: dict[int, str] = {}
+    for line in proc.stdout.decode(errors="replace").splitlines():
+        if line.startswith("p"):
+            try:
+                current = int(line[1:])
+            except ValueError:
+                current = None
+            continue
+        if current is None or not line.startswith("n"):
+            continue
+        by_pid[current] = os.path.realpath(line[1:])
+    for pid in pids:
+        cwd = by_pid.get(pid)
+        if cwd:
+            found.append((pid, cwd))
+    return found
+
+
 def live_processes(process_name: str) -> list[tuple[int, str]]:
     """返回全部存活同名进程的 ``(pid, 归一化 cwd)`` 列表。
 
@@ -234,32 +312,17 @@ def live_processes(process_name: str) -> list[tuple[int, str]]:
     兜底。已知局限：同名的其它子命令进程（如 ``<name> serve``）
     会被一并计入，调用方（OpenCode）必须自己排除非 TUI。任一环节失败都静默
     降级为空列表，不抛异常。
+
+    pid 集合没变时复用上一轮 cwd，避免后台重扫把 macOS ``lsof`` 再付一遍。
     """
-    found: list[tuple[int, str]] = []
-    for pid in _pids_for_process_name(process_name):
-        cwd = None
-        if sys.platform.startswith("linux"):
-            try:
-                cwd = os.readlink(f"/proc/{pid}/cwd")
-            except OSError:
-                continue
-        elif sys.platform == "darwin":
-            try:
-                out = subprocess.check_output(
-                    ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
-                    stderr=subprocess.DEVNULL,
-                ).decode(errors="replace")
-            except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-                continue
-            for line in out.splitlines():
-                if line.startswith("n"):
-                    cwd = line[1:]
-                    break
-        else:
-            continue
-        if cwd:
-            found.append((pid, os.path.realpath(cwd)))
-    return found
+    pids = _pids_for_process_name(process_name)
+    key = tuple(sorted(pids))
+    cached = _LIVE_CWD_CACHE.get(process_name)
+    if cached is not None and cached[0] == key:
+        return list(cached[1])
+    found = _cwds_for_pids(pids)
+    _LIVE_CWD_CACHE[process_name] = (key, found)
+    return list(found)
 
 
 def _etime_seconds(text: str) -> float | None:

@@ -626,6 +626,52 @@ class RuntimeTests(unittest.TestCase):
         third = registry.scan_all(limit=10)[runtime.id]
         self.assertNotIn("runtime_status", third[0])
 
+    def test_nested_history_scan_signature_skips_unchanged_rescan(self) -> None:
+        import json
+
+        from corral.runtime.cursor import CursorRuntime
+        from corral.scan import cursor as scan_cursor
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            chat = root / "ws" / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            chat.mkdir(parents=True)
+            (chat / "meta.json").write_text(
+                json.dumps({
+                    "schemaVersion": 1,
+                    "createdAtMs": 1,
+                    "updatedAtMs": 2,
+                    "hasConversation": True,
+                    "title": "签名跳过",
+                    "cwd": str(root),
+                }),
+                encoding="utf-8",
+            )
+            (chat / "prompt_history.json").write_text('["hello"]', encoding="utf-8")
+            calls = {"n": 0}
+            real = scan_cursor.scan_sessions
+
+            def counting(*args, **kwargs):
+                calls["n"] += 1
+                return real(*args, **kwargs)
+
+            runtime = CursorRuntime()
+            registry = RuntimeRegistry((runtime,))
+            with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
+                scan_cursor, "live_pid_snapshot", return_value=()
+            ), mock.patch.object(
+                scan_cursor, "live_processes", return_value=[]
+            ), mock.patch.object(
+                scan_cursor, "scan_sessions", side_effect=counting
+            ):
+                first = registry.scan_all(limit=10)[runtime.id]
+                second = registry.scan_all(limit=10)[runtime.id]
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual([session["id"] for session in first], [
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        ])
+        self.assertEqual(first[0]["id"], second[0]["id"])
+
     def test_scan_failure_returns_old_cache_without_overwriting_it(self) -> None:
         runtime = CachedRuntime()
         registry = RuntimeRegistry((runtime,))

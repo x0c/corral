@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 
 from corral.remote import config as remote_config
@@ -214,6 +215,32 @@ class RemoteServiceTests(unittest.TestCase):
         second = self._connect("bb" * 32)
         reply = self._call(second, protocol.M_PAIR, {"code": code})
         self.assertFalse(reply["ok"], "配对码用过一次就该作废")
+
+    def test_concurrent_scans_of_the_same_code_admit_only_one_phone(self):
+        code = self.service.begin_pairing()
+        barrier = threading.Barrier(2)
+        outcomes: list[bool] = []
+        lock = threading.Lock()
+
+        def attempt(device_key: str) -> None:
+            connection = Connection(device_key, lambda _msg: None)
+            self.service.attach(connection)
+            barrier.wait()
+            self.service.handle(
+                connection, protocol.request(1, protocol.M_PAIR, {"code": code})
+            )
+            with lock:
+                outcomes.append(connection.paired)
+
+        workers = [
+            threading.Thread(target=attempt, args=("aa" * 32,)),
+            threading.Thread(target=attempt, args=("bb" * 32,)),
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        self.assertEqual(sum(1 for ok in outcomes if ok), 1)
 
     def test_wrong_pairing_code_is_rejected(self):
         self.service.begin_pairing()
@@ -687,6 +714,65 @@ class PairingWindowTests(unittest.TestCase):
         reloaded = remote_config.load_state()
         self.assertIsNotNone(remote_config.find_device(reloaded, "aa" * 32))
         self.assertEqual(reloaded.host_id, state.host_id)
+
+    def test_wrong_code_does_not_close_the_window(self):
+        code = crypto.new_pairing_code()
+        remote_config.write_pairing(code, ttl=60)
+        mode, reason = remote_config.consume_pairing("WRONGWRONGWRONG1")
+        self.assertIsNone(mode)
+        self.assertEqual(reason, "wrong")
+        self.assertIsNotNone(remote_config.read_pairing())
+
+    def test_consume_pairing_is_atomic_across_threads(self):
+        code = crypto.new_pairing_code()
+        remote_config.write_pairing(code, ttl=60, mode="readonly")
+        barrier = threading.Barrier(2)
+        results: list[tuple[str | None, str | None]] = []
+        lock = threading.Lock()
+
+        def worker() -> None:
+            barrier.wait()
+            result = remote_config.consume_pairing(code)
+            with lock:
+                results.append(result)
+
+        workers = [threading.Thread(target=worker) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        oks = [item for item in results if item[1] is None]
+        self.assertEqual(len(oks), 1)
+        self.assertEqual(oks[0][0], "readonly")
+        self.assertEqual(sum(1 for item in results if item[1] == "expired"), 1)
+
+    def test_rotate_host_key_keeps_the_key_still_registered_on_the_relay(self):
+        first = remote_config.load_or_create_host_key()
+        state = remote_config.load_state()
+        remote_config.rotate_host_key(state)
+        self.assertEqual(remote_config.load_host_prev_key(), first)
+        remote_config.rotate_host_key(state)
+        self.assertEqual(
+            remote_config.load_host_prev_key(),
+            first,
+            "连续轮换尚未连上中继时，prev 必须仍是中继上那把",
+        )
+        self.assertNotEqual(remote_config.host_key_path().read_bytes(), first)
+
+    def test_relay_headers_sign_prev_auth_with_the_same_nonce(self):
+        from corral.remote.transport.relay import RelayClient
+
+        first = remote_config.load_or_create_host_key()
+        state = remote_config.load_state()
+        remote_config.rotate_host_key(state)
+        client = RelayClient(None, state, first)  # type: ignore[arg-type]
+        headers = client._headers()
+        self.assertIn("X-Corral-Prev-Auth", headers)
+        auth_parts = headers["X-Corral-Auth"].split(".")
+        prev_parts = headers["X-Corral-Prev-Auth"].split(".")
+        self.assertEqual(auth_parts[1:4], prev_parts[1:4])
+        remote_config.clear_host_prev_key()
+        self.assertNotIn("X-Corral-Prev-Auth", client._headers())
 
 
 if __name__ == "__main__":

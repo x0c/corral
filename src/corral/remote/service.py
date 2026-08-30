@@ -487,16 +487,13 @@ class RemoteService:
 
     def _pair(self, connection: Connection, params: dict):
         key = connection.device_public_key or "anon"
-        pairing = remote_config.read_pairing()
-        if pairing is None:
+        pairing_mode, reason = remote_config.consume_pairing(str(params.get("code") or ""))
+        if reason == "expired":
             self._note_pair_failure(key)
             raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.pairing_expired"))
-        if not crypto.codes_equal(str(params.get("code") or ""), pairing[0]):
+        if reason == "wrong":
             self._note_pair_failure(key)
             raise ActionError(protocol.E_UNAUTHORIZED, t("remote.err.pairing_wrong"))
-        # 必须在 clear 之前读模式，否则窗口文件没了就永远当成 full
-        pairing_mode = remote_config.read_pairing_mode()
-        remote_config.clear_pairing()  # 一次性凭据，用掉立刻作废
         access = str(params.get("access") or "").strip().lower()
         # 开发机 `pair --readonly` 写入的窗口模式优先，防止手机端自行申请 full
         if pairing_mode == "readonly":

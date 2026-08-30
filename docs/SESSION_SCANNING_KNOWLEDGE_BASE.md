@@ -173,8 +173,8 @@ flowchart TD
 1. OpenCode 的签名包含数据库及可选 `-wal` 文件的 mtime，以及排序后的 `(pid, cwd)` 全量进程快照（不再按 cwd 折叠成单 pid）。
 2. 签名不变时复用上一份成功扫描结果，但必须复制每个会话列表项，禁止让界面就地添加的展示字段污染缓存。
 3. OpenCode 读取失败时保留上一份成功结果，不能用空列表覆盖。
-4. Claude/Codex 不使用父目录签名：多层目录下文件追加不会可靠更新父目录 mtime。两者逐文件使用精确签名复用已解析元数据；Codex 还把会话名称索引签名纳入版本。
-5. Kimi 按主事件流文件精确签名复用元数据；Cursor 按元数据文件签名，并额外绑定提示历史与正文数据库签名。缓存写意图在全部运行时扫描完成后一次事务提交，避免逐条同步写盘。
+4. Claude/Codex/Cursor/Kimi/Pi 用**逐文件 stat**（路径 + mtime_ns + size）加进程 pid 快照做 `scan_signature`，跳过未变化运行时的完整 `scan_sessions()`。禁止用祖先目录 mtime：既有文件追加不会冒泡。Claude 的 pid 文件集合也进签名，避免进程退出后 live 冻住。
+5. 解析层另有派生缓存：Kimi 按主事件流文件精确签名复用元数据；Cursor 按元数据文件签名，并额外绑定提示历史与正文数据库签名。缓存写意图在全部运行时扫描完成后一次事务提交，避免逐条同步写盘。
 6. 这些缓存是可删除的本地派生数据；损坏、锁竞争或禁用时必须按未命中处理，不能改变扫描结果。完整边界见 `PERFORMANCE_KNOWLEDGE_BASE.md`。
 
 ### 2.6 关注状态证据与裁决
@@ -283,7 +283,7 @@ flowchart TD
 - **AI 易错点**【必须】Cursor 绿点只来自 `beforeSubmitPrompt`。`afterAgentResponse` 是本轮最终答复，必须记成 idle，不能记成 working。Cursor 托管进程说完后仍活着，历史扫描对 Cursor 又从不推导 working/idle；一旦把「说完」写成执行中，后续 unknown 会把绿点钉死。旧库里已把 `afterAgentResponse` 记成 working 的记录，合并时必须纠正为 idle。官方确认该事件在一轮的最终可见答复之后触发，不是工具调用之间的中间句。
 - **AI 易错点**【性能】Cursor 关注信号默认只在 live 或相关文件签名变化时打开 `store.db`；冷会话不得随每轮刷新重复打开数据库。
 - **AI 易错点**【隐私与可靠性】关注状态库只存标识、令牌、时间和状态，不存正文；Cursor hook 配置必须增量保存、先备份再原子替换，任何接收失败都故障开放。
-- **AI 易错点**【禁止】为 Claude/Codex 用父目录 mtime 实现 `scan_signature` → 保持返回 `None`，每次正常扫描（原因：深层 JSONL 写入不会可靠冒泡到祖先目录，错误缓存会让新会话或活性变化冻结）。
+- **AI 易错点**【禁止】为 Claude/Codex 用父目录 mtime 实现 `scan_signature` → 必须逐文件 `stat`（加 pid 快照）。深层 JSONL 写入不会可靠冒泡到祖先目录，父目录签名会让新会话或活性变化冻结。
 - **AI 易错点**【必须】OpenCode 的扫描签名同时包含 `opencode.db`、可选 `opencode.db-wal` 的 mtime 与排序后的 `(pid, cwd)` 全量进程快照（原因：只看数据库文件会漏掉进程退出后的运行中状态变更；按 cwd 折叠会漏掉同目录第二个 TUI 的启停）。
 - **AI 易错点**【禁止】把 OpenCode 当作 JSONL，或在只读失败时静默返回“没有会话” → 它是 SQLite；发现数据库但全部只读连接/查询失败时抛出错误，让注册表保留上一份成功结果。
 - **AI 易错点**【必须】Cursor 只扫描 `~/.cursor/chats/` 的 CLI 历史，列表阶段只读 `meta.json` 和 `prompt_history.json`，完整预览才读 `store.db`（原因：IDE agent transcripts 不属于本域，过早读大 SQLite 会破坏首屏预算）。

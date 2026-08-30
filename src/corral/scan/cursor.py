@@ -56,12 +56,18 @@ _OPEN_CHAT_STORE_RE = re.compile(
 )
 # 判活时只收集 Cursor chat 相关 fd，避免读取 agent 打开的全部文件。
 _CURSOR_FD_HINT = ".cursor/chats/"
+_CHAT_SIG_FILES = ("meta.json", "prompt_history.json", "store.db", "store.db-wal")
+_STORE_PATH_CACHE: tuple[tuple[int, ...], dict[int, list[str]]] | None = None
 
 
 def _cursor_store_paths_for_pids(pids: list[int]) -> dict[int, list[str]]:
     """只读 agent 进程中与 Cursor chat store 相关的打开路径。"""
     if not pids:
         return {}
+    key = tuple(sorted(pids))
+    global _STORE_PATH_CACHE
+    if _STORE_PATH_CACHE is not None and _STORE_PATH_CACHE[0] == key:
+        return {pid: list(paths) for pid, paths in _STORE_PATH_CACHE[1].items()}
     result: dict[int, list[str]] = {}
     if sys.platform.startswith("linux"):
         for pid in pids:
@@ -102,6 +108,7 @@ def _cursor_store_paths_for_pids(pids: list[int]) -> dict[int, list[str]]:
             path = line[1:]
             if _CURSOR_FD_HINT in path.replace("\\", "/"):
                 result.setdefault(current, []).append(path)
+    _STORE_PATH_CACHE = (key, {pid: list(paths) for pid, paths in result.items()})
     return result
 
 

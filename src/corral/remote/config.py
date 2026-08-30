@@ -29,6 +29,7 @@ _DEFAULT_RELAY_URL = "wss://corral-relay.caozc.top"
 _STATE_FILENAME = "remote.json"
 _KEY_FILENAME = "identity.key"
 _HOST_KEY_FILENAME = "host.key"
+_HOST_PREV_KEY_FILENAME = "host.key.prev"
 _ACCOUNT_FILENAME = "account.json"
 _PAIRING_FILENAME = "pairing.json"
 _PID_FILENAME = "remote.pid"
@@ -68,7 +69,14 @@ def _migrate_legacy_dir(legacy: Path, primary: Path) -> None:
     except OSError:
         try:
             primary.mkdir(parents=True, exist_ok=True)
-            for name in (_STATE_FILENAME, _KEY_FILENAME, _PAIRING_FILENAME, _PID_FILENAME):
+            for name in (
+                _STATE_FILENAME,
+                _KEY_FILENAME,
+                _HOST_KEY_FILENAME,
+                _HOST_PREV_KEY_FILENAME,
+                _PAIRING_FILENAME,
+                _PID_FILENAME,
+            ):
                 src = legacy / name
                 if src.is_file() and not (primary / name).exists():
                     _atomic_write_bytes(primary / name, src.read_bytes(), 0o600)
@@ -86,6 +94,11 @@ def identity_key_path() -> Path:
 
 def host_key_path() -> Path:
     return remote_dir() / _HOST_KEY_FILENAME
+
+
+def host_prev_key_path() -> Path:
+    """轮换后尚未被中继确认的上一把注册钥匙。"""
+    return remote_dir() / _HOST_PREV_KEY_FILENAME
 
 
 def account_path() -> Path:
@@ -371,14 +384,21 @@ def load_or_create_identity() -> bytes:
     return key
 
 
-def load_or_create_host_key() -> bytes:
-    path = host_key_path()
+def _read_key_file(path: Path) -> bytes | None:
     try:
         data = path.read_bytes()
         if len(data) == 32:
             return data
     except OSError:
         pass
+    return None
+
+
+def load_or_create_host_key() -> bytes:
+    path = host_key_path()
+    existing = _read_key_file(path)
+    if existing is not None:
+        return existing
     from corral.remote.crypto import generate_host_key_bytes
 
     key = generate_host_key_bytes()
@@ -451,13 +471,34 @@ def find_device_by_id(state: RemoteState, device_id: str) -> PairedDevice | None
     return None
 
 
+def load_host_prev_key() -> bytes | None:
+    """轮换后尚未被中继确认的上一把注册钥匙。"""
+    return _read_key_file(host_prev_key_path())
+
+
+def clear_host_prev_key() -> None:
+    with _lock:
+        try:
+            host_prev_key_path().unlink()
+        except OSError:
+            pass
+
+
 def rotate_host_key(state: RemoteState) -> RemoteState:
-    """轮换 Ed25519 注册密钥。routing_id 由 X25519 派生，已配对手机不必重扫。"""
+    """轮换 Ed25519 注册密钥。routing_id 由 X25519 派生，已配对手机不必重扫。
+
+    若旧钥匙仍可能登记在中继上，先写入 ``host.key.prev``，下次握手成功后再删。
+    连续轮换且尚未连上中继时，保留中继上那把旧钥匙，不把中间版本当 prev。
+    """
     from corral.remote.crypto import generate_host_key_bytes
 
-    key = generate_host_key_bytes()
+    new_key = generate_host_key_bytes()
     with _lock:
-        _atomic_write_bytes(host_key_path(), key, 0o600)
+        old_key = _read_key_file(host_key_path())
+        prev = host_prev_key_path()
+        if old_key is not None and not prev.exists():
+            _atomic_write_bytes(prev, old_key, 0o600)
+        _atomic_write_bytes(host_key_path(), new_key, 0o600)
     return state
 
 
@@ -506,32 +547,68 @@ def write_pairing(code: str, ttl: float, *, mode: str = "full") -> None:
     if mode not in ("full", "readonly"):
         mode = "full"
     payload = json.dumps({"code": code, "expires_at": time.time() + ttl, "mode": mode})
-    _atomic_write_text(pairing_path(), payload, 0o600)
+    with _lock:
+        _atomic_write_text(pairing_path(), payload, 0o600)
 
 
-def read_pairing_mode() -> str:
-    try:
-        raw = json.loads(pairing_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return "full"
+def _pairing_mode_of(raw: dict) -> str:
     mode = str(raw.get("mode") or "full").strip().lower()
     return mode if mode in ("full", "readonly") else "full"
 
 
-def read_pairing() -> tuple[str, float] | None:
+def _read_pairing_unlocked() -> dict | None:
     try:
         raw = json.loads(pairing_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(raw, dict):
+        _clear_pairing_unlocked()
+        return None
     code = str(raw.get("code") or "")
     expires_at = float(raw.get("expires_at") or 0.0)
     if not code or expires_at <= time.time():
-        clear_pairing()
+        _clear_pairing_unlocked()
         return None
-    return code, expires_at
+    return raw
+
+
+def read_pairing_mode() -> str:
+    with _lock:
+        window = _read_pairing_unlocked()
+        if window is None:
+            return "full"
+        return _pairing_mode_of(window)
+
+
+def read_pairing() -> tuple[str, float] | None:
+    with _lock:
+        window = _read_pairing_unlocked()
+        if window is None:
+            return None
+        return str(window.get("code") or ""), float(window.get("expires_at") or 0.0)
+
+
+def consume_pairing(submitted: str) -> tuple[str | None, str | None]:
+    """同一把锁里读码、比对、删窗口。返回 (mode, error)，error 为 expired / wrong / None。"""
+    from corral.remote.crypto import codes_equal
+
+    with _lock:
+        window = _read_pairing_unlocked()
+        if window is None:
+            return None, "expired"
+        stored = str(window.get("code") or "")
+        if not codes_equal(submitted, stored):
+            return None, "wrong"
+        _clear_pairing_unlocked()
+        return _pairing_mode_of(window), None
 
 
 def clear_pairing() -> None:
+    with _lock:
+        _clear_pairing_unlocked()
+
+
+def _clear_pairing_unlocked() -> None:
     try:
         pairing_path().unlink()
     except OSError:

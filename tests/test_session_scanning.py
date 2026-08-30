@@ -121,6 +121,24 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
         content = [{"type": "text", "text": None}, {"type": "text", "text": "真实文本"}]
         self.assertEqual(scan_claude._extract_text(content), "真实文本")
 
+    def test_scan_signature_ignores_parent_dir_mtime_and_sees_jsonl_append(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            projects = Path(td) / "projects"
+            proj = projects / "demo"
+            proj.mkdir(parents=True)
+            jsonl = proj / "sess.jsonl"
+            jsonl.write_text("{}\n", encoding="utf-8")
+            with mock.patch.object(scan_claude, "PROJECTS_DIR", str(projects)), mock.patch.object(
+                scan_claude, "SESSIONS_DIR", str(Path(td) / "sessions")
+            ):
+                first = scan_claude.scan_signature()
+                os.utime(proj, None)
+                after_dir = scan_claude.scan_signature()
+                jsonl.write_text("{}\n{}\n", encoding="utf-8")
+                after_file = scan_claude.scan_signature()
+        self.assertEqual(first, after_dir)
+        self.assertNotEqual(first, after_file)
+
     def test_entry_time_does_not_crash_when_snapshot_is_json_null(self) -> None:
         self.assertIsNone(scan_claude._entry_time({"snapshot": None}))
 
@@ -4722,6 +4740,36 @@ class CursorScanTests(unittest.TestCase):
             self.assertEqual(s["first_user_msg"], "最早一句")
             self.assertTrue(s["path"].endswith(s["id"]) or s["path"].endswith("store.db"))
 
+    def test_scan_signature_tracks_file_stat_not_parent_dir_mtime(self) -> None:
+        """祖先目录 touch 不得改变签名；meta/WAL 追加必须改变。"""
+        from corral.scan import cursor as scan_cursor
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = str(root / "proj")
+            Path(cwd).mkdir()
+            chat_dir = self._chat(
+                root,
+                "ws1",
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                title="签名",
+                cwd=cwd,
+                updated_ms=1_700_000_000_000,
+                prompts=["hello"],
+            )
+            with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
+                scan_cursor, "live_pid_snapshot", return_value=()
+            ):
+                first = scan_cursor.scan_signature()
+                os.utime(root / "ws1", None)
+                after_dir = scan_cursor.scan_signature()
+                meta = chat_dir / "meta.json"
+                meta.write_text(meta.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+                after_file = scan_cursor.scan_signature()
+
+        self.assertEqual(first, after_dir)
+        self.assertNotEqual(first, after_file)
+
     def test_scan_filters_self_generated_title_sessions(self) -> None:
         """标题生成 `agent -p` 落盘会话必须过滤 PROMPT_MARKER（首条/fallback/原生标题）。"""
         from corral.scan import cursor as scan_cursor
@@ -5408,6 +5456,41 @@ class CursorScanTests(unittest.TestCase):
             found = common.live_processes("agent")
 
         self.assertEqual(found, [(agent_pid, cwd)])
+
+    def test_live_processes_batches_cwd_lsof_on_macos_and_caches_pid_set(self) -> None:
+        """macOS 查 cwd 必须一次合并 lsof；pid 集合不变时不得再 fork。"""
+        from corral.scan import common
+
+        common.clear_live_cwd_cache()
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(list(argv))
+            result = mock.Mock()
+            result.stdout = (
+                b"p11\nfcwd\nn/tmp/a\n"
+                b"p22\nfcwd\nn/tmp/b\n"
+            )
+            return result
+
+        with mock.patch.object(
+            common, "_pids_for_process_name", return_value=[11, 22]
+        ), mock.patch.object(
+            common.sys, "platform", "darwin"
+        ), mock.patch.object(
+            common.subprocess, "run", side_effect=fake_run
+        ), mock.patch.object(
+            common.os.path, "realpath", side_effect=lambda path: path
+        ):
+            first = common.live_processes("agent")
+            second = common.live_processes("agent")
+
+        self.assertEqual(first, [(11, "/tmp/a"), (22, "/tmp/b")])
+        self.assertEqual(second, first)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:5], ["lsof", "-a", "-d", "cwd", "-Fn"])
+        self.assertEqual(calls[0][-2:], ["-p", "11,22"])
+        common.clear_live_cwd_cache()
 
 
 class DeleteSessionScanTests(unittest.TestCase):

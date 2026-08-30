@@ -1000,6 +1000,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Valid for ten minutes.\n",
         "zh": "十分钟内有效。\n",
     },
+    "remote.pair.trust_warning": {
+        "en": (
+            "Pairing gives this phone the same control as sitting at this computer. "
+            "Only scan a code shown on this machine.\n"
+        ),
+        "zh": (
+            "配对后这部手机拥有与坐在这台电脑前相同的控制权。"
+            "只扫这台机器上显示的码。\n"
+        ),
+    },
     "remote.pair.service_not_running": {
         "en": (
             "Note: the always-on service is not running yet. "

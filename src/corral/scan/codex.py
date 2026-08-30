@@ -19,7 +19,7 @@ from corral import titles
 from corral.cache import file_signature, get_cache
 from corral.codex_identity import live_claims
 from corral.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
-from corral.scan.common import is_ephemeral_agent_cwd
+from corral.scan.common import is_ephemeral_agent_cwd, live_pid_snapshot, stat_signature
 from corral.scan.common import parse_timestamp as _parse_timestamp
 
 SESSIONS_DIR = os.path.expanduser("~/.codex/sessions")
@@ -387,6 +387,14 @@ def _live_session_ids() -> dict[str, int]:
         return live_ids
 
     return _live_uuids_from_lsof(pids)
+
+
+def scan_signature() -> tuple | None:
+    """逐 rollout 文件 stat + codex pid 快照；禁止用 sessions 目录 mtime。"""
+    files = _find_all_session_files()
+    if os.path.isfile(SESSION_INDEX):
+        files = [*files, SESSION_INDEX]
+    return (stat_signature(files), live_pid_snapshot("codex"))
 
 
 def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:

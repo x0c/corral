@@ -96,6 +96,7 @@ class RelayClient:
                     self.last_error = ""
                     backoff = _INITIAL_BACKOFF
                     observe.event("remote_relay_connected", url=self.url)
+                    remote_config.clear_host_prev_key()
                     await self._pump(socket, stop)
             except asyncio.CancelledError:
                 raise
@@ -123,13 +124,19 @@ class RelayClient:
         ts = int(time.time())
         assertion = remote_crypto.sign_host_assertion(host_key, self.state.host_id, ts, nonce)
         pub = remote_crypto.host_public_key_bytes(host_key)
-        return {
+        headers = {
             "X-Corral-Host-Name": self.state.host_name,
             "X-Corral-Host-Pub": pub.hex(),
             "X-Corral-Version": __version__,
             "X-Corral-Auth": assertion,
             "X-Corral-Bundle-Id": "com.x0c.corral",
         }
+        prev = remote_config.load_host_prev_key()
+        if prev is not None:
+            headers["X-Corral-Prev-Auth"] = remote_crypto.sign_host_assertion(
+                prev, self.state.host_id, ts, nonce
+            )
+        return headers
 
     async def _pump(self, socket, stop: asyncio.Event) -> None:
         stopper = asyncio.create_task(stop.wait())

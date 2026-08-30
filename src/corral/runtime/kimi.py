@@ -24,6 +24,9 @@ class KimiRuntime(BaseRuntime):
     # `-y/--yolo` 在根命令即被接受（自动放行全部操作），供原生恢复、空白新会话和直启子命令复用。
     auto_approve_args = ("-y",)
 
+    def scan_signature(self) -> object | None:
+        return scan_kimi.scan_signature()
+
     def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
         return scan_kimi.scan_sessions(limit=limit)
 

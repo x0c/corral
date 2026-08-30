@@ -17,12 +17,14 @@ from corral.legacy_names import (
 )
 from corral.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
 from corral.scan.common import (
+    live_pid_snapshot,
     live_processes,
     open_file_paths,
     parse_timestamp,
     process_command_line,
     process_environ,
     process_start_time,
+    stat_signature,
 )
 
 PI_HOME = os.path.expanduser("~/.pi/agent")
@@ -175,6 +177,17 @@ def _build_session_info(path: str) -> tuple[SessionInfo, float] | None:
         first_user_msg=first_user, last_user_msg=last_user, last_agent_msg=last_agent,
     )
     return info, created
+
+
+def scan_signature() -> tuple | None:
+    """逐 JSONL stat + pi pid 快照；隔离目录里的新文件也会出现在 walk 里。"""
+    paths: list[str] = []
+    if os.path.isdir(SESSIONS_DIR):
+        for root, _dirs, names in os.walk(SESSIONS_DIR):
+            for name in names:
+                if name.endswith(".jsonl"):
+                    paths.append(os.path.join(root, name))
+    return (stat_signature(paths), live_pid_snapshot("pi"))
 
 
 def scan_sessions(

@@ -25,6 +25,9 @@ class CursorRuntime(BaseRuntime):
     )
     auto_approve_args = ("--force",)
 
+    def scan_signature(self) -> object | None:
+        return scan_cursor.scan_signature()
+
     def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
         return scan_cursor.scan_sessions(limit=limit)
 

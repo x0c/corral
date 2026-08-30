@@ -19,6 +19,9 @@ class CodexRuntime(BaseRuntime):
     )
     auto_approve_args = ("--dangerously-bypass-approvals-and-sandbox",)
 
+    def scan_signature(self) -> object | None:
+        return scan_codex.scan_signature()
+
     def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
         return scan_codex.scan_sessions(limit=limit)
 
