@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-08-30.1"  # 解析器增删必须抬版本，否则空结果/旧 Codex 注入会一直命中缓存
+PARSER_VERSION = "2026-08-31.1"  # 提问按题分组、过期问卷不再摊平；旧缓存仍是 8 个按钮钉底
 _SCHEMA_VERSION = 1
 
 

@@ -57,7 +57,9 @@ class ToolCall:
     detail: str = ""
     status: str = "running"  # running / ok / error
     output: str = ""
-    options: list[str] = field(default_factory=list)  # 仅提问型工具：可选答案
+    options: list[str] = field(default_factory=list)  # 仅单道提问：可选答案
+    # 一次询问里的多道题；有值时不要再读摊平后的 options。
+    question_groups: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data = {
@@ -73,11 +75,14 @@ class ToolCall:
             data["output"] = self.output
         if self.options:
             data["options"] = self.options
+        if self.question_groups:
+            data["questions"] = self.question_groups
         return data
 
     @classmethod
     def from_dict(cls, data: dict) -> ToolCall:
         options = data.get("options")
+        groups = data.get("questions")
         return cls(
             call_id=str(data.get("id") or ""),
             name=str(data.get("name") or "tool"),
@@ -87,6 +92,9 @@ class ToolCall:
             status=str(data.get("status") or "running"),
             output=str(data.get("output") or ""),
             options=list(options) if isinstance(options, list) else [],
+            question_groups=[g for g in groups if isinstance(g, dict)]
+            if isinstance(groups, list)
+            else [],
         )
 
 
@@ -241,35 +249,65 @@ def summarize(name: str, kind: str, args: dict | str) -> tuple[str, str]:
     return name, detail
 
 
-def _extract_options(args: dict) -> list[str]:
-    """提问型工具的候选答案。手机端会把它们渲染成一排可点的按钮。"""
+def _option_label(item: object) -> str:
+    if isinstance(item, str):
+        return _clip(item, 80)
+    if isinstance(item, dict):
+        return _clip(
+            item.get("label") or item.get("title") or item.get("text") or item.get("name") or "",
+            80,
+        )
+    return ""
+
+
+def _extract_question_groups(args: dict) -> list[dict]:
+    """把提问参数收成「一道题一组」。多道题禁止摊成一份选项列表。"""
     if not isinstance(args, dict):
         return []
-    for key in ("options", "choices", "questions"):
+    raw_questions = args.get("questions")
+    if isinstance(raw_questions, list) and raw_questions and isinstance(raw_questions[0], dict):
+        groups: list[dict] = []
+        for item in raw_questions:
+            if not isinstance(item, dict):
+                continue
+            title = _clip(
+                item.get("question") or item.get("prompt") or item.get("header") or "",
+                200,
+            )
+            nested = item.get("options") if isinstance(item.get("options"), list) else item.get("choices")
+            labels = [_option_label(entry) for entry in nested] if isinstance(nested, list) else []
+            labels = [label for label in labels if label]
+            if title or labels:
+                groups.append({"summary": title, "options": labels})
+        return groups
+    title = _clip(str(args.get("question") or args.get("prompt") or ""), 200)
+    for key in ("options", "choices"):
         raw = args.get(key)
         if not isinstance(raw, list):
             continue
-        labels: list[str] = []
-        for item in raw:
-            if isinstance(item, str):
-                labels.append(_clip(item, 80))
-            elif isinstance(item, dict):
-                # AskUserQuestion 一类会嵌一层 {question, options:[{label}]}
-                nested = item.get("options")
-                if isinstance(nested, list):
-                    labels.extend(
-                        _clip(o.get("label") or o.get("title") or o.get("text"), 80)
-                        for o in nested
-                        if isinstance(o, dict)
-                    )
-                    continue
-                label = item.get("label") or item.get("title") or item.get("text") or item.get("name")
-                if label:
-                    labels.append(_clip(label, 80))
-        labels = [x for x in labels if x]
+        labels = [_option_label(entry) for entry in raw]
+        labels = [label for label in labels if label]
         if labels:
-            return labels[:8]
+            return [{"summary": title, "options": labels}]
     return []
+
+
+def _question_fields(kind: str, args: dict) -> tuple[list[str], list[dict]]:
+    """单道题写入 options；多道题只写入 question_groups，避免摊平。"""
+    if kind not in QUESTION_KINDS:
+        return [], []
+    groups = _extract_question_groups(args)
+    if not groups:
+        return [], []
+    if len(groups) == 1:
+        return list(groups[0].get("options") or []), []
+    return [], groups
+
+
+def _extract_options(args: dict) -> list[str]:
+    """单道提问的候选答案。多道题返回空列表，改走 question_groups。"""
+    options, _groups = _question_fields("question", args)
+    return options
 
 
 def _result_text(value: object) -> str:
@@ -827,13 +865,15 @@ def _parse_codex(reader: RichReader) -> list[RichMessage]:
             except ValueError:
                 args = payload.get("arguments") or {}
             summary, detail = summarize(name, classify(name), args)
+            options, groups = _question_fields(classify(name), args)
             tool = ToolCall(
                 call_id=str(payload.get("call_id") or payload.get("id") or ""),
                 name=name,
                 kind=classify(name),
                 summary=summary,
                 detail=detail,
-                options=_extract_options(args) if classify(name) in QUESTION_KINDS else [],
+                options=options,
+                question_groups=groups,
             )
             attach(tool)
             if messages:
@@ -957,13 +997,15 @@ def _parse_claude(reader: RichReader) -> list[RichMessage]:
             kind = classify(name)
             args = _tool_args(part.get("input"))
             summary, detail = summarize(name, kind, args)
+            options, groups = _question_fields(kind, args)
             tool = ToolCall(
                 call_id=str(part.get("id") or ""),
                 name=name,
                 kind=kind,
                 summary=summary,
                 detail=detail,
-                options=_extract_options(args) if kind in QUESTION_KINDS else [],
+                options=options,
+                question_groups=groups,
             )
             tools.append(tool)
         if texts or tools:
@@ -1078,13 +1120,15 @@ def _cursor_assistant(content: object, reader: RichReader) -> tuple[str, list[To
             kind = classify(name)
             args = part.get("args") if isinstance(part.get("args"), dict) else {}
             summary, detail = summarize(name, kind, args)
+            options, groups = _question_fields(kind, args)
             tool = ToolCall(
                 call_id=str(part.get("toolCallId") or ""),
                 name=name,
                 kind=kind,
                 summary=summary,
                 detail=detail,
-                options=_extract_options(args) if kind in QUESTION_KINDS else [],
+                options=options,
+                question_groups=groups,
             )
             tools.append(tool)
     return _clip("\n\n".join(texts), _MAX_TEXT), tools
@@ -1153,25 +1197,50 @@ def pending_prompts_from_messages(items: list[RichMessage]) -> list[dict]:
     """从已解析消息里找出仍在等待用户回答的提问型工具调用。
 
     手机端可直接渲染 ``options`` 为可点按钮；没有选项时仍返回摘要供自由输入。
+    一次询问里的多道题拆成多条；后面已经有新回复或新工具时旧提问不再返回。
     """
-    prompts: list[dict] = []
-    for message in items:
-        if message.role != "assistant":
+    for message in reversed(items):
+        running = [
+            tool
+            for tool in message.tools
+            if tool.kind in QUESTION_KINDS and tool.status == "running"
+        ]
+        if running:
+            prompts: list[dict] = []
+            for tool in running:
+                prompts.extend(_prompt_entries_for_tool(tool))
+            return prompts
+        if _message_supersedes_prompts(message):
+            return []
+    return []
+
+
+def _prompt_entries_for_tool(tool: ToolCall) -> list[dict]:
+    groups = tool.question_groups or [{"summary": tool.summary, "options": list(tool.options)}]
+    multi = len(groups) > 1
+    entries: list[dict] = []
+    for index, group in enumerate(groups):
+        if not isinstance(group, dict):
             continue
-        for tool in message.tools:
-            if tool.kind not in QUESTION_KINDS or tool.status != "running":
-                continue
-            entry: dict = {
-                "id": tool.call_id,
-                "name": tool.name,
-                "summary": tool.summary,
-                # 始终带上 options（可为 []），避免手机端把缺字段当成整包解码失败。
-                "options": list(tool.options),
-            }
-            if tool.detail:
-                entry["detail"] = tool.detail
-            prompts.append(entry)
-    return prompts
+        entry: dict = {
+            "id": f"{tool.call_id}:{index}" if multi else tool.call_id,
+            "name": tool.name,
+            "summary": group.get("summary") or tool.summary,
+            "options": list(group.get("options") or []),
+        }
+        if tool.detail and not multi:
+            entry["detail"] = tool.detail
+        entries.append(entry)
+    return entries
+
+
+def _message_supersedes_prompts(message: RichMessage) -> bool:
+    if (message.text or "").strip():
+        return True
+    for tool in message.tools:
+        if tool.kind not in QUESTION_KINDS or tool.status != "running":
+            return True
+    return False
 
 
 def pending_prompts(session: dict) -> list[dict]:

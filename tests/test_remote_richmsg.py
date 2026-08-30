@@ -67,6 +67,57 @@ class RichmsgUtilityTests(unittest.TestCase):
         )
         self.assertEqual(nested, ["方案 A", "方案 B"])
 
+    def test_two_questions_are_not_flattened(self) -> None:
+        args = {
+            "questions": [
+                {
+                    "question": "会补上来吗？",
+                    "options": [
+                        {"label": "会补上来，重进就都在了"},
+                        {"label": "补上来一部分，还是缺最新的"},
+                        {"label": "重进也还是没有"},
+                        {"label": "没试过"},
+                    ],
+                },
+                {
+                    "question": "哪个助手？",
+                    "options": [
+                        {"label": "Cursor"},
+                        {"label": "Claude Code"},
+                        {"label": "Codex"},
+                        {"label": "Pi"},
+                    ],
+                },
+            ]
+        }
+        self.assertEqual(richmsg._extract_options(args), [])
+        groups = richmsg._extract_question_groups(args)
+        self.assertEqual([group["summary"] for group in groups], ["会补上来吗？", "哪个助手？"])
+        self.assertEqual(len(groups[0]["options"]), 4)
+        self.assertEqual(groups[1]["options"][-1], "Pi")
+
+    def test_pending_prompts_split_questions_and_drop_when_later_activity(self) -> None:
+        ask = richmsg.ToolCall(
+            call_id="q1",
+            name="AskQuestion",
+            kind="question",
+            summary="AskQuestion",
+            status="running",
+            question_groups=[
+                {"summary": "会补上来吗？", "options": ["A", "B", "C", "D"]},
+                {"summary": "哪个助手？", "options": ["Cursor", "Claude Code", "Codex", "Pi"]},
+            ],
+        )
+        live = [richmsg.RichMessage(seq=1, role="assistant", tools=[ask])]
+        prompts = richmsg.pending_prompts_from_messages(live)
+        self.assertEqual([item["id"] for item in prompts], ["q1:0", "q1:1"])
+        self.assertEqual(prompts[0]["options"], ["A", "B", "C", "D"])
+        self.assertEqual(prompts[1]["summary"], "哪个助手？")
+
+        later = richmsg.ToolCall(call_id="g1", name="grep", kind="search", summary="grep", status="ok")
+        moved = live + [richmsg.RichMessage(seq=2, role="assistant", tools=[later])]
+        self.assertEqual(richmsg.pending_prompts_from_messages(moved), [])
+
     def test_looks_failed_only_on_explicit_markers(self) -> None:
         self.assertFalse(richmsg._looks_failed("all good\nprinted error in body"))
         self.assertTrue(richmsg._looks_failed("exit code: 1\nsomething broke"))
@@ -603,6 +654,23 @@ class RichmsgSerializationTests(unittest.TestCase):
         self.assertEqual(restored.seq, 1)
         self.assertEqual(restored.tools[0].options, ["A", "B"])
         self.assertEqual(restored.tools[0].call_id, "1")
+
+    def test_to_dict_keeps_question_groups(self) -> None:
+        tool = richmsg.ToolCall(
+            call_id="q1",
+            name="AskQuestion",
+            kind="question",
+            summary="AskQuestion",
+            question_groups=[
+                {"summary": "会补上来吗？", "options": ["A", "B"]},
+                {"summary": "哪个助手？", "options": ["Cursor", "Pi"]},
+            ],
+        )
+        data = tool.to_dict()
+        self.assertNotIn("options", data)
+        self.assertEqual(len(data["questions"]), 2)
+        restored = richmsg.ToolCall.from_dict(data)
+        self.assertEqual(restored.question_groups[1]["options"], ["Cursor", "Pi"])
 
 class RichmsgIncrementalTests(unittest.TestCase):
     def test_codex_tool_result_is_reemitted_on_poll(self) -> None:
