@@ -35,12 +35,18 @@ def _write_session(path: Path, session_id: str, cwd: str, text: str = "问题") 
     )
 
 
+def _project_dir(root: Path, cwd: str) -> Path:
+    """目标目录必须走搬家自己的 cwd 编码：macOS 上 /tmp 会解析成 /private/tmp。"""
+    return root / "sessions" / pi_migration._encode_cwd(cwd)
+
+
 class MigrationTests(unittest.TestCase):
     def test_copies_exact_main_and_leaves_subagent_and_source_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as cache:
             root = Path(td)
             cwd = "/Users/example/project"
-            legacy = root / "sessions" / "--Users-example-project--" / "corral-main1234"
+            project = _project_dir(root, cwd)
+            legacy = project / "corral-main1234"
             main = legacy / "2026-08-26T00-00-00-000Z_main1234.jsonl"
             subagent = legacy / "2026-08-26T00-01-00-000Z_subagent-uuid.jsonl"
             _write_session(main, "main1234", cwd)
@@ -63,7 +69,8 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as cache:
             root = Path(td)
             cwd = "/tmp/project"
-            legacy = root / "sessions" / "--tmp-project--" / "pickup-abc12345"
+            project = _project_dir(root, cwd)
+            legacy = project / "pickup-abc12345"
             main = legacy / "2026-08-26T00-00-00-000Z_abc12345.jsonl"
             _write_session(main, "abc12345", cwd)
             first = pi_migration.migrate_legacy_sessions(root, cache, active_dirs=set())
@@ -75,13 +82,11 @@ class MigrationTests(unittest.TestCase):
     def test_different_existing_destination_is_conflict_and_never_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as cache:
             root = Path(td)
-            cwd = "/Users/example/project"
-            source = (
-                root / "sessions" / "--Users-example-project--" / "corral-abc12345"
-                / "2026-08-26T00-00-00-000Z_abc12345.jsonl"
-            )
+            cwd = "/tmp/project"
+            project = _project_dir(root, cwd)
+            source = project / "corral-abc12345" / "2026-08-26T00-00-00-000Z_abc12345.jsonl"
             _write_session(source, "abc12345", cwd, "旧内容")
-            destination = root / "sessions" / "--Users-example-project--" / source.name
+            destination = project / source.name
             _write_session(destination, "abc12345", cwd, "不同内容")
             before = hashlib.sha256(destination.read_bytes()).hexdigest()
 
@@ -95,7 +100,8 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as cache:
             root = Path(td)
             cwd = "/tmp/project"
-            legacy = root / "sessions" / "--tmp-project--" / "corral-live1234"
+            project = _project_dir(root, cwd)
+            legacy = project / "corral-live1234"
             source = legacy / "2026-08-26T00-00-00-000Z_live1234.jsonl"
             _write_session(source, "live1234", cwd)
 
@@ -105,14 +111,13 @@ class MigrationTests(unittest.TestCase):
 
             self.assertEqual(len(report["deferred"]), 1)
             self.assertEqual(report["copied"], [])
-            destination = root / "sessions" / "--tmp-project--" / source.name
-            self.assertFalse(destination.exists())
+            self.assertFalse((project / source.name).exists())
 
     def test_unmatched_directory_never_guesses_latest_file(self) -> None:
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as cache:
             root = Path(td)
             cwd = "/tmp/project"
-            legacy = root / "sessions" / "--tmp-project--" / "corral-main1234"
+            legacy = _project_dir(root, cwd) / "corral-main1234"
             _write_session(legacy / "newest.jsonl", "some-subagent", cwd)
 
             report = pi_migration.migrate_legacy_sessions(root, cache, active_dirs=set())
