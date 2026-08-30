@@ -260,6 +260,11 @@ class RemoteService:
             self._sync_state_mtime()
         with self._lock:
             self._connections.add(connection)
+        observe.event(
+            "remote_device_attached",
+            device=connection.device_name or connection.device_id,
+            reason="控制面连接",
+        )
 
     def detach(self, connection: Connection) -> None:
         """控制面断开：设备离线，退订，并关掉已附着的数据面。"""
@@ -288,6 +293,11 @@ class RemoteService:
                 data_hook()
             except Exception:
                 pass
+        observe.event(
+            "remote_device_detached",
+            device=connection.device_name or connection.device_id,
+            reason="控制面断开",
+        )
 
     def attach_data_plane(self, token: str, device_public_key: str, send, close_hook, channel) -> Connection | None:
         """把第二条物理连接附着到已有逻辑 Connection。校验失败返回 None，不得踢控制面。"""
@@ -317,7 +327,11 @@ class RemoteService:
         connection.data_send = send
         connection.data_close_hook = close_hook
         connection.data_channel = channel
-        observe.event("remote_data_plane_attached", device=connection.device_name or connection.device_id)
+        observe.event(
+            "remote_data_plane_attached",
+            device=connection.device_name or connection.device_id,
+            reason="数据面连接",
+        )
         return connection
 
     def detach_data_plane(self, connection: Connection, channel) -> None:
@@ -327,7 +341,11 @@ class RemoteService:
         connection.data_send = None
         connection.data_close_hook = None
         connection.data_channel = None
-        observe.event("remote_data_plane_detached", device=connection.device_name or connection.device_id)
+        observe.event(
+            "remote_data_plane_detached",
+            device=connection.device_name or connection.device_id,
+            reason="数据面断开",
+        )
 
     def _purge_data_binds(self) -> None:
         now = time.time()

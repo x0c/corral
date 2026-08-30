@@ -554,6 +554,191 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertEqual([item.text for item in added], ["后来追加"])
         self.hub.unwatch_conversation("claude:placeholder")
 
+    def test_prompts_incremental_poll_publishes_watch_events(self) -> None:
+        """watch 之后 prompts/_ensure_transcript 增量读必须推给正在看的通道。"""
+        events: list[tuple[str, dict]] = []
+        self.hub._on_event = lambda channel, data: events.append((channel, data))
+        path = Path(self._tmp.name) / "claude.jsonl"
+        _write_assistant_jsonl(path, ["第一句"])
+        session = _session(sid="a")
+        session["path"] = str(path)
+        self.hub.store.sessions = {"claude": [session]}
+        page = self.hub.watch_conversation("claude:a")
+        self.assertEqual(page["messages"][-1]["text"], "第一句")
+        events.clear()
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "uuid": "u-new",
+                        "message": {"role": "user", "content": "用户新提问"},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            handle.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "uuid": "a-new",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "助手新回复"}],
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        self.hub.prompts("claude:a")
+        texts = _delta_role_texts(events)
+        self.assertEqual({channel for channel, _payload in events}, {"session:claude:a"})
+        self.assertIn(("user", "用户新提问"), texts)
+        self.assertIn(("assistant", "助手新回复"), texts)
+        self.hub.unwatch_conversation("claude:a")
+
+    def test_rebinding_prompts_publish_to_phone_channel(self) -> None:
+        """占位卡转正后，增量仍推到手机原来的通道。"""
+        events: list[tuple[str, dict]] = []
+        self.hub._on_event = lambda channel, data: events.append((channel, data))
+        old_path = Path(self._tmp.name) / "old-live.jsonl"
+        old_path.write_text("", encoding="utf-8")
+        new_path = Path(self._tmp.name) / "new-live.jsonl"
+        _write_assistant_jsonl(new_path, ["转正后的回复"])
+        placeholder = _session(sid="placeholder")
+        placeholder["path"] = str(old_path)
+        real = _session(sid="real-id")
+        real["path"] = str(new_path)
+        self.hub.store.sessions = {"claude": [placeholder]}
+        self.hub.watch_conversation("claude:placeholder")
+        self.hub.store.sessions = {"claude": [real]}
+        self.hub.store._session_key_migrations["claude:placeholder"] = "claude:real-id"
+        self.hub._follow_key_migrations()
+        events.clear()
+        with new_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "uuid": "later-live",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "后来追加"}],
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        self.hub.prompts("claude:placeholder")
+        self.assertEqual({channel for channel, _payload in events}, {"session:claude:placeholder"})
+        self.assertIn(("assistant", "后来追加"), _delta_role_texts(events))
+        self.hub.unwatch_conversation("claude:placeholder")
+
+    def test_send_text_echoes_user_text_to_phone_channel(self) -> None:
+        events: list[tuple[str, dict]] = []
+        self.hub._on_event = lambda channel, data: events.append((channel, data))
+        session = _session(sid="a")
+        session["keepalive_name"] = "pane-a"
+        self.hub.store.sessions = {"claude": [session]}
+        with (
+            mock.patch.object(remote_sessions.embed, "paste") as paste,
+            mock.patch.object(remote_sessions.embed, "send_key") as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub.send_text("claude:a", "你好手机")
+            paste.assert_called_once_with("pane-a", "你好手机")
+            send_key.assert_called_once_with("pane-a", "Enter")
+            self.assertEqual(
+                events,
+                [
+                    (
+                        "session:claude:a",
+                        {
+                            "version": 1,
+                            "kind": "echo",
+                            "session": "claude:a",
+                            "role": "user",
+                            "text": "你好手机",
+                        },
+                    )
+                ],
+            )
+            events.clear()
+            self.hub.send_text("claude:a", "")
+        self.assertEqual(events, [])
+
+    def test_attention_change_publishes_to_conversation_watch(self) -> None:
+        events: list[tuple[str, dict]] = []
+        self.hub._on_event = lambda channel, data: events.append((channel, data))
+        path = Path(self._tmp.name) / "claude.jsonl"
+        path.write_text("", encoding="utf-8")
+        session = _session(sid="a", attention="working")
+        session["path"] = str(path)
+        self.hub.store.sessions = {"claude": [session]}
+        self.hub.watch_conversation("claude:a")
+        self.hub._snapshot_attention()
+        events.clear()
+        session["attention_kind"] = "waiting"
+        self.hub._detect_attention_changes()
+        attention = [
+            (channel, payload)
+            for channel, payload in events
+            if payload.get("kind") == "attention"
+        ]
+        self.assertEqual(len(attention), 1)
+        self.assertEqual(attention[0][0], "session:claude:a")
+        self.assertEqual(
+            attention[0][1],
+            {
+                "version": 1,
+                "kind": "attention",
+                "session": "claude:a",
+                "attention": "waiting",
+            },
+        )
+        self.hub.unwatch_conversation("claude:a")
+
+    def test_conversation_poll_interval_tightens_when_working(self) -> None:
+        path = Path(self._tmp.name) / "claude.jsonl"
+        path.write_text("", encoding="utf-8")
+        session = _session(sid="a", attention="working")
+        session["path"] = str(path)
+        self.hub.store.sessions = {"claude": [session]}
+        self.hub.watch_conversation("claude:a")
+        self.assertEqual(
+            self.hub._conversation_poll_interval(),
+            remote_sessions._CONVERSATION_ACTIVE_INTERVAL,
+        )
+        session["attention_kind"] = "none"
+        self.assertEqual(
+            self.hub._conversation_poll_interval(),
+            remote_sessions._CONVERSATION_INTERVAL,
+        )
+        session["attention_kind"] = "waiting"
+        self.assertEqual(
+            self.hub._conversation_poll_interval(),
+            remote_sessions._CONVERSATION_ACTIVE_INTERVAL,
+        )
+        self.hub.unwatch_conversation("claude:a")
+
+    def test_paging_earlier_does_not_publish_deltas(self) -> None:
+        events: list[tuple[str, dict]] = []
+        self.hub._on_event = lambda channel, data: events.append((channel, data))
+        path = Path(self._tmp.name) / "claude.jsonl"
+        _write_assistant_jsonl(path, [f"消息-{index}" for index in range(90)])
+        session = _session(sid="a")
+        session["path"] = str(path)
+        self.hub.store.sessions = {"claude": [session]}
+        page = self.hub.watch_conversation("claude:a")
+        events.clear()
+        earlier = self.hub.message_page("claude:a", before_seq=page["oldest_seq"])
+        self.assertGreater(len(earlier["messages"]), 0)
+        self.assertEqual(_delta_role_texts(events), [])
+        self.hub.unwatch_conversation("claude:a")
+
     def test_stop_and_delete_mutate_canonical_key(self) -> None:
         """手机仍拿旧键时，停止/删除必须改正式会话，不能写到已经不存在的占位卡。"""
         real = _session(sid="real-id")
@@ -580,6 +765,16 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertIn("claude:real-id", self.hub.store._deleted)
         self.assertIn("claude:placeholder", self.hub.store._deleted)
         self.assertIsNone(self.hub.store.find_session("claude:real-id"))
+
+
+def _delta_role_texts(events: list[tuple[str, dict]]) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    for _channel, payload in events:
+        if payload.get("kind") != "delta":
+            continue
+        for message in payload.get("messages") or []:
+            found.append((str(message.get("role") or ""), str(message.get("text") or "")))
+    return found
 
 
 def _write_assistant_jsonl(path: Path, texts: list[str]) -> None:

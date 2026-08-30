@@ -32,7 +32,8 @@ _SCAN_LIMIT = 200
 _REFRESH_INTERVAL = 15.0  # 远程进程与桌面界面抢同一把 GIL；3 秒全量扫会把中继心跳拖死
 _PHONE_LIST_LIMIT = 80
 _SCREEN_INTERVAL = 0.2       # 有人在看终端视图时的抓帧周期
-_CONVERSATION_INTERVAL = 1.0  # 实时会话的富消息轮询周期
+_CONVERSATION_INTERVAL = 1.0  # 实时会话的富消息轮询周期（空闲）
+_CONVERSATION_ACTIVE_INTERVAL = 0.25  # 正在处理或等回复时收紧，不改画面周期
 _HOST_WIDTH = 120            # 新建托管会话的默认窗口宽度（按桌面常见宽度，手机横向平移）
 _HOST_HEIGHT = 40
 MESSAGE_PAGE_LIMIT = 80
@@ -397,28 +398,43 @@ class SessionHub:
                 except Exception:
                     continue
 
+    def _conversation_poll_interval(self) -> float:
+        """被看会话正在处理或等回复时加快对话轮询；全空闲回到 1 秒。不改画面周期。"""
+        with self._lock:
+            keys = [
+                watch.canonical_key or watch.key
+                for watch in self._conversations.values()
+                if watch.watchers > 0
+            ]
+        for key in keys:
+            session = self.store.find_session(key)
+            if session is None:
+                continue
+            kind = _ATTENTION_LABELS.get(str(session.get("attention_kind") or "none"), "none")
+            if kind in ("working", "waiting"):
+                return _CONVERSATION_ACTIVE_INTERVAL
+        return _CONVERSATION_INTERVAL
+
     def _conversation_loop(self) -> None:
-        while not self._stop.wait(_CONVERSATION_INTERVAL):
+        while not self._stop.wait(self._conversation_poll_interval()):
             with self._lock:
                 watches = [w for w in self._conversations.values() if w.watchers > 0]
+            seen_readers: set[int] = set()
             for watch in watches:
+                reader_id = id(watch.reader)
+                if reader_id in seen_readers:
+                    continue
+                seen_readers.add(reader_id)
                 new_messages: list[richmsg.RichMessage] = []
                 try:
                     with self._transcript_io:
                         new_messages = watch.reader.poll()
-                        if new_messages:
-                            self._append_transcript(
-                                watch.canonical_key or watch.key, new_messages
-                            )
                 except Exception:
                     continue
                 if new_messages:
-                    with self._lock:
-                        current = self._conversations.get(watch.key)
-                        if current is not None:
-                            current.deltas.append(new_messages)
-                    for event in _wire_message_batches(new_messages, session_key=watch.key):
-                        self._on_event(f"session:{watch.key}", event)
+                    self._publish_new_messages(
+                        watch.canonical_key or watch.key, new_messages
+                    )
 
     # -- 会话查询 ---------------------------------------------------------
 
@@ -686,6 +702,33 @@ class SessionHub:
             snapshot = current
         self._persist_transcript(snapshot)
 
+    def _publish_new_messages(
+        self, transcript_key: str, new_messages: list[richmsg.RichMessage]
+    ) -> None:
+        """规范化游标刚读到的新消息：写入缓存，并推给所有正在看这条会话的手机通道。
+
+        占位卡转正后 transcript 挂在正式键上，事件仍发到手机原来的 ``session:{watch.key}``。
+        ``read_all`` / ``read_earlier`` 是窗口构建，不要走这里。
+        """
+        if not new_messages:
+            return
+        self._append_transcript(transcript_key, new_messages)
+        with self._lock:
+            targets = [
+                watch
+                for watch in self._conversations.values()
+                if watch.watchers > 0
+                and (
+                    watch.key == transcript_key
+                    or watch.canonical_key == transcript_key
+                )
+            ]
+            for watch in targets:
+                watch.deltas.append(new_messages)
+        for watch in targets:
+            for event in _wire_message_batches(new_messages, session_key=watch.key):
+                self._on_event(f"session:{watch.key}", event)
+
     def _ensure_transcript(self, session: dict) -> _Transcript:
         """返回当前会话的规范化消息缓存；文件没变就不重新解析。"""
         key = session_key(session)
@@ -723,13 +766,12 @@ class SessionHub:
         if incremental and reader is not None and messages is not None and current is not None:
             new_messages = reader.poll()
             if new_messages:
-                messages.extend(new_messages)
+                self._publish_new_messages(key, new_messages)
             with self._lock:
                 stored = self._transcripts.get(key)
                 if stored is not None and stored.reader is reader:
                     stored.signature = signature
-                    stored.messages = messages
-                    to_persist = stored
+                    to_persist = stored if not new_messages else None
                 else:
                     to_persist = None
                     stored = current
@@ -743,12 +785,13 @@ class SessionHub:
             messages, state, generation = cached
             reader = richmsg.RichReader(session)
             reader.restore_state(state, messages)
-            new_messages = reader.poll()
-            if new_messages:
-                messages.extend(new_messages)
             transcript = _Transcript(key, path, signature, generation, reader, messages)
             self._remember_transcript(transcript)
-            self._persist_transcript(transcript)
+            new_messages = reader.poll()
+            if new_messages:
+                self._publish_new_messages(key, new_messages)
+            else:
+                self._persist_transcript(transcript)
             return transcript
 
         reader = richmsg.RichReader(session)
@@ -1074,6 +1117,18 @@ class SessionHub:
         if submit:
             time.sleep(0.05)  # 给目标程序一点时间收完粘贴，避免回车抢在正文前面
             embed.send_key(name, "Enter")
+        if text:
+            # 立刻回显到手机传来的通道，不占规范化 seq；助手历史落地后的正式消息才带 seq。
+            self._on_event(
+                f"session:{key}",
+                {
+                    "version": 1,
+                    "kind": "echo",
+                    "session": key,
+                    "role": "user",
+                    "text": text,
+                },
+            )
 
     def send_keys(self, key: str, keys: list[str]) -> None:
         name = self._keepalive_name(key)
@@ -1269,19 +1324,40 @@ class SessionHub:
         }
 
     def _detect_attention_changes(self) -> None:
-        """找出「刚刚从执行中变成等你回答」的会话，交给推送层。
+        """关注状态变化：正在看的对话走实时事件；系统推送仍只报「等你回答」。
 
-        只报这一种跃迁：用户被叫回手机的唯一理由就是助手卡住等答复。把「有新消息」
-        也做成推送会在长任务里刷屏，实测桌面端一轮任务能产生几十次状态波动。
+        推送层只收 waiting 跃迁，避免长任务刷屏。已经打开详情的手机必须立刻
+        看到「正在处理 / 等你回答」，所以 conversation watch 订阅任意状态变化。
         """
         hook = self._attention_hook
         layout = self._layout() if hook else None
+        with self._lock:
+            watches = [
+                watch
+                for watch in self._conversations.values()
+                if watch.watchers > 0
+            ]
         for session in self.store.all_sessions():
             key = session_key(session)
             current = str(session.get("attention_kind") or "none")
             previous = self._last_attention.get(key)
             self._last_attention[key] = current
-            if hook is None or previous is None or current == previous:
+            if previous is not None and current == previous:
+                continue
+            label = _ATTENTION_LABELS.get(current, "none")
+            for watch in watches:
+                if watch.key != key and watch.canonical_key != key:
+                    continue
+                self._on_event(
+                    f"session:{watch.key}",
+                    {
+                        "version": 1,
+                        "kind": "attention",
+                        "session": watch.key,
+                        "attention": label,
+                    },
+                )
+            if hook is None or previous is None:
                 continue
             if current == "waiting":
                 try:

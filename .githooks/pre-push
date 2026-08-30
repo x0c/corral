@@ -42,8 +42,13 @@ run_ci() {
 }
 
 if [ "$need_full" -eq 1 ]; then
-  echo "==> 发版推送：跑与 CI 同源的完整检查（ruff + 单测）"
-  run_ci
+  if python3 scripts/ci-test.py --check-stamp >/dev/null; then
+    echo "==> 完整检查已在本工作区跑过（产品代码未改），跳过重复，只再拦 ruff"
+    run_ci --lint-only
+  else
+    echo "==> 发版推送：跑与 CI 同源的完整检查（ruff + 单测）"
+    run_ci
+  fi
 else
   echo "==> 推送门禁：只跑 ruff（与 CI Lint 同源）；发版请用 release: 提交说明或推 v* 标签以触发全量"
   run_ci --lint-only

@@ -506,10 +506,11 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 
 **推送 / 发版门禁 + 矩阵 fail-fast（2026-08-07）**：单靠文档不够——Agent 仍可能漏跑验证就推。落地三道：
 
-1. **`.githooks/pre-push`**（`bash scripts/install-git-hooks.sh` 装到 Git 实际会执行的 hooks 目录）：日常推送只跑 `ci-test.py --lint-only`；提交说明以 `release:` 开头或推 `v*` 标签时跑完整 `ci-test.py`。应急跳过：`CORRAL_SKIP_PUSH_GATE=1` 或 `git push --no-verify`（应极少用）。
+1. **`.githooks/pre-push`**（`bash scripts/install-git-hooks.sh` 装到 Git 实际会执行的 hooks 目录）：日常推送只跑 `ci-test.py --lint-only`；提交说明以 `release:` 开头或推 `v*` 标签时需要完整检查。应急跳过：`CORRAL_SKIP_PUSH_GATE=1` 或 `git push --no-verify`（应极少用）。
+   - **完整套件每个版本只跑一次（2026-08-30）**：发版慢不是因为单次检查太重，而是同一套完整检查被连跑最多三遍（发版前一次、推送门禁一次、收尾脚本再一次）。完整检查成功后在 `.git/corral-ci-stamp` 记下当前产品代码指纹（`src/`、`tests/`、`scripts/`、`.githooks/`、`rust/` 及版本文件）；推送门禁和 `publish-release.sh` 发现指纹未变就只再拦 ruff。改过这些目录之后戳失效，必须再跑。**禁止**把「跑快点」修成跳过界面/终端集成或只跑改过的文件；也不要指望 Agent 每次记得设 `CORRAL_SKIP_*`。
    - **共享 `core.hooksPath`（如 `~/.git-hooks`）**：Git 会忽略各仓 `.git/hooks`。安装脚本必须在共享目录写**通用分发器**（仅当当前仓有可执行的 `.githooks/pre-push` 才转调），禁止把本仓专用脚本直接盖到全局 hooks——否则别的仓库推送也会跑 corral 检查。若目标已是指向本仓脚本的软链，**先 `rm` 再写分发器**；`cat >` 会顺着软链把真脚本盖掉（已踩过一次）。
    - **判定「是否全量门禁」**：只看「相对远端尚未推送」的提交（`git log … --not --remotes`）。新分支首次推送若用裸 `git log $sha`，会扫到历史上任意 `release:` 提交，误跑全量——不要改回。
-2. **`publish-release.sh` 开头**再跑完整 `ci-test.py`，挡住「推送被绕过、收尾脚本仍把配方指到未验证版本」；`CORRAL_SKIP_CI_GATE=1` 仅应急。
+2. **`publish-release.sh` 开头**认同一枚戳：工作区未改就跳过整套；戳失效或被 `--no-verify` 绕过推送时仍会跑完整检查，挡住「把配方指到未验证版本」。`CORRAL_SKIP_CI_GATE=1` 仅应急。
 3. **`test.yml` 矩阵 `fail-fast: true`**：一路挂了就取消其余作业，少收重复失败邮件、少占免费并发。排查「只在某一 OS / Python 挂」时可临时改 `false` 看全貌，修完改回。
 
 仍无法保证永远零邮件（平台专属挂死、偶发竞态、GitHub 自身异常），但「本机以为绿、一推整矩阵 Lint 红」这类应被门禁拦在推送前。克隆后若尚未装 hook，先 `bash scripts/install-git-hooks.sh`。
@@ -528,7 +529,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - **Kitty 键盘协议回归用例在 5 个 Python 版本上全挂（确定性，非偶发）。** `TEXTUAL_DISABLE_KITTY_KEY` 原先只在 `cli.py` 顶部 `setdefault`，而 `textual.constants` 是**导入时一次性读环境变量定死**的：任何先 `import textual` 再碰 `corral.cli` 的路径（测试套件、只 `import corral` 的脚本、第三方嵌入）都会让这道保护整个失效。本机之所以一直看不出来，是因为开发环境的 shell 里已经导出了 `TEXTUAL_DISABLE_KITTY_KEY=1`，把问题掩盖掉了——**复现必须 `env -u TEXTUAL_DISABLE_KITTY_KEY` 清掉再跑**。已修：开关上移到 `corral/__init__.py`（包顶层是唯一「任何用法必经」的位置），`cli.py` 不再重复设置。
 - **macOS 作业挂死并空烧 6 小时，进而拖垮整个队列。** 作业没有配 `timeout-minutes`，单测跑到 `test_ui` 后半段卡住后一直占着 runner 直到平台 6 小时上限才被杀。免费额度的 macOS 并发本就少，两个这样的僵尸作业把后续排队拖到 **14 小时以上**（实测：11:48 推送的作业次日 02:22 才开始跑），连带一大片 `cancelled`。已加 `timeout-minutes: 40`，并让 `scripts/ci-test.py` 用 `faulthandler.dump_traceback_later` 在 1500 秒时打印**全部线程栈**再退出——下次再挂，日志里直接能看到卡在哪个用例，而不是只剩一句 `The operation was canceled`。**挂死点已于当天定位并修复**——见下面「macOS 专有挂死」一条，这套打栈机制第一次上线就把它抓了出来（26 分钟自曝，而不是空烧 6 小时）。
 - **已知 Pilot 偶发污染结论。** 见「界面」节的分屏聚焦竞态那条。CI 现在走 `scripts/ci-test.py`，首轮失败的用例自动单独重跑一次，两次都失败才算真回归。
-- **排查「ci-test 跑很久 / 每次都要等很久 / 是不是卡住了」（2026-08-30）**：完整套件本就大约十分钟，不是故障。时间几乎都在界面自动化和真实终端集成；日常推送只跑几秒的格式检查。还在刷新的通过行、或夹杂「任务执行超过 0.1 秒」= 仍在跑。连续许多分钟零输出、或约 25 分钟打出全部线程栈才是挂死（见上条 macOS 空烧，已修）。禁止把「发版门禁太慢」修成跳过界面/终端集成。
+- **排查「ci-test 跑很久 / 每次都要等很久 / 发版检查跑三遍 / 不要每次都跑这么重 / 是不是卡住了」（2026-08-30）**：单次完整套件大约十分钟，不是故障。时间几乎都在界面自动化和真实终端集成；日常推送只跑几秒的格式检查。还在刷新的通过行、或夹杂「任务执行超过 0.1 秒」= 仍在跑。连续许多分钟零输出、或约 25 分钟打出全部线程栈才是挂死（见上条 macOS 空烧，已修）。发版若连等三轮，是门禁在重复跑同一套（已改为认戳跳过）。禁止把「发版门禁太慢」修成跳过界面/终端集成。
 
 另外两处工作流层面的浪费也一并修了：`on: push` 不带过滤时，tag 推送会和同一提交在 `main` 上的推送产生**完全重复的一轮矩阵**（每次发版凭空多 7 个作业），已收窄为 `branches: ["**"]`；并加了 `concurrency` + `cancel-in-progress`，同分支后推的提交自动作废前一轮排队。
 

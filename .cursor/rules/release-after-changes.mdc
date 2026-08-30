@@ -10,7 +10,7 @@ alwaysApply: true
 ## 流程
 
 1. 同步 bump：`pyproject.toml`、`Cargo.toml`、`Cargo.lock`、`src/corral/__init__.py`（补丁位递增）
-2. 跑验证：`python3 -m compileall -q src/corral tests` 与相关单测
+2. 跑验证：完整套件每个版本只跑一次；成功后记戳，推送/收尾若产品代码未改不再整套重跑
 3. 提交：`release: vX.Y.Z <简述>`
 4. 打 annotated tag：`git tag -a vX.Y.Z -m "vX.Y.Z"`
 5. 推送：`git push github main` + tag，以及 `origin` 同名分支与 tag

@@ -26,7 +26,7 @@
 # 中断恢复：若在「计算源码归档校验和」一步因境外网络超时中断（附件已传好、
 # 只差配方），直接 `CORRAL_SKIP_WHEELS=1 bash scripts/publish-release.sh` 补跑即可
 # （2026-08-17 v0.24.131 实踩）。
-#   CORRAL_SKIP_CI_GATE=1  跳过发版前完整 ci-test（仅应急；默认必须过）
+#   CORRAL_SKIP_CI_GATE=1  跳过发版前完整 ci-test（仅应急；默认认戳，未改则不再重跑）
 #   HOMEBREW_TAP_TOKEN     写 tap 仓库用的令牌（默认取 `gh auth token`）
 set -euo pipefail
 
@@ -52,10 +52,12 @@ fi
 VERSION="${TAG#v}"
 echo "==> 发布 ${TAG}"
 
-# 发版硬门槛：与 CI 同源的 ruff + 全量单测。推送门禁若被 --no-verify 绕过，
-# 这里仍拦住「装坏包 / 把配方指到未经验证的 tag」。
+# 发版硬门槛：与 CI 同源的 ruff + 全量单测。推送门禁若被 --no-verify 绕过且戳
+# 也失效，这里仍拦住「装坏包 / 把配方指到未经验证的 tag」。
 if [ "${CORRAL_SKIP_CI_GATE:-0}" = "1" ]; then
   echo "==> 跳过发版前 CI 同源检查（CORRAL_SKIP_CI_GATE=1）"
+elif python3 scripts/ci-test.py --check-stamp >/dev/null; then
+  echo "==> 完整检查已在本工作区跑过（产品代码未改），跳过重复"
 else
   echo "==> 发版前强制跑 CI 同源检查"
   env -u TEXTUAL_DISABLE_KITTY_KEY PYTHONPATH=src python3 scripts/ci-test.py \

@@ -27,6 +27,9 @@ matching_sidebar_session` 约十次一遇）不再污染 CI 结论。
 
 ``--lint-only``：只跑 ruff（推送前门禁用，几秒级）；完整入口留给发版推送与
 ``publish-release.sh``。
+
+``--check-stamp``：本工作区产品代码是否刚跑过完整检查（给推送门禁和收尾脚本
+用来跳过重复，不跑 lint/单测）。
 """
 from __future__ import annotations
 
@@ -36,6 +39,21 @@ import os
 import subprocess
 import sys
 import unittest
+from pathlib import Path
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+import ci_stamp
+
+ROOT = _SCRIPTS_DIR.parent
+_SRC = str(ROOT / "src")
+# 本机 `python3` 常常没有装过 corral；子进程 `python -m corral` 也要找得到包。
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+_existing = os.environ.get("PYTHONPATH", "")
+if _SRC not in _existing.split(os.pathsep):
+    os.environ["PYTHONPATH"] = _SRC if not _existing else _SRC + os.pathsep + _existing
 
 # 单个作业的硬上限（秒）。取值要明显小于 CI 作业自身的 timeout-minutes，
 # 才能保证「先由我们打出栈」而不是「先被平台静默杀掉」。
@@ -86,11 +104,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="只跑 ruff check（推送前门禁）；不加则再跑全量单测",
     )
+    parser.add_argument(
+        "--check-stamp",
+        action="store_true",
+        help="只判断本工作区是否刚跑过完整检查（不跑 lint/单测）",
+    )
     return parser.parse_args(argv)
+
+
+def _record_success() -> None:
+    ci_stamp.write_stamp(ROOT)
+    print("=== 已记下完整检查戳（后续推送/收尾若产品代码未改则跳过重复）===")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.check_stamp:
+        if ci_stamp.stamp_matches(ROOT):
+            print("完整检查戳有效")
+            return 0
+        print("完整检查戳缺失或产品代码已改", file=sys.stderr)
+        return 1
+
     lint_code = _run_ruff()
     if lint_code != 0:
         return lint_code
@@ -104,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     if result.wasSuccessful():
+        _record_success()
         return 0
 
     flaky = _collect_ids(result)
@@ -116,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     retry = runner.run(loader.loadTestsFromNames(flaky))
     if retry.wasSuccessful():
         print("\n=== 重跑全部通过，判定为已知偶发（非回归） ===")
+        _record_success()
         return 0
     print("\n=== 重跑仍失败，判定为真回归 ===")
     return 1
