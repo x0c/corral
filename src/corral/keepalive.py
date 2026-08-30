@@ -30,7 +30,7 @@ from corral.legacy_names import (
 )
 from corral.models import LaunchPlan
 
-_DEFAULT_IDLE_HOURS = 6.0
+_DEFAULT_IDLE_HOURS = 2.0
 _SUBPROCESS_TIMEOUT = 1.5
 SUBPROCESS_TIMEOUT = _SUBPROCESS_TIMEOUT
 
@@ -179,7 +179,7 @@ def kill(name: str) -> bool:
 
 
 def reap_idle(now: float | None = None) -> list[str]:
-    """关闭空闲超过阈值（默认 6 小时，`CORRAL_KEEPALIVE_IDLE_HOURS=0` 禁用）的保活会话。
+    """关闭空闲超过阈值（默认 2 小时，`CORRAL_KEEPALIVE_IDLE_HOURS=0` 禁用）的保活会话。
 
     会话历史仍在各自运行时的磁盘记录里，关闭的只是 tmux 后台进程，不丢数据。
     """

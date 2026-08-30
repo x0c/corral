@@ -215,7 +215,7 @@ corral shim uninstall               # 只移除 corral 加的那一段，其余�
 
 - 按 `Ctrl-\`（不需要前缀键）即可脱离并回到你的 shell，会话继续运行；标准的 `Ctrl-b d` 同样有效。
 - 在后台运行中／进行中的会话上按 `q` 可结束它（再按一次 `q` 确认）。
-- 空闲会话（tmux 无活动）默认 6 小时后自动回收；可用 `CORRAL_KEEPALIVE_IDLE_HOURS` 调整（设 `0` 关闭回收；旧变量名 `SC_KEEPALIVE_IDLE_HOURS` 仍然可用）。回收只关掉后台 tmux 会话，历史仍留在磁盘上。
+- 空闲会话（tmux 无活动）默认 2 小时后自动回收；可用 `CORRAL_KEEPALIVE_IDLE_HOURS` 调整（设 `0` 关闭回收；旧变量名 `SC_KEEPALIVE_IDLE_HOURS` 仍然可用）。回收只关掉后台 tmux 会话，历史仍留在磁盘上。
 - 单次运行想关掉保活用 `corral --no-keepalive`，永久关闭用 `CORRAL_KEEPALIVE=0`（旧名 `SC_KEEPALIVE=0` 也可用）。
 - 当 `corral` 本身已经跑在 `tmux`/`screen` 里时，会跳过「全屏接管」那种形式的保活（不做嵌套）；内嵌面板不需要 attach，在这种环境下照常工作。
 

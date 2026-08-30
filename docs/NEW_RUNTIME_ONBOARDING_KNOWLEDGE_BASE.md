@@ -185,7 +185,7 @@ sequenceDiagram
 - **AI 易错点**【必须】手机远程对话必须在 `remote/richmsg.py` 的 `_PARSERS` 登记该助手。漏登记时桌面预览正常、手机打开会话却是空白；远程层不会回落到扫描器。最低先挂 `_parse_plain`。改解析器后抬高 `PARSER_VERSION` 并重启常驻远程服务。
 - **AI 易错点**【必须】扫描器返回完整统一会话字段，并隔离私有历史格式；列表扫描不可因一条损坏记录崩溃。真实历史中的显式 `null`、系统事件、内部子任务和已删除工作目录都应按该助手格式处理。
 - 【消歧】「同助手恢复」与「跨助手接力」不是同一能力：前者复用原会话 ID 与原生命令，后者启动全新目标会话并给出源历史位置；不能为了统一命令外观把后者伪装成恢复。
-- **AI 易错点**【必须】若新助手在首次落盘时自己生成会话 ID（如 Pi 的 uuidv7），托管新建/分叉要让占位 ident 与真实会话身份可精确对齐；Pi 在默认项目目录内可用 `--session-id`，否则分屏组仍记着临时键，真实卡会出现在组外。禁止用 cwd 或 mtime 把新进程猜到同目录历史。**Pi 的 per-session `--session-dir` / `PI_CODING_AGENT_SESSION_DIR` 隔离已于 2026-08-26 裁定废弃**：它会破坏 `/resume`，并让 subagent 抢走主 pane；新运行时接入不得复制这条历史做法，见 [会话扫描知识库 §2.2.1](SESSION_SCANNING_KNOWLEDGE_BASE.md#221-pi-每会话隔离目录故障与替换约束2026-08-26-裁定)。不要为了消掉 Pi 新建时的 `Warning: No project session found with id '…'` 去掉 `--session-id`；恢复旧会话则用找不到即失败的 `--session`。
+- **AI 易错点**【必须】若新助手在首次落盘时自己生成会话 ID（如 Pi 的 uuidv7），托管新建/分叉要让占位 ident 与真实会话身份可精确对齐；Pi 在默认项目目录内可用 `--session-id`，否则分屏组仍记着临时键，真实卡会出现在组外。禁止用 cwd 或 mtime 把新进程猜到同目录历史。**Pi 的 per-session `--session-dir` / `PI_CODING_AGENT_SESSION_DIR` 隔离已于 2026-08-26 裁定废弃**：它会破坏 `/resume`，并让 subagent 抢走主 pane；新运行时接入不得复制这条历史做法，见 [Pi 会话身份扩展设计](design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md)（扫描如何消费 claim 见 [会话扫描知识库 §2.2.1](SESSION_SCANNING_KNOWLEDGE_BASE.md#221-扫描如何消费托管身份症状入口仍走这里)）。不要为了消掉 Pi 新建时的 `Warning: No project session found with id '…'` 去掉 `--session-id`；恢复旧会话则用找不到即失败的 `--session`。
 - **AI 易错点**【必须】实现 `delete_session` 前先确认该助手的历史是不是多个会话共享同一份存储（单个数据库/单个索引文件）；共享存储绝不能直接删文件，必须按会话 ID 精确删行，否则会把其他用户会话一起删掉且不可恢复。判断依据是 `SessionInfo.path` 的真实含义——同一助手的多条会话若 `path` 指向同一个文件（如 OpenCode 的 `opencode.db`），就是共享存储。
 
 ## §7 验证路径

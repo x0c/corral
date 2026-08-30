@@ -126,7 +126,7 @@ server (socket name `corral-keepalive`) so the underlying process survives an SS
 what stays running after `corral` exits:
 
 - The wrapped runtime process (and everything it does) keeps running in the background until it exits
-  on its own, is manually closed (`x` in the TUI), or is auto-reaped after being idle (default 6h, see
+  on its own, is manually closed (`x` in the TUI), or is auto-reaped after being idle (default 2h, see)
   `CORRAL_KEEPALIVE_IDLE_HOURS`, legacy name `SC_KEEPALIVE_IDLE_HOURS`).
 - To detect which sessions are already backgrounded, `corral` reads the local process table (`ps -eo
   pid,ppid`) and lists the tmux server's own sessions (`tmux -L corral-keepalive list-sessions`). This is

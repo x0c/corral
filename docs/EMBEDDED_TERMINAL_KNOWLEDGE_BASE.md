@@ -193,7 +193,7 @@ stateDiagram-v2
 | `CORRAL_RUNTIME` / `CORRAL_SESSION_ID` | 注入 pane 的运行时与会话标识 | 新名称是主路径 |
 | `SC_RUNTIME` / `SC_SESSION_ID` | 上述标识的旧名称 | 创建托管会话时继续注入 |
 | `CORRAL_KEEPALIVE` / `SC_KEEPALIVE` | 禁用会话保活和内嵌可用性的开关 | 任一值为 `0` 都应生效 |
-| `CORRAL_KEEPALIVE_IDLE_HOURS` / `SC_KEEPALIVE_IDLE_HOURS` | 会话保活的空闲回收时长 | 属于会话保活域，本域只需保持同一命名与兼容 |
+| `CORRAL_KEEPALIVE_IDLE_HOURS` / `SC_KEEPALIVE_IDLE_HOURS` | 会话保活的空闲回收时长（默认 2 小时，`0` 禁用） | 属于会话保活域，本域只需保持同一命名与兼容 |
 
 ## §5 本域流程 / 组件 / 任务 / MQ 入口索引
 

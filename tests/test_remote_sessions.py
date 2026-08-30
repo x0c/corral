@@ -501,6 +501,86 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertEqual([item.text for item in added], ["追加一条"])
         self.hub.unwatch_conversation("claude:a")
 
+    def test_require_session_follows_placeholder_key_migration(self) -> None:
+        """占位卡转正后，手机仍拿着旧键也必须能找到会话，不能报已经不在列表里。"""
+        real = _session(sid="real-id", title="正式会话")
+        self.hub.store.sessions = {"claude": [real]}
+        self.hub.store._session_key_migrations["claude:placeholder"] = "claude:real-id"
+        found = self.hub.require_session("claude:placeholder")
+        self.assertEqual(found["id"], "real-id")
+        with self.assertRaises(remote_sessions.ActionError) as raised:
+            self.hub.require_session("claude:missing")
+        self.assertEqual(raised.exception.code, "not_found")
+
+    def test_conversation_watch_rebinding_keeps_phone_channel(self) -> None:
+        """转正后实时订阅仍走手机原来的通道，但读取正式历史。"""
+        old_path = Path(self._tmp.name) / "old.jsonl"
+        old_path.write_text("", encoding="utf-8")
+        new_path = Path(self._tmp.name) / "new.jsonl"
+        _write_assistant_jsonl(new_path, ["转正后的回复"])
+        placeholder = _session(sid="placeholder")
+        placeholder["path"] = str(old_path)
+        real = _session(sid="real-id")
+        real["path"] = str(new_path)
+        self.hub.store.sessions = {"claude": [placeholder]}
+        page = self.hub.watch_conversation("claude:placeholder")
+        self.assertEqual(page["messages"], [])
+        self.hub.store.sessions = {"claude": [real]}
+        self.hub.store._session_key_migrations["claude:placeholder"] = "claude:real-id"
+        self.hub._follow_key_migrations()
+        found = self.hub.require_session("claude:placeholder")
+        self.assertEqual(found["id"], "real-id")
+        watch = self.hub._conversations["claude:placeholder"]
+        self.assertEqual(watch.key, "claude:placeholder")
+        self.assertEqual(watch.canonical_key, "claude:real-id")
+        cached = self.hub._transcripts["claude:real-id"]
+        self.assertEqual([item.text for item in cached.messages], ["转正后的回复"])
+        with new_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "uuid": "later",
+                        "message": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "后来追加"}],
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        added = watch.reader.poll()
+        self.assertEqual([item.text for item in added], ["后来追加"])
+        self.hub.unwatch_conversation("claude:placeholder")
+
+    def test_stop_and_delete_mutate_canonical_key(self) -> None:
+        """手机仍拿旧键时，停止/删除必须改正式会话，不能写到已经不存在的占位卡。"""
+        real = _session(sid="real-id")
+        real["keepalive_name"] = "corral-claude-real"
+        self.hub.store.sessions = {"claude": [real]}
+        self.hub.store.hosted["claude:real-id"] = "corral-claude-real"
+        self.hub.store._session_key_migrations["claude:placeholder"] = "claude:real-id"
+        with mock.patch("corral.remote.sessions.keepalive.kill", return_value=True) as mocked:
+            self.hub.stop_session("claude:placeholder")
+        mocked.assert_called_once_with("corral-claude-real")
+        self.assertNotIn("claude:real-id", self.hub.store.hosted)
+        stopped = self.hub.store.find_session("claude:real-id")
+        self.assertIsNotNone(stopped)
+        self.assertFalse(stopped["live"])
+
+        real = _session(sid="real-id")
+        self.hub.store.sessions = {"claude": [real]}
+        self.hub.store._deleted.clear()
+        self.hub.store._session_key_migrations["claude:placeholder"] = "claude:real-id"
+        runtime = mock.Mock()
+        with mock.patch.object(self.hub, "_runtime_of", return_value=runtime):
+            self.hub.delete_session("claude:placeholder")
+        runtime.delete_session.assert_called_once()
+        self.assertIn("claude:real-id", self.hub.store._deleted)
+        self.assertIn("claude:placeholder", self.hub.store._deleted)
+        self.assertIsNone(self.hub.store.find_session("claude:real-id"))
+
 
 def _write_assistant_jsonl(path: Path, texts: list[str]) -> None:
     lines = []

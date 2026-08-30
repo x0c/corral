@@ -107,6 +107,8 @@ class _ConversationWatch:
     watchers: int = 0
     generation: int = 1
     deltas: _DeltaBuffer = field(default_factory=_DeltaBuffer)
+    # 手机订阅通道继续用 key（可能是占位卡旧键）；canonical_key 指向转正后的会话。
+    canonical_key: str = ""
 
 
 @dataclass
@@ -380,6 +382,7 @@ class SessionHub:
                 changed = self.store.refresh()
             except Exception:
                 continue
+            self._follow_key_migrations()
             self._detect_attention_changes()
             if changed and self._sessions_watchers:
                 self._on_event("sessions", self.list_snapshot())
@@ -404,7 +407,9 @@ class SessionHub:
                     with self._transcript_io:
                         new_messages = watch.reader.poll()
                         if new_messages:
-                            self._append_transcript(watch.key, new_messages)
+                            self._append_transcript(
+                                watch.canonical_key or watch.key, new_messages
+                            )
                 except Exception:
                     continue
                 if new_messages:
@@ -585,16 +590,68 @@ class SessionHub:
             "sessions": payloads,
         }
 
+    def resolve_session_key(self, key: str) -> str:
+        """手机可能还拿着占位卡旧键；助手落下真实历史后换成正式键，旧键仍须能用。
+
+        电脑侧栏会跟着迁编号，远程详情页不会。禁止把旧键当成「已经不在列表里」。
+        """
+        current = str(key or "")
+        seen: set[str] = set()
+        while current and current not in seen:
+            seen.add(current)
+            if self.store.find_session(current) is not None:
+                return current
+            migrated = (self.store.session_key_migrations() or {}).get(current)
+            if not migrated or migrated == current:
+                break
+            current = str(migrated)
+        return str(key or "")
+
     def require_session(self, key: str) -> dict:
-        session = self.store.find_session(key)
+        session = self.store.find_session(self.resolve_session_key(key))
         if session is None:
             raise ActionError("not_found", t("remote.err.session_gone"))
         return session
 
+    def _follow_key_migrations(self) -> None:
+        """占位卡转正后，已打开的对话订阅改读正式历史，事件仍发到手机原来的通道。"""
+        migrations = self.store.session_key_migrations() or {}
+        if not migrations:
+            return
+        with self._lock:
+            watches = [
+                watch
+                for watch in self._conversations.values()
+                if watch.watchers > 0
+            ]
+        for watch in watches:
+            new_key = migrations.get(watch.key) or migrations.get(watch.canonical_key)
+            if not new_key or new_key == (watch.canonical_key or watch.key):
+                continue
+            session = self.store.find_session(new_key)
+            if session is None:
+                continue
+            try:
+                transcript = self._ensure_transcript(session)
+            except Exception:
+                continue
+            with self._lock:
+                current = self._conversations.get(watch.key)
+                if current is None:
+                    continue
+                current.reader = transcript.reader
+                current.generation = transcript.generation
+                current.canonical_key = new_key
+
     def _remember_transcript(self, transcript: _Transcript) -> None:
         with self._lock:
             self._transcripts[transcript.key] = transcript
-            watched = {item.key for item in self._conversations.values() if item.watchers > 0}
+            watched: set[str] = set()
+            for item in self._conversations.values():
+                if item.watchers > 0:
+                    watched.add(item.key)
+                    if item.canonical_key:
+                        watched.add(item.canonical_key)
             if len(self._transcripts) > _MAX_IN_MEMORY_TRANSCRIPTS:
                 for cached_key in list(self._transcripts):
                     if len(self._transcripts) <= _MAX_IN_MEMORY_TRANSCRIPTS:
@@ -855,9 +912,13 @@ class SessionHub:
         replayed: list[richmsg.RichMessage] | None = None
         with self._lock:
             watch = self._conversations.get(key)
+            canonical = session_key(session)
             if watch is None:
                 watch = _ConversationWatch(
-                    key, transcript.reader, generation=transcript.generation
+                    key,
+                    transcript.reader,
+                    generation=transcript.generation,
+                    canonical_key=canonical,
                 )
                 self._conversations[key] = watch
             else:
@@ -865,6 +926,7 @@ class SessionHub:
                     watch.deltas.clear()
                 watch.reader = transcript.reader
                 watch.generation = transcript.generation
+                watch.canonical_key = canonical
             watch.watchers += 1
             if after_seq is not None:
                 replayed = _try_replay(watch, transcript, int(after_seq), generation)
@@ -950,7 +1012,7 @@ class SessionHub:
         return name
 
     def _capture_frame(self, watch: _ScreenWatch) -> dict | None:
-        session = self.store.find_session(watch.key)
+        session = self.store.find_session(self.resolve_session_key(watch.key))
         if session is None:
             return None
         name = str(session.get("keepalive_name") or "")
@@ -1042,6 +1104,7 @@ class SessionHub:
         返回值必须读 ``pinned_session_keys`` / ``pinned_group_ids``，不要再用已废弃的
         ``pinned_sessions``——那个属性不存在时 ``getattr`` 会落到空集合，接口永远回 false。
         """
+        key = self.resolve_session_key(key)
         snapshot = self.layout_db.read()
         group = snapshot.get_group(key)
         if group is not None:
@@ -1052,26 +1115,33 @@ class SessionHub:
 
     def stop_session(self, key: str) -> None:
         session = self.require_session(key)
+        canonical = session_key(session)
         name = str(session.get("keepalive_name") or "")
         if not name:
             raise ActionError("unavailable", t("remote.err.session_not_running"))
         keepalive.kill(name)
-        self.store.mark_hosted(key, None)
+        self.store.mark_hosted(canonical, None)
 
     def delete_session(self, key: str) -> None:
         session = self.require_session(key)
+        canonical = session_key(session)
         runtime = self._runtime_of(session)
-        self.store.mark_deleted(key)
+        self.store.mark_deleted(canonical)
+        if key != canonical:
+            self.store.mark_deleted(key)
         try:
             runtime.delete_session(session)
         except Exception as exc:
-            self.store.abort_delete(key)
+            self.store.abort_delete(canonical)
+            if key != canonical:
+                self.store.abort_delete(key)
             raise ActionError("unavailable", t("remote.err.delete_failed", error=exc)) from exc
         # 删除成功后同步清掉侧栏置顶/分组记忆，避免剩余成员仍挂着「幽灵组」
-        try:
-            self.layout_db.remove_session(key)
-        except Exception:
-            pass
+        for item in {key, canonical}:
+            try:
+                self.layout_db.remove_session(item)
+            except Exception:
+                pass
 
     def _host(self, plan, runtime_id: str, title: str, cwd: str | None) -> dict:
         ident = keepalive.new_session_ident()
@@ -1167,8 +1237,9 @@ class SessionHub:
             name = embed.host_session(plan, runtime.id, ident, width, height)
         except embed.EmbedError as exc:
             raise ActionError("unavailable", t("remote.err.resume_failed", error=exc)) from exc
-        self.store.mark_hosted(key, name)
-        refreshed = self.store.find_session(key) or session
+        canonical = session_key(session)
+        self.store.mark_hosted(canonical, name)
+        refreshed = self.store.find_session(canonical) or session
         return self.session_payload(refreshed, self._layout())
 
     def handoff_session(self, key: str, target_runtime_id: str) -> dict:

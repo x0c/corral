@@ -326,7 +326,7 @@ the remote machine. Reopen `corral` and the session shows `后台运行中` (run
 - Press `Ctrl-\` (no prefix needed) to detach and return to your shell while the session keeps running;
   the standard `Ctrl-b d` also works.
 - Press `q` on a backgrounded / in-progress session to end it (press `q` again to confirm).
-- Idle sessions (no tmux activity) are auto-reaped after 6h by default; tune with
+- Idle sessions (no tmux activity) are auto-reaped after 2h by default; tune with
   `CORRAL_KEEPALIVE_IDLE_HOURS` (`0` disables reaping; the legacy name `SC_KEEPALIVE_IDLE_HOURS`
   still works). Reaping only closes the background tmux session — history stays on disk.
 - Disable keep-alive for a single run with `corral --no-keepalive`, or permanently with

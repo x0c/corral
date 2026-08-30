@@ -279,7 +279,7 @@ class ReapIdleTests(unittest.TestCase):
     def test_kills_sessions_past_idle_threshold(self) -> None:
         # 新旧两种前缀的会话都要被回收（sc-* 是改名前留下的存量）
         rows = "corral-claude-old|1000\nsc-claude-legacy|1000\ncorral-claude-fresh|99999\n"
-        now = 100000.0  # 前两个空闲 99000 秒 ≈ 27.5 小时，超过默认 6 小时阈值
+        now = 100000.0  # 前两个空闲 99000 秒 ≈ 27.5 小时，超过默认 2 小时阈值
 
         with mock.patch.dict("os.environ", {}, clear=True), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
@@ -289,6 +289,21 @@ class ReapIdleTests(unittest.TestCase):
 
         self.assertEqual(reaped, ["corral-claude-old", "sc-claude-legacy"])
         self.assertEqual(mocked_kill.call_count, 2)
+
+    def test_default_threshold_is_two_hours(self) -> None:
+        now = 10000.0
+        over = now - 2.5 * 3600
+        under = now - 1.5 * 3600
+        rows = f"corral-claude-over|{over:.0f}\ncorral-claude-under|{under:.0f}\n"
+
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("corral.liveness.subprocess.check_output", return_value=rows.encode()), \
+             mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill:
+            reaped = keepalive.reap_idle(now=now)
+
+        self.assertEqual(reaped, ["corral-claude-over"])
+        mocked_kill.assert_called_once_with("corral-claude-over")
 
     def test_zero_threshold_disables_reaping(self) -> None:
         with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "0"}, clear=True), \

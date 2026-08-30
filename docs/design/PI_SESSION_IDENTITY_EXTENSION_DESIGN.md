@@ -686,10 +686,29 @@ Pi Server/SessionLease 稳定并提供可依赖的会话身份与写入租约后
 
 ## 17. 依据与关联文档
 
-- [会话扫描与对话内容领域知识库 §2.2.1、§6](../SESSION_SCANNING_KNOWLEDGE_BASE.md)：旧隔离故障、现场证据与禁止修补项。
-- [维护指南“Pi 扫描与启动”](../MAINTAINER_GUIDE.md)：Pi JSONL、启动参数、无害告警与现行缺陷。
+- [会话扫描与对话内容领域知识库 §2.2.1](../SESSION_SCANNING_KNOWLEDGE_BASE.md)：扫描如何**消费** claim、列表配额与 `keep_ids`；协议不在那边定义。
+- [维护指南“Pi 扫描与启动” / “会话保活与存活判定”](../MAINTAINER_GUIDE.md)：Pi JSONL 格式、启动参数、无害告警；保活启动包装 vs 存活判定拆分。
 - [可观测知识库](../OBSERVABILITY_KNOWLEDGE_BASE.md)：日志脱敏和 256KB 整文件清空的取证缺陷。
 - Pi 官方 `extensions.md`：Session Events、ExtensionContext、mode 与 replacement 生命周期。
 - Pi 官方 `session-format.md`、`sessions.md`：JSONL header、parentSession、tree、默认会话目录与 SessionManager。
 - Pi 官方 `packages.md`：全局 extension/package 的安装与 scope；Corral 采用 wheel 自带、本地原子安装，不调用网络包安装。
 - Pi 官方 `environment-variables.md`：`PI_CODING_AGENT_DIR` 与待删除的 `PI_CODING_AGENT_SESSION_DIR` 语义。
+
+## 18. 与会话扫描的边界
+
+改「谁正在用哪一条会话」读本文；改「有哪些历史、正文是什么、列表会不会被旧目录挤爆」读扫描知识库。两边不要互相补对方的启发式。
+
+| 在这边 | 不在这边 |
+|---|---|
+| claim 协议、插件安装/升级、所有权锁、旧隔离搬家、pane 精确绑定 | 列出 JSONL/SQLite、对话预览、签名缓存、`limit` / `keep_ids` |
+| 禁止 cwd / mtime /「目录最新文件」当身份 | 旧隔离目录仍单独占一份扫描配额（迁移期列表完整性，不是身份策略） |
+| 一个会话同一时刻最多一个 writer | 一个 `keepalive_name` 只能挂一条会话（存活判定的闸，见维护指南） |
+| Codex 包装器回执与 threadId claim（附录） | Codex 正文去重、`thread_source=subagent` 过滤、macOS 合并 `lsof` |
+
+扫描器可以把 claim 读成 live 标志，但**不得**用扫描结果反向决定 pane 属主，也不得在扫描里复活已废弃的每会话小房间。
+
+## 附录：Codex 托管身份
+
+不要再以历史扫描作为新托管会话的身份来源。Corral 启动时生成不可预测的宿主 nonce，并将 nonce、目标 tmux 名和一次性私有 claim 路径传给启动包装器；包装器已在 Codex TUI 与 `codex app-server` 的双向 JSON-RPC 通道上，必须从 `thread/start` 返回值或 `thread/started` 通知取得完整 `threadId` 后，以原子方式写入 `{nonce, threadId, rolloutPath, pid}`。Corral 只接受 nonce 精确相同、路径在 Codex 会话根内、threadId/rolloutPath 一致且 pane 仍存活的单一 claim，然后用真实 threadId 取代占位卡；`/new`、`/resume`、`/fork` 发生时同样以 app-server 生命周期事件更新 claim。缺 claim、重复 claim、路径不一致或子线程声明时，一律停在占位/未托管态并记录诊断，绝不回落到 cwd、mtime、短 id 或祖先链猜测。
+
+历史扫描只保留给外部/旧会话发现和崩溃恢复。短托管标识不是 Codex 原生会话 ID；包装器还可能在同一祖先链内拉起多层 `codex` 进程。验收必须包括同 cwd 三个并行托管窗口、会话内新建/恢复/分叉、包装器重连与 Corral 重启；每个窗口的真实 threadId、首条任务和实时终端必须一一对应。实现入口：`codex_identity.py`。
