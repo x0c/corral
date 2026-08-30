@@ -60,6 +60,8 @@ class I18nCatalogTests(unittest.TestCase):
         )
         self.assertEqual(t("list.sep_pinned"), "Pinned")
         self.assertEqual(t("list.sep_today"), "Today")
+        self.assertEqual(t("action.board_prev"), "Prev page")
+        self.assertEqual(t("action.board_next"), "Next page")
         self.assertEqual(t("time.minutes_ago", n=2), "2m ago")
 
         i18n.set_lang("zh")
@@ -72,6 +74,8 @@ class I18nCatalogTests(unittest.TestCase):
         )
         self.assertEqual(t("list.sep_pinned"), "置顶")
         self.assertEqual(t("list.sep_today"), "今天")
+        self.assertEqual(t("action.board_prev"), "上一页")
+        self.assertEqual(t("action.board_next"), "下一页")
         self.assertEqual(t("time.minutes_ago", n=2), "2分钟前")
 
     def test_join_names_uses_locale_separator(self) -> None:
@@ -110,12 +114,16 @@ class I18nCatalogTests(unittest.TestCase):
     def test_new_catalog_entries(self) -> None:
         i18n.set_lang("en")
         self.assertEqual(t("session.title.new", name="Claude"), "New Claude session")
+        self.assertEqual(t("session.title.pending"), "(pending title)")
+        self.assertEqual(t("session.title.cmd.doc_init"), "Init docs")
         self.assertEqual(t("modal.export_session"), "Export session")
         self.assertEqual(t("error.launch_failed", error="boom"), "Launch failed: boom")
         self.assertEqual(t("remote.err.session_gone"), "This session is no longer in the list")
         self.assertEqual(t("shim.status.installed"), "Installed")
         i18n.set_lang("zh")
         self.assertEqual(t("session.title.new", name="Claude"), "新Claude会话")
+        self.assertEqual(t("session.title.pending"), "(待生成标题)")
+        self.assertEqual(t("session.title.cmd.doc_init"), "文档初始化")
         self.assertEqual(t("modal.export_session"), "导出会话")
         self.assertEqual(t("error.launch_failed", error="boom"), "启动失败：boom")
         self.assertEqual(t("remote.err.session_gone"), "这条会话已经不在列表里了")

@@ -458,7 +458,7 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
 
         title, needs_gen = titles.resolve_initial_title(session, {})
 
-        self.assertEqual(title, "(待生成标题)")
+        self.assertEqual(title, t("session.title.pending"))
         self.assertTrue(needs_gen)
 
     def test_claude_native_slug_does_not_override_meaningful_fallback(self) -> None:
@@ -486,10 +486,16 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
             "fallback_title": "/doc-init @openconductor",
         }
 
+        i18n.set_lang("en")
         title, needs_gen = titles.resolve_initial_title(session, {})
+        self.assertEqual(title, "openconductor Init docs")
+        self.assertTrue(needs_gen)
 
+        i18n.set_lang("zh")
+        title, needs_gen = titles.resolve_initial_title(session, {})
         self.assertEqual(title, "openconductor 文档初始化")
         self.assertTrue(needs_gen)
+        i18n.set_lang("en")
 
     def test_generated_title_cache_wins_for_claude(self) -> None:
         session = {
@@ -4618,6 +4624,9 @@ class CursorScanTests(unittest.TestCase):
         prompts: list[str],
         has_conversation: bool = True,
         is_subagent: bool = False,
+        parent_id: str | None = None,
+        root_parent_id: str | None = None,
+        store_meta_hex: bool = True,
     ) -> Path:
         d = root / ws / chat_id
         d.mkdir(parents=True)
@@ -4636,7 +4645,42 @@ class CursorScanTests(unittest.TestCase):
             (d / "prompt_history.json").write_text(
                 json.dumps(prompts, ensure_ascii=False), encoding="utf-8"
             )
+        if parent_id:
+            self._write_subagent_store(
+                d,
+                chat_id,
+                parent_id=parent_id,
+                root_parent_id=root_parent_id,
+                as_hex=store_meta_hex,
+            )
         return d
+
+    def _write_subagent_store(
+        self,
+        chat_dir: Path,
+        chat_id: str,
+        *,
+        parent_id: str,
+        root_parent_id: str | None = None,
+        as_hex: bool = True,
+    ) -> None:
+        payload = {
+            "agentId": chat_id,
+            "name": "New Agent",
+            "subagentInfo": {
+                "parentAgentId": parent_id,
+                "rootParentAgentId": root_parent_id or parent_id,
+                "typeName": "explore",
+                "toolCallId": "call-test",
+            },
+        }
+        raw = json.dumps(payload, ensure_ascii=False)
+        value = raw.encode("utf-8").hex() if as_hex else raw
+        conn = sqlite3.connect(str(chat_dir / "store.db"))
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT INTO meta(key, value) VALUES ('0', ?)", (value,))
+        conn.commit()
+        conn.close()
 
     def test_scan_sessions_reads_meta_and_prompt_history(self) -> None:
         from corral.scan import cursor as scan_cursor
@@ -4756,6 +4800,207 @@ class CursorScanTests(unittest.TestCase):
                 sessions = scan_cursor.scan_sessions(limit=10)
 
         self.assertEqual([s["id"] for s in sessions], ["parent-chat-id-0001-0002-0003-000000000001"])
+
+    def test_decode_store_meta_value_accepts_json_and_hex(self) -> None:
+        from corral.scan import cursor as scan_cursor
+
+        payload = {"agentId": "abc", "subagentInfo": {"parentAgentId": "parent"}}
+        raw = json.dumps(payload)
+        self.assertEqual(scan_cursor._decode_store_meta_value(raw)["agentId"], "abc")
+        self.assertEqual(
+            scan_cursor._decode_store_meta_value(raw.encode().hex())["subagentInfo"]["parentAgentId"],
+            "parent",
+        )
+        self.assertIsNone(scan_cursor._decode_store_meta_value("not-json-or-hex"))
+
+    def test_live_flags_resume_subagent_marks_parent_live(self) -> None:
+        """主会话进程不在、子代理 --resume 仍在时，父会话必须是进行中。"""
+        from corral.scan import cursor as scan_cursor
+
+        parent_id = "23da49b0-a1da-427c-bc5b-cb713f19668f"
+        sub_id = "70c7eb76-2bac-4497-bd3f-24dd94680443"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = str(root / "proj")
+            Path(cwd).mkdir()
+            self._chat(
+                root, "ws1", parent_id, title="父会话", cwd=cwd,
+                updated_ms=1_700_000_000_000, prompts=["顶层任务"],
+            )
+            self._chat(
+                root, "ws1", sub_id, title="Subagent", cwd=cwd,
+                updated_ms=1_700_000_000_100, prompts=["子任务"],
+                is_subagent=True, parent_id=parent_id,
+            )
+            real_cwd = os.path.realpath(cwd)
+            with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
+                scan_cursor, "live_processes", return_value=[(4242, real_cwd)]
+            ), mock.patch.object(
+                scan_cursor,
+                "process_command_line",
+                return_value=f"/Users/x/.local/bin/agent --force --resume {sub_id}",
+            ), mock.patch.object(
+                scan_cursor, "_cursor_store_paths_for_pids", return_value={4242: []}
+            ), mock.patch.object(scan_cursor, "process_environ", return_value={}):
+                sessions = scan_cursor.scan_sessions(limit=10)
+
+        self.assertEqual([s["id"] for s in sessions], [parent_id])
+        self.assertTrue(sessions[0]["live"])
+        self.assertEqual(sessions[0]["pid"], 4242)
+
+    def test_live_flags_open_subagent_store_marks_parent_live(self) -> None:
+        """无 --resume、只打开了子代理 store.db 时，也要把 live 记到父会话。"""
+        from corral.scan import cursor as scan_cursor
+
+        parent_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1"
+        sub_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee2"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = str(root / "proj")
+            Path(cwd).mkdir()
+            self._chat(
+                root, "ws1", parent_id, title="父会话", cwd=cwd,
+                updated_ms=1_700_000_000_000, prompts=["顶层任务"],
+            )
+            self._chat(
+                root, "ws1", sub_id, title="Subagent", cwd=cwd,
+                updated_ms=1_700_000_000_100, prompts=["子任务"],
+                is_subagent=True, parent_id=parent_id, store_meta_hex=False,
+            )
+            real_cwd = os.path.realpath(cwd)
+            open_paths = {8801: [f"/Users/x/.cursor/chats/ws1/{sub_id}/store.db"]}
+            with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
+                scan_cursor, "live_processes", return_value=[(8801, real_cwd)]
+            ), mock.patch.object(
+                scan_cursor,
+                "process_command_line",
+                return_value="/Users/x/.local/bin/agent --force",
+            ), mock.patch.object(
+                scan_cursor, "_cursor_store_paths_for_pids", return_value=open_paths
+            ), mock.patch.object(scan_cursor, "process_environ", return_value={}):
+                sessions = scan_cursor.scan_sessions(limit=10)
+
+        self.assertEqual([s["id"] for s in sessions], [parent_id])
+        self.assertTrue(sessions[0]["live"])
+        self.assertEqual(sessions[0]["pid"], 8801)
+
+    def test_live_flags_parent_pid_wins_over_subagent_pid(self) -> None:
+        """父进程仍在时不要被子代理 pid 覆盖，避免托管画面绑错窗。"""
+        from corral.scan import cursor as scan_cursor
+
+        parent_id = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+        sub_id = "cccccccc-dddd-eeee-ffff-111111111111"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = str(root / "proj")
+            Path(cwd).mkdir()
+            self._chat(
+                root, "ws1", parent_id, title="父会话", cwd=cwd,
+                updated_ms=1_700_000_000_000, prompts=["顶层任务"],
+            )
+            self._chat(
+                root, "ws1", sub_id, title="Subagent", cwd=cwd,
+                updated_ms=1_700_000_000_100, prompts=["子任务"],
+                is_subagent=True, parent_id=parent_id,
+            )
+            real_cwd = os.path.realpath(cwd)
+            agents = [(111, real_cwd), (222, real_cwd)]
+            cmdlines = {
+                111: f"/Users/x/.local/bin/agent --force --resume {parent_id}",
+                222: f"/Users/x/.local/bin/agent --force --resume {sub_id}",
+            }
+
+            def fake_cmdline(pid: int) -> str:
+                return cmdlines[pid]
+
+            with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
+                scan_cursor, "live_processes", return_value=agents
+            ), mock.patch.object(
+                scan_cursor, "process_command_line", side_effect=fake_cmdline
+            ), mock.patch.object(
+                scan_cursor, "_cursor_store_paths_for_pids", return_value={}
+            ), mock.patch.object(scan_cursor, "process_environ", return_value={}):
+                sessions = scan_cursor.scan_sessions(limit=10)
+
+        self.assertEqual(len(sessions), 1)
+        self.assertTrue(sessions[0]["live"])
+        self.assertEqual(sessions[0]["pid"], 111)
+
+    def test_live_flags_nested_subagent_binds_root_parent(self) -> None:
+        """嵌套子代理必须绑到用户能看见的顶层父会话，不能停在中间层。"""
+        from corral.scan import cursor as scan_cursor
+
+        root_id = "dddddddd-eeee-ffff-aaaa-222222222222"
+        mid_id = "eeeeeeee-ffff-aaaa-bbbb-333333333333"
+        leaf_id = "ffffffff-aaaa-bbbb-cccc-444444444444"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = str(root / "proj")
+            Path(cwd).mkdir()
+            self._chat(
+                root, "ws1", root_id, title="顶层", cwd=cwd,
+                updated_ms=1_700_000_000_000, prompts=["顶层任务"],
+            )
+            self._chat(
+                root, "ws1", mid_id, title="中间层", cwd=cwd,
+                updated_ms=1_700_000_000_050, prompts=["中间任务"],
+                is_subagent=True, parent_id=root_id,
+            )
+            self._chat(
+                root, "ws1", leaf_id, title="叶子", cwd=cwd,
+                updated_ms=1_700_000_000_100, prompts=["叶子任务"],
+                is_subagent=True, parent_id=mid_id, root_parent_id=root_id,
+            )
+            real_cwd = os.path.realpath(cwd)
+            with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
+                scan_cursor, "live_processes", return_value=[(9001, real_cwd)]
+            ), mock.patch.object(
+                scan_cursor,
+                "process_command_line",
+                return_value=f"/Users/x/.local/bin/agent --force --resume {leaf_id}",
+            ), mock.patch.object(
+                scan_cursor, "_cursor_store_paths_for_pids", return_value={9001: []}
+            ), mock.patch.object(scan_cursor, "process_environ", return_value={}):
+                sessions = scan_cursor.scan_sessions(limit=10)
+
+        self.assertEqual([s["id"] for s in sessions], [root_id])
+        self.assertTrue(sessions[0]["live"])
+        self.assertEqual(sessions[0]["pid"], 9001)
+
+    def test_live_flags_subagent_without_parent_store_does_not_guess(self) -> None:
+        """子代理没有父会话指针时，禁止按同目录猜测绑到别的卡。"""
+        from corral.scan import cursor as scan_cursor
+
+        parent_id = "12121212-3434-5656-7878-909090909090"
+        sub_id = "34343434-5656-7878-9090-121212121212"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cwd = str(root / "proj")
+            Path(cwd).mkdir()
+            self._chat(
+                root, "ws1", parent_id, title="父会话", cwd=cwd,
+                updated_ms=1_700_000_000_000, prompts=["顶层任务"],
+            )
+            self._chat(
+                root, "ws1", sub_id, title="Subagent", cwd=cwd,
+                updated_ms=1_700_000_000_100, prompts=["子任务"],
+                is_subagent=True,
+            )
+            real_cwd = os.path.realpath(cwd)
+            with mock.patch.object(scan_cursor, "CHATS_DIR", str(root)), mock.patch.object(
+                scan_cursor, "live_processes", return_value=[(7007, real_cwd)]
+            ), mock.patch.object(
+                scan_cursor,
+                "process_command_line",
+                return_value=f"/Users/x/.local/bin/agent --force --resume {sub_id}",
+            ), mock.patch.object(
+                scan_cursor, "_cursor_store_paths_for_pids", return_value={7007: []}
+            ), mock.patch.object(scan_cursor, "process_environ", return_value={}):
+                sessions = scan_cursor.scan_sessions(limit=10)
+
+        self.assertEqual([s["id"] for s in sessions], [parent_id])
+        self.assertFalse(sessions[0]["live"])
+        self.assertIsNone(sessions[0]["pid"])
 
     def test_load_conversation_extracts_user_query_and_assistant(self) -> None:
         from corral.scan import cursor as scan_cursor

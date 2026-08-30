@@ -168,6 +168,37 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(message["m"], protocol.M_SESSIONS_LIST)
         self.assertEqual(message["p"], {"limit": 3})
 
+    def test_compressed_messages_round_trip(self):
+        message = protocol.request(7, protocol.M_SESSION_WATCH, {"key": "codex:abc"})
+        message["payload"] = "连续助手输出" * 2000
+        packed = protocol.pack(message, compress=True)
+        self.assertLess(len(packed), len(protocol.dumps(message)))
+        self.assertEqual(packed[:2], b"CR")
+        self.assertEqual(packed[3], 1)
+        # Apple Compression 的 COMPRESSION_ZLIB 实际输出 raw DEFLATE，不是 0x78 zlib 头。
+        self.assertNotEqual(packed[8], 0x78)
+        self.assertEqual(protocol.unpack(packed), message)
+
+    def test_unpack_accepts_zlib_wrapped_payload(self):
+        import zlib
+
+        message = protocol.request(7, protocol.M_SESSIONS_LIST)
+        raw = protocol.dumps({**message, "payload": "x" * 2000})
+        body = zlib.compress(raw, level=5)
+        packed = b"CR" + bytes([1, 1]) + len(raw).to_bytes(4, "big") + body
+        self.assertEqual(protocol.unpack(packed)["m"], protocol.M_SESSIONS_LIST)
+
+    def test_uncompressed_messages_remain_backward_compatible(self):
+        message = protocol.request(7, protocol.M_SESSIONS_LIST)
+        raw = protocol.dumps(message)
+        self.assertEqual(protocol.unpack(raw), message)
+
+    def test_compressed_payload_rejects_trailing_data(self):
+        message = protocol.request(7, protocol.M_SESSIONS_LIST)
+        packed = protocol.pack({**message, "payload": "x" * 2000}, compress=True)
+        with self.assertRaises(protocol.ProtocolError):
+            protocol.unpack(packed + b"tail")
+
     def test_error_carries_code_and_message(self):
         message = protocol.loads(
             protocol.dumps(protocol.error(1, protocol.E_UNAUTHORIZED, "没配对"))
@@ -200,6 +231,94 @@ class HostIdentityTests(unittest.TestCase):
         self.assertEqual(parts[1], "abc")
         self.assertEqual(parts[2], "1700000000")
         self.assertEqual(len(parts), 5)
+
+
+@unittest.skipUnless(_HAS_CRYPTO, _SKIP)
+class HostChannelBackpressureTests(unittest.TestCase):
+    """数据面队列满不得 close 控制面；控制面被灌爆仍按今天的行为断开自己。"""
+
+    def setUp(self) -> None:
+        import os
+        import tempfile
+
+        from corral.remote.service import Connection, RemoteService
+        from corral.remote.transport.channel import HostChannel
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._old_cache = os.environ.get("CORRAL_CACHE_DIR")
+        os.environ["CORRAL_CACHE_DIR"] = self._tmp.name
+        self.addCleanup(self._restore_cache)
+        self._Connection = Connection
+        self._HostChannel = HostChannel
+        self.service = RemoteService()
+        self.closed: list[str] = []
+
+    def _restore_cache(self) -> None:
+        import os
+
+        if self._old_cache is None:
+            os.environ.pop("CORRAL_CACHE_DIR", None)
+        else:
+            os.environ["CORRAL_CACHE_DIR"] = self._old_cache
+
+    def _channel(self, *, queue_size: int = 1):
+        channel = self._HostChannel(
+            self.service,
+            crypto.generate_private_key_bytes(),
+            b"\x00" * 16,
+            lambda _t, _p: None,
+            queue_size=queue_size,
+        )
+        channel._ensure_worker = lambda: None  # 不消费队列，才能测满
+        return channel
+
+    def test_data_plane_overflow_does_not_close_control(self):
+        control = self._Connection("aa" * 32, lambda _m: None)
+        self.service.attach(control)
+        control.close_hook = lambda: self.closed.append("control")
+        channel = self._channel()
+        channel._owns_logical_connection = False
+        channel._confirmed = True
+        channel._connection = control
+        channel._queue.put_nowait((protocol.FRAME_DATA, b"fill"))
+        channel.submit(protocol.FRAME_DATA, b"overflow")
+        self.assertFalse(channel._closed)
+        self.assertFalse(control.closed)
+        self.assertIn(control, self.service._connections)
+        self.assertEqual(self.closed, [])
+
+    def test_control_plane_overflow_still_closes_itself(self):
+        control = self._Connection("aa" * 32, lambda _m: None)
+        self.service.attach(control)
+        channel = self._channel()
+        channel._owns_logical_connection = True
+        channel._confirmed = True
+        channel._connection = control
+        control.close_hook = channel.close
+        channel._queue.put_nowait((protocol.FRAME_DATA, b"fill"))
+        channel.submit(protocol.FRAME_DATA, b"overflow")
+        self.assertTrue(channel._closed)
+        self.assertTrue(control.closed)
+
+    def test_bad_data_bind_closes_only_data_channel(self):
+        from corral.remote.crypto import ChannelError
+
+        control = self._Connection("aa" * 32, lambda _m: None)
+        self.service.attach(control)
+        control.close_hook = lambda: self.closed.append("control")
+        channel = self._channel(queue_size=8)
+        channel._pending_device_key = control.device_public_key
+        with self.assertRaises(ChannelError):
+            channel._confirm_and_attach(
+                protocol.request(
+                    1, protocol.M_HELLO, {"plane": "data", "bind": "nope", "name": "iPhone"}
+                )
+            )
+        channel.close()
+        self.assertFalse(control.closed)
+        self.assertEqual(self.closed, [])
+        self.assertTrue(channel._closed)
 
 
 if __name__ == "__main__":

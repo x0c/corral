@@ -93,29 +93,32 @@ class WrapPlanTests(unittest.TestCase):
         self.assertNotIn("-c", wrapped.argv)
 
     def test_wrap_plan_pins_pi_session_id_for_new_sessions(self) -> None:
-        from corral.scan.pi import PI_SESSION_DIR_ENV, hosted_session_dir, session_file_dir
+        from corral import pi_identity
 
         plan = LaunchPlan(("pi", "--approve"), "/tmp/proj")
 
-        wrapped = keepalive.wrap_plan(plan, "pi", "abcd1234")
+        with mock.patch.object(pi_identity, "ensure_extension_installed", return_value={"status": "ok"}):
+            wrapped = keepalive.wrap_plan(plan, "pi", "abcd1234")
 
-        expected_dir = hosted_session_dir("/tmp/proj", "abcd1234")
         tail = wrapped.argv[wrapped.argv.index("--") + 1:]
-        self.assertEqual(
-            tail,
-            ("pi", "--approve", "--session-dir", expected_dir, "--session-id", "abcd1234"),
+        # 新架构：会话写回 Pi 默认目录，不再注入 --session-dir 小房间；
+        # 分屏身份改由 corral-session-identity 扩展的 claim 提供。
+        self.assertEqual(tail, ("pi", "--approve", "--session-id", "abcd1234"))
+        self.assertNotIn("-e", wrapped.argv[wrapped.argv.index("--") + 1:])
+        env_pairs = [wrapped.argv[i + 1] for i, arg in enumerate(wrapped.argv) if arg == "-e"]
+        self.assertTrue(
+            any(pair.startswith(pi_identity.INSTANCE_ENV + "=") for pair in env_pairs)
         )
-        self.assertIn(f"{PI_SESSION_DIR_ENV}={expected_dir}", wrapped.argv)
+        self.assertTrue(
+            any(pair.startswith(pi_identity.CLAIM_PATH_ENV + "=") for pair in env_pairs)
+        )
         resume = LaunchPlan(("pi", "--approve", "--session", "/tmp/a.jsonl"), "/tmp/proj")
-        resume_wrapped = keepalive.wrap_plan(resume, "pi", "abcd1234")
+        with mock.patch.object(pi_identity, "ensure_extension_installed", return_value={"status": "ok"}):
+            resume_wrapped = keepalive.wrap_plan(resume, "pi", "abcd1234")
         resume_tail = resume_wrapped.argv[resume_wrapped.argv.index("--") + 1:]
-        resume_dir = session_file_dir("/tmp/a.jsonl")
-        self.assertEqual(
-            resume_tail,
-            ("pi", "--approve", "--session-dir", resume_dir, "--session", "/tmp/a.jsonl"),
-        )
+        self.assertEqual(resume_tail, ("pi", "--approve", "--session", "/tmp/a.jsonl"))
         self.assertNotIn("--session-id", resume_tail)
-        self.assertIn(f"{PI_SESSION_DIR_ENV}={resume_dir}", resume_wrapped.argv)
+        self.assertNotIn("--session-dir", resume_tail)
 
     def test_session_name_truncates_long_ident(self) -> None:
         plan = LaunchPlan(("claude",), None)

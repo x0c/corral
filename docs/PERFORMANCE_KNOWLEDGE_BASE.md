@@ -2,7 +2,7 @@
 
 ## 什么时候读
 
-改、评审、优化或排查启动、会话扫描、对话预览、内嵌终端渲染、**侧边栏列表重建与分屏加格**、缓存、原生扩展、安装包或发布流水线时先读本文；**排查「电脑忙时 corral 卡、自身占用却不高」「同类会话管理 / 内嵌终端 TUI 的性能坑」时也读**（见「系统高负载下的调度优先级」与「同类应用踩坑地图」）。**性能优化动手前先做一轮外部调研**（同类 TUI / 终端工具的公开优化经验），再结合本地计时拆解，不要只靠本地 profile 闭门造车（机主 2026-08-17 纠正；本地计时的做法见「新开分屏（加格）链路」节）。各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。
+改、评审、优化或排查启动、会话扫描、对话预览、内嵌终端渲染、**侧边栏列表重建与分屏加格**、缓存、原生扩展、安装包或发布流水线时先读本文；**排查「电脑忙时 corral 卡、自身占用却不高」「同类会话管理 / 内嵌终端 TUI 的性能坑」「打开大历史第一次解析整份 JSONL / 详情把通道堵住」时也读**（见「系统高负载下的调度优先级」与「同类应用踩坑地图」）。**性能优化动手前先做一轮外部调研**（同类 TUI / 终端工具的公开优化经验），再结合本地计时拆解，不要只靠本地 profile 闭门造车（机主 2026-08-17 纠正；本地计时的做法见「新开分屏（加格）链路」节）。各助手历史语义仍以 `SESSION_SCANNING_KNOWLEDGE_BASE.md` 为准，终端交互语义仍以 `EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` 为准。
 
 ## 系统高负载下的调度优先级（为什么「自己不重却卡」）
 
@@ -30,6 +30,18 @@
 | tmux 服务端 livelock | 整个 socket 无响应，要 `kill -9` | [tmux#5024](https://github.com/tmux/tmux/issues/5024)：控制模式高压 + 宽字符/emoji 可卡在重绘；Unicode 重的 pane 更危险 | 少开多余 `-C` 客户端；升级本机 tmux；异常时查是否服务端 100% 而非 corral |
 | Textual / Python GIL | 界面冻、后台其实在算 | Textual 官方：CPU 活必须 `@work(thread=True)`，UI 更新走 `call_from_thread`；后台线程过重仍会抢 GIL | 抓帧已在后台线程；**禁止**在消息处理里同步重解析 / 全表刷新 |
 | 把后台活抬到 Interactive | 耗电、挤掉真正交互 | Apple：只有真正交互才用最高档 | 标题守护 / 全量扫描保持默认或更低 |
+
+### 手机远程画面无变化路径（2026-08-27）
+
+手机订阅终端画面仍需按固定节奏向 tmux 取快照，才能在各助手未提供可靠事件通知时保持实时性；但相同原文、尺寸、光标、历史位置的连续快照不得再进入字符网格解析和逐行差分。`SessionHub` 在抓到原文后先比较这份完整画面状态，相同则直接跳过；画面内容或任一展示元数据变化才解析并交给 `ScreenEncoder`。这不会减少抓 tmux 的频率，却移除了空闲时反复创建单元格、编码行与计算状态行的 CPU/GIL 开销。
+
+`ScreenEncoder` 的“无行变化”不等于“无画面变化”：光标位置、可见性或历史长度变化时，必须发一份空行的增量帧，让手机更新交互态；只有内容和元数据都相同才不发。不得为了这项优化合并订阅者、丢掉慢订阅者的最新变化，或调用 resize。回归：`tests.test_remote_screen`、`SessionHubPayloadTests.test_unchanged_capture_skips_screen_parsing_and_encoding`。
+
+### 手机远程会话历史（2026-08-29）
+
+打开手机上的会话详情时，开发机侧的瓶颈不只是富消息解析。2026-08-29 经公网中继按手机同款请求实测：本机生成 535 条列表摘要约 2ms、约 368KB；同一条 `sessions.watch` 经中继约 13.5s；随后对约 87MB 历史发 `session.watch`，20s 内无回包，中继报心跳超时。列表摘要编码不是主因；主因是常驻进程扫描/解析占住解释器锁导致心跳无法应答，以及把整表闲置会话塞进首包。
+
+分页窗口只减少线路字节；若每次 `session.watch` / `session.messages` / 提问列表都从文件头 `read_all`，大 Codex 历史会被完整解析两到三遍。正确路径：按历史文件签名保存规范化消息（进程内 + `remote-transcripts.sqlite3`）；缓存未命中时第一次打开只从 JSONL 末尾解析当前消息窗口（Cursor 按 rowid 取尾部），向前翻页再补读更早一块，不要为翻一页读完整文件；打开、翻页、提问和实时订阅共用同一把读取器和同一份消息列表；文件变长只从上次偏移继续。改了规范化结果形状或读取语义必须抬 `transcript_cache.PARSER_VERSION`。列表首包截成等待/置顶 + 有限闲置；解析 JSONL 时按块让出解释器锁。禁止为了“推进实时游标”再读一遍，也禁止用 `sessions.list --limit 5` 或本机 unittest 冒充手机路径已通。验收脚本：`scripts/phone_remote_acceptance.py`。架构与禁止的误修见 `docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md`。
 
 **排查分诊（先问「空闲也卡还是只忙时卡」）**：
 
@@ -207,7 +219,7 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 
 - 原生扩展使用稳定的 Python 3.10 ABI，一个平台产物覆盖该平台的 Python 3.10 及以上版本。
 - 正式发布必须构建 macOS 通用轮子，以及 glibc/musl 的 Linux x86_64、aarch64 轮子，并附源代码包和校验和。
-- 一键安装脚本按操作系统、CPU 架构和 Linux libc 直接选择预编译轮子；找不到匹配产物时才退回源码安装。项目支持范围仍是 macOS 与 Linux，不声明 Windows 支持。
+- 一键安装脚本按操作系统、CPU 架构和 Linux libc 直接选择预编译轮子；找不到匹配产物时才退回源码安装。项目支持范围仍是 macOS 与 Linux，不声明 Windows 支持（阻碍面与档位见 [WINDOWS_COMPATIBILITY_DESIGN.md](design/WINDOWS_COMPATIBILITY_DESIGN.md)）。
 - Homebrew 源码配方构建时必须声明 Maturin 与 Rust 构建依赖，并在隔离环境中生成轮子，不能继续调用旧的纯 Python 安装入口。
 - `CORRAL_NATIVE=0` 可强制走 Python 回退，用于差分测试和故障隔离；正常用户不需要设置。
 

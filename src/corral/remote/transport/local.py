@@ -52,6 +52,7 @@ class LocalServer:
                 port,
                 max_size=8 * 1024 * 1024,
                 ping_interval=20,
+                ping_timeout=60,
                 origins=[None],
                 subprotocols=[protocol.SUBPROTOCOL],
             )
@@ -103,6 +104,8 @@ class LocalServer:
             address=address,
             close_transport=_close_transport,
         )
+        # 每条 WebSocket 一条通道。同一手机的第二条连接（数据面）在 hello 里
+        # 用 data_bind 附着到已有逻辑 Connection，不会再登记成另一台设备。
         # 直连时也先发一次通道分配，让手机端的收包逻辑与走中继时完全一致——
         # 客户端不必为两种连接方式各写一套。
         await _send(socket_conn, protocol.encode_frame(protocol.FRAME_DEVICE_OPEN, channel_id, b""))

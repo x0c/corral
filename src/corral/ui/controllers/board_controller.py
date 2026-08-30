@@ -63,6 +63,7 @@ class BoardControllerMixin:
         # 未进入看板时角标永远按第一页计算：临时实例只算 total / 后页急件，不携带状态。
         snapshot = ActivityBoard().sync(collect_candidates(self.store))
         session_list.set_board_snapshot(snapshot)
+        self.refresh_bindings()
 
     def _show_activity_board(self, *, focus_pane: bool = False) -> None:
         if not self.embed_ok:
@@ -81,6 +82,7 @@ class BoardControllerMixin:
             hosted_keys=collect_hosted_keys(self.store),
         )
         session_list.set_board_snapshot(snapshot)
+        self.refresh_bindings()
         if not snapshot.keys:
             if area.ordered_session_keys() == ["__board_empty__"]:
                 return
@@ -109,7 +111,24 @@ class BoardControllerMixin:
         if focus_key:
             self._begin_attention_read(focus_key)
 
-    def _page_activity_board(self, delta: int) -> None:
+    def _page_activity_board(self, delta: int, *, from_click: bool = False) -> None:
+        if from_click:
+            if not self.embed_ok:
+                return
+            session_list = self.query_one(SessionListView)
+            if not session_list.is_activity_board_selected():
+                session_list.select_activity_board()
+            if not self._activity_board_active:
+                self._show_activity_board(focus_pane=False)
+            self._activity_board.set_typing_key(None)
+            if self._live_embed_focused():
+                self._focus_list()
+            if delta:
+                self._activity_board.turn_page(delta)
+                self._show_activity_board(focus_pane=False)
+            else:
+                self.refresh_bindings()
+            return
         if not self._activity_board_active:
             return
         if self._live_embed_focused():

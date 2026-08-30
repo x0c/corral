@@ -6,7 +6,7 @@ import json
 import os
 import re
 
-from corral import titles
+from corral import pi_identity, titles
 from corral.legacy_names import (
     cache_dir as product_cache_dir,
 )
@@ -820,6 +820,9 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
     多个 TUI，禁止再按「cwd → 最新一条」猜测。
 
     绑定优先级（正向证据优先，禁止「同目录只留最新一条」）：
+
+    0. 身份扩展 claim（``corral-session-identity``）：instance + 精确 session
+       id，第一权威；托管进程没有有效 claim 时保持 provisional，不猜；
     1. 进程正打开的 ``*.jsonl``（若该进程有 session-dir，打开的文件还须在该目录内）；
     2. ``corral-<ident>/`` 隔离目录（``PI_CODING_AGENT_SESSION_DIR`` /
        ``--session-dir``）：该目录里 mtime 最新的一条（托管 /new 的属主，
@@ -867,6 +870,22 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
     _load_persisted_overrides([pid for pid, _cwd in tui_procs], starts, created_ts)
     open_paths = open_file_paths([pid for pid, _cwd in tui_procs])
     envs = {pid: process_environ(pid) for pid, _cwd in tui_procs}
+
+    # 身份桥 claim（corral-session-identity 扩展）：有效 claim 是 live 归属的
+    # 第一权威，只按 claim 里的精确 session id 绑定；同一 pid 取 sequence
+    # 最大的一条。托管进程的 claim instance 必须与 env 注入值一致，裸 Pi 的
+    # native claim 直接按 pid 对号。
+    claims_by_pid: dict[int, list[dict]] = {}
+    for claim in pi_identity.read_claims():
+        if not pi_identity.claim_is_live(claim):
+            continue
+        try:
+            claim_pid = int(claim.get("pid") or 0)
+        except (TypeError, ValueError):
+            continue
+        if claim_pid <= 0:
+            continue
+        claims_by_pid.setdefault(claim_pid, []).append(claim)
 
     def _proc_session_dir(pid: int) -> str:
         env = envs.get(pid) or {}
@@ -982,6 +1001,27 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
         return True
 
     def bind_exact(pid: int) -> None:
+        env_instance = str((envs.get(pid) or {}).get(pi_identity.INSTANCE_ENV) or "").strip()
+        candidates = claims_by_pid.get(pid) or []
+        if env_instance:
+            candidates = [
+                claim for claim in candidates
+                if str(claim.get("instanceId") or "") == env_instance
+            ]
+        claim = max(
+            candidates,
+            key=lambda item: int(item.get("sequence") or 0),
+            default=None,
+        )
+        if claim is not None:
+            session = by_id.get(str(claim.get("sessionId") or ""))
+            if session is not None and not (session.get("live") and session.get("pid") != pid):
+                _mark_live(session, pid)
+                _remember_live_session(pid, str(session.get("id") or ""), starts.get(pid))
+            # claim 指向的会话尚未落盘或不在扫描窗口：保持 provisional，
+            # 绝不回落到 cwd/mtime 猜测。
+            bound_pids.add(pid)
+            return
         if bind_open_jsonl(pid):
             return
         if bind_session_dir(pid):
@@ -1031,8 +1071,9 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
             _mark_live(session, pid)
             bind_and_stop(pid, session, source="env")
             return
-        if ident:
-            # 托管占位 ident 尚未落盘、或不在本轮扫描窗口：不要回落到 cwd 配对。
+        if ident or env_instance:
+            # 托管占位 ident 尚未落盘、不在本轮扫描窗口，或身份扩展没给出
+            # 有效 claim：宁可未关联/provisional，不要回落到 cwd 配对。
             bound_pids.add(pid)
 
     for pid, _cwd in tui_procs:

@@ -11,10 +11,12 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from contextlib import suppress
 
+from corral import updater
 from corral.i18n import join_names, t
 from corral.remote import config as remote_config
 from corral.remote import crypto, pairing
@@ -48,8 +50,8 @@ def _access_label(access: str) -> str:
     return t("remote.access.full")
 
 
-def _check_dependencies() -> str:
-    """依赖缺一不可，缺了就把安装命令原样给出来，不要让用户自己猜。"""
+def _missing_dependencies() -> list[str]:
+    """返回当前运行解释器中尚未安装的远程能力组件。"""
     missing = []
     if not crypto.available():
         missing.append("cryptography")
@@ -57,6 +59,16 @@ def _check_dependencies() -> str:
         import websockets  # noqa: F401
     except ImportError:
         missing.append("websockets")
+    try:
+        import segno  # noqa: F401
+    except ImportError:
+        missing.append("segno")
+    return missing
+
+
+def _check_dependencies() -> str:
+    """只读检查缺失组件，供状态类命令使用。"""
+    missing = _missing_dependencies()
     if not missing:
         return ""
     return t(
@@ -64,6 +76,45 @@ def _check_dependencies() -> str:
         names=join_names(missing),
         packages=" ".join(missing),
     )
+
+
+def _dependency_install_command(missing: list[str]) -> list[str]:
+    """按实际安装渠道生成能改到同一运行环境的安装命令。"""
+    if updater.detect_channel() == "pipx":
+        # pipx 的 venv 默认没有 pip；必须由 pipx 注入到当前 corral 环境。
+        return ["pipx", "inject", "corral", *missing]
+    return [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+        *missing,
+    ]
+
+
+def _ensure_dependencies() -> str:
+    """在当前 Corral 运行环境中幂等补齐启动远程服务所需组件。"""
+    missing = _missing_dependencies()
+    if not missing:
+        return ""
+    print(t("remote.deps.installing", names=join_names(missing)), file=sys.stderr)
+    try:
+        result = subprocess.run(
+            _dependency_install_command(missing),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return t("remote.deps.auto_install_failed")
+    if result.returncode != 0 or _missing_dependencies():
+        return t("remote.deps.auto_install_failed")
+    print(t("remote.deps.installed", names=join_names(missing)), file=sys.stderr)
+    return ""
 
 
 def _stop_pid(pid: int) -> None:
@@ -86,7 +137,7 @@ def _stop_pid(pid: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _cmd_start(args) -> int:
-    problem = _check_dependencies()
+    problem = _ensure_dependencies()
     if problem:
         return _fail(problem, args.json)
 
@@ -116,10 +167,18 @@ def _cmd_start(args) -> int:
     running = remote_config.read_pid()
     if running:
         if not args.force:
-            return _fail(
-                t("remote.start.already_running", pid=running),
-                args.json,
-            )
+            if args.quiet:
+                return EXIT_OK
+            public_key = crypto.public_key_bytes(remote_config.load_or_create_identity())
+            code = crypto.new_pairing_code()
+            remote_config.write_pairing(code, _PAIRING_TTL)
+            if args.json:
+                pairing_payload = pairing.as_json(state, code, public_key, state.local_port)
+                print(_envelope(True, {"running": True, "pairing": pairing_payload}))
+            else:
+                _print_pairing(state, code, public_key, state.local_port)
+                print(t("remote.start.qr_refreshed", pid=running))
+            return EXIT_OK
         _stop_pid(running)
         remote_config.clear_pid()
 
@@ -135,7 +194,7 @@ def _cmd_start(args) -> int:
     daemon = RemoteDaemon(state)
     public_key = crypto.public_key_bytes(daemon.static_private)
 
-    if not state.devices and not args.quiet:
+    if not args.quiet:
         code = daemon.service.begin_pairing(_PAIRING_TTL)
         _print_pairing(state, code, public_key, state.local_port)
 
@@ -170,7 +229,7 @@ def _print_pairing(state, code: str, public_key: bytes, local_port: int, *, mode
 # ---------------------------------------------------------------------------
 
 def _cmd_pair(args) -> int:
-    problem = _check_dependencies()
+    problem = _ensure_dependencies()
     if problem:
         return _fail(problem, args.json)
     state = remote_config.load_state()

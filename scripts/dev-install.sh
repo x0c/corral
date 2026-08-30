@@ -19,10 +19,16 @@ fi
 # 改名前入口叫 pickup。只认 corral 时，旧安装会让脚本误走 pipx，装出一份
 # 非 editable 副本，随后校验失败（2026-08-23 真机）。
 entry_python() {
-  local cmd bin shebang
+  local cmd bin shebang py
   for cmd in corral pickup; do
     bin="$(command -v "$cmd" 2>/dev/null || true)"
     if [[ -n "$bin" && -f "$bin" ]]; then
+      # pipx 的 POSIX 入口首行只是 #!/bin/sh，真正解释器在第二行的 exec 中。
+      py="$(sed -n "2s/^'''exec' '\([^']*\)'.*/\1/p" "$bin" 2>/dev/null || true)"
+      if [[ -n "$py" && -x "$py" ]]; then
+        printf '%s\n' "$py"
+        return 0
+      fi
       shebang="$(sed -n '1s/^#!//p' "$bin" 2>/dev/null || true)"
       if [[ -n "$shebang" && -x "$shebang" ]]; then
         printf '%s\n' "$shebang"
@@ -46,21 +52,33 @@ install_editable() {
   "$py" -m pip install --user --break-system-packages --force-reinstall --no-deps -e "$ROOT"
 }
 
+install_pipx_editable() {
+  echo "→ pipx install --editable --force $ROOT[remote]"
+  pipx install --editable --force "$ROOT[remote]"
+}
+
+is_pipx_python() {
+  local py="$1"
+  "$py" -c 'import os, sys; raise SystemExit(0 if os.path.isfile(os.path.join(sys.prefix, "pipx_metadata.json")) else 1)'
+}
+
 PY=""
 if PY="$(entry_python)"; then
   echo "检测到入口解释器：$PY"
-  install_editable "$PY"
+  if is_pipx_python "$PY"; then
+    install_pipx_editable
+    PY="$(entry_python)"
+  else
+    install_editable "$PY"
+  fi
 elif command -v pipx >/dev/null 2>&1; then
   echo "未找到可用的 corral/pickup shebang，改用 pipx install …"
-  # pipx 对本地路径也可能忽略 --editable，只装进 venv 副本；后面必须再 -e 一次。
-  pipx install "$ROOT" --force
+  install_pipx_editable
   PY="$(entry_python || true)"
   if [[ -z "${PY:-}" ]]; then
     echo "错误：pipx 安装后仍找不到 corral 入口" >&2
     exit 1
   fi
-  echo "pipx 不一定保留 editable，再对该解释器做一次 -e …"
-  install_editable "$PY"
 else
   echo "未找到 corral / pickup / pipx，改用 python3 --user editable 安装"
   PY="$(command -v python3)"

@@ -11,25 +11,36 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 
 from corral import embed, keepalive, titles
+from corral.cache import history_signature
 from corral.i18n import t
 from corral.models import LaunchRequest, NewSessionRequest, session_key
-from corral.remote import richmsg
+from corral.remote import richmsg, transcript_cache
 from corral.remote.screen import ScreenEncoder
 from corral.runtime import LaunchError
 from corral.split_layout import default_layout_db, group_emoji
 from corral.store import SessionStore
 
 _SCAN_LIMIT = 200
-_REFRESH_INTERVAL = 3.0
+_REFRESH_INTERVAL = 15.0  # 远程进程与桌面界面抢同一把 GIL；3 秒全量扫会把中继心跳拖死
+_PHONE_LIST_LIMIT = 80
 _SCREEN_INTERVAL = 0.2       # 有人在看终端视图时的抓帧周期
 _CONVERSATION_INTERVAL = 1.0  # 实时会话的富消息轮询周期
 _HOST_WIDTH = 120            # 新建托管会话的默认窗口宽度（按桌面常见宽度，手机横向平移）
 _HOST_HEIGHT = 40
+MESSAGE_PAGE_LIMIT = 80
+MESSAGE_PAGE_LIMIT_MAX = 120
+MESSAGE_PAGE_BYTES = 256 * 1024
+MESSAGE_EVENT_BYTES = 64 * 1024
+_MAX_IN_MEMORY_TRANSCRIPTS = 48
+_CONVERSATION_DELTA_LIMIT = 200  # 每条被看会话只留最近这么多增量；溢出则 replay 失败走 tail
 
 _ATTENTION_LABELS = {"none": "none", "unread": "unread", "working": "working", "waiting": "waiting"}
 
@@ -51,6 +62,42 @@ class _ScreenWatch:
     watchers: int = 0
     cols: int = 0
     rows: int = 0
+    last_capture: tuple[object, ...] | None = None
+
+
+class _DeltaBuffer:
+    """有界增量环形缓冲。只保留最近 N 条；溢出后旧序号不可回放。
+
+    借鉴 OpenCAN EventBuffer 的 Since / 溢出语义，但用的是 Corral 消息 seq，
+    不引入独立事件序号。缓冲为空时由调用方改查规范化缓存。
+    """
+
+    def __init__(self, maxlen: int = _CONVERSATION_DELTA_LIMIT) -> None:
+        cap = maxlen if maxlen > 0 else _CONVERSATION_DELTA_LIMIT
+        self._items: deque[richmsg.RichMessage] = deque(maxlen=cap)
+
+    def append(self, messages: list[richmsg.RichMessage]) -> None:
+        for message in messages:
+            self._items.append(message)
+
+    def clear(self) -> None:
+        self._items.clear()
+
+    @property
+    def empty(self) -> bool:
+        return not self._items
+
+    def since_or_gap(self, after_seq: int) -> list[richmsg.RichMessage] | None:
+        """返回 seq > after_seq 的增量。空列表表示已追上；None 表示缺口已滚出。"""
+        if not self._items:
+            return None
+        oldest = self._items[0].seq
+        newest = self._items[-1].seq
+        if after_seq >= newest:
+            return []
+        if after_seq + 1 < oldest:
+            return None
+        return [item for item in self._items if item.seq > after_seq]
 
 
 @dataclass
@@ -58,6 +105,226 @@ class _ConversationWatch:
     key: str
     reader: richmsg.RichReader
     watchers: int = 0
+    generation: int = 1
+    deltas: _DeltaBuffer = field(default_factory=_DeltaBuffer)
+
+
+@dataclass
+class _Transcript:
+    key: str
+    path: str
+    signature: tuple[int, int, int, int] | None
+    generation: int
+    reader: richmsg.RichReader
+    messages: list[richmsg.RichMessage]
+
+
+def _same_identity(
+    left: tuple[int, int, int, int] | None,
+    right: tuple[int, int, int, int] | None,
+) -> bool:
+    return left is not None and right is not None and left[:2] == right[:2]
+
+
+def _json_size(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _wire_message_batches(messages: list[richmsg.RichMessage], *, session_key: str) -> list[dict]:
+    """把实时增量切成有上限的批次，避免一次工具洪峰撑大单帧。"""
+    batches: list[dict] = []
+    current: list[dict] = []
+    for message in messages:
+        candidate = current + [message.to_wire_dict()]
+        probe = {
+            "version": 1,
+            "kind": "delta",
+            "session": session_key,
+            "messages": candidate,
+        }
+        if current and _json_size(probe) > MESSAGE_EVENT_BYTES:
+            batches.append({
+                "version": 1,
+                "kind": "delta",
+                "session": session_key,
+                "from_seq": current[0]["seq"],
+                "to_seq": current[-1]["seq"],
+                "messages": current,
+            })
+            current = [message.to_wire_dict()]
+        else:
+            current = candidate
+    if current:
+        batches.append({
+            "version": 1,
+            "kind": "delta",
+            "session": session_key,
+            "from_seq": current[0]["seq"],
+            "to_seq": current[-1]["seq"],
+            "messages": current,
+        })
+    return batches
+
+
+def _phone_list_window_items(
+    items: list[dict],
+    *,
+    is_priority,
+    cap: int = _PHONE_LIST_LIMIT,
+) -> list[dict]:
+    """等待/执行中/置顶优先，其余按原顺序截断；优先集超过上限时全部保留。"""
+    must: list[dict] = []
+    rest: list[dict] = []
+    for item in items:
+        if is_priority(item):
+            must.append(item)
+        else:
+            rest.append(item)
+    if len(must) >= cap:
+        return must
+    return must + rest[: cap - len(must)]
+
+
+def _session_is_priority(session: dict, layout) -> bool:
+    attention = str(session.get("attention_kind") or "none")
+    if attention in ("waiting", "working"):
+        return True
+    if layout is None:
+        return False
+    key = session_key(session)
+    if key in (getattr(layout, "pinned_session_keys", {}) or {}):
+        return True
+    group = layout.get_group(key)
+    return bool(
+        group is not None and group.group_id in (getattr(layout, "pinned_group_ids", {}) or {})
+    )
+
+
+def _phone_list_window(payloads: list[dict], *, cap: int = _PHONE_LIST_LIMIT) -> list[dict]:
+    """手机首包只带当前页用得上的会话：等待/执行中/置顶优先，其余按原顺序截断。"""
+    return _phone_list_window_items(
+        payloads,
+        is_priority=lambda payload: (
+            payload.get("attention") in ("waiting", "working")
+            or payload.get("pinned")
+            or (
+                isinstance(payload.get("group"), dict) and payload["group"].get("pinned")
+            )
+        ),
+        cap=cap,
+    )
+
+
+def _phone_list_window_sessions(
+    sessions: list[dict], layout, *, cap: int = _PHONE_LIST_LIMIT
+) -> list[dict]:
+    return _phone_list_window_items(
+        sessions,
+        is_priority=lambda session: _session_is_priority(session, layout),
+        cap=cap,
+    )
+
+
+def _list_version_blob(rows: list) -> str:
+    blob = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _message_page(
+    items: list[richmsg.RichMessage],
+    *,
+    limit: int,
+    before_seq: int | None = None,
+    generation: int = 1,
+    has_earlier: bool = False,
+) -> dict:
+    """生成受消息条数与 JSON 体积双重约束的历史窗口。"""
+    bounded_limit = max(1, min(limit or MESSAGE_PAGE_LIMIT, MESSAGE_PAGE_LIMIT_MAX))
+    scoped = [item for item in items if before_seq is None or item.seq < before_seq]
+    has_more = len(scoped) > bounded_limit or has_earlier
+    selected = scoped[-bounded_limit:]
+    wire = [item.to_wire_dict() for item in selected]
+    while len(wire) > 1 and _json_size({"messages": wire}) > MESSAGE_PAGE_BYTES:
+        wire.pop(0)
+        selected.pop(0)
+        has_more = True
+    oldest = wire[0]["seq"] if wire else 0
+    newest = wire[-1]["seq"] if wire else 0
+    return {
+        "version": 1,
+        "kind": "snapshot",
+        "messages": wire,
+        "oldest_seq": oldest,
+        "newest_seq": newest,
+        "from": oldest,
+        "to": newest,
+        "total": len(items),
+        "generation": generation,
+        "has_more": has_more,
+    }
+
+
+def _continuous_after(
+    items: list[richmsg.RichMessage],
+    after_seq: int,
+    *,
+    cap: int = _CONVERSATION_DELTA_LIMIT,
+) -> list[richmsg.RichMessage] | None:
+    """从规范化缓存取出 after_seq 之后的连续消息。对不上或超过上限则 None。"""
+    newest = items[-1].seq if items else 0
+    if after_seq > newest:
+        return None
+    newer = [item for item in items if item.seq > after_seq]
+    if not newer:
+        return []
+    if newer[0].seq != after_seq + 1:
+        return None
+    if len(newer) > cap:
+        return None
+    wire = [item.to_wire_dict() for item in newer]
+    if _json_size({"messages": wire}) > MESSAGE_PAGE_BYTES:
+        return None
+    return newer
+
+
+def _replay_page(
+    items: list[richmsg.RichMessage],
+    *,
+    after_seq: int,
+    generation: int,
+    total: int,
+) -> dict:
+    """只含缺口的回包。空 messages 表示已追上，不是清空。"""
+    wire = [item.to_wire_dict() for item in items]
+    oldest = wire[0]["seq"] if wire else after_seq
+    newest = wire[-1]["seq"] if wire else after_seq
+    return {
+        "version": 1,
+        "kind": "snapshot",
+        "messages": wire,
+        "oldest_seq": oldest,
+        "newest_seq": newest,
+        "from": oldest,
+        "to": newest,
+        "total": total,
+        "generation": generation,
+        "has_more": False,
+        "resume": "replay",
+    }
+
+
+def _try_replay(
+    watch: _ConversationWatch,
+    transcript: _Transcript,
+    after_seq: int,
+    client_generation: int | None,
+) -> list[richmsg.RichMessage] | None:
+    """generation 一致且缺口连续可补时返回消息（可空）；否则 None 让调用方走 tail。"""
+    if client_generation is None or int(client_generation) != transcript.generation:
+        return None
+    if not watch.deltas.empty:
+        return watch.deltas.since_or_gap(after_seq)
+    return _continuous_after(transcript.messages, after_seq)
 
 
 class SessionHub:
@@ -75,6 +342,9 @@ class SessionHub:
         self._lock = threading.Lock()
         self._screens: dict[str, _ScreenWatch] = {}
         self._conversations: dict[str, _ConversationWatch] = {}
+        self._transcripts: dict[str, _Transcript] = {}
+        self._transcript_cache = transcript_cache.TranscriptCache()
+        self._transcript_io = threading.Lock()
         self._sessions_watchers = 0
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -96,6 +366,7 @@ class SessionHub:
         for thread in self._threads:
             thread.join(timeout=1.0)
         embed.close_channel()
+        self._transcript_cache.close()
 
     def set_attention_hook(self, hook) -> None:
         """注册关注状态变化回调，供推送层订阅。"""
@@ -111,7 +382,7 @@ class SessionHub:
                 continue
             self._detect_attention_changes()
             if changed and self._sessions_watchers:
-                self._on_event("sessions", {"sessions": self.list_sessions()})
+                self._on_event("sessions", self.list_snapshot())
 
     def _screen_loop(self) -> None:
         while not self._stop.wait(_SCREEN_INTERVAL):
@@ -128,15 +399,21 @@ class SessionHub:
             with self._lock:
                 watches = [w for w in self._conversations.values() if w.watchers > 0]
             for watch in watches:
+                new_messages: list[richmsg.RichMessage] = []
                 try:
-                    new_messages = watch.reader.poll()
+                    with self._transcript_io:
+                        new_messages = watch.reader.poll()
+                        if new_messages:
+                            self._append_transcript(watch.key, new_messages)
                 except Exception:
                     continue
                 if new_messages:
-                    self._on_event(
-                        f"session:{watch.key}",
-                        {"messages": [m.to_dict() for m in new_messages]},
-                    )
+                    with self._lock:
+                        current = self._conversations.get(watch.key)
+                        if current is not None:
+                            current.deltas.append(new_messages)
+                    for event in _wire_message_batches(new_messages, session_key=watch.key):
+                        self._on_event(f"session:{watch.key}", event)
 
     # -- 会话查询 ---------------------------------------------------------
 
@@ -203,30 +480,228 @@ class SessionHub:
             payload["pinned"] = key in pinned_sessions
         return payload
 
-    def list_sessions(self, query: str = "", limit: int = 0) -> list[dict]:
-        layout = self._layout()
+    def _session_matches(self, session: dict, layout, needle: str) -> bool:
+        title = str(self.store.get_title(session) or "")
+        cwd = str(session.get("cwd_display") or session.get("cwd") or "")
+        last_user = str(session.get("last_user_msg") or "")
+        last_agent = str(session.get("last_agent_msg") or "")
+        group_name = ""
+        if layout is not None:
+            group = layout.get_group(session_key(session))
+            if group is not None:
+                group_name = str(group.name or "")
+        haystack = f"{title}\n{cwd}\n{last_user}\n{last_agent}\n{group_name}".lower()
+        return needle in haystack
+
+    def _window_version(self, sessions: list[dict], layout) -> str:
+        rows = []
+        for session in sessions:
+            key = session_key(session)
+            pinned = False
+            group_pinned = False
+            if layout is not None:
+                pinned = key in (getattr(layout, "pinned_session_keys", {}) or {})
+                group = layout.get_group(key)
+                if group is not None:
+                    group_pinned = group.group_id in (
+                        getattr(layout, "pinned_group_ids", {}) or {}
+                    )
+            rows.append(
+                [
+                    key,
+                    str(session.get("attention_kind") or "none"),
+                    str(self.store.get_title(session) or ""),
+                    round(self._wire_float(session.get("mtime")), 3),
+                    str(session.get("last_user_msg") or "")[:160],
+                    str(session.get("last_agent_msg") or "")[:160],
+                    bool(session.get("live")),
+                    pinned,
+                    group_pinned,
+                ]
+            )
+        return _list_version_blob(rows)
+
+    def _listed_payloads(
+        self, query: str = "", limit: int = 0, layout=None
+    ) -> tuple[list[dict], int, bool]:
+        layout = self._layout() if layout is None else layout
         sessions = self.store.all_sessions()
-        payloads = [self.session_payload(s, layout) for s in sessions]
+        total = len(sessions)
         if query:
             needle = query.strip().lower()
-            payloads = [
-                p
-                for p in payloads
-                if needle in (p["title"] or "").lower()
-                or needle in (p["cwd_display"] or "").lower()
-                or needle in (p["last_user"] or "").lower()
-                or needle in (p["last_agent"] or "").lower()
-                or needle in str((p.get("group") or {}).get("name") or "").lower()
-            ]
+            matched = [item for item in sessions if self._session_matches(item, layout, needle)]
+            has_more = limit > 0 and len(matched) > limit
+            chosen = matched[:limit] if limit > 0 else matched
+            payloads = [self.session_payload(item, layout) for item in chosen]
+            return payloads, len(matched), has_more
         if limit > 0:
-            payloads = payloads[:limit]
+            chosen = sessions[:limit]
+            payloads = [self.session_payload(item, layout) for item in chosen]
+            return payloads, total, total > limit
+        windowed = _phone_list_window_sessions(sessions, layout)
+        payloads = [self.session_payload(item, layout) for item in windowed]
+        return payloads, total, total > len(windowed)
+
+    def list_sessions(self, query: str = "", limit: int = 0) -> list[dict]:
+        payloads, _, _ = self._listed_payloads(query=query, limit=limit)
         return payloads
+
+    def list_snapshot(
+        self, query: str = "", limit: int = 0, since_version: str = ""
+    ) -> dict:
+        """给手机的列表回包：默认窗口带版本号；版本未变不带会话数组。"""
+        layout = self._layout()
+        if query or limit > 0:
+            payloads, total, has_more = self._listed_payloads(
+                query=query, limit=limit, layout=layout
+            )
+            return {
+                "version": _list_version_blob(
+                    [item.get("key") for item in payloads]
+                ),
+                "unchanged": False,
+                "has_more": has_more,
+                "total": total,
+                "sessions": payloads,
+            }
+        sessions = self.store.all_sessions()
+        windowed = _phone_list_window_sessions(sessions, layout)
+        total = len(sessions)
+        has_more = total > len(windowed)
+        version = self._window_version(windowed, layout)
+        if since_version and since_version == version:
+            return {
+                "version": version,
+                "unchanged": True,
+                "has_more": has_more,
+                "total": total,
+            }
+        payloads = [self.session_payload(item, layout) for item in windowed]
+        return {
+            "version": version,
+            "unchanged": False,
+            "has_more": has_more,
+            "total": total,
+            "sessions": payloads,
+        }
 
     def require_session(self, key: str) -> dict:
         session = self.store.find_session(key)
         if session is None:
             raise ActionError("not_found", t("remote.err.session_gone"))
         return session
+
+    def _remember_transcript(self, transcript: _Transcript) -> None:
+        with self._lock:
+            self._transcripts[transcript.key] = transcript
+            watched = {item.key for item in self._conversations.values() if item.watchers > 0}
+            if len(self._transcripts) > _MAX_IN_MEMORY_TRANSCRIPTS:
+                for cached_key in list(self._transcripts):
+                    if len(self._transcripts) <= _MAX_IN_MEMORY_TRANSCRIPTS:
+                        break
+                    if cached_key not in watched:
+                        self._transcripts.pop(cached_key, None)
+
+    def _persist_transcript(self, transcript: _Transcript) -> None:
+        runtime = str(transcript.reader.session.get("source") or "")
+        try:
+            self._transcript_cache.put(
+                runtime,
+                transcript.key,
+                transcript.path,
+                transcript.messages,
+                transcript.reader.export_state(),
+                transcript.generation,
+            )
+        except Exception:
+            return
+
+    def _append_transcript(self, key: str, new_messages: list[richmsg.RichMessage]) -> None:
+        with self._lock:
+            current = self._transcripts.get(key)
+            if current is None or not new_messages:
+                return
+            known = {item.seq for item in current.messages}
+            for item in new_messages:
+                if item.seq not in known:
+                    current.messages.append(item)
+            current.signature = history_signature(current.path) if current.path else None
+            snapshot = current
+        self._persist_transcript(snapshot)
+
+    def _ensure_transcript(self, session: dict) -> _Transcript:
+        """返回当前会话的规范化消息缓存；文件没变就不重新解析。"""
+        key = session_key(session)
+        path = str(session.get("path") or "")
+        signature = history_signature(path) if path else None
+        with self._lock:
+            current = self._transcripts.get(key)
+            if current is not None and current.path == path and current.signature == signature:
+                return current
+        with self._transcript_io:
+            return self._load_transcript(session, key, path, signature)
+
+    def _load_transcript(
+        self,
+        session: dict,
+        key: str,
+        path: str,
+        signature: tuple[int, int, int, int] | None,
+    ) -> _Transcript:
+        with self._lock:
+            current = self._transcripts.get(key)
+            if current is not None and current.path == path and current.signature == signature:
+                return current
+            incremental = (
+                current is not None
+                and current.path == path
+                and _same_identity(current.signature, signature)
+                and current.signature is not None
+                and signature is not None
+                and signature[2] >= current.signature[2]
+            )
+            reader = current.reader if current is not None else None
+            messages = current.messages if current is not None else None
+            generation = current.generation if current is not None else 1
+        if incremental and reader is not None and messages is not None and current is not None:
+            new_messages = reader.poll()
+            if new_messages:
+                messages.extend(new_messages)
+            with self._lock:
+                stored = self._transcripts.get(key)
+                if stored is not None and stored.reader is reader:
+                    stored.signature = signature
+                    stored.messages = messages
+                    to_persist = stored
+                else:
+                    to_persist = None
+                    stored = current
+            if to_persist is not None:
+                self._persist_transcript(to_persist)
+            return stored
+
+        runtime = str(session.get("source") or "")
+        cached = self._transcript_cache.get(runtime, key, path) if path else None
+        if cached is not None:
+            messages, state, generation = cached
+            reader = richmsg.RichReader(session)
+            reader.restore_state(state, messages)
+            new_messages = reader.poll()
+            if new_messages:
+                messages.extend(new_messages)
+            transcript = _Transcript(key, path, signature, generation, reader, messages)
+            self._remember_transcript(transcript)
+            self._persist_transcript(transcript)
+            return transcript
+
+        reader = richmsg.RichReader(session)
+        messages = reader.read_all(limit=MESSAGE_PAGE_LIMIT)
+        rebuilt = current is not None and not incremental
+        generation = generation + 1 if rebuilt else 1
+        transcript = _Transcript(key, path, signature, generation, reader, messages)
+        self._remember_transcript(transcript)
+        self._persist_transcript(transcript)
+        return transcript
 
     def session_detail(self, key: str) -> dict:
         session = self.require_session(key)
@@ -237,19 +712,61 @@ class SessionHub:
         payload["history_path"] = session.get("path") or ""
         return payload
 
-    def messages(self, key: str, limit: int = 400) -> list[dict]:
-        """整轮读出富消息。列表很长时只保留最近的一段——手机上没人会往上翻两千条。"""
+    def messages(
+        self,
+        key: str,
+        limit: int = MESSAGE_PAGE_LIMIT,
+        before_seq: int | None = None,
+    ) -> list[dict]:
+        """兼容旧调用方，返回受限历史窗口，不把整份会话搬上网络。"""
+        return self.message_page(key, limit=limit, before_seq=before_seq)["messages"]
+
+    def message_page(
+        self,
+        key: str,
+        *,
+        limit: int = MESSAGE_PAGE_LIMIT,
+        before_seq: int | None = None,
+    ) -> dict:
+        """返回带游标元数据的有限历史窗口，不重新解析整份历史。"""
         session = self.require_session(key)
-        reader = richmsg.RichReader(session)
-        items = reader.read_all()
-        if limit > 0 and len(items) > limit:
-            items = items[-limit:]
-        return [m.to_dict() for m in items]
+        transcript = self._ensure_transcript(session)
+        if before_seq is not None:
+            with self._transcript_io:
+                self._fill_earlier(transcript, before_seq, limit)
+        return _message_page(
+            transcript.messages,
+            limit=limit,
+            before_seq=before_seq,
+            generation=transcript.generation,
+            has_earlier=transcript.reader.has_earlier(),
+        )
+
+    def _fill_earlier(
+        self,
+        transcript: _Transcript,
+        before_seq: int,
+        limit: int,
+    ) -> None:
+        """内存里没有更早消息时，从窗口左缘再向前读一块并 prepend。"""
+        scoped = [item for item in transcript.messages if item.seq < before_seq]
+        while len(scoped) < max(1, limit) and transcript.reader.has_earlier():
+            older_than = min((item.seq for item in transcript.messages), default=before_seq)
+            try:
+                earlier = transcript.reader.read_earlier(limit, before_seq=older_than)
+            except Exception:
+                break
+            if not earlier:
+                break
+            transcript.messages = earlier + transcript.messages
+            scoped = [item for item in transcript.messages if item.seq < before_seq]
+            self._persist_transcript(transcript)
 
     def prompts(self, key: str) -> list[dict]:
         """当前仍待回答的提问型工具调用（含可点选项列表）。"""
         session = self.require_session(key)
-        return richmsg.pending_prompts(session)
+        transcript = self._ensure_transcript(session)
+        return richmsg.pending_prompts_from_messages(transcript.messages)
 
     def projects(self) -> list[dict]:
         # path/name 与 iOS NewSessionSheet 对齐；cwd/label 保留给桌面侧同一套项目列表语义。
@@ -301,29 +818,71 @@ class SessionHub:
             self._sessions_watchers = max(0, self._sessions_watchers - 1)
 
     def conversation_snapshot(self, key: str) -> list[dict]:
-        """不改订阅计数，只读当前富消息全文（给同连接重复 session.watch 用）。"""
+        """不改订阅计数，只读当前富消息全文（仅供本机内部兼容路径）。"""
         session = self.require_session(key)
-        return [m.to_dict() for m in richmsg.RichReader(session).read_all()]
+        transcript = self._ensure_transcript(session)
+        return [item.to_wire_dict() for item in transcript.messages]
 
-    def watch_conversation(self, key: str) -> list[dict]:
-        """订阅一条会话的实时聊天流，同时把已有历史一次性返回。
+    def conversation_page(
+        self,
+        key: str,
+        *,
+        limit: int = MESSAGE_PAGE_LIMIT,
+        before_seq: int | None = None,
+    ) -> dict:
+        """不改订阅计数，只读一页当前富消息。"""
+        return self.message_page(key, limit=limit, before_seq=before_seq)
 
-        首包历史用独立 reader 读拍：共享 reader 只负责增量 poll。
-        否则第二台手机（或重连后的第二路订阅）会因为 watchers>1 拿到空列表，
-        而若对共享 reader 再 read_all 又会把增量游标打乱、把旧消息当新消息重推。
+    def watch_conversation(
+        self,
+        key: str,
+        *,
+        limit: int = MESSAGE_PAGE_LIMIT,
+        after_seq: int | None = None,
+        generation: int | None = None,
+    ) -> dict:
+        """订阅一条会话的实时聊天流，同时只返回有限历史窗口。
+
+        首包与实时增量共用同一份规范化缓存和同一把 reader：
+        打开会话时不再为了推进游标或生成首包而把历史读两遍。
+
+        手机重连可带 after_seq / generation：代次一致且缺口仍在则只回放更新
+        （resume=replay）；否则退回当前尾部窗口（resume=tail）。未传 after_seq
+        保持今天的尾部行为，旧手机不用改。
         """
         session = self.require_session(key)
+        transcript = self._ensure_transcript(session)
+        replayed: list[richmsg.RichMessage] | None = None
         with self._lock:
             watch = self._conversations.get(key)
-            created = watch is None
             if watch is None:
-                watch = _ConversationWatch(key, richmsg.RichReader(session))
+                watch = _ConversationWatch(
+                    key, transcript.reader, generation=transcript.generation
+                )
                 self._conversations[key] = watch
+            else:
+                if watch.generation != transcript.generation:
+                    watch.deltas.clear()
+                watch.reader = transcript.reader
+                watch.generation = transcript.generation
             watch.watchers += 1
-        if created:
-            # 推进共享游标到末尾，后续 poll 只推增量
-            watch.reader.read_all()
-        return self.conversation_snapshot(key)
+            if after_seq is not None:
+                replayed = _try_replay(watch, transcript, int(after_seq), generation)
+        if after_seq is not None and replayed is not None:
+            return _replay_page(
+                replayed,
+                after_seq=int(after_seq),
+                generation=transcript.generation,
+                total=len(transcript.messages),
+            )
+        page = _message_page(
+            transcript.messages,
+            limit=limit,
+            generation=transcript.generation,
+            has_earlier=transcript.reader.has_earlier(),
+        )
+        page["resume"] = "tail"
+        return page
 
     def unwatch_conversation(self, key: str) -> None:
         with self._lock:
@@ -346,6 +905,7 @@ class SessionHub:
                 self._screens[key] = watch
             watch.watchers += 1
             watch.encoder.reset()
+            watch.last_capture = None
         return self._capture_frame(watch)
 
     def unwatch_screen(self, key: str) -> None:
@@ -369,6 +929,7 @@ class SessionHub:
             if watch is None or watch.watchers <= 0:
                 raise ActionError("usage_error", t("remote.err.not_watching_screen"))
             watch.encoder.reset()
+            watch.last_capture = None
         return self._capture_frame(watch)
 
     def scroll_screen(self, key: str, offset: int) -> dict | None:
@@ -378,6 +939,7 @@ class SessionHub:
                 raise ActionError("usage_error", t("remote.err.not_watching_screen"))
             watch.scroll_offset = max(0, int(offset))
             watch.encoder.reset()
+            watch.last_capture = None
         return self._capture_frame(watch)
 
     def _keepalive_name(self, key: str) -> str:
@@ -408,6 +970,19 @@ class SessionHub:
         text = embed.capture(name, watch.scroll_offset, watch.rows)
         if text is None:
             return None
+        capture_state = (
+            text,
+            watch.cols,
+            watch.rows,
+            cursor_x,
+            cursor_y,
+            cursor_visible,
+            history_size,
+            watch.scroll_offset,
+        )
+        if watch.last_capture == capture_state:
+            return None
+        watch.last_capture = capture_state
         grid = embed.parse_screen(text, watch.cols, watch.rows)
         frame = watch.encoder.encode(
             grid,

@@ -70,7 +70,7 @@ flowchart TD
 
 | 本地位置 | 内容 | 读取/写入边界 |
 |---|---|---|
-| `~/.cache/corral/events.log` | 结构化事件日志，一行一个 JSON | 本地追加；每次写前超过 256KB 则截断 |
+| `~/.cache/corral/events.log` | 结构化事件日志，一行一个 JSON | 当前实现本地追加，写前超过 256KB 会整文件清空；2026-08-26 Pi 会话错绑取证中因此永久丢失 10:28–11:16 的关键托管/占位迁移事件，不能把它视为可靠历史保留 |
 | `~/.cache/corral/embed-error.log` | 后台异常与致命闪退的完整 traceback | 本地追加；每次写前超过 256KB 则截断 |
 | `~/.cache/corral/screenshots/tui-*.svg` | F12 导出的真实 TUI 截图 | 仅用户主动触发；可能包含真实对话 |
 | `~/.cache/corral/` | 诊断、截图和其它本地缓存根目录 | `corral diagnose` 只报告路径与存在性 |
@@ -87,7 +87,7 @@ flowchart TD
 | `split_group_member_missing` | 浏览既有会话组时，后台扫描暂时未发现某个成员 | 缺失数量；不记录会话名称、标题或正文 |
 | `host_session` | 内嵌会话托管成功或失败 | 耗时、运行时、`ok` |
 | `capture_slow` | 单次抓帧达到或超过 100ms | 耗时与低基数状态 |
-| `host_size_drift` | 抓帧线程发现 tmux 真实尺寸落后于格子期望并重发 `resize` | 实际/期望宽高与重试次数；同一目标最多 3 次、间隔约 2s |
+| `host_size_drift` | 抓帧线程发现 tmux 真实尺寸落后于格子期望并重发 `resize` | 实际/期望宽高与重试次数；同一目标最多 3 次、间隔约 2s。**同一会话在约 2 倍宽度之间来回（如 165↔82）= 两扇窗口在抢，不是单次 resize 失败**；对齐成功后不得再抢被改走的宽度 |
 | `screenshot` | 用户按 F12 成功导出截图 | 本地路径和 SVG 格式 |
 | `error` | 抓帧、重扫、截图、TUI/进程未捕获异常等路径 | 位置、异常类型、短消息；完整栈另存 |
 | debug 事件 | 已开启细日志时 | 仅用于补充诊断上下文，不应承载正文 |
@@ -101,7 +101,7 @@ flowchart TD
 2. **写日志失败必须吞掉。** 创建目录、截断或写文件失败都不能拖死抓帧、后台重扫或界面线程；观测是降级能力，不得成为主流程可用性的前置条件。
 3. **默认只写低基数事件。** 常规日志仅保留事件名、耗时、状态、运行时等可聚合事实；细粒度上下文只在 `CORRAL_DEBUG=1` 或 `CORRAL_LOG=debug` 时写入。
 4. **敏感内容必须脱敏。** 字段名为 `text`、`prompt`、`messages`、`message`、`content`、`body`、`argv`、`command`、`token`、`api_key`、`password`、`secret`（含大小写变化）时，一律以 `<redacted>` 落盘；不要新增近义字段来绕过该规则。
-5. **日志上限为 256KB。** `events.log` 与 `embed-error.log` 在下一次写入前若超过 256KB 即截断，防止长期运行无限占用本地磁盘；这是截断，不是保留历史轮转。
+5. **当前 256KB 整文件截断只是一项已知有害的容量保护，不是可靠保留策略。** 2026-08-26 排查“Pi 新会话消失、标题与提示词挂错分屏”时，`events.log` 因超限直接清空，10:28–11:16 的 `host_session`、占位卡转正和分屏键迁移证据永久丢失，只能靠第三方扩展日志与文件 birth 时间反推。后续改造应使用有界轮转并至少保留上一段；在轮转落地前，排障必须立刻复制/读取现场日志，禁止把“文件里没有”当成“事件没发生”。日志仍不得无限增长或记录会话正文。
 6. **异常需要双层证据。** 事件日志写无 traceback 的 `error`，异常日志写完整 traceback；不要把完整栈或会话内容塞回结构化事件。致命闪退必须经 `sys.excepthook` / 线程 hook / Textual `_handle_exception` 落盘，不能只依赖终端瞬间打印。Textual `WorkerFailed` 等包装异常必须展开到根因（`.error` / `__cause__`）再落盘，事件里可用 `via` 标明外层类型。
 7. **诊断必须只读。** `corral diagnose` 只检查本地路径、文件是否存在、tmux 版本和配色自检，并解析 `last_error`；不得启动 TUI、创建会话、写入历史、消费模型额度或改变会话状态。
 8. **F12 与验收截图不能混用。** F12 是真实用户现场截图，可能含隐私；`docs/screenshots/capture.py` 用虚构夹具生成仓库验收图。不能用后者替代现场取证，也不能把前者提交到仓库。
@@ -114,7 +114,7 @@ flowchart TD
 |---|---|---|
 | 事件日志基础契约 | `python3 -m unittest -v test_observe.py` | JSON 行包含时间、级别和事件名 |
 | 细日志开关 | 在测试或本机分别关闭/开启 `CORRAL_DEBUG=1`、`CORRAL_LOG=debug` | 默认不写 debug，开启后才出现 debug 事件 |
-| 脱敏与容量边界 | `python3 -m unittest -v test_observe.py` | 敏感字段变为 `<redacted>`，超过 256KB 后可继续写入 |
+| 脱敏与容量边界 | `python3 -m unittest -v test_observe.py` | 敏感字段变为 `<redacted>`；当前实现超限后仍可继续写入，但整文件清空是已知取证缺陷，改轮转时须断言上一段可追查 |
 | 异常双写 | `python3 -m unittest -v test_observe.py` | `error` 事件无 traceback，异常日志有完整 traceback |
 | 只读诊断 | `python3 -m corral diagnose` 或已安装命令 `corral diagnose` | 返回日志/截图目录、存在性、`last_error`、tmux 与配色事实；不启动 TUI |
 | 事件现场读取 | `python3 -m corral diagnose` 后读取 `data.last_error` 或 `~/.cache/corral/events.log` | 能看到最近闪退栈，或按 JSON 行查看 `scan_all`、`list_rebuild`、`host_session`、`capture_slow`、`host_size_drift`、`error` 等 |

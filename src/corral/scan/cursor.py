@@ -11,6 +11,11 @@ Cursor CLI 的会话按「工作区哈希 / 会话 UUID」两级目录存放：
 列表扫描只碰 meta.json / prompt_history.json，保证首屏轻量。完整对话由
 load_conversation() 只读打开 store.db，解析 JSON blob 里 role=user/assistant
 的正文；二进制 DAG blob 跳过。用户正文优先取 <user_query>…</user_query>。
+
+``isSubagent`` 的 Task 派生 chat 不得进入列表。判活时若 ``agent`` 进程实际
+绑在这类子会话上（``--resume`` 或打开了它的 store.db），必须把 live 记到
+``subagentInfo.rootParentAgentId`` / ``parentAgentId`` 指向的父会话——父进程
+已回到空闲或不在跑时，子代理仍在干活，侧栏也必须是进行中。
 """
 
 from __future__ import annotations
@@ -305,15 +310,122 @@ def _chat_ids_from_open_paths(paths: list[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
     for path in paths:
-        match = _OPEN_CHAT_STORE_RE.search(path.replace("\\", "/"))
-        if not match:
+        parsed = _chat_dir_from_open_path(path)
+        if parsed is None:
             continue
-        chat_id = match.group("id")
+        chat_id, _chat_dir = parsed
         if chat_id in seen:
             continue
         seen.add(chat_id)
         ordered.append(chat_id)
     return ordered
+
+
+def _chat_dir_from_open_path(path: str) -> tuple[str, str] | None:
+    """从打开的 store.db / -wal / -shm 路径取出 (chatId, 会话目录)。"""
+    file_path = str(path or "").split("?", 1)[0]
+    match = _OPEN_CHAT_STORE_RE.search(file_path.replace("\\", "/"))
+    if not match:
+        return None
+    return match.group("id"), os.path.dirname(file_path)
+
+
+def _find_chat_dir(chat_id: str) -> str | None:
+    """在 CHATS_DIR 各工作区下定位某一 chatId 的目录。"""
+    text = str(chat_id or "").strip()
+    if not text or not os.path.isdir(CHATS_DIR):
+        return None
+    try:
+        workspaces = os.listdir(CHATS_DIR)
+    except OSError:
+        return None
+    for workspace_id in workspaces:
+        chat_dir = os.path.join(CHATS_DIR, workspace_id, text)
+        if os.path.isdir(chat_dir):
+            return chat_dir
+    return None
+
+
+def _decode_store_meta_value(value) -> dict | None:
+    """解析 store.db meta 表 ``key='0'`` 的 JSON；兼容明文与 hex。"""
+    if isinstance(value, memoryview):
+        value = bytes(value)
+    if isinstance(value, (bytes, bytearray)):
+        text = bytes(value).decode("utf-8", "replace").strip()
+    else:
+        text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        obj = None
+    if isinstance(obj, dict):
+        return obj
+    try:
+        obj = json.loads(bytes.fromhex(text).decode("utf-8"))
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _parent_id_from_store(chat_dir: str) -> str | None:
+    """从 store.db 的 subagentInfo 取顶层父会话 id。"""
+    store_path = os.path.join(chat_dir, "store.db")
+    if not os.path.isfile(store_path):
+        return None
+    conn = connect_store_ro(store_path)
+    if conn is None:
+        return None
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = '0'").fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    obj = _decode_store_meta_value(row[0])
+    if not isinstance(obj, dict):
+        return None
+    info = obj.get("subagentInfo")
+    if not isinstance(info, dict):
+        return None
+    root = str(info.get("rootParentAgentId") or "").strip()
+    parent = str(info.get("parentAgentId") or "").strip()
+    return root or parent or None
+
+
+def _subagent_parent_id(chat_dir: str) -> str | None:
+    """该目录若是 Task/subagent 派生 chat，返回应显示进行中的父会话 id。"""
+    meta = _read_json(os.path.join(chat_dir, "meta.json"))
+    is_subagent = isinstance(meta, dict) and meta.get("isSubagent") is True
+    parent_id = _parent_id_from_store(chat_dir)
+    if not is_subagent and not parent_id:
+        return None
+    return parent_id
+
+
+def _session_for_agent_chat(
+    by_id: dict[str, dict],
+    chat_id: str,
+    *,
+    chat_dir: str | None = None,
+) -> dict | None:
+    """把进程绑到的 chatId 解析成列表里那张卡：顶层会话，或子代理的父会话。"""
+    text = str(chat_id or "").strip()
+    if not text:
+        return None
+    session = by_id.get(text)
+    if session is not None:
+        return session
+    directory = chat_dir if chat_dir and os.path.isdir(chat_dir) else _find_chat_dir(text)
+    if not directory:
+        return None
+    parent_id = _subagent_parent_id(directory)
+    if not parent_id:
+        return None
+    return by_id.get(parent_id)
 
 
 def _session_for_corral_ident(by_id: dict[str, dict], ident: str) -> dict | None:
@@ -360,6 +472,10 @@ def _apply_live_flags(sessions: list[dict]) -> None:
     2. 进程已打开的 `~/.cursor/chats/.../<chatId>/store.db`；
     3. 环境变量 `CORRAL_SESSION_ID` / `SC_SESSION_ID`（仅完整会话 id）。
 
+    以上 chatId 若是被过滤的 Task/subagent 会话，改绑到
+    ``subagentInfo.rootParentAgentId``（否则 ``parentAgentId``）对应的父会话。
+    父进程已空闲或不在跑、只剩子代理进程时，父会话仍须标 live。
+
     同一 chat 若同时有「无 --resume 的原托管进程」和后来的 ``--resume`` 进程，
     必须优先绑前者：占位卡退役依赖 annotate 把真实会话标上原 tmux 名
     （``corral-cursor-<临时8位>``）；若先绑到二次 resume，占位卡会残留成双卡。
@@ -378,12 +494,17 @@ def _apply_live_flags(sessions: list[dict]) -> None:
         if resume_id:
             if not allow_resume:
                 return
-            if resume_id in by_id:
-                _mark_live(by_id[resume_id], pid)
+            session = _session_for_agent_chat(by_id, resume_id)
+            if session is not None:
+                _mark_live(session, pid)
             return
 
-        for chat_id in _chat_ids_from_open_paths(open_paths.get(pid) or []):
-            session = by_id.get(chat_id)
+        for path in open_paths.get(pid) or []:
+            parsed = _chat_dir_from_open_path(path)
+            if parsed is None:
+                continue
+            chat_id, chat_dir = parsed
+            session = _session_for_agent_chat(by_id, chat_id, chat_dir=chat_dir)
             if session is not None and _mark_live(session, pid):
                 return
 

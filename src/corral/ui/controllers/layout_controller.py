@@ -29,8 +29,14 @@ class LayoutControllerMixin:
     `_render_detail`、`_warm_conversation`、`_rebuild_list`、`_update_header`。"""
 
     def _reconcile_split_session_keys(self) -> dict[str, str]:
-        """占位卡转正后 session_key 会变；按 keepalive 对齐分屏并返回键迁移。"""
+        """占位卡转正后 session_key 会变；按 keepalive 对齐分屏并返回键迁移。
+
+        不只看当前右栏格：sqlite 里的会话组 / 独立置顶若还挂着占位键，右栏已经
+        切走时也必须迁。否则侧栏按正式键找不到第二人，会把整组藏成两张独立卡
+        （2026-08-30 真机：刚在分屏里开的两个会话自己拆开）。
+        """
         import corral
+        from corral.keepalive import session_name
 
         key_by_keepalive: dict[str, str] = {}
         owners: dict[str, str] = {}
@@ -46,24 +52,54 @@ class LayoutControllerMixin:
                     # 两条会话挂了同一个托管名（扫描串台时真实发生过）：谁都不
                     # 迁，否则会把分屏格改绑到错的会话上，把会话组拆掉。
                     ambiguous.add(str(kname))
-        for key, kname in self.store.hosted.items():
+        for key, kname in getattr(self.store, "hosted", {}).items():
             if kname and str(kname) not in ambiguous:
                 key_by_keepalive.setdefault(str(kname), key)
         for kname in ambiguous:
             key_by_keepalive.pop(kname, None)
-        area = self._split_area()
+
         migrated: dict[str, str] = {}
+
+        def migrate(old_key: str, new_key: str | None) -> None:
+            if not old_key or not new_key or old_key == new_key or old_key in migrated:
+                return
+            self._apply_layout_change(
+                lambda store, o=old_key, n=new_key: store.migrate_session_key(o, n)
+            )
+            migrated[old_key] = new_key
+
+        pending = getattr(self.store, "session_key_migrations", None)
+        recorded = pending() if callable(pending) else pending
+        if isinstance(recorded, dict):
+            for old_key, new_key in recorded.items():
+                migrate(old_key, new_key)
+
+        area = self._split_area()
         for spec in area.pane_specs():
             kname = spec.keepalive_name
             if not kname:
                 continue
-            new_key = key_by_keepalive.get(kname)
-            if new_key and new_key != spec.session_key:
-                migrated[spec.session_key] = new_key
-                old_key = spec.session_key
-                self._apply_layout_change(
-                    lambda store, o=old_key, n=new_key: store.migrate_session_key(o, n)
-                )
+            migrate(spec.session_key, key_by_keepalive.get(kname))
+
+        split_store = getattr(self, "_split_store", None)
+        find_session = getattr(self.store, "find_session", None)
+        stale_keys: list[str] = []
+        if split_store is not None:
+            for group in split_store.groups.values():
+                stale_keys.extend(group.session_keys)
+            stale_keys.extend(split_store.pinned_session_keys)
+            if split_store.last_focus_key:
+                stale_keys.append(split_store.last_focus_key)
+        for old_key in stale_keys:
+            if old_key in migrated:
+                continue
+            if callable(find_session) and find_session(old_key) is not None:
+                continue
+            runtime_id, sep, ident = old_key.partition(":")
+            if not sep or not runtime_id or not ident:
+                continue
+            migrate(old_key, key_by_keepalive.get(session_name(runtime_id, ident)))
+
         area.reconcile_session_keys(key_by_keepalive)
         return migrated
 

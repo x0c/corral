@@ -384,6 +384,10 @@ class EmbedPane(Widget):
         self._heal_target: tuple[int, int] | None = None
         self._heal_count = 0
         self._heal_last_at = 0.0
+        # 这一格最近一次用来对齐的期望尺寸，以及曾经真正对齐成功的尺寸。
+        # 对齐成功后若期望没变、真实宽度却被改走，视为另一扇窗口赢了，不再抢。
+        self._heal_layout: tuple[int, int] | None = None
+        self._heal_applied: tuple[int, int] | None = None
         # resize 后抓帧冻结：主线程开启；抓帧线程判定稳定后解除并放行一帧。
         self._resize_hold_active = False
         self._resize_hold_until_min = 0.0
@@ -467,8 +471,7 @@ class EmbedPane(Widget):
             self._cursor = None
             self._clear_resize_capture_hold()
             self._tmux_pane_size = None
-            self._heal_target = None
-            self._heal_count = 0
+            self._reset_heal_state()
         # 必须早于写入 session_name：抓帧线程可能正好在这里被旧会话的轮询唤醒，
         # 一旦看见新名字就会立即抓屏；若覆盖尺寸晚一步才写入，仍有机会按旧半宽
         # 解析出一次「左边内容、右边空白」的首帧。传 None 也要写进去，把上一格
@@ -544,8 +547,7 @@ class EmbedPane(Widget):
         self._clear_resize_capture_hold()
         self._capture_size_override = None
         self._tmux_pane_size = None
-        self._heal_target = None
-        self._heal_count = 0
+        self._reset_heal_state()
         self._detail_renderer = renderer
         self.dead = False
         self._detail_stick_bottom = True
@@ -565,8 +567,7 @@ class EmbedPane(Widget):
         self._clear_resize_capture_hold()
         self._capture_size_override = None
         self._tmux_pane_size = None
-        self._heal_target = None
-        self._heal_count = 0
+        self._reset_heal_state()
         self.dead = False
         self._detail_stick_bottom = False
         self.detail_offset = 0
@@ -634,6 +635,14 @@ class EmbedPane(Widget):
             return self._tmux_pane_size
         return self._pane_size()
 
+    def _reset_heal_state(self) -> None:
+        """切会话 / 清格时丢掉对齐记忆，避免把上一格的「已让出」带到新会话。"""
+        self._heal_target = None
+        self._heal_count = 0
+        self._heal_last_at = 0.0
+        self._heal_layout = None
+        self._heal_applied = None
+
     def _expected_host_size(self) -> tuple[int, int]:
         """这一格希望托管窗变成的尺寸：预测优先，否则用控件当前尺寸。"""
         return self._capture_size_override or self._pane_size()
@@ -642,11 +651,25 @@ class EmbedPane(Widget):
         """tmux 真实尺寸与格子期望不符时，带退避重发 resize-window。
 
         必须在抓帧线程调用：fork/控制通道不能进 Textual 主线程。
+
+        多扇窗口共用同一份真实画面。本格一旦见过「真实尺寸 == 我的期望」，
+        之后期望没变、真实宽度却被改走，视为另一扇窗口赢了，不再抢回来——
+        否则单格与两格会来回改宽度，Cursor 整屏重排看起来像宽度抽动。
         """
         expected = self._expected_host_size()
+        if self._heal_layout != expected:
+            # 这一格自己的布局变了，允许重新对齐。
+            self._heal_layout = expected
+            self._heal_applied = None
+            self._heal_target = None
+            self._heal_count = 0
+            self._heal_last_at = 0.0
         if real == expected:
+            self._heal_applied = expected
             self._heal_count = 0
             self._heal_target = None
+            return
+        if self._heal_applied == expected:
             return
         if not embed.should_resize_host(expected[0], expected[1]):
             return

@@ -1,5 +1,5 @@
 <!-- managed:inherited-agents:start -->
-<!-- source: /Users/geraltgraham/Codes/pickup/AGENTS.md -->
+<!-- source: /Users/geraltgraham/Codes/Corral/AGENTS.md -->
 # Corral
 
 终端会话接力 CLI，支持跨 Claude Code / Codex / OpenCode / Kimi Code / Cursor / Pi 会话恢复与接力。
@@ -10,9 +10,10 @@
 
 > 以下文档在涉及对应领域的开发、评审或排查时先读取。领域知识库与验证细则见组件内说明。
 
-- [cli/AGENTS.md](cli/AGENTS.md)：改、评审或发布 Corral CLI 工具前必读（含领域知识库、截图验收，以及**排查「GitHub 持续发单测失败邮件 / 流水线作业排队十几小时 / macOS 作业挂死」「敲原命令没进托管」「启动 Pi 出现 No project session found with id」「看不到历史 Pi 会话 / 只能看到最近的 Pi」「钉过的 Pi 不在 pinned / 不筛项目名就不在置顶区、一筛又出现」「分屏两格画面一模一样 / 两个会话内容相同」「本机与开发机版本对不上」「助手还在跑、侧栏却显示已结束」「还能执行 pickup / 敲 corral command not found / 新名无法启动」**的入口）。**用 Corral 导出的会话数据写周报 / 日报 / 工作总结，或排查「导出内容不够写总结」时，从这里进 `cli/docs/SKILL.md` 的「拿会话数据做总结 / 周报时的边界」节。** Remote：`ssh://git@10.10.10.2:2222/Max/corral.git`
-- [ios/AGENTS.md](ios/AGENTS.md)：改、评审、构建或真机验收手机客户端前必读（含签名推送、钥匙串共享、禁止 resize、模拟器/真机脚本）。界面视觉与两端状态色见 [ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md](ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md)。
-- [cli/docs/REMOTE_KNOWLEDGE_BASE.md](cli/docs/REMOTE_KNOWLEDGE_BASE.md)：改、评审或排查手机 ↔ 开发机远程接力协议、配对、推送密文、画面差分、**换网连不上 / 中继开关与默认地址、任意网络可达策略**前必读。个人中继部署拓扑见 agentsync 基础设施知识库 `corral-relay.caozc.top` 节。
+- [cli/AGENTS.md](cli/AGENTS.md)：改、评审或发布 Corral CLI 工具前必读（含领域知识库、截图验收，以及**排查「GitHub 持续发单测失败邮件 / 流水线作业排队十几小时 / macOS 作业挂死」「敲原命令没进托管」「启动 Pi 出现 No project session found with id」「新开 Pi 会话切走后消失 / 标题和 prompt 历史挂到另一空 Pi 分屏 / `/resume` 看不到其它会话」「看不到历史 Pi 会话 / 只能看到最近的 Pi」「钉过的 Pi 不在 pinned / 不筛项目名就不在置顶区、一筛又出现」「刚在分屏里开的两个会话自己拆开 / 变成两张独立卡」「分屏两格画面一模一样 / 两个会话内容相同」「分屏两格但每格画面只占一半 / 像被压成 1/4」「活跃会话看不到翻页 / Mac 没有 PageUp PageDown」「Cursor 画面疯狂抽动 / 宽度抖动 / 有的会话抖有的不抖」「本机与开发机版本对不上」「助手还在跑、侧栏却显示已结束」「Cursor 子代理还在跑、主会话却显示已结束」「还能执行 pickup / 敲 corral command not found / 新名无法启动」「Ctrl+R 后卡住 / 强停打出 Python 堆栈 / 退出后鼠标一点就出现 `^[[<`」「英文会话却出中文标题 / 标题跟界面语言走」**的入口）。**有人提议做 Windows / WSL 兼容时进 `cli/docs/design/WINDOWS_COMPATIBILITY_DESIGN.md`（2026-08-27 已裁定不做）。**用 Corral 导出的会话数据写周报 / 日报 / 工作总结，或排查「导出内容不够写总结」时，从这里进 `cli/docs/SKILL.md` 的「拿会话数据做总结 / 周报时的边界」节。** Remote：`ssh://git@10.10.10.2:2222/Max/corral.git`
+- [ios/AGENTS.md](ios/AGENTS.md)：改、评审、构建或真机验收手机客户端前必读（含签名推送、钥匙串共享、禁止 resize、模拟器/真机脚本）。**用户可见改动完成后必须立刻装到 iPhone Max**，不读会只改源码让真机继续跑旧过滤/旧界面。界面视觉、两端状态色、**会话展示字号**与**助手官方标识（禁止自绘）**见 [ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md](ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md)。**排查「两台开发机点进去会话一模一样 / 打开会话后闪退」进 iOS 故障排查索引。** Remote：`ssh://git@10.10.10.2:2222/Max/corral-ios.git`
+- [cli/docs/REMOTE_KNOWLEDGE_BASE.md](cli/docs/REMOTE_KNOWLEDGE_BASE.md)：改、评审或排查手机 ↔ 开发机远程接力协议、配对、推送密文、画面差分、**换网连不上 / 中继开关与默认地址、任意网络可达策略、`corral remote start` 一直不退出、会话列表或打开历史极慢 / 进列表仍先转圈 / 转圈后开发机响应超时、打开大历史第一次仍像卡死 / 详情把通道堵住、Cursor 用户气泡出现整段系统上下文、Codex 详情第一句是系统说明、Pi 会话在手机上是空聊天、两台开发机点进去会话一模一样**前必读（验收必须走中继上的整表订阅+**每个助手一条详情**，禁止用 5 条摘要、单条 Codex 或本机 unittest 冒充）。个人中继部署拓扑见 agentsync 基础设施知识库 `corral-relay.caozc.top` 节。
+- [cli/docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md](cli/docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md)：规划、设计、评审或排查手机会话列表/历史加载慢、**进列表仍先转圈、不要堆滚动分页**、**进详情后返回没反应**、实时数据被大历史拖住、**打开大历史第一次解析整份 JSONL**、Cursor 上下文泄漏、Codex 消息缺失、**Pi 手机聊天空白**、直连/中继切换与断线恢复前必读。不读会把压缩或超时当成完整方案，漏掉缓存分页、尾部偏移读取、控制/数据隔离、序号恢复和真实设备验收。
 
 ## 组件一览
 
@@ -20,7 +21,7 @@
 |---|---|---|
 | `cli/` | Python | 活跃 |
 | `ios/` | SwiftUI | 活跃 |
-| `relay/` | Go | 活跃（零知识中继 + APNs） |
+| `relay/` | Go | 活跃（零知识中继 + APNs） Remote：`ssh://git@10.10.10.2:2222/Max/corral-relay.git` |
 
 ## 领域地图（doc-init）
 
@@ -45,6 +46,7 @@
 | 手机远程接力（开发机侧） | cli/src/corral/remote/ · cli/docs/REMOTE_KNOWLEDGE_BASE.md · cli/src/corral/bootstrap.py（任意网络 = 中继默认开；勿长期 `--no-relay`） |
 | 手机客户端 | ios/ · ios/AGENTS.md · ios/Corral/Design/ · ios/docs/UI_DESIGN_KNOWLEDGE_BASE.md（局域网优先、失败回落中继；换网冒烟） |
 | 零知识中继与 APNs | relay/ · relay/docs/PROTOCOL_V2.md · 个人公网实例见 agentsync 基础设施知识库 `corral-relay.caozc.top` |
+| Windows / WSL 兼容（已裁定不做） | cli/docs/design/WINDOWS_COMPATIBILITY_DESIGN.md |
 | 开源发布与一键安装 | cli/install.sh · cli/.github/workflows/ · cli/scripts/publish-release.sh |
 | CI 流水线 | cli/.github/workflows/test.yml · cli/scripts/ci-test.py · cli/.githooks/pre-push · cli/scripts/install-git-hooks.sh |
 | 客户端自动更新 | cli/src/corral/updater.py · cli/src/corral/ui/update_toast.py |
@@ -63,15 +65,18 @@
 > 以下文档在涉及对应领域的开发、评审或排查时先读取。
 
 - `README.md`：使用、修改、评审或扩展会话扫描、会话关注圆点、Cursor 状态观察、终端界面、标题生成、运行时适配和跨运行时接力
-- `docs/TERMINAL_UI_KNOWLEDGE_BASE.md`：开发、评审、优化或排查终端界面、侧边栏会话关注圆点/已读判定、筛选/会话全文搜索弹窗（`Ctrl+F`）/新建会话、对话预览（含默认钉底滚动）、右侧多分屏顶栏、**中国龙横飞彩蛋（`#dragon-chip`、快照合成、CJK 定格画面、动画时长）**、分屏格数上限（`split_layout.MAX_PANES`，改这个数前必读）、分屏组合记忆、高级操作弹窗、Footer 按键、多语言文案、运行中系统/终端深浅色跟随、截图验收；**设计或修改「键盘输入归属谁」相关行为（自动聚焦、鼠标点击语义、回列表出口、输入蒙版、快捷键随焦点裁剪）前必读 §6 焦点契约**；排查 SSH 下 TUI 颜色失真 / 真彩降级时也读；**排查「钉过的会话不在 pinned / 不筛项目名就不在置顶区、一筛又出现」也读**（进组不得毁掉独立 pin；筛选可见成员 < 2 则解散为独立会话）
-- `docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md`：内嵌实时终端、右栏托管画面（最多四格；调整格数上限时必读，含通道池与最小托管宽度的连带约束）、控制通道池、抓帧与按键转发、焦点边界/结束会话、连接中卡死；排查或修改**内嵌助手深浅色主题识别错误**（外层终端背景色探测与注入）也从这里进；**排查「分屏两格画面一模一样 / 两个会话内容相同」也读**（同一 `keepalive_name` 开了两格内嵌终端）
-- `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`：开发、评审、优化或排查会话扫描、关注状态证据、Cursor 状态观察、对话预览数据、判活、扫描性能和各助手历史格式；**排查「助手还在跑、侧栏却显示已结束 / 点进去变成历史预览」、尤其 OpenCode 带初始提问或 Pi 接力提问被误判成非交互时也读**（`--prompt` 后的说明词不当命令行，见该文 §6）；**排查「看不到历史 Pi 会话 / 只能看到最近的 Pi / 钉过的旧 Pi 从列表消失」也读**（`--session-dir` 隔离目录占满 `limit`、置顶/组成员须经 `keep_ids` 豁免，以及 Pi v1 无 `parentId`）；**排查「分屏两格画面一模一样」也读**（`annotate` 把同一 pane 贴给两条会话）
-- `docs/PERFORMANCE_KNOWLEDGE_BASE.md`：改、评审、优化或排查启动、扫描、预览、终端渲染、**侧边栏列表重建 / 分屏加格卡顿**、派生缓存、原生加速、性能基准与预编译包；**排查「电脑忙时界面卡、自身占用却不高」、系统高负载调度优先级，或对照同类会话管理 / 内嵌终端 TUI 的踩坑地图时也读**
+- `docs/TERMINAL_UI_KNOWLEDGE_BASE.md`：开发、评审、优化或排查终端界面、侧边栏会话关注圆点/已读判定、筛选/会话全文搜索弹窗（`Ctrl+F`）/新建会话、对话预览（含默认钉底滚动）、右侧多分屏顶栏、**会话标题语言 vs 界面语言（标题不是 chrome，不跟 locale）**、**中国龙横飞彩蛋（`#dragon-chip`、快照合成、CJK 定格画面、动画时长）**、分屏格数上限（`split_layout.MAX_PANES`，改这个数前必读）、分屏组合记忆、高级操作弹窗、Footer 按键、多语言文案、运行中系统/终端深浅色跟随、截图验收；**设计或修改「键盘输入归属谁」相关行为（自动聚焦、鼠标点击语义、回列表出口、输入蒙版、快捷键随焦点裁剪）前必读 §6 焦点契约**；排查 SSH 下 TUI 颜色失真 / 真彩降级时也读；**排查「已安装助手在新建 / 接力选择器中显示未安装」也读**；**排查「钉过的会话不在 pinned / 不筛项目名就不在置顶区、一筛又出现」也读**（进组不得毁掉独立 pin；筛选可见成员 < 2 则解散为独立会话）；**排查「刚在分屏里开的两个会话自己拆开 / 变成两张独立卡」也读**（占位卡转正后组记忆必须跟上，即使右栏已切走）；**排查「两格分屏但每格画面只占一半 / 像被压成 1/4」也读**（先看另一扇窗口是否打开了活跃会话看板）；**排查「活跃会话看不到翻页 / 没有分页按钮 / Mac 没有 PageUp PageDown / 不知道怎么翻页」也读**（多页必须画出可点的 `[1/2]` 并在底栏露出 `[` `]`，禁止靠 Page Up/Down）；**排查「Ctrl+R 后卡住 / 强停打出 Python 堆栈 / 退出后鼠标一点就出现 `^[[<`」也读**（Warp 拦 Ctrl+R；强停必须吞中断并同步关掉鼠标跟踪，禁止把 Ctrl+R 绑成全文搜索）
+- `docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md`：内嵌实时终端、右栏托管画面（最多四格；调整格数上限时必读，含通道池与最小托管宽度的连带约束）、控制通道池、抓帧与按键转发、焦点边界/结束会话、连接中卡死；排查或修改**内嵌助手深浅色主题识别错误**（外层终端背景色探测与注入）也从这里进；**排查「分屏两格画面一模一样 / 两个会话内容相同」也读**（同一 `keepalive_name` 开了两格内嵌终端）；**排查「分屏两格但每格画面只占一半 / 像被压成 1/4」也读**（另一扇窗口的活跃会话或更多格改了共享画面尺寸，不是单窗口把宽度除了两次）；**排查「Cursor 画面疯狂抽动 / 宽度抖动 / 有的会话抖有的不抖」也读**（先看是不是两扇窗口在抢同一条会话的宽度；Cursor 长对话整屏重画是另一条、已验证不要给抓帧加中间态过滤）
+- `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md`：开发、评审、优化或排查会话扫描、关注状态证据、Cursor 状态观察、对话预览数据、判活、扫描性能和各助手历史格式；**排查「助手还在跑、侧栏却显示已结束 / 点进去变成历史预览」、尤其 OpenCode 带初始提问或 Pi 接力提问被误判成非交互时也读**（`--prompt` 后的说明词不当命令行，见该文 §6）；**排查「Cursor 子代理还在跑、主会话却显示已结束」也读**（子代理不得进列表，但 live 必须记到父会话）；**排查「新开 Pi 会话切走后消失 / 标题和 Your prompts 挂到另一个空 Pi 分屏 / Pi 原生 `/resume` 看不到其它会话 / subagent 抢走主 pane」必读 §2.2.1**（per-session `--session-dir` 隔离已于 2026-08-26 裁定废弃，禁止继续修补）；排查「只能看到最近的 Pi / 钉过的旧 Pi 从列表消失」也读（旧隔离目录占满 `limit`、置顶/组成员须经 `keep_ids` 豁免，以及 Pi v1 无 `parentId`）；**排查「分屏两格画面一模一样」也读**（`annotate` 把同一 pane 贴给两条会话）
+- `docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md`：设计、开发、评审或排查 Pi 会话身份插件、pane 会话错绑、插件自动安装与协议升级、协作式所有权锁、旧 `corral-*`/`pickup-*` 隔离历史迁移前**必读**。不读会继续沿用已废弃的 `--session-dir` 小房间、让 subagent 抢主 pane、破坏 Pi 原生 `/resume`，或在身份不确定时误绑会话。
+- `docs/design/WINDOWS_COMPATIBILITY_DESIGN.md`：有人提议做 Windows / WSL 兼容、或想改 `install.sh`/CI 加 win 矩阵前**必读**——**2026-08-27 已裁定不做**（含原生与专项 WSL 产品化）；重开须机主显式推翻该裁定
+- `docs/PERFORMANCE_KNOWLEDGE_BASE.md`：改、评审、优化或排查启动、扫描、预览、终端渲染、**手机远程画面无变化时的重复解析 / 编码 / 推送**、**手机会话历史打开极慢 / 同一会话被完整解析多遍 / 打开大历史第一次解析整份 JSONL**、侧边栏列表重建 / 分屏加格卡顿、派生缓存、原生加速、性能基准与预编译包；**排查「电脑忙时界面卡、自身占用却不高」、系统高负载调度优先级，或对照同类会话管理 / 内嵌终端 TUI 的踩坑地图时也读**
 - `docs/CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md`：跨助手接力、高级操作、原生恢复、空白新建、启动计划与接力提示词；**改接力说明，排查「接力时提示没有历史记录位置后终端界面退出」，或排查「刚派生的 OpenCode/Pi 会话被标成已结束」时也读**（提问会进 `--prompt` / 位置参数，不要为了判活去改说明词）
-- `docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md`：新增、修改、评审或排查一种 AI 助手（含 Pi）的扫描、预览、恢复、接力、空白新建、命令托管或标题生成前必读，避免出现半接入状态；**给新助手设计「带初始提问启动」时也读**（先分清交互窗口还是打印模式，提问正文不能当命令行扫）
-- `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：事件日志、诊断、F12 截图观测、界面异常排查
-- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、会话关注状态与 Cursor 观察器、会话保活、直启、Agent 只读接口、**启动 Pi 每次都打出「Warning: No project session found with id …」（进「Pi 扫描与启动」节；无害，禁止为消警告拆掉 `--session-id`）**、**排查「看不到历史 Pi 会话 / 只能看到最近的 Pi / 钉过的旧 Pi 从列表消失」也进该节**、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、要不要上 PyPI）、**CI 工作流（改 `.github/workflows/` / `scripts/ci-test.py` / 推送门禁与 `install-git-hooks.sh`、排查「GitHub 天天发单测失败邮件 / 作业排队十几小时 / macOS 作业挂死 / 本机漏跑 ruff / 多 Agent 脏树挡发版 / 推 tag 后要用 ls-remote 核对远端」前必读「CI 工作流」节）**、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）；**排查「还能执行 pickup / 敲 corral command not found / 新名无法启动 / No module named pickup.bootstrap」进「内嵌面板」节改名后未重装入口那条**（禁止加回 `pickup` console script，跑 `scripts/dev-install.sh`）
-- `docs/REMOTE_KNOWLEDGE_BASE.md`：改、评审或排查 `corral remote`、手机配对、推送密文、画面差分、禁止手机 resize、可选依赖 `[remote]`、**换网不可用 / 中继默认与 `--no-relay` 禁区、任意网络可达**前必读；客户端工程见 `../ios/AGENTS.md`；个人中继部署见 agentsync 基础设施知识库 `corral-relay.caozc.top`
+- `docs/NEW_RUNTIME_ONBOARDING_KNOWLEDGE_BASE.md`：新增、修改、评审或排查一种 AI 助手（含 Pi）的扫描、预览、恢复、接力、空白新建、命令托管、标题生成、**手机远程对话空白**或**命令别名导致的安装状态误判**前必读，避免出现半接入状态；**给新助手设计「带初始提问启动」时也读**（先分清交互窗口还是打印模式，提问正文不能当命令行扫）
+- `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`：改、评审或排查事件日志、诊断、F12 截图观测、界面异常前必读；**排查历史事件“明明发生过但日志没有”也读**（当前 256KB 整文件截断会永久丢掉前一段，不能据此断言事件未发生）
+- `docs/MAINTAINER_GUIDE.md`：维护、评审或排查标题生成、**标题语言（跟用户提问主语言，不跟界面语言、不默认中文；排查「英文会话却出中文标题 / 标题跟系统语言走」）**、会话关注状态与 Cursor 观察器、会话保活、直启、Agent 只读接口、**启动 Pi 每次都打出「Warning: No project session found with id …」（进「Pi 扫描与启动」节；无害，禁止为消警告拆掉 `--session-id`）**、**排查「看不到历史 Pi 会话 / 只能看到最近的 Pi / 钉过的旧 Pi 从列表消失」也进该节**、开源发布与分发渠道（含**排查「发了新版本但用户升不了级 / `brew upgrade` 拉不到新版 / 发布卡在 CI 排队」**、要不要上 PyPI）、**CI 工作流（改 `.github/workflows/` / `scripts/ci-test.py` / 推送门禁与 `install-git-hooks.sh`、排查「GitHub 天天发单测失败邮件 / 作业排队十几小时 / macOS 作业挂死 / 本机漏跑 ruff / 多 Agent 脏树挡发版 / 推 tag 后要用 ls-remote 核对远端」前必读「CI 工作流」节）**、客户端自动更新及上述领域的维护级细节与历史踩坑（含 pipx/安装副本与源码分叉、SSH `COLORTERM` 真彩降级、内嵌 pane 背景色注入与助手深浅色主题的历次真机排查记录）；**排查「还能执行 pickup / 敲 corral command not found / 新名无法启动 / No module named pickup.bootstrap」进「内嵌面板」节改名后未重装入口那条**（禁止加回 `pickup` console script，跑 `scripts/dev-install.sh`）
+- `docs/REMOTE_KNOWLEDGE_BASE.md`：改、评审或排查 `corral remote`、手机配对、**服务启动即在终端输出可扫码二维码**、**`corral remote start` 一直不退出 / 超时杀掉后通道没了**、推送密文、画面差分、禁止手机 resize、可选依赖 `[remote]`、**换网不可用 / 中继默认与 `--no-relay` 禁区、任意网络可达、守护进程还叫旧名 pickup / 连中继 404 / 手机 App 突然连不上 / 会话列表或打开历史极慢 / 进列表仍先转圈 / 转圈后开发机响应超时 / 打开大历史第一次仍像卡死 / 详情把通道堵住 / Cursor 用户气泡出现整段系统上下文 / Codex 详情第一句是系统说明 / Pi 会话在手机上是空聊天 / 两台开发机点进去会话一模一样 / 换网后对话整段重拉 / 重连后聊天闪空**前必读（验收必须走中继上的整表订阅+**每个助手一条详情**，禁止用 5 条摘要、单条 Codex 或本机 unittest 冒充）；客户端工程见 `../ios/AGENTS.md`；个人中继部署见 agentsync 基础设施知识库 `corral-relay.caozc.top`
+- `docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md`：规划、设计、评审或排查手机会话列表/历史加载慢、**进列表仍先转圈、不要堆滚动分页**、**进详情后返回没反应**、实时数据被大历史拖住、**打开大历史第一次解析整份 JSONL**、Cursor 上下文泄漏、Codex 消息缺失、**Pi 手机聊天空白**、直连/中继切换与断线恢复、**换网后对话像冷启动 / 按序号补缺口**前必读。不读会把压缩或超时当成完整方案，漏掉缓存分页、尾部偏移读取、控制/数据隔离、序号恢复和真实设备验收
 - `docs/SKILL.md`：修改、评审 `agent_api.py` 面向 Agent 的子命令、字段或退出码语义（含 `diagnose`）；这是 Agent 侧唯一的使用文档，改命令行为必须同步这里。**用 `show`/`export` 的会话数据做周报、日报、工作总结、活动统计，或排查「导出的内容不够写总结 / 看不出到底改了什么」时，必读「拿会话数据做总结 / 周报时的边界」节**——那 5 条（对话不含工具调用与改码证据、标题只能当索引、`last_agent` 常为空、user 侧混着系统注入文本、没有成果字段）是不会改的产品边界，得在调用方侧校正
 - `PRIVACY.md`：修改、评审或排查历史文件读取、会话关注状态库、Cursor 用户级观察配置、缓存写入、标题生成、跨运行时接力和开源隐私边界
 - `CONTRIBUTING.md`：修改开源贡献流程、验证命令、设计边界或 PR 要求
@@ -84,7 +89,7 @@
 - 运行时私有行为必须收敛在 `runtime/` 对应适配器中；新增运行时只实现扫描、对话预览、原生恢复、历史格式提示、接力新会话（读取其他运行时历史）和空白新会话（不关联任何历史，仅指定工作目录）两种启动能力，并在默认注册表注册一次。
 - 跨运行时接力统一走“源适配器导出 `Handoff` → 目标适配器生成 `LaunchPlan`”，禁止增加 Claude→Gemini、Codex→Gemini 等两两转换分支。
 - 同运行时使用原生恢复；跨运行时必须新建目标会话、让目标 Agent 按需读取原始 JSONL，不能改写或伪造原会话。
-- 标题生成是独立服务，不属于任何运行时适配器。生成后端统一走 `titlegen.py` 的 `TitleGenerator` 抽象，覆盖与默认运行时注册表一致的助手（claude / codex / opencode / kimi / cursor）：本机装了哪个就可以用哪个生成标题，首选失败按注册顺序自动切换。`titles.py` 不得直接拼接任何 CLI 命令；`titlegen.py` 与 `runtime/` 互不 import——运行时适配器管「怎么恢复/接力会话」，标题生成器管「怎么无头问一次模型」，两者后端恰好重名但职责不同，不要合并。标题和界面状态使用“运行时 + 会话 ID”作为唯一键，新增运行时不得退回纯会话 ID。新增运行时必须同时在 `titlegen._GENERATORS` 加对应生成器，且若该 CLI 会把生成调用落盘成会话历史，对应扫描器必须加 `titles.PROMPT_MARKER` 前缀过滤。
+- 标题生成是独立服务，不属于任何运行时适配器。生成后端统一走 `titlegen.py` 的 `TitleGenerator` 抽象，覆盖与默认运行时注册表一致的助手（claude / codex / opencode / kimi / cursor）：本机装了哪个就可以用哪个生成标题，首选失败按注册顺序自动切换。`titles.py` 不得直接拼接任何 CLI 命令；`titlegen.py` 与 `runtime/` 互不 import——运行时适配器管「怎么恢复/接力会话」，标题生成器管「怎么无头问一次模型」，两者后端恰好重名但职责不同，不要合并。标题和界面状态使用“运行时 + 会话 ID”作为唯一键，新增运行时不得退回纯会话 ID。新增运行时必须同时在 `titlegen._GENERATORS` 加对应生成器，且若该 CLI 会把生成调用落盘成会话历史，对应扫描器必须加 `titles.PROMPT_MARKER` 前缀过滤。**生成标题的语言跟该会话用户提问的主语言，不跟界面语言，也不默认中文**（2026-08-30 裁定；细则见 `docs/MAINTAINER_GUIDE.md`「标题与排序」）。禁止把标题当 `i18n.t()` 文案，也禁止写「英文会话也可以用中文」。`PROMPT_MARKER` 是噪音过滤用的固定原文，不得翻译。
 - 会话预览：选中非进行中会话时，右栏直接展示完整对话（**默认钉在最新消息**，上滚看更早；用户离开底部后列表刷新不得强行钉回）；已托管会话右栏展示内嵌实时终端。**在别的终端窗口里跑、没被 corral 托管的会话（`live` 且无 `keepalive_name`）拿不到实时画面**——右栏走完整对话那一路并在详情头写明原因，打开它必须先确认（那是对同一份历史另起恢复进程，不是接管），细则见 `docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` §1。唯一界面是左栏会话列表 + 右栏（可最多四格均分内嵌终端），禁止再加回全屏预览或纯列表第二套入口。右侧顶栏可点选已安装助手在当前项目下加格；分屏会话会形成持久会话组，结束后仍保留，运行成员才参与启动恢复；组名、成员、折叠、置顶与侧栏显隐见 `split_layout.py`（`~/.cache/corral/sidebar-layout.sqlite3`）。**这份记忆多窗口共享：所有写入必须经 `SidebarLayoutDB` 在事务里重读最新再叠加，界面只持有只读快照，禁止改快照后整份覆盖写**（那正是多开窗口互相抹掉置顶与分组的老缺陷）。细则与 `_detail_stick_bottom` 见 `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` / `docs/MAINTAINER_GUIDE.md`。
 - **外部运行会话（2026-08-08 裁定）**：上条会话预览规则中“打开它必须先确认”的旧表述已废止。外部运行会话只能保持静态预览，**不得弹确认框，也不得针对同一份历史另起恢复进程**；等待原窗口结束后才可正常恢复。
 - **侧边栏末行间隔、会话组与关注圆点（硬约定）**：凡往左栏加控件（搜索框、新建项、未来任何块），**最后一行必须是间隔空行**，画在该控件自身高度内并算进命中区与选中高亮；禁止用 `margin`、兄弟空隙或 `ListItem` padding 做分隔（点在空隙上不会落到本项）。会话卡例外：固定三行正文、高度 3，不再另加末行空行；标题统一使用基础标题样式，不因运行中整行变绿；**首行整体 bold（与下面两行拉开层级），其中项目名比标题淡一档（`dim`）、标题本身不得 dim**——项目名是定位用的前缀，同亮度会和标题抢视线；淡化只用 `dim` 这类相对语汇，不要写死具体颜色（深浅色主题都要成立），窄栏截断时别把 `dim` 涂进标题；**首行最左是关注圆点**（等待回答黄 > 执行中绿 > 未读新结果红 > 无），独立会话卡圆点后接空格分隔的「项目 标题」（**不带冒号**），**组内子项不写项目名前缀**（项目已在组卡第二行）；**无圆点时不留占位空格**，标题直接顶到最左并吃满整行宽度（截断宽度按有无圆点取 `width - 2` 或 `width`）；第二行运行时靠右、第三行时间靠右。**第三行时间按新鲜度分四档亮度**（半小时内 / 三小时内 / 一天内 / 更早），最新一档与标题同色（着重显示），越旧越暗；档位色一律用 `$foreground` + 透明度经组件样式解析，禁止写死颜色或退回单级 `dim`，也禁止让时间行带上自己的背景色（会盖掉整行的选中/分屏底色）。圆点不得参与排序、筛选或计数。圆点字符 `●` 的 East Asian Width 是 Ambiguous：Rich 按 1 格算，把它放进首行文本流时必须让宽度预算与 Rich 一致，不要按「CJK 字体看起来占 2 格」去补偿；出图时 `docs/screenshots/capture.py` 只给「内容恰为该字形」的独立 `<text>` 换成非 CJK 等宽族来修观感。当前基准：搜索框高 2、新建项高 2、活动看板高 2、会话卡与会话组卡高 3；组卡第一行只保留展开/收起三角、可选置顶标记和水果组名，**不得画关注圆点**；组卡第二行项目名与 `Group …` 同列左对齐；第三行留白（不写时间，避免与成员卡重复）；成员用贴左缘的半角框线 `├─ `/`└─ `（续行同列 `│`，无前导空格、不用 dim；禁止混全角竖线以免三行卡之间断线）且不在顶层重复。分栏时左栏固定宽 39（`ui/main_screen.py` 的 `LIST_PANE_WIDTH`），内层 `#sidebar-sticky` / `#sidebar-scroll` 的垂直/水平 `scrollbar-size` 均为 0（滚动条不占列宽，键盘与滚轮滚动照常）。**筛选框、＋新建和活动看板固定不滚**（`#project-search` 在列表外，`＋ 新建` 与活动看板在 `#sidebar-sticky`）；置顶块、Pinned 线与未置顶 Today / older 都在 `#sidebar-scroll` 里一起滚——置顶只改变排序（钉在列表最上），不冻在视口里，钉再多也不会裁切或挤掉未置顶；指针在固定头上滚轮仍带动会话列表、顶部不动。**改左栏宽度必须同步改 `selftest.sh` 的 IME 光标锚定断言**——那里把面板起点硬编码成第 40 列（`expected_x=$((40 + inner_x))`，即 39 宽 + 1 列空隙），只改宽度会让端到端冒烟直接判失败。**右栏分屏（≥2 格）时，侧边栏给当前会话组整组铺底（Group 行 + 全部成员），激活会话再重一档**；光标停在组卡上时整组贴 `-group-selected`（成员与组卡同档高光），激活成员再叠 `-split-active`。底色标在 `ListItem` 上，组标题 / 组标题且光标在其上 / 激活格 / 激活格且光标在其上四级必须单调递进。置顶用 `p` / `Ctrl+P`：独立会话可单独置顶，会话组只能整体置顶（组内成员改为整组置顶）；`Ctrl+P` 是与 `Ctrl+F` 同级的全局键，右栏实时格持焦时仍可用；已关闭 Textual 命令面板，不要再展示 `^p palette`；未置顶区跟 SessionStore 稳定顺序走（进入后已有项不因 mtime 更新而飘；新建会话仍插最前），只有置顶块固定在最上；**置顶与未置顶都非空时中间插一行居中 `Pinned`/`置顶` 的 `$primary` 蓝横线；未置顶按滚动 24 小时切 today/older 两桶（桶内不重排），两侧都有时插 `Today`/`今天` 线；高 1、disabled、键盘跳过；禁止 Older/其他标签**。细则见 `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` / `docs/MAINTAINER_GUIDE.md`「界面」节。
@@ -201,7 +206,7 @@ corral --limit 5
 ```bash
 corral --version                 # 或 corral diagnose → data.package_file / stale_source_warning
 command -v corral
-head -1 "$(command -v corral)"   # 若 #!.../pipx/venvs/corral/bin/python → 用该解释器验
+# pipx 的入口常是 /bin/sh 包装器，不能只看第一行；以 corral --version 的 python/package_file 为准
 ```
 
 在仓库目录内启动 TUI 若加载了别处的副本，stderr 会打 `[corral] …改源码不会生效` 告警。期望 `package_file` 落在本仓库 `cli/src/corral/`（editable）或你有意使用的 site-packages。样式自检：`corral diagnose` 的 `runtime_label_style_claude` 应为 `bold #D97757`。

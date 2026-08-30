@@ -170,6 +170,154 @@ class CodexRichmsgTests(unittest.TestCase):
             self.assertEqual(messages[0].role, "assistant")
             self.assertEqual(messages[0].text, "已完成")
 
+    def test_response_item_assistant_message_text(self) -> None:
+        """Codex 当前 response_item 格式的助手正文也必须进入远程聊天流。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "当前格式也可见"}],
+                        },
+                    }
+                ],
+            )
+            messages = richmsg.RichReader(_session("codex", path)).read_all()
+            self.assertEqual([(m.role, m.text) for m in messages], [("assistant", "当前格式也可见")])
+
+    def test_injected_agents_md_user_blob_is_dropped(self) -> None:
+        """系统说明与真人问题常写成两条 user；手机不能把说明当成第一条人话。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "# AGENTS.md instructions\n<INSTRUCTIONS>秘密</INSTRUCTIONS>",
+                                },
+                                {"type": "input_text", "text": "<environment_context>cwd=/tmp</environment_context>"},
+                            ],
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "给我看图标"}],
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "给我看图标"},
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {"type": "agent_message", "message": "好的"},
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "好的"}],
+                        },
+                    },
+                ],
+            )
+            messages = richmsg.RichReader(_session("codex", path)).read_all()
+            self.assertEqual(
+                [(item.role, item.text) for item in messages],
+                [("user", "给我看图标"), ("assistant", "好的")],
+            )
+
+    def test_turn_aborted_and_string_agents_blob_are_dropped(self) -> None:
+        """中断标记和字符串形态的系统说明都不能当手机第一句。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": "# AGENTS.md instructions\n秘密",
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": "<turn_aborted> The user interrupted the previous turn",
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "继续"},
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {"type": "agent_message", "message": "好"},
+                    },
+                ],
+            )
+            messages = richmsg.RichReader(_session("codex", path)).read_all()
+            self.assertEqual(
+                [(item.role, item.text) for item in messages],
+                [("user", "继续"), ("assistant", "好")],
+            )
+
+    def test_code_review_prompt_is_kept(self) -> None:
+        """技能默认提问也是真人可见会话，手机不能滤成空白。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            prompt = "对本仓库当前的 git diff 做一次 code review，不要额外限制范围。"
+            _write_jsonl(
+                path,
+                [{"type": "event_msg", "payload": {"type": "user_message", "message": prompt}}],
+            )
+            messages = richmsg.RichReader(_session("codex", path)).read_all()
+            self.assertEqual([(item.role, item.text) for item in messages], [("user", prompt)])
+
+    def test_plan_followup_prompt_is_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codex.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": "Briefly inform the user about the task result.",
+                        },
+                    },
+                    {
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "现在四角根本无法调整了"},
+                    },
+                ],
+            )
+            messages = richmsg.RichReader(_session("codex", path)).read_all()
+            self.assertEqual(
+                [(item.role, item.text) for item in messages],
+                [("user", "现在四角根本无法调整了")],
+            )
+
 
 class ClaudeRichmsgTests(unittest.TestCase):
     def test_tool_use_with_string_input_and_results(self) -> None:
@@ -250,6 +398,41 @@ class ClaudeRichmsgTests(unittest.TestCase):
             bash = next(t for t in tools if t.call_id == "b1")
             self.assertEqual(bash.kind, "shell")
             self.assertEqual(bash.status, "error")
+
+    def test_task_notification_and_interrupt_are_dropped(self) -> None:
+        """Claude 的到点通知和中断标记不能占手机用户气泡。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "user",
+                        "origin": {"kind": "task-notification"},
+                        "message": {"role": "user", "content": "<task-notification>到点了"},
+                    },
+                    {
+                        "type": "user",
+                        "origin": {"kind": "human"},
+                        "message": {"role": "user", "content": "[Request interrupted by user]"},
+                    },
+                    {
+                        "type": "user",
+                        "origin": {"kind": "human"},
+                        "message": {"role": "user", "content": "<task-notification>伪装成人话"},
+                    },
+                    {
+                        "type": "user",
+                        "origin": {"kind": "human"},
+                        "message": {"role": "user", "content": "现在侧边栏记忆做得怎么样？"},
+                    },
+                ],
+            )
+            messages = richmsg.RichReader(_session("claude", path)).read_all()
+            self.assertEqual(
+                [(item.role, item.text) for item in messages],
+                [("user", "现在侧边栏记忆做得怎么样？")],
+            )
 
     def test_ask_user_question_options(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -380,6 +563,28 @@ class CursorRichmsgTests(unittest.TestCase):
             self.assertEqual(ask.options, ["好", "停"])
             self.assertEqual(ask.status, "running")
 
+    def test_user_query_is_extracted_and_injected_context_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.db"
+            _cursor_db(
+                path,
+                [
+                    {
+                        "role": "user",
+                        "content": (
+                            "<user_info>\nName: Tester\n</user_info>\n"
+                            "<rules>\nAlways be verbose.\n</rules>\n"
+                            "<user_query>\n把登录改成验证码\n</user_query>"
+                        ),
+                    },
+                    {"role": "user", "content": "<user_info>\n只剩上下文\n</user_info>"},
+                ],
+            )
+            messages = richmsg.RichReader(_session("cursor", path)).read_all()
+            user_texts = [item.text for item in messages if item.role == "user"]
+            self.assertEqual(user_texts, ["把登录改成验证码"])
+
+
 
 class RichmsgSerializationTests(unittest.TestCase):
     def test_to_dict_includes_options_in_tools(self) -> None:
@@ -394,6 +599,10 @@ class RichmsgSerializationTests(unittest.TestCase):
         data = message.to_dict()
         self.assertIn("tools", data)
         self.assertEqual(data["tools"][0]["options"], ["A", "B"])
+        restored = richmsg.RichMessage.from_dict(data)
+        self.assertEqual(restored.seq, 1)
+        self.assertEqual(restored.tools[0].options, ["A", "B"])
+        self.assertEqual(restored.tools[0].call_id, "1")
 
 class RichmsgIncrementalTests(unittest.TestCase):
     def test_codex_tool_result_is_reemitted_on_poll(self) -> None:
@@ -495,6 +704,161 @@ class RichmsgIncrementalTests(unittest.TestCase):
             self.assertEqual(len(second), 1)
             self.assertEqual(second[0].seq, first[0].seq)
             self.assertEqual(second[0].tools[0].status, "ok")
+
+
+class PlainRuntimeRichmsgTests(unittest.TestCase):
+    def test_every_default_runtime_has_a_remote_parser(self) -> None:
+        from corral.runtime import default_registry
+
+        missing = [runtime_id for runtime_id in default_registry().ids if runtime_id not in richmsg._PARSERS]
+        self.assertEqual(missing, [], f"手机远程解析器漏登记：{missing}")
+
+    def test_unknown_runtime_returns_no_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unknown.jsonl"
+            _write_jsonl(path, [{"type": "message", "message": {"role": "user", "content": "hi"}}])
+            messages = richmsg.RichReader(_session("unknown-runtime", path)).read_all()
+        self.assertEqual(messages, [])
+
+    def test_pi_user_and_assistant_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "2026-08-26T00-00-00-000Z_sess-1.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "session",
+                        "id": "sess-1",
+                        "timestamp": "2026-08-26T00:00:00Z",
+                        "cwd": directory,
+                    },
+                    {
+                        "type": "message",
+                        "id": "u1",
+                        "parentId": None,
+                        "timestamp": "2026-08-26T00:00:01Z",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "你好"}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "id": "a1",
+                        "parentId": "u1",
+                        "timestamp": "2026-08-26T00:00:02Z",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "thinking", "thinking": "先想想"},
+                                {"type": "text", "text": "收到"},
+                            ],
+                        },
+                    },
+                ],
+            )
+            messages = richmsg.RichReader(_session("pi", path)).read_all()
+        self.assertEqual([(item.role, item.text) for item in messages], [("user", "你好"), ("assistant", "收到")])
+
+    def test_jsonl_incomplete_last_line_is_not_consumed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude.jsonl"
+            complete = json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "a1",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "先到"}],
+                    },
+                },
+                ensure_ascii=False,
+            )
+            path.write_bytes(complete.encode("utf-8") + b"\n{\"type\":\"assistant\"")
+            reader = richmsg.RichReader(_session("claude", path))
+            first = reader.read_all()
+            self.assertEqual([item.text for item in first], ["先到"])
+            tail = json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "a2",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "后到"}],
+                    },
+                },
+                ensure_ascii=False,
+            )
+            path.write_bytes(complete.encode("utf-8") + b"\n" + tail.encode("utf-8") + b"\n")
+            second = reader.poll()
+            self.assertEqual([item.text for item in second], ["后到"])
+
+
+def _claude_assistant_line(index: int, *, pad: str = "") -> dict:
+    return {
+        "type": "assistant",
+        "uuid": f"u{index}",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": f"尾部消息-{index}{pad}"}],
+        },
+    }
+
+
+class RichmsgTailWindowTests(unittest.TestCase):
+    def test_jsonl_read_all_parses_tail_not_whole_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "claude.jsonl"
+            total = 4000
+            _write_jsonl(path, [_claude_assistant_line(index) for index in range(total)])
+            reader = richmsg.RichReader(_session("claude", path))
+            messages = reader.read_all(limit=80)
+            self.assertGreater(len(messages), 0)
+            self.assertLess(reader.parsed_line_count, total // 2)
+            self.assertEqual(messages[-1].text, f"尾部消息-{total - 1}")
+            self.assertTrue(reader.has_earlier())
+            self.assertGreater(reader._earliest_offset, 0)
+            self.assertGreater(reader._offset, reader._earliest_offset)
+
+            extra = _claude_assistant_line(total)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(extra, ensure_ascii=False) + "\n")
+            added = reader.poll()
+            self.assertEqual([item.text for item in added], [f"尾部消息-{total}"])
+
+            older_than = messages[0].seq
+            parsed_after_tail = reader.parsed_line_count
+            earlier = reader.read_earlier(80, before_seq=older_than)
+            self.assertGreater(len(earlier), 0)
+            self.assertLess(earlier[-1].seq, older_than)
+            self.assertNotEqual(earlier[-1].text, messages[-1].text)
+            self.assertLess(reader.parsed_line_count, total)
+            self.assertGreaterEqual(reader.parsed_line_count, parsed_after_tail)
+
+    def test_jsonl_read_all_io_failure_returns_empty(self) -> None:
+        reader = richmsg.RichReader(_session("claude", Path("/no/such/claude.jsonl")))
+        self.assertEqual(reader.read_all(), [])
+
+    def test_cursor_read_all_takes_tail_rows_not_full_table(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.db"
+            total = 800
+            blobs = [
+                {"role": "user", "content": f"<user_query>\n游标消息-{index}\n</user_query>"}
+                for index in range(total)
+            ]
+            _cursor_db(path, blobs)
+            reader = richmsg.RichReader(_session("cursor", path))
+            messages = reader.read_all(limit=80)
+            self.assertGreater(len(messages), 0)
+            self.assertLess(reader.parsed_line_count, total)
+            self.assertEqual(messages[-1].text, f"游标消息-{total - 1}")
+            self.assertTrue(reader.has_earlier())
+            older_than = messages[0].seq
+            earlier = reader.read_earlier(80, before_seq=older_than)
+            self.assertGreater(len(earlier), 0)
+            self.assertLess(earlier[-1].seq, older_than)
+            self.assertLess(reader.parsed_line_count, total)
 
 
 if __name__ == "__main__":

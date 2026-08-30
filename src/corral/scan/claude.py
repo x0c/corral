@@ -156,14 +156,6 @@ _NOISE_PROMPT_PREFIXES = (
     "你将看到一批编程助手会话的摘录",
 )
 
-_DOC_COMMAND_LABELS = {
-    "doc-init": "文档初始化",
-    "doc-update": "会话文档复盘",
-    "doc-compact": "文档整理压缩",
-    "doc-audit": "文档审查",
-}
-
-
 def _title_line(text: str | None) -> str | None:
     if not text:
         return None
@@ -180,21 +172,7 @@ def _title_line(text: str | None) -> str | None:
 
 
 def _normalize_title_line(line: str | None) -> str | None:
-    if not line:
-        return None
-    line = re.sub(r"\s+", " ", line.strip())
-    if not line:
-        return None
-
-    for command, label in _DOC_COMMAND_LABELS.items():
-        command_match = re.fullmatch(rf"[/\$]{command}\s+@?([\w.-]+?)/?", line, flags=re.IGNORECASE)
-        if command_match:
-            return f"{command_match.group(1)} {label}"
-        if re.fullmatch(rf"[/\$]{command}", line, flags=re.IGNORECASE):
-            return label
-
-    line = re.sub(r"^(?:@[\w.-]+/?\s+)+", "", line).strip()
-    return line or None
+    return titles._normalize_title(line)
 
 
 def _is_low_value_title(text: str | None) -> bool:

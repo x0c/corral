@@ -149,21 +149,18 @@ class RuntimeTests(unittest.TestCase):
             )
             self.assertEqual(forked.argv, ("pi", "--approve", "--fork", str(history)))
             stamped = runtime_pi.bind_hosted_ident(forked, "abcd1234")
-            fork_dir = runtime_pi.scan_pi.hosted_session_dir(td, "abcd1234")
             self.assertEqual(
                 stamped.argv,
-                (
-                    "pi", "--approve", "--session-dir", fork_dir,
-                    "--session-id", "abcd1234", "--fork", str(history),
-                ),
+                ("pi", "--approve", "--session-id", "abcd1234", "--fork", str(history)),
             )
+            self.assertNotIn("--session-dir", stamped.argv)
             resumed_bound = runtime_pi.bind_hosted_ident(resumed, "abcd1234")
-            resume_dir = runtime_pi.scan_pi.session_file_dir(str(history))
             self.assertEqual(
                 resumed_bound.argv,
-                ("pi", "--approve", "--session-dir", resume_dir, "--session", str(history)),
+                ("pi", "--approve", "--session", str(history)),
             )
             self.assertNotIn("--session-id", resumed_bound.argv)
+            self.assertNotIn("--session-dir", resumed_bound.argv)
             handoff = registry.build_launch_plan(
                 LaunchRequest(session, "claude", "交给 Claude", force_new=True)
             )
@@ -549,6 +546,19 @@ class RuntimeTests(unittest.TestCase):
         reg = default_registry()
         self.assertIn("cursor", reg.ids)
         self.assertEqual(reg.get("cursor").executable, "agent")
+
+    def test_cursor_availability_accepts_primary_or_alias_command(self) -> None:
+        runtime = default_registry().get("cursor")
+
+        for installed, expected in (({"agent"}, True), ({"cursor-agent"}, True), (set(), False)):
+            with self.subTest(installed=installed):
+                with mock.patch(
+                    "corral.runtime.base.shutil.which",
+                    side_effect=lambda name, available=installed: (
+                        f"/tmp/{name}" if name in available else None
+                    ),
+                ):
+                    self.assertEqual(runtime.is_available(), expected)
 
     def test_passthrough_pads_force_once_for_cursor(self) -> None:
         reg = default_registry()

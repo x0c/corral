@@ -87,7 +87,7 @@ sequenceDiagram
 按以下检查清单完成新助手接入；任何一项缺失都会导致「能扫到但不能使用」或「界面能选到但启动失败」的半接入状态。
 
 1. **确认真实数据与命令能力**：在本机实际创建、续接并结束至少一个新助手会话；记录历史目录或数据库、会话 ID、工作目录、用户/助手正文、时间、原生恢复命令、空白新建命令，以及可安全使用的自动批准参数。不要只依据官网文档推断参数。
-2. **实现扫描与预览**：新增 `scan/<助手>.py`，把私有历史转换成完整 `SessionInfo`；列表扫描保持轻量，完整对话在 `load_conversation` 按需读取。过滤内部子任务、空会话、系统注入和标题生成留下的噪音会话。`load_conversation` 仍只出纯文本。`corral share` 另走 `transcript.py` 的 `_parse_<id>`，必须按该助手真实落盘格式抽出 thinking / tool_call / tool_result，否则 share 对该助手返回空 events。
+2. **实现扫描与预览**：新增 `scan/<助手>.py`，把私有历史转换成完整 `SessionInfo`；列表扫描保持轻量，完整对话在 `load_conversation` 按需读取。过滤内部子任务、空会话、系统注入和标题生成留下的噪音会话。`load_conversation` 仍只出纯文本。`corral share` 另走 `transcript.py` 的 `_parse_<id>`，必须按该助手真实落盘格式抽出 thinking / tool_call / tool_result，否则 share 对该助手返回空 events。**手机远程另走 `remote/richmsg.py` 的 `_PARSERS`**：漏登记时桌面预览正常、手机详情却是空白，远程层不会回落到扫描器。最低先挂 `_parse_plain`（走 `load_conversation`）；有工具卡片再写专用解析器。登记或改语义后必须抬高 `remote/transcript_cache.py` 的 `PARSER_VERSION`，否则空结果会一直命中旧缓存。常驻远程服务必须重启后才加载新解析器。
 3. **实现助手运行时**：新增 `runtime/<助手>.py` 的 `BaseRuntime` 子类，声明稳定的 id、显示名、可执行命令、历史阅读提示和唯一一处的 `auto_approve_args`；实现扫描、预览、原生恢复、跨助手目标新建、空白新建。仅在确实支持且已验证时实现带指令的原生续接。
    同时实现 `delete_session(session)`（终端界面 `x` 删除会话用；`BaseRuntime` 默认实现是直接报错，不覆写就等于该助手不支持删除）：删除是彻底抹掉、不可恢复，必须先确认新助手的历史存储形态再决定实现方式——单文件（如 Claude/Codex 的 JSONL）直接 `os.unlink`；每会话一个目录（如 Kimi/Cursor）要整目录 `shutil.rmtree`，只删 `path` 指向的那一个文件会留下同目录的其他元数据文件；**所有会话共享同一份存储时（如 OpenCode 的单个 SQLite 库）绝对不能删文件本身**，必须开一个可写连接、按会话 ID 精确删除对应的行（含外键关联表，按依赖顺序删除、一次事务提交），否则会连带清空其他会话的历史。详见 `docs/SESSION_SCANNING_KNOWLEDGE_BASE.md` 和各 `scan/<助手>.py` 里 `delete_session()` 的实现与测试。
 4. **注册一次**：在 `runtime/registry.py` 导入并加入 `default_registry()`。注册表顺序就是默认显示/选择顺序之一；id 必须唯一，且扫描结果的 `source` 必须与其一致。
@@ -114,6 +114,8 @@ sequenceDiagram
 | `scan/cursor.py` | Cursor CLI 目录、JSON 与 SQLite 扫描 | Cursor 扫描器 |
 | `scan/pi.py` | Pi JSONL 扫描、活动分支回溯与对话预览 | Pi 扫描器 |
 | `transcript.py` | `corral share` 统一事件流（thinking / 工具调用） | `load_events`、`_parse_<id>` |
+| `remote/richmsg.py` | 手机远程富消息；漏登记则详情空白 | `_PARSERS`、`_parse_plain` |
+| `remote/transcript_cache.py` | 规范化消息本机缓存 | `PARSER_VERSION` |
 | `models.py` | 统一会话、接力和启动计划数据模型 | `SessionInfo`、`Handoff`、`LaunchPlan` |
 | `theme.py` | 运行时配色唯一来源 | `RUNTIME_LABEL_STYLES`、`runtime_label_style` |
 | `cli.py`、`bootstrap.py` | 启动入口与直启分发 | `main()`、`_dispatch_direct_launch()` |
@@ -127,6 +129,7 @@ sequenceDiagram
 | 新助手扫描历史 | `scan/<助手>.py` | `scan_sessions(limit, keep_ids=None)` | 返回按时间倒序的统一会话；单条异常不应使其他助手不可用；`keep_ids` 是侧栏置顶/分组成员，超 limit 也必须保留（目前仅 Pi 真正使用，签名仍须接住以免 registry 关键字参数炸） |
 | 新助手读取完整预览 | `scan/<助手>.py` | `load_conversation(...)` | 只保留真人用户与助手可读文本，按时间正序返回 |
 | 新助手的 share transcript | `transcript.py` | `_parse_<id>(session)` | 不走 `load_conversation`；按文件序发出 user/assistant/thinking/tool_call/tool_result；Cursor 的 tool-result blob 可能比对应 tool-call 更早出现在 rowid 序里，必须先攒再配对 |
+| 新助手的手机远程对话 | `remote/richmsg.py` | `_PARSERS[id]` | 漏登记则手机详情空白；桌面 `load_conversation` 不能代替这项 |
 | 同助手恢复 | `runtime/<助手>.py` | `build_resume_plan(session)` | 使用新助手已验证的原生命令和会话 ID |
 | 新助手接手其他助手 | `runtime/<助手>.py` | `build_new_plan(handoff)` | 新建目标会话，把统一接力提示词作为首条任务，不伪造恢复 |
 | 新助手空白开局 | `runtime/<助手>.py` | `build_new_session_plan(cwd)` | 不带任何历史或接力提示词，只在有效工作目录启动 |
@@ -170,6 +173,7 @@ sequenceDiagram
 - **AI 易错点**【禁止】为每两个助手增加转换分支；必须统一走「源助手运行时导出 `Handoff` → 目标助手运行时生成 `LaunchPlan`」。原因是两两组合随助手数量平方增长，且会绕开统一的历史校验、摘要和只读边界。
 - **AI 易错点**【禁止】把会话保活、tmux 托管、内嵌抓帧或界面状态塞进新助手适配器；适配器只解释该助手的扫描、预览和启动语义。保活与内嵌是运行时无关层，耦合后新助手会破坏其他助手的生命周期。
 - **AI 易错点**【必须】`auto_approve_args` 只能作为助手运行时的单一类属性声明；恢复、空白新建、带指令续接和直启都复用它。若该参数只属于部分子命令、或对位置敏感（OpenCode 的 `--auto` 两者都占：`stats`/`export` 等子命令不认，且必须排在子命令之后，前置会让子命令名被当成项目路径），在适配器里覆写 `compose_passthrough_argv` 处理直启透传，不要把这种私有规则写进注册表，也不要因此把类属性留空。
+- **AI 易错点**【已安装助手显示「未安装」】运行时的安装判断必须覆盖该助手声明的全部可执行入口，不能只检查主入口。当前 Cursor 的主入口是 `agent`，`cursor-agent` 是兼容入口；运行时判断已统一检查两者，修复了过去只安装 `cursor-agent` 时终端界面的新建 / 高级操作选择器错误显示「未安装」、而标题生成器仍判断为可用的假阴性。新增或评审带别名的助手时，必须覆盖「主入口存在、仅别名存在、两者都不存在」三种状态；安装后界面仍显示旧状态时，先重启终端界面，因为它只能看到启动该进程时继承的命令搜索路径。命令拦截器的 `installed` 与 `shimmed` 是另一层状态，前者为真、后者为假只表示助手存在但尚未登记拦截，不等于助手未安装。
 - **AI 易错点**【必须】标题缓存和界面状态以「助手运行时 + 会话 ID」为唯一键（`session_key`），不能只用会话 ID。不同助手可能生成相同 ID，纯 ID 会造成标题和状态串台。
 - **AI 易错点**【必须】若标题生成调用会写入该助手历史，扫描器必须过滤以 `titles.PROMPT_MARKER` 开头的会话，并在完整解析前尽量廉价预判。否则后台标题任务会变成用户可见的假会话并持续污染列表。
 - **AI 易错点**【默认】`scan_signature()` 保持 `None`；只有用真实数据证明文件或 WAL 的元数据变化能完整代表历史与判活变化时才覆写。多层目录的祖先 mtime 不会因既有文件追加而可靠更新，错误签名会让真实会话冻结在旧列表。
@@ -178,9 +182,10 @@ sequenceDiagram
 - **AI 易错点**【必须】接力摘录的角色标签使用「用户」「助手」，不能使用「你」；「你」会被接手的模型误解为它自身。摘录构建失败应降级为空或扫描摘要，不得阻断接力。
 - **AI 易错点**【禁止】在接力提示词注入 `status_tag` 的「已完成」等完成态。是否仍有任务必须由接手助手读取原始历史并检查工作区后决定；完成态会诱导它提前停止。
 - **AI 易错点**【必须】新助手配色只在 `RUNTIME_LABEL_STYLES` 新增一行；不要在界面组件重复硬编码颜色。未知 id 已有弱化回退样式。
+- **AI 易错点**【必须】手机远程对话必须在 `remote/richmsg.py` 的 `_PARSERS` 登记该助手。漏登记时桌面预览正常、手机打开会话却是空白；远程层不会回落到扫描器。最低先挂 `_parse_plain`。改解析器后抬高 `PARSER_VERSION` 并重启常驻远程服务。
 - **AI 易错点**【必须】扫描器返回完整统一会话字段，并隔离私有历史格式；列表扫描不可因一条损坏记录崩溃。真实历史中的显式 `null`、系统事件、内部子任务和已删除工作目录都应按该助手格式处理。
 - 【消歧】「同助手恢复」与「跨助手接力」不是同一能力：前者复用原会话 ID 与原生命令，后者启动全新目标会话并给出源历史位置；不能为了统一命令外观把后者伪装成恢复。
-- **AI 易错点**【必须】若新助手在首次落盘时自己生成会话 ID（如 Pi 的 uuidv7），托管新建/分叉必须把占位 ident 钉进启动计划（Pi 用 `--session-id`），让扫描键与占位卡相同。否则分屏组仍记着临时键，真实卡会出现在组外。禁止用 cwd 把新进程猜到同目录历史。Pi 还要把官方 `--session-dir` 指到 `corral-<ident>/`，否则同 cwd 两个 pane 的 jsonl 仍挤在默认堆里，空闲认领会串 Your prompts。**不要为了消掉 Pi 启动时那行 `Warning: No project session found with id '…'` 去拆这个旗标**——该告警是新助手把「按 id 恢复」与「按 id 新建」合并成一个参数时的正常输出，无害，细则见 `MAINTAINER_GUIDE.md`「Pi 扫描与启动」。
+- **AI 易错点**【必须】若新助手在首次落盘时自己生成会话 ID（如 Pi 的 uuidv7），托管新建/分叉要让占位 ident 与真实会话身份可精确对齐；Pi 在默认项目目录内可用 `--session-id`，否则分屏组仍记着临时键，真实卡会出现在组外。禁止用 cwd 或 mtime 把新进程猜到同目录历史。**Pi 的 per-session `--session-dir` / `PI_CODING_AGENT_SESSION_DIR` 隔离已于 2026-08-26 裁定废弃**：它会破坏 `/resume`，并让 subagent 抢走主 pane；新运行时接入不得复制这条历史做法，见 [会话扫描知识库 §2.2.1](SESSION_SCANNING_KNOWLEDGE_BASE.md#221-pi-每会话隔离目录故障与替换约束2026-08-26-裁定)。不要为了消掉 Pi 新建时的 `Warning: No project session found with id '…'` 去掉 `--session-id`；恢复旧会话则用找不到即失败的 `--session`。
 - **AI 易错点**【必须】实现 `delete_session` 前先确认该助手的历史是不是多个会话共享同一份存储（单个数据库/单个索引文件）；共享存储绝不能直接删文件，必须按会话 ID 精确删行，否则会把其他用户会话一起删掉且不可恢复。判断依据是 `SessionInfo.path` 的真实含义——同一助手的多条会话若 `path` 指向同一个文件（如 OpenCode 的 `opencode.db`），就是共享存储。
 
 ## §7 验证路径
@@ -213,6 +218,7 @@ sequenceDiagram
 5. **真实历史抽查**：随机抽查至少 5 条本机新助手会话，分别调用扫描与预览，检查无空文本、字面量 `"None"`、错误角色、时间倒序、内部子任务或标题生成噪音；同时确认扫描出的历史路径实际存在。
 
 6. **真机流程验收**：用当前源码启动 `python3 -m corral --limit 5`，确认新助手出现在列表和高级操作目标中、标签颜色可区分。分别完成同助手恢复、从一个现有助手交给新助手、从新助手交给一个现有助手、指定工作目录的空白新建；跨助手后检查源历史文件的修改时间和内容未被本流程改写。
+   对声明了多个可执行入口的助手，额外在隔离命令搜索路径下验证「仅主入口」「仅别名入口」「两者都没有」：终端界面与标题生成器的可用状态必须一致；安装入口后重启已打开的终端界面再验，不能用安装前已运行的旧进程得出结论。
 
 7. **对照验收**：将新助手逐项与现有适配器对照，而非只验证「能启动」：
    - Claude/Codex：多层 JSONL 历史，默认不使用扫描签名；
@@ -228,6 +234,7 @@ sequenceDiagram
 - [CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md](CROSS_RUNTIME_HANDOFF_KNOWLEDGE_BASE.md)：改同助手恢复、跨助手接力提示词、历史只读边界或启动计划时联读。
 - [TERMINAL_UI_KNOWLEDGE_BASE.md](TERMINAL_UI_KNOWLEDGE_BASE.md)：改列表可见性、高级操作入口、运行时名称展示或用户可见操作时联读。
 - [MAINTAINER_GUIDE.md](MAINTAINER_GUIDE.md)：改运行时边界、扫描器细节、标题噪音、配色、直启或真实路径验证时联读。
+- [REMOTE_KNOWLEDGE_BASE.md](REMOTE_KNOWLEDGE_BASE.md)：排查「电脑能预览、手机打开却是空聊天」时联读；远程解析表与桌面扫描器不是同一条路。
 
 ## §9 覆盖度与待补充项
 

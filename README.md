@@ -177,11 +177,13 @@ block Cursor. Use the `corral observer ... cursor` commands above to audit, prev
 - The first two rows never scroll away. `+ New session` (Chinese: `＋ 新建会话`) still starts a blank
   hosted session. The row under it is **Active sessions** (Chinese: `活跃会话`): it auto-tiles up to
   four hosted sessions that currently need you — waiting for an answer, working, or a new unread
-  result. The label shows how many of those sessions there are (`Active sessions  ·  3 sessions`),
-  not a page number. A session that just finished stays on the current page for a moment so the
-  grid does not jump while you are still reading it. Sessions idle in another window are left out
-  (no live picture). Overflow is paged with `[` / `]`; a yellow dot means more waiting off the
-  current page. Opening a specific sidebar session leaves the board and restores your usual
+  result. The label shows how many of those sessions there are (`Active sessions  ·  3 sessions`).
+  A page number appears only when there is more than one page: the row then shows a clickable
+  `[1/2]`, and the footer spells out `[` previous page / `]` next page while the list has focus
+  (laptop keyboards without Page Up / Page Down still work). A session that just finished stays
+  on the current page for a moment so the grid does not jump while you are still reading it.
+  Sessions idle in another window are left out (no live picture). A yellow dot means more waiting
+  off the current page. Opening a specific sidebar session leaves the board and restores your usual
   single pane or split. The board never writes a named split group.
 - Click a runtime button above the right side to add that agent as another pane in the current project.
   Up to four panes may run together; click a pane to focus it and sync the sidebar selection.

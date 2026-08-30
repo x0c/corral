@@ -13,6 +13,7 @@
   The tool never writes to this database.
 - Kimi Code CLI history under `~/.kimi-code/sessions/` (per-session `state.json` metadata and the
   `agents/main/wire.jsonl` conversation log).
+- Pi history under `~/.pi/agent/sessions/` (or `PI_CODING_AGENT_DIR`), one JSONL file per session.
 - Cursor's user-level hook configuration at `~/.cursor/hooks.json`, solely to inspect and preserve
   existing entries while managing corral's own live-state observer entries.
 
@@ -47,6 +48,12 @@ The tool reads these files to build a recent-session list, extract a compact pre
   is uploaded. Inspect it with `corral cache status`, preview deletion with
   `corral cache clear --dry-run`, clear it with `corral cache clear`, or disable it with
   `CORRAL_CACHE=0`.
+- A second derived cache under `~/.cache/corral/remote-transcripts.sqlite3` used by the phone remote
+  service. It stores normalized chat messages (including tool summaries) so opening a session on the
+  phone does not re-parse the entire history file. Same signature invalidation, same user-only
+  directory, nothing uploaded. `CORRAL_CACHE=0` disables this on-disk cache too; the in-process
+  copy used by a running remote service is not written to disk. `corral cache clear` also deletes
+  this file.
   Note: since the full-text search feature (`Ctrl+F`), the TUI warms a search index in the
   background shortly after startup, which parses the conversation text of every scanned session
   rather than only the ones you open. This does not read anything your OS user could not already
@@ -56,9 +63,20 @@ The tool reads these files to build a recent-session list, extract a compact pre
 - Share transcripts exported from the TUI Advanced menu under `~/.cache/corral/share/` (the same
   `corral.share/v1` JSON as `corral share`, including conversation text, thinking, and tool I/O).
   The directory follows `CORRAL_CACHE_DIR` / XDG like other cache files. Nothing in it is uploaded.
+- Corral's bundled Pi identity extension under `~/.pi/agent/extensions/corral-session-identity/`,
+  plus content-free process/session claims and single-writer locks under
+  `~/.pi/agent/corral-session-identity/`. They contain local identifiers, paths, PIDs, timestamps,
+  and protocol state only — never prompts, answers, tool data, credentials, or model settings. The
+  extension makes no network requests.
+- A Pi migration journal under `~/.cache/corral/pi-migration-v1.json`. On interactive startup,
+  legacy `corral-*` / `pickup-*` session folders are checked. When a main session can be proven by
+  exact header ID, the existing JSONL is copied byte-for-byte into Pi's default project folder so
+  native `/resume` can see it. Existing targets are never overwritten, subagent files are not
+  copied, active folders are deferred, and the original legacy folder is retained as a backup.
 
-It does not write attention state into Claude Code, Codex CLI, OpenCode, Kimi Code CLI, or Cursor
-conversation history. The Cursor write described above changes only the user-level hook configuration.
+It does not write attention state into Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor, or Pi
+conversation history. The Pi migration above creates a byte-identical copy but does not append to or
+rewrite conversation content. The Cursor write described above changes only the user-level hook configuration.
 
 ## Network And Account Usage
 

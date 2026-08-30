@@ -16,6 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from corral import titlegen
+from corral.i18n import get_lang, t
 from corral.legacy_names import cache_dir as _product_cache_dir
 from corral.models import session_key
 
@@ -51,12 +52,24 @@ def is_title_generation_prompt(text: object) -> bool:
     """
     return isinstance(text, str) and PROMPT_MARKER in text
 
-_DOC_COMMAND_LABELS = {
-    "doc-init": "文档初始化",
-    "doc-update": "会话文档复盘",
-    "doc-compact": "文档整理压缩",
-    "doc-audit": "文档审查",
+
+_DOC_COMMAND_KEYS = {
+    "doc-init": "session.title.cmd.doc_init",
+    "doc-update": "session.title.cmd.doc_update",
+    "doc-compact": "session.title.cmd.doc_compact",
+    "doc-audit": "session.title.cmd.doc_audit",
 }
+# 占位标题的去标点形态；生成结果或缓存里出现这些一律当无效，避免当最终标题。
+_PENDING_COMPACT = frozenset({"待生成标题", "pendingtitle"})
+
+
+def _pending_title() -> str:
+    return t("session.title.pending")
+
+
+def doc_command_labels() -> dict[str, str]:
+    """斜杠命令的临时可读标签，跟界面语言，不是生成标题。"""
+    return {command: t(key) for command, key in _DOC_COMMAND_KEYS.items()}
 
 
 def _fingerprint(session: dict) -> str:
@@ -142,7 +155,7 @@ def _normalize_title(text: str | None) -> str | None:
     if not line:
         return None
 
-    for command, label in _DOC_COMMAND_LABELS.items():
+    for command, label in doc_command_labels().items():
         command_match = re.fullmatch(rf"[/\$]{command}\s+@?([\w.-]+?)/?", line, flags=re.IGNORECASE)
         if command_match:
             return f"{command_match.group(1)} {label}"
@@ -178,6 +191,8 @@ def _is_low_value_title(text: str | None) -> bool:
     if line.startswith(("{", "[")):
         return True  # 结构化 JSON/数组片段；截断或被 pretty-print 折行后未必能 fullmatch 闭合括号
     compact = re.sub(r"[\s,，。.!！?？:：;；'\"`~～…\[\]()（）{}<>《》]+", "", line).lower()
+    if compact in _PENDING_COMPACT:
+        return True
     if compact in {
         "继续",
         "继续吧",
@@ -283,7 +298,7 @@ def resolve_initial_title(session: dict, cache: dict) -> tuple[str, bool]:
     if _failed_in_current_version(cached):
         # 失败条目里的 title 只用于保留当时的本地兜底；展示时仍重新按当前会话
         # 内容计算，避免会话后来补充了更清楚的任务信息却一直显示旧兜底。
-        return _temporary_title(session) or "(待生成标题)", False
+        return _temporary_title(session) or _pending_title(), False
     if cached and cached.get("generation_state") == _GENERATION_STATE_FAILED:
         # 冷却已过或旧缓存版本的失败终态：其中保存的本地兜底不能冒充模型标题。
         cached = None
@@ -296,7 +311,7 @@ def resolve_initial_title(session: dict, cache: dict) -> tuple[str, bool]:
     if temporary:
         return temporary, not _is_low_value_title(temporary)
 
-    return "(待生成标题)", True
+    return _pending_title(), True
 
 
 def has_usable_cached_title(session: dict, cache: dict) -> bool:
@@ -320,12 +335,21 @@ def _build_batch_prompt(sessions: list[dict]) -> str:
             }
         )
     payload = json.dumps(items, ensure_ascii=False)
+    fallback_lang = "中文" if get_lang() == "zh" else "英文"
     return (
         f"{PROMPT_MARKER}（JSON 数组，每项含 id 和首尾消息片段）。"
-        "为每条会话生成一个不超过 16 个字的标题，概括这次会话在做什么。"
+        "为每条会话生成一个短标题，概括这次会话在做什么。"
+        "中文不超过 16 个字；英文不超过约 8 个单词；不要句号或引号。"
         "preferred_title 是扫描器选出的最佳用户意图，优先依据它；"
-        "只有它不清楚时才参考 first_user_msg、last_user_msg、last_agent_msg。"
-        "标题语言规则：如果会话内容主要是中文，就用中文；如果主要是英文，也可以用中文描述，但优先用简洁的中文。"
+        "只有它不清楚时才参考 first_user_msg、last_user_msg。"
+        "last_agent_msg 只用来理解任务，不要用它决定标题语言。"
+        "标题语言必须跟该会话用户提问的主语言一致："
+        "用户主要用中文提问就出中文，主要用英文提问就出英文，不要翻译成另一种语言。"
+        "Title language MUST match the user's prompts, not this instruction: "
+        "Chinese prompts → Chinese title; English prompts → English title."
+        "中英夹杂时跟用户提问里占比更高的一侧。"
+        f"只有用户提问看不出主语言时，才用{fallback_lang}。"
+        "不要因为本说明是中文就把英文会话译成中文。"
         "只输出一个 JSON 对象，键是 id，值是标题字符串，不要输出任何其他文字。\n\n"
         f"{payload}"
     )
@@ -371,7 +395,7 @@ def _failed_cache_entry(session: dict, *, failed_at: float | None = None) -> dic
     """构造当前缓存版本的生成失败终态，并保留可直接展示的本地标题。"""
     return {
         "fp": _fingerprint(session),
-        "title": _temporary_title(session) or "(待生成标题)",
+        "title": _temporary_title(session) or _pending_title(),
         "generation_state": _GENERATION_STATE_FAILED,
         "generation_version": TITLE_CACHE_VERSION,
         "failed_at": time.time() if failed_at is None else failed_at,

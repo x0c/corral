@@ -52,14 +52,43 @@ class FakeHub:
     def unwatch_screen(self, key: str):
         self.watching_screens[key] = self.watching_screens.get(key, 0) - 1
 
-    def watch_conversation(self, key: str):
+    def watch_conversation(
+        self, key: str, *, limit: int = 80, after_seq=None, generation=None
+    ):
         self.watching_conversations = getattr(self, "watching_conversations", {})
         self.watching_conversations[key] = self.watching_conversations.get(key, 0) + 1
-        return [{"id": "m1", "role": "user", "text": "你好"}]
+        self._record("watch_conversation", key, limit, after_seq, generation)
+        return {
+            "version": 1,
+            "kind": "snapshot",
+            "messages": [{"seq": 1, "role": "user", "text": "你好"}],
+            "oldest_seq": 1,
+            "newest_seq": 1,
+            "has_more": False,
+            "resume": "tail",
+            "generation": 1,
+        }
 
     def conversation_snapshot(self, key: str):
         self._record("conversation_snapshot", key)
-        return [{"id": "m1", "role": "user", "text": "你好"}, {"id": "m2", "role": "assistant", "text": "在"}]
+        return [{"seq": 1, "role": "user", "text": "你好"}, {"seq": 2, "role": "assistant", "text": "在"}]
+
+    def conversation_page(self, key: str, *, limit: int = 80, before_seq: int | None = None):
+        self._record("conversation_snapshot", key)
+        return {
+            "version": 1,
+            "kind": "snapshot",
+            "messages": [
+                {"seq": 1, "role": "user", "text": "你好"},
+                {"seq": 2, "role": "assistant", "text": "在"},
+            ],
+            "oldest_seq": 1,
+            "newest_seq": 2,
+            "has_more": False,
+        }
+
+    def message_page(self, key: str, *, limit: int = 80, before_seq: int | None = None):
+        return self.conversation_page(key, limit=limit, before_seq=before_seq)
 
     def unwatch_conversation(self, key: str):
         self.watching_conversations = getattr(self, "watching_conversations", {})
@@ -246,6 +275,19 @@ class RemoteServiceTests(unittest.TestCase):
         self.assertEqual(len(second["d"]["messages"]), 2)
         self.assertIn(("conversation_snapshot", ("codex:abc",)), self.hub.calls)
 
+    def test_session_watch_forwards_resume_cursor(self):
+        """重连带来的 after_seq / generation 必须原样交给会话中枢。"""
+        connection = self._paired()
+        self._call(
+            connection,
+            protocol.M_SESSION_WATCH,
+            {"key": "codex:abc", "after_seq": 12, "generation": 3},
+        )
+        self.assertIn(
+            ("watch_conversation", ("codex:abc", 80, 12, 3)),
+            self.hub.calls,
+        )
+
     def test_disconnect_releases_every_subscription(self):
         """断线不退订会让后台一直抓帧，是最典型的「电脑莫名发烫」来源。"""
         connection = self._paired()
@@ -408,6 +450,199 @@ class RemoteServiceTests(unittest.TestCase):
         connection = self._paired()
         reply = self._call(connection, protocol.M_SESSION_NEW, {"cwd": "/tmp"})
         self.assertEqual(reply["e"]["code"], protocol.E_USAGE)
+
+    def test_oversized_success_payload_returns_error_instead_of_dropping(self):
+        """回包体积超限必须把错误回给手机，不能让通道静默断开后让客户端空等到超时。"""
+        connection = self._paired()
+        sent: list[dict] = []
+        blows = {"n": 0}
+
+        def flaky_send(message: dict) -> None:
+            blows["n"] += 1
+            if blows["n"] == 1:
+                raise protocol.ProtocolError("消息未压缩体积过大")
+            sent.append(message)
+
+        connection.send = flaky_send
+        self.service.handle(connection, protocol.request(9, protocol.M_SESSIONS_LIST, {}))
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(sent[0].get("ok"))
+        self.assertEqual(sent[0]["e"]["code"], protocol.E_INTERNAL)
+
+    # -- 控制/数据双连接 ---------------------------------------------------
+
+    def test_hello_without_want_data_plane_has_planes_but_no_token(self):
+        """旧客户端不带 want_data_plane：能看见 planes 能力，但不发绑定令牌。"""
+        connection = self._connect()
+        reply = self._call(connection, protocol.M_HELLO, {"name": "iPhone"})
+        self.assertTrue(reply["ok"])
+        self.assertEqual(reply["d"]["capabilities"]["planes"], ["control", "data"])
+        self.assertNotIn("data_bind", reply["d"])
+
+    def test_hello_with_want_data_plane_issues_bind_token(self):
+        connection = self._paired()
+        reply = self._call(connection, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})
+        self.assertTrue(reply["ok"])
+        token = reply["d"]["data_bind"]
+        self.assertTrue(token)
+        self.assertEqual(reply["d"]["capabilities"]["planes"], ["control", "data"])
+        data_sent: list[dict] = []
+        attached = self.service.attach_data_plane(
+            token, connection.device_public_key, data_sent.append, lambda: None, channel=object()
+        )
+        self.assertIs(attached, connection)
+        self.assertIsNotNone(connection.data_send)
+
+    def test_wrong_data_bind_does_not_kick_control_plane(self):
+        connection = self._paired()
+        self._call(connection, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})
+        closed = []
+        connection.close_hook = lambda: closed.append("control")
+        result = self.service.attach_data_plane(
+            "not-a-real-token",
+            connection.device_public_key,
+            lambda _m: None,
+            lambda: None,
+            channel=object(),
+        )
+        self.assertIsNone(result)
+        self.assertFalse(connection.closed)
+        self.assertIn(connection, self.service._connections)
+        self.assertEqual(closed, [])
+        listing = self._call(connection, protocol.M_SESSIONS_LIST)
+        self.assertTrue(listing["ok"])
+
+    def test_data_bind_wrong_device_key_does_not_kick_control(self):
+        connection = self._paired()
+        reply = self._call(connection, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})
+        token = reply["d"]["data_bind"]
+        result = self.service.attach_data_plane(
+            token, "bb" * 32, lambda _m: None, lambda: None, channel=object()
+        )
+        self.assertIsNone(result)
+        self.assertFalse(connection.closed)
+        # 令牌未消费，本机公钥仍能附着。
+        attached = self.service.attach_data_plane(
+            token, connection.device_public_key, lambda _m: None, lambda: None, channel=object()
+        )
+        self.assertIs(attached, connection)
+
+    def test_data_bind_is_single_use(self):
+        connection = self._paired()
+        token = self._call(connection, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})["d"][
+            "data_bind"
+        ]
+        first = self.service.attach_data_plane(
+            token, connection.device_public_key, lambda _m: None, lambda: None, channel=object()
+        )
+        second = self.service.attach_data_plane(
+            token, connection.device_public_key, lambda _m: None, lambda: None, channel=object()
+        )
+        self.assertIs(first, connection)
+        self.assertIsNone(second)
+        self.assertFalse(connection.closed)
+
+    def test_expired_data_bind_is_rejected(self):
+        connection = self._paired()
+        token = self._call(connection, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})["d"][
+            "data_bind"
+        ]
+        self.service._data_binds[token].expires_at = 0
+        self.assertIsNone(
+            self.service.attach_data_plane(
+                token, connection.device_public_key, lambda _m: None, lambda: None, channel=object()
+            )
+        )
+        self.assertFalse(connection.closed)
+
+    def test_large_responses_go_to_data_plane_when_attached(self):
+        connection = self._paired()
+        data_sent: list[dict] = []
+        connection.data_send = data_sent.append
+        self.sent.clear()
+        self.service.handle(connection, protocol.request(1, protocol.M_SESSION_MESSAGES, {"key": "codex:abc"}))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(len(data_sent), 1)
+        self.assertTrue(data_sent[0]["ok"])
+
+        data_sent.clear()
+        self.service.handle(connection, protocol.request(2, protocol.M_SESSIONS_LIST, {}))
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(data_sent, [])
+
+    def test_screen_events_go_data_plane_conversation_events_stay_control(self):
+        connection = self._paired()
+        self._call(connection, protocol.M_SESSIONS_WATCH)
+        self._call(connection, protocol.M_SESSION_WATCH, {"key": "codex:abc"})
+        self._call(connection, protocol.M_SCREEN_WATCH, {"key": "codex:abc"})
+        data_sent: list[dict] = []
+        connection.data_send = data_sent.append
+        self.sent.clear()
+        self.service._dispatch_event(protocol.CH_SESSIONS, {"sessions": []})
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(data_sent, [])
+        self.sent.clear()
+        self.service._dispatch_event(protocol.session_channel("codex:abc"), {"messages": []})
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(data_sent, [])
+        self.sent.clear()
+        self.service._dispatch_event(protocol.screen_channel("codex:abc"), {"full": True})
+        self.assertEqual(self.sent, [])
+        self.assertEqual(len(data_sent), 1)
+        self.assertEqual(data_sent[0]["c"], protocol.screen_channel("codex:abc"))
+
+    def test_data_plane_disconnect_keeps_control_and_allows_rebind(self):
+        connection = self._paired()
+        token = self._call(connection, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})["d"][
+            "data_bind"
+        ]
+        marker = object()
+        self.service.attach_data_plane(
+            token, connection.device_public_key, lambda _m: None, lambda: None, channel=marker
+        )
+        self.assertIsNotNone(connection.data_send)
+        self.service.detach_data_plane(connection, marker)
+        self.assertIsNone(connection.data_send)
+        self.assertFalse(connection.closed)
+        again = self._call(connection, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})
+        self.assertIn("data_bind", again["d"])
+        self.assertNotEqual(again["d"]["data_bind"], token)
+
+    def test_control_detach_closes_data_plane(self):
+        connection = self._paired()
+        closed = []
+        token = self._call(connection, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})["d"][
+            "data_bind"
+        ]
+        self.service.attach_data_plane(
+            token,
+            connection.device_public_key,
+            lambda _m: None,
+            lambda: closed.append("data"),
+            channel=object(),
+        )
+        self.service.detach(connection)
+        self.assertEqual(closed, ["data"])
+        self.assertTrue(connection.closed)
+
+    def test_rpc_on_either_plane_is_accepted(self):
+        """半升级时开在「错误平面」上的调用仍要处理，不能拒收卡死。"""
+        connection = self._paired()
+        data_sent: list[dict] = []
+        inbound_data = []
+
+        def data_reply(message):
+            inbound_data.append(message)
+
+        connection.data_send = data_sent.append
+        # 从数据面进来的短 RPC：原路返回数据面，不拒。
+        self.service.handle(
+            connection,
+            protocol.request(4, protocol.M_SESSIONS_LIST, {}),
+            reply=data_reply,
+        )
+        self.assertEqual(len(inbound_data), 1)
+        self.assertTrue(inbound_data[0]["ok"])
 
 
 class PairingWindowTests(unittest.TestCase):

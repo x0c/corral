@@ -199,7 +199,8 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
 
     左栏更宽——项目名后面还要跟路径，信息量远大于右栏的助手名。交互上
     ←→ 换栏、↑↓ 选行；左栏回车表示「项目定了，去选助手」，右栏回车才真正
-    确认。左栏顶有本地筛选框（`/` 聚焦）：按项目名 / 路径模糊收窄，查询串
+    确认。左栏顶有本地筛选框：**打开即聚焦，立刻可打字**收窄项目名 / 路径
+    （`projects.fuzzy_match`）；项目列表持焦时 `/` 仍可回到筛选框。查询串
     不写回侧边栏 `NavState.project_query`，但打开时可带入侧边栏当前筛选作初值。
 
     返回 (项目目录, 运行时 id)；Esc 或点框外空白返回 None。
@@ -321,6 +322,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
                         value=self._initial_query,
                         placeholder=t("modal.project_filter_placeholder"),
                         id="ns-project-filter",
+                        select_on_focus=False,
                     )
                     yield ListView(
                         *self._project_items(self._visible),
@@ -348,9 +350,13 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         projects = self.query_one("#ns-projects", ListView)
         projects.border_title = t("modal.column_project")
         self.query_one("#ns-runtimes", ListView).border_title = t("modal.column_runtime")
-        # 用 Screen.set_focus 同步钉住项目列表：Input 排在左栏更前，若走
-        # Widget.focus()/call_later，可能被默认焦点顺序抢走，快路径就断了。
-        self.set_focus(projects)
+        # 打开即钉在筛选框：用户立刻打字搜项目。Input 虽排在左栏最前，Textual
+        # 仍可能把默认焦点给 ListView；用 Screen.set_focus 同步钉住，避免
+        # Widget.focus()/call_later 被抢走。有初值时把光标放到末尾，方便接着打。
+        filt = self.query_one("#ns-project-filter", Input)
+        self.set_focus(filt)
+        if filt.value:
+            filt.cursor_position = len(filt.value)
 
     # ---- 筛选 ----
 
@@ -381,7 +387,7 @@ class NewSessionModal(OutsideClickDismiss, ModalScreen[tuple[str, str] | None]):
         # 以控件现值为准（不要信可能滞后的 event.value）：带初值挂载时 Textual
         # 可能先派发空串 Changed，若按事件值重建会把 __init__ 已收窄的列表冲宽，
         # 高负载下断言/导航都会偶发失败。列表已与「按现值应收」一致则跳过，
-        # 避免无意义 clear/extend 抢走项目列表焦点。
+        # 避免无意义 clear/extend 抢走筛选框焦点。
         query = event.input.value
         new_visible = self._matching_projects(query)
         if [item[0] for item in new_visible] == [item[0] for item in self._visible]:

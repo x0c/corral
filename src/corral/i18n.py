@@ -313,12 +313,12 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "置顶",
     },
     "action.board_prev": {
-        "en": "Board prev",
-        "zh": "看板上一页",
+        "en": "Prev page",
+        "zh": "上一页",
     },
     "action.board_next": {
-        "en": "Board next",
-        "zh": "看板下一页",
+        "en": "Next page",
+        "zh": "下一页",
     },
     "group.session_count": {
         "en": "{count} sessions",
@@ -476,8 +476,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "筛选项目…",
     },
     "modal.two_column_hint": {
-        "en": "↑↓ Select   / Filter   ←→ Switch column   Enter Confirm   Esc Back",
-        "zh": "↑↓ 选择   / 筛选   ←→ 切换栏   Enter 确认   Esc 返回",
+        "en": "Type to filter   ↓ List   ←→ Switch column   Enter Confirm   Esc Back",
+        "zh": "直接输入筛选   ↓ 列表   ←→ 切换栏   Enter 确认   Esc 返回",
     },
     "confirm.kill_session": {
         "en": "End session “{title}”? Unsaved progress in the current task will be lost",
@@ -623,6 +623,26 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "session.title.copy_suffix": {
         "en": " (copy)",
         "zh": "（副本）",
+    },
+    "session.title.pending": {
+        "en": "(pending title)",
+        "zh": "(待生成标题)",
+    },
+    "session.title.cmd.doc_init": {
+        "en": "Init docs",
+        "zh": "文档初始化",
+    },
+    "session.title.cmd.doc_update": {
+        "en": "Session recap",
+        "zh": "会话文档复盘",
+    },
+    "session.title.cmd.doc_compact": {
+        "en": "Compact docs",
+        "zh": "文档整理压缩",
+    },
+    "session.title.cmd.doc_audit": {
+        "en": "Audit docs",
+        "zh": "文档审查",
     },
     # 启动 / tmux
     "error.launch_failed": {
@@ -1154,6 +1174,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Signed in as {login}.",
         "zh": "已登录为 {login}。",
     },
+    "remote.login.not_needed": {
+        "en": "This relay does not require an account. Phone handoff is ready.",
+        "zh": "这个中继不需要登录账号，手机接力已可用。",
+    },
+    "remote.start.qr_refreshed": {
+        "en": "The service is already running (PID {pid}); a fresh pairing QR code is shown above.",
+        "zh": "服务已在运行（进程 {pid}），上方已生成新的配对二维码。",
+    },
     "remote.login.visit": {
         "en": "Open {uri} and enter this code: {code}",
         "zh": "打开 {uri} 并输入设备码：{code}",
@@ -1207,6 +1235,21 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "  pip install 'corral[remote]'\n"
             "  pipx inject corral {packages}"
         ),
+    },
+    "remote.deps.installing": {
+        "en": "Installing phone handoff components: {names}",
+        "zh": "正在补齐手机接力所需组件：{names}",
+    },
+    "remote.deps.installed": {
+        "en": "Phone handoff components are ready: {names}",
+        "zh": "手机接力所需组件已就绪：{names}",
+    },
+    "remote.deps.auto_install_failed": {
+        "en": (
+            "Could not install the phone handoff components automatically. "
+            "Check your network or package source and retry."
+        ),
+        "zh": "手机接力所需组件未能自动安装。请检查网络或软件源后重试。",
     },
     # 命令拦截 shim
     "shim.status.installed": {

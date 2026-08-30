@@ -16,7 +16,12 @@ from corral.activity_board import (
 )
 from corral.attention import AttentionState
 from corral.split_layout import MAX_PANES
-from corral.ui.session_list import ActivityBoardCard, activity_board_label
+from corral.ui.session_list import (
+    ActivityBoardCard,
+    activity_board_label,
+    activity_board_pager_text,
+    layout_activity_board_row,
+)
 
 
 def _cand(key: str, kind: str, updated_at: float = 0.0) -> BoardCandidate:
@@ -428,12 +433,13 @@ class ActivityBoardLabelTests(unittest.TestCase):
         i18n.set_lang("zh")
         self.assertEqual(activity_board_label(None), "活跃会话")
 
-    def test_shows_session_count_not_page_numbers(self) -> None:
+    def test_shows_session_count_not_page_numbers_on_single_page(self) -> None:
         i18n.set_lang("en")
         one = BoardSnapshot(
             keys=("a",), page=0, page_count=1, total=1, waiting_off_page=0, waiting_total=0
         )
         self.assertEqual(activity_board_label(one), "Active sessions  ·  1 session")
+        self.assertEqual(activity_board_pager_text(one), "")
         many = BoardSnapshot(
             keys=("a", "b", "c", "d"),
             page=1,
@@ -445,9 +451,28 @@ class ActivityBoardLabelTests(unittest.TestCase):
         label = activity_board_label(many)
         self.assertEqual(label, "Active sessions  ·  5 sessions")
         self.assertNotIn("/", label)
+        self.assertEqual(activity_board_pager_text(many), "[2/2]")
         i18n.set_lang("zh")
         self.assertEqual(activity_board_label(one), "活跃会话  ·  1 个会话")
         self.assertEqual(activity_board_label(many), "活跃会话  ·  5 个会话")
+
+    def test_pager_is_right_aligned_and_clickable_when_multi_page(self) -> None:
+        snap = BoardSnapshot(
+            keys=("a", "b", "c", "d"),
+            page=0,
+            page_count=2,
+            total=5,
+            waiting_off_page=1,
+            waiting_total=2,
+        )
+        layout = layout_activity_board_row(snap, 39)
+        self.assertEqual(layout.pager, "[1/2]")
+        self.assertFalse(layout.can_prev)
+        self.assertTrue(layout.can_next)
+        self.assertEqual(layout.hit(layout.pager_start), -1)
+        self.assertEqual(layout.hit(layout.pager_start + 4), 1)
+        self.assertEqual(layout.hit(layout.pager_start + 2), 0)
+        self.assertIsNone(layout.hit(0))
 
     def test_card_keeps_off_page_waiting_dot(self) -> None:
         class _Owner:
@@ -465,7 +490,7 @@ class ActivityBoardLabelTests(unittest.TestCase):
         plain = card.render().plain
         self.assertIn("Active sessions  ·  5 sessions", plain)
         self.assertIn("●", plain)
-        self.assertNotIn("1/2", plain)
+        self.assertIn("[1/2]", plain)
 
 
 if __name__ == "__main__":

@@ -32,11 +32,35 @@ class FakeHub:
     def unwatch_sessions(self):
         pass
 
-    def watch_conversation(self, key: str):
-        return []
+    def watch_conversation(
+        self, key: str, *, limit: int = 80, after_seq=None, generation=None
+    ):
+        return {
+            "version": 1,
+            "kind": "snapshot",
+            "messages": [],
+            "oldest_seq": 0,
+            "newest_seq": 0,
+            "has_more": False,
+            "resume": "tail",
+            "generation": 1,
+        }
 
     def conversation_snapshot(self, key: str):
         return []
+
+    def conversation_page(self, key: str, *, limit: int = 80, before_seq: int | None = None):
+        return {
+            "version": 1,
+            "kind": "snapshot",
+            "messages": [],
+            "oldest_seq": 0,
+            "newest_seq": 0,
+            "has_more": False,
+        }
+
+    def message_page(self, key: str, *, limit: int = 80, before_seq: int | None = None):
+        return self.conversation_page(key, limit=limit, before_seq=before_seq)
 
     def unwatch_conversation(self, key: str):
         pass

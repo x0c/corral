@@ -25,7 +25,12 @@ from corral import __version__, observe
 from corral.i18n import t
 from corral.remote import config as remote_config
 from corral.remote import crypto, protocol, ratelimit
-from corral.remote.sessions import ActionError, SessionHub
+from corral.remote.sessions import (
+    MESSAGE_PAGE_LIMIT,
+    MESSAGE_PAGE_LIMIT_MAX,
+    ActionError,
+    SessionHub,
+)
 
 _PAIRING_TTL = 10 * 60  # 配对码有效期：够扫码，又不至于长期挂着一个可用凭据
 
@@ -77,12 +82,28 @@ _TMUX_KEY_RE = re.compile(
 _PUSH_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
+class _DataBind:
+    """控制面签发的短时数据面令牌。绑定设备公钥，一次性，超时作废。"""
+
+    __slots__ = ("device_public_key", "connection", "expires_at")
+
+    def __init__(self, device_public_key: str, connection: Connection, expires_at: float) -> None:
+        self.device_public_key = device_public_key
+        self.connection = connection
+        self.expires_at = expires_at
+
+
 class Connection:
-    """一条已完成加密握手的连接。``send`` 必须是线程安全的。"""
+    """一条已完成加密握手的逻辑连接。``send`` 必须是线程安全的。
+
+    旧手机只有控制面 ``send``。新手机附着数据面后，大历史与终端帧走
+    ``data_send``；未附着时全部仍走 ``send``，行为与今天完全一致。
+    """
 
     def __init__(self, device_public_key: str, send, *, address: str = "") -> None:
         self.device_public_key = device_public_key
         self.send = send
+        self.data_send = None  # 可选：数据面 writer；未附着则为 None
         self.address = address
         self.paired = False
         self.device_name = ""
@@ -90,7 +111,15 @@ class Connection:
         self.access = "full"
         self.channels: set[str] = set()
         self.closed = False
-        self.close_hook = None  # 可选：() -> None，用于踢掉底层传输
+        self.compression_enabled = False
+        self.close_hook = None  # 可选：() -> None，用于踢掉控制面底层传输
+        self.data_close_hook = None  # 可选：() -> None，只关数据面
+        self.data_channel = None  # 数据面 HostChannel 身份，供拆绑时对号入座
+
+    def emit(self, message: dict, *, data: bool = False) -> None:
+        """按平面发一帧。数据面未附着或 ``data=False`` 时走控制面。"""
+        writer = self.data_send if data and self.data_send is not None else self.send
+        writer(message)
 
 
 class RemoteService:
@@ -106,6 +135,7 @@ class RemoteService:
         self._connections: set[Connection] = set()
         self._subscribers: dict[str, set[Connection]] = {}
         self._audit: list[dict] = []  # 最近远程操作，供 status 展示
+        self._data_binds: dict[str, _DataBind] = {}
 
     # -- 状态同步 ---------------------------------------------------------
 
@@ -232,9 +262,17 @@ class RemoteService:
             self._connections.add(connection)
 
     def detach(self, connection: Connection) -> None:
+        """控制面断开：设备离线，退订，并关掉已附着的数据面。"""
         connection.closed = True
+        data_hook = connection.data_close_hook
+        connection.data_close_hook = None
+        connection.data_send = None
+        connection.data_channel = None
         with self._lock:
             self._connections.discard(connection)
+            stale = [token for token, bind in self._data_binds.items() if bind.connection is connection]
+            for token in stale:
+                self._data_binds.pop(token, None)
             channels = list(connection.channels)
             for channel in channels:
                 subscribers = self._subscribers.get(channel)
@@ -245,6 +283,71 @@ class RemoteService:
             connection.channels.clear()
         for channel in channels:
             self._release_channel(channel)
+        if data_hook is not None:
+            try:
+                data_hook()
+            except Exception:
+                pass
+
+    def attach_data_plane(self, token: str, device_public_key: str, send, close_hook, channel) -> Connection | None:
+        """把第二条物理连接附着到已有逻辑 Connection。校验失败返回 None，不得踢控制面。"""
+        now = time.time()
+        with self._lock:
+            bind = self._data_binds.get(token)
+            if bind is None:
+                return None
+            if bind.expires_at <= now:
+                self._data_binds.pop(token, None)
+                return None
+            if bind.device_public_key != device_public_key:
+                return None
+            connection = bind.connection
+            if connection.closed or connection not in self._connections:
+                self._data_binds.pop(token, None)
+                return None
+            self._data_binds.pop(token, None)
+        old_hook = connection.data_close_hook
+        old_channel = connection.data_channel
+        connection.data_close_hook = None
+        if old_hook is not None and old_channel is not channel:
+            try:
+                old_hook()
+            except Exception:
+                pass
+        connection.data_send = send
+        connection.data_close_hook = close_hook
+        connection.data_channel = channel
+        observe.event("remote_data_plane_attached", device=connection.device_name or connection.device_id)
+        return connection
+
+    def detach_data_plane(self, connection: Connection, channel) -> None:
+        """仅数据面断开：控制面保持，允许之后重新签发 data_bind。"""
+        if connection.data_channel is not channel:
+            return
+        connection.data_send = None
+        connection.data_close_hook = None
+        connection.data_channel = None
+        observe.event("remote_data_plane_detached", device=connection.device_name or connection.device_id)
+
+    def _purge_data_binds(self) -> None:
+        now = time.time()
+        with self._lock:
+            stale = [token for token, bind in self._data_binds.items() if bind.expires_at <= now]
+            for token in stale:
+                self._data_binds.pop(token, None)
+
+    def _issue_data_bind(self, connection: Connection) -> str:
+        self._purge_data_binds()
+        token = crypto.random_id(16)
+        bind = _DataBind(
+            device_public_key=connection.device_public_key,
+            connection=connection,
+            expires_at=time.time() + protocol.DATA_BIND_TTL_SEC,
+        )
+        with self._lock:
+            self._data_binds[token] = bind
+        observe.event("remote_data_bind_issued", device=connection.device_name or connection.device_id)
+        return token
 
     def _subscribe(self, connection: Connection, channel: str) -> bool:
         with self._lock:
@@ -283,17 +386,19 @@ class RemoteService:
         if not targets:
             return
         message = protocol.event(channel, data)
+        via_data = channel.startswith("screen:")
         for connection in targets:
             if connection.closed:
                 continue
             try:
-                connection.send(message)
+                connection.emit(message, data=via_data)
             except Exception:
                 continue
 
     # -- 消息处理 ---------------------------------------------------------
 
-    def handle(self, connection: Connection, message: dict) -> None:
+    def handle(self, connection: Connection, message: dict, *, reply=None) -> None:
+        inbound = reply if reply is not None else connection.send
         if message.get("t") != "req":
             return
         req_id = int(message.get("id") or 0)
@@ -302,16 +407,54 @@ class RemoteService:
         try:
             data = self._invoke(connection, method, params)
         except ActionError as exc:
-            connection.send(protocol.error(req_id, exc.code, exc.message))
+            inbound(protocol.error(req_id, exc.code, exc.message))
             return
         except NotImplementedError:
-            connection.send(protocol.error(req_id, protocol.E_USAGE, t("remote.err.unsupported_method", method=method)))
+            inbound(protocol.error(req_id, protocol.E_USAGE, t("remote.err.unsupported_method", method=method)))
             return
         except Exception as exc:
             observe.event("remote_method_failed", method=method, error=str(exc))
-            connection.send(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+            inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
             return
-        connection.send(protocol.response(req_id, data))
+        response = protocol.response(req_id, data)
+        negotiate_compression = (
+            not connection.compression_enabled and self._requests_compression(message)
+        )
+        if negotiate_compression:
+            # 首个响应仍用裸 JSON 发出；写完后才切换，避免客户端还没收到协商结果就
+            # 按压缩格式解码。旧客户端不带 caps，因此始终维持原始载荷。
+            response["wire"] = {"version": 1, "compression": "deflate"}
+        writer = self._writer_for_response(connection, method, inbound)
+        try:
+            writer(response)
+        except Exception as exc:
+            observe.event("remote_response_send_failed", method=method, error=str(exc))
+            try:
+                connection.send(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
+            except Exception:
+                return
+            return
+        if negotiate_compression:
+            connection.compression_enabled = True
+
+    @staticmethod
+    def _writer_for_response(connection: Connection, method: str, inbound):
+        """大历史与终端帧走数据面；其余（含数据面自己的 hello）原路返回。
+
+        未附着数据面时全部走 ``inbound``（旧手机即现有唯一 ``send``）。
+        开在「错误平面」上的调用仍处理，只是大包优先改走数据面写出。
+        """
+        if method in _DATA_PAYLOAD_METHODS and connection.data_send is not None:
+            return connection.data_send
+        return inbound
+
+    @staticmethod
+    def _requests_compression(message: dict) -> bool:
+        caps = message.get("caps")
+        if not isinstance(caps, dict):
+            return False
+        compression = caps.get("compression")
+        return isinstance(compression, list) and "deflate" in compression
 
     def _invoke(self, connection: Connection, method: str, params: dict):
         # 每次请求都以磁盘为准：解绑立刻生效
@@ -398,7 +541,7 @@ class RemoteService:
         )
         self.refresh_state()
         # 未配对也返回中继/局域网开关，便于旧配对手机补上中继地址、不必重新扫码。
-        return {
+        payload = {
             "protocol": protocol_version(),
             "corral_version": __version__,
             "host_id": self.state.host_id,
@@ -410,19 +553,39 @@ class RemoteService:
             "relay_url": self.state.relay_url if self.state.relay_enabled else "",
             "relay_enabled": self.state.relay_enabled,
             "local_enabled": self.state.local_enabled,
+            "capabilities": {
+                "compression": ["deflate"],
+                "message_page_limit": MESSAGE_PAGE_LIMIT,
+                "message_page_limit_max": MESSAGE_PAGE_LIMIT_MAX,
+                "planes": list(protocol.CAPABILITY_PLANES),
+            },
+        }
+        # 数据面 hello 只做附着确认，不再签发新令牌。
+        if str(params.get("plane") or "") == protocol.PLANE_DATA:
+            return payload
+        # 旧客户端不带该字段，不发 token，行为与今天完全一致。
+        if params.get("want_data_plane") is True:
+            payload["data_bind"] = self._issue_data_bind(connection)
+        return payload
+
+    def _sessions_list_payload(self, params: dict) -> dict:
+        query = str(params.get("q") or "")
+        limit = _int_param(params, "limit", 0)
+        since_version = str(params.get("since_version") or "")
+        snapshot = getattr(self.hub, "list_snapshot", None)
+        if callable(snapshot):
+            return snapshot(query=query, limit=limit, since_version=since_version)
+        return {
+            "sessions": self.hub.list_sessions(query=query, limit=limit),
         }
 
     def _sessions_list(self, connection: Connection, params: dict):
-        return {
-            "sessions": self.hub.list_sessions(
-                query=str(params.get("q") or ""), limit=_int_param(params, "limit", 0)
-            )
-        }
+        return self._sessions_list_payload(params)
 
     def _sessions_watch(self, connection: Connection, params: dict):
         if self._subscribe(connection, protocol.CH_SESSIONS):
             self.hub.watch_sessions()
-        return {"sessions": self.hub.list_sessions()}
+        return self._sessions_list_payload(params)
 
     def _sessions_unwatch(self, connection: Connection, params: dict):
         if self._unsubscribe(connection, protocol.CH_SESSIONS):
@@ -433,7 +596,22 @@ class RemoteService:
         return self.hub.session_detail(_key(params))
 
     def _session_messages(self, connection: Connection, params: dict):
-        return {"messages": self.hub.messages(_key(params), _int_param(params, "limit", 400))}
+        before_raw = params.get("before_seq")
+        before_seq = (
+            None
+            if before_raw is None or before_raw == ""
+            else _int_param(params, "before_seq", 0)
+        )
+        return self.hub.message_page(
+            _key(params),
+            limit=_int_param(
+                params,
+                "limit",
+                MESSAGE_PAGE_LIMIT,
+                max_value=MESSAGE_PAGE_LIMIT_MAX,
+            ),
+            before_seq=before_seq,
+        )
 
     def _session_prompts(self, connection: Connection, params: dict):
         return {"prompts": self.hub.prompts(_key(params))}
@@ -441,11 +619,23 @@ class RemoteService:
     def _session_watch(self, connection: Connection, params: dict):
         key = _key(params)
         channel = protocol.session_channel(key)
+        limit = _int_param(
+            params,
+            "limit",
+            MESSAGE_PAGE_LIMIT,
+            max_value=MESSAGE_PAGE_LIMIT_MAX,
+        )
+        after_seq = _optional_int_param(params, "after_seq")
+        generation = _optional_int_param(params, "generation")
         if self._subscribe(connection, channel):
-            history = self.hub.watch_conversation(key)
+            return self.hub.watch_conversation(
+                key,
+                limit=limit,
+                after_seq=after_seq,
+                generation=generation,
+            )
         else:
-            history = self.hub.conversation_snapshot(key)
-        return {"messages": history}
+            return self.hub.conversation_page(key, limit=limit)
 
     def _session_unwatch(self, connection: Connection, params: dict):
         key = _key(params)
@@ -610,10 +800,29 @@ def _int_param(params: dict, name: str, default: int, *, max_value: int = 10_000
     return min(value, max_value)
 
 
+def _optional_int_param(params: dict, name: str, *, max_value: int = 10_000_000) -> int | None:
+    """缺省字段保持 None（旧客户端不传）；在场则收成非负整数。"""
+    if name not in params:
+        return None
+    return _int_param(params, name, 0, max_value=max_value)
+
+
 def protocol_version() -> int:
     from corral.remote import REMOTE_PROTOCOL_VERSION
 
     return REMOTE_PROTOCOL_VERSION
+
+
+# 走数据面的大响应：历史页与终端帧。未附着时仍走控制面。
+_DATA_PAYLOAD_METHODS = frozenset(
+    {
+        protocol.M_SESSION_MESSAGES,
+        protocol.M_SESSION_GET,
+        protocol.M_SESSION_WATCH,
+        protocol.M_SCREEN_WATCH,
+        protocol.M_SCREEN_SCROLL,
+    }
+)
 
 
 _HANDLERS = {

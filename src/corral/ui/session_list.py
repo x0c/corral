@@ -719,7 +719,10 @@ class NewSessionCard(Widget):
 
 
 def activity_board_label(snap: BoardSnapshot | None) -> str:
-    """侧栏入口文案：没人盯时只写名称；有人时写成「活跃会话 · N 个会话」，不写页码。"""
+    """侧栏入口左侧文案：没人盯时只写名称；有人时写成「活跃会话 · N 个会话」。
+
+    页码不写进这段：只有一页时保持干净；多于一页时由右侧可点的 ``[1/2]`` 承担。
+    """
     if snap is None or not snap.total:
         return t("list.activity_board")
     count = (
@@ -728,6 +731,79 @@ def activity_board_label(snap: BoardSnapshot | None) -> str:
         else t("group.session_count", count=snap.total)
     )
     return t("list.activity_board_count", count=count)
+
+
+def activity_board_pager_text(snap: BoardSnapshot | None) -> str:
+    """多于一页时返回 ``[1/2]``；只有一页或没人时为空。"""
+    if snap is None or snap.page_count <= 1:
+        return ""
+    return f"[{snap.page + 1}/{snap.page_count}]"
+
+
+@dataclass(frozen=True)
+class BoardRowLayout:
+    """活跃会话入口第一行：左侧名称、可选等待圆点、右侧翻页。"""
+
+    label: str
+    waiting: bool
+    pager: str
+    pager_start: int
+    can_prev: bool
+    can_next: bool
+
+    def hit(self, x: int) -> int | None:
+        """点在翻页上返回 -1 / 0 / 1（上一页 / 只进入 / 下一页）；点在名称上返回 None。"""
+        if self.pager_start < 0 or not self.pager:
+            return None
+        import corral
+
+        pager_w = corral._text_width(self.pager)
+        end = self.pager_start + pager_w
+        if x < self.pager_start or x >= end:
+            return None
+        if x == self.pager_start:
+            return -1
+        if x == end - 1:
+            return 1
+        return 0
+
+
+def layout_activity_board_row(
+    snap: BoardSnapshot | None, width: int
+) -> BoardRowLayout:
+    """按侧栏宽度排入口第一行，给绘制和点击命中共用。"""
+    import corral
+
+    width = max(10, width)
+    label = activity_board_label(snap)
+    waiting = bool(snap is not None and snap.waiting_off_page)
+    pager = activity_board_pager_text(snap)
+    can_prev = bool(snap is not None and snap.page > 0)
+    can_next = bool(snap is not None and snap.page + 1 < snap.page_count)
+    extra = 0
+    if waiting:
+        extra += 2
+    pager_w = corral._text_width(pager) if pager else 0
+    if pager:
+        extra += 1 + pager_w
+    fitted = corral._fit_cell(label, max(1, width - extra)).rstrip()
+    used = corral._text_width(fitted)
+    if waiting:
+        used += 2
+    if pager:
+        pager_start = max(used + 1, width - pager_w)
+        if pager_start + pager_w > width:
+            pager_start = max(0, width - pager_w)
+    else:
+        pager_start = -1
+    return BoardRowLayout(
+        label=fitted,
+        waiting=waiting,
+        pager=pager,
+        pager_start=pager_start,
+        can_prev=can_prev,
+        can_next=can_next,
+    )
 
 
 class ActivityBoardCard(Widget):
@@ -746,15 +822,49 @@ class ActivityBoardCard(Widget):
     def __init__(self, owner: SessionListView, **kwargs) -> None:
         super().__init__(**kwargs)
         self._owner = owner
+        self._row_layout: BoardRowLayout | None = None
 
     def render(self) -> Text:
+        import corral
+
         snap = self._owner.board_snapshot
-        out = Text(activity_board_label(snap), style="bold")
-        if snap is not None and snap.waiting_off_page:
+        width = max(10, self.size.width or 39)
+        layout = layout_activity_board_row(snap, width)
+        self._row_layout = layout
+        out = Text(layout.label, style="bold")
+        used = corral._text_width(layout.label)
+        if layout.waiting:
             out.append(" ")
             out.append("●", style="bold yellow")
+            used += 2
+        if layout.pager:
+            gap = max(0, layout.pager_start - used)
+            if gap:
+                out.append(" " * gap)
+            out.append(layout.pager[0], style="dim" if not layout.can_prev else None)
+            out.append(layout.pager[1:-1])
+            out.append(layout.pager[-1], style="dim" if not layout.can_next else None)
+            used = layout.pager_start + corral._text_width(layout.pager)
+        pad = max(0, width - used)
+        if pad:
+            out.append(" " * pad)
         out.append("\n")
         return out
+
+    def on_click(self, event: events.Click) -> None:
+        layout = self._row_layout
+        if layout is None:
+            layout = layout_activity_board_row(
+                self._owner.board_snapshot, max(10, self.size.width or 39)
+            )
+        delta = layout.hit(event.x)
+        if delta is None:
+            return
+        event.stop()
+        screen = self.screen
+        page = getattr(screen, "_page_activity_board", None)
+        if callable(page):
+            page(delta, from_click=True)
 
 
 class PinSeparatorCard(Widget):
@@ -1551,6 +1661,12 @@ class SessionListView(Vertical):
 
     def is_activity_board_selected(self) -> bool:
         return self._selected_item_id() == ACTIVITY_BOARD_ID
+
+    def select_activity_board(self) -> None:
+        """把高亮挪到活跃会话入口（固定头第二项）。"""
+        target = STICKY_IDS.index(ACTIVITY_BOARD_ID)
+        if self.index != target:
+            self.index = target
 
     def set_board_snapshot(self, snapshot: BoardSnapshot | None) -> None:
         self.board_snapshot = snapshot

@@ -50,7 +50,7 @@ from textual.widgets import Footer, Input, Label, ListView, TextArea
 import corral
 from corral import ui_prefs as _ui_prefs
 from corral.models import LaunchPlan
-from corral.ui.app import CorralApp
+from corral.ui.app import _TERMINAL_RESTORE, CorralApp, restore_terminal, run_app
 from corral.ui.embed_pane import EmbedPane
 from corral.ui.modals import (
     COPY_SESSION_CHOICE,
@@ -239,6 +239,77 @@ class KittyKeyboardProtocolTests(unittest.TestCase):
             constants.DISABLE_KITTY_KEY,
             "Textual 必须把 Kitty 键盘协议判定为禁用；开着会绕过 IME 导致内嵌 Agent 打不了中文",
         )
+
+
+class InterruptTerminalRestoreTests(unittest.TestCase):
+    """回归：强停界面不得把 Python 堆栈和 SGR 鼠标码留给外壳。
+
+    真机（Warp，2026-08-29）：Ctrl+R 被终端拦下后界面像卡住，Ctrl+C 打出
+    KeyboardInterrupt 堆栈，点击变成 ``^[[<0;21;2M``。根因是 asyncio.run 收尾
+    等默认线程池（最长 300 秒）时第二次 SIGINT 掀掉 Textual 的关闭路径。
+    """
+
+    def test_restore_sequence_disables_sgr_mouse_and_alt_screen(self) -> None:
+        for token in (
+            b"\x1b[?1000l",
+            b"\x1b[?1003l",
+            b"\x1b[?1006l",
+            b"\x1b[?1049l",
+            b"\x1b[?25h",
+        ):
+            self.assertIn(token, _TERMINAL_RESTORE)
+
+    def test_restore_writes_cleanup_to_stdout_fd(self) -> None:
+        written: list[bytes] = []
+
+        def _write(fd: int, data: bytes) -> int:
+            written.append(data)
+            return len(data)
+
+        stdout = mock.Mock()
+        stdout.fileno.return_value = 1
+        with (
+            mock.patch("corral.ui.app.os.write", side_effect=_write),
+            mock.patch("corral.ui.app.os.isatty", return_value=True),
+            mock.patch("corral.ui.app.sys.__stdout__", stdout),
+            mock.patch("corral.ui.app.sys.stdout", stdout),
+            mock.patch("termios.tcflush"),
+        ):
+            restore_terminal()
+        self.assertEqual(written, [_TERMINAL_RESTORE])
+
+    def test_restore_falls_back_to_tty_when_stdout_is_not_writable(self) -> None:
+        written: list[bytes] = []
+
+        def _write(fd: int, data: bytes) -> int:
+            written.append(data)
+            return len(data)
+
+        broken = mock.Mock()
+        broken.fileno.side_effect = OSError("no fd")
+        with (
+            mock.patch("corral.ui.app.sys.__stdout__", broken),
+            mock.patch("corral.ui.app.sys.stdout", broken),
+            mock.patch("corral.ui.app.sys.__stderr__", broken),
+            mock.patch("corral.ui.app.os.open", return_value=9) as open_tty,
+            mock.patch("corral.ui.app.os.write", side_effect=_write),
+            mock.patch("corral.ui.app.os.close") as close_tty,
+            mock.patch("termios.tcflush"),
+        ):
+            restore_terminal()
+        open_tty.assert_called_once_with("/dev/tty", os.O_WRONLY)
+        close_tty.assert_called_once_with(9)
+        self.assertEqual(written, [_TERMINAL_RESTORE])
+
+    def test_run_app_swallows_keyboard_interrupt_and_restores(self) -> None:
+        store = _make_store()
+        with (
+            mock.patch.object(CorralApp, "run", side_effect=KeyboardInterrupt),
+            mock.patch("corral.ui.app.restore_terminal") as restore,
+        ):
+            result = run_app(store, False)
+        self.assertIsNone(result)
+        restore.assert_called()
 
 
 @contextlib.contextmanager
@@ -3484,6 +3555,44 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(pane._heal_count, 0)  # noqa: SLF001
         self.assertGreaterEqual(embed_pane_mod._HOST_SIZE_HEAL_MAX, 3)
 
+    def test_host_size_heal_yields_after_another_window_wins(self) -> None:
+        """本格对齐成功后，真实宽度被另一布局改走时不得抢回来。
+
+        现场：同一 Cursor 会话在单格(~165)与两格(~82)之间来回 host_size_drift，
+        助手整屏重排，观感就是宽度抽动；只被一扇窗口看着的会话不会抖。
+        """
+        pane = EmbedPane()
+        pane._capture_size_override = None  # noqa: SLF001
+        with (
+            mock.patch.object(pane, "_pane_size", return_value=(165, 60)),
+            mock.patch("corral.embed.should_resize_host", return_value=True),
+            mock.patch("corral.embed.resize") as resize,
+            mock.patch("corral.observe.event"),
+        ):
+            pane._heal_host_size_if_needed("corral-cursor-65", (165, 60))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 0)
+            pane._heal_host_size_if_needed("corral-cursor-65", (82, 60))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 0, "另一扇窗口改走宽度后不得抢回")
+        with (
+            mock.patch.object(pane, "_pane_size", return_value=(82, 60)),
+            mock.patch("corral.embed.should_resize_host", return_value=True),
+            mock.patch("corral.embed.resize") as resize,
+            mock.patch("corral.observe.event"),
+        ):
+            pane._heal_last_at = 0.0  # noqa: SLF001
+            pane._heal_host_size_if_needed("corral-cursor-65", (82, 60))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 0, "本格改成两格且已经对齐则不必 resize")
+        with (
+            mock.patch.object(pane, "_pane_size", return_value=(165, 60)),
+            mock.patch("corral.embed.should_resize_host", return_value=True),
+            mock.patch("corral.embed.resize") as resize,
+            mock.patch("corral.observe.event"),
+        ):
+            pane._heal_last_at = 0.0  # noqa: SLF001
+            pane._heal_host_size_if_needed("corral-cursor-65", (82, 60))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 1, "本格自己改回单格时仍可对齐")
+            resize.assert_called_with("corral-cursor-65", 165, 60)
+
     async def test_browsing_existing_groups_persists_focus_not_composition(self) -> None:
         """浏览已有会话组只 set_focus，不得 set_group（会抬 updated_at 并整表写盘）。"""
         sessions = [
@@ -3803,6 +3912,60 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(area.title_with_project)
                 self.assertTrue(area.allow_cross_project)
                 self.assertEqual(app.screen._split_store.groups, {})
+
+    async def test_activity_board_shows_pager_and_bracket_turns_page(self) -> None:
+        """多于一页时入口画出 [1/2]、底栏露出下一页，按 ] 切到后页。"""
+        from corral.activity_board import BoardCandidate
+
+        sessions = [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": time.time() - i, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp", "live": True, "keepalive_name": f"corral-s{i}",
+            }
+            for i in range(5)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        candidates = [
+            BoardCandidate(key=f"claude:s{i}", kind="waiting", updated_at=5 - i)
+            for i in range(5)
+        ]
+        with mock.patch(
+            "corral.ui.controllers.board_controller.collect_candidates",
+            return_value=candidates,
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                list_view = app.screen.query_one(SessionListView)
+                list_view.focus()
+                list_view.index = 1
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                await _wait_until(
+                    lambda: area.ordered_session_keys()
+                    == ["claude:s0", "claude:s1", "claude:s2", "claude:s3"]
+                )
+                card = app.screen.query_one(ActivityBoardCard)
+                self.assertIn("[1/2]", card.render().plain)
+                screen = app.screen
+                self.assertTrue(screen.check_action("board_next", ()))
+                self.assertFalse(screen.check_action("board_prev", ()))
+                shown = [
+                    (binding.key, binding.description)
+                    for binding in screen.BINDINGS
+                    if binding.show and screen.check_action(binding.action, ())
+                ]
+                self.assertIn(("right_square_bracket", "Next page"), shown)
+                await pilot.press("]")
+                await pilot.pause()
+                await _wait_until(
+                    lambda: area.ordered_session_keys() == ["claude:s4"]
+                )
+                self.assertIn("[2/2]", card.render().plain)
+                self.assertFalse(screen.check_action("board_next", ()))
+                self.assertTrue(screen.check_action("board_prev", ()))
 
     async def test_activity_board_holds_panes_while_hosted_during_viewing(self) -> None:
         """观看期间不撤格：会话跑完但仍托管时钉在原格，真正结束（不再托管）才撤。"""
@@ -5391,6 +5554,9 @@ class FooterActionGatingTests(unittest.TestCase):
         self.assertFalse(screen.check_action("focus_list", ()))
         self.assertTrue(screen.check_action("toggle_sidebar", ()))
         self.assertTrue(screen.check_action("toggle_pin", ()))
+        # 没进看板、或只有一页时翻页键必须藏起来。
+        self.assertFalse(screen.check_action("board_prev", ()))
+        self.assertFalse(screen.check_action("board_next", ()))
 
     def test_toggle_sidebar_disabled_without_embed(self) -> None:
         from corral.ui.main_screen import MainScreen
@@ -7122,8 +7288,41 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
         self.assertIsNone(result_holder.get("result"))
 
+    async def test_new_session_modal_opens_with_filter_focused(self) -> None:
+        """打开即可打字筛选，不必先按 /。"""
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(110, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+
+            async def _open():
+                await app.push_screen_wait(
+                    NewSessionModal(
+                        [
+                            ("/tmp/alpha", "alpha", "/tmp/alpha"),
+                            ("/tmp/beta", "beta", "/tmp/beta"),
+                            ("/Codes/corral", "corral", "/Codes/corral"),
+                        ],
+                        [RuntimeChoice("claude", "Claude", "", True)],
+                    )
+                )
+
+            app.run_worker(_open())
+            await pilot.pause(delay=0.2)
+            modal = app.screen
+            self.assertIsInstance(modal, NewSessionModal)
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
+            await pilot.press("c", "o", "r", "r")
+            await pilot.pause()
+            projects = modal.query_one("#ns-projects")
+            self.assertEqual(len(projects.children), 1)
+            self.assertEqual(modal._row("#ns-projects").value, "/Codes/corral")
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
+            await pilot.press("escape")
+            await pilot.pause(delay=0.2)
+
     async def test_new_session_modal_picks_project_then_runtime(self) -> None:
-        """一个弹窗内选完：左栏回车换到右栏，右栏回车才确认。"""
+        """一个弹窗内选完：筛选框落到项目栏后回车换到右栏，右栏回车才确认。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
@@ -7145,6 +7344,10 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             modal = app.screen
             self.assertIsInstance(modal, NewSessionModal)
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
+            await pilot.press("down")  # 筛选框 -> 项目列表（仍在 alpha）
+            await pilot.pause()
+            self.assertTrue(modal.query_one("#ns-projects").has_focus)
             await pilot.press("down")  # alpha -> beta
             await pilot.press("enter")  # 项目定了，焦点交给运行时栏
             await pilot.pause()
@@ -7172,6 +7375,12 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             app.run_worker(_open())
             await pilot.pause(delay=0.2)
             modal = app.screen
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
+            await pilot.press("right")  # 筛选框持焦时 ←→ 无效
+            await pilot.pause()
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
+            await pilot.press("down")  # 筛选框 -> 项目列表
+            await pilot.pause()
             self.assertTrue(modal.query_one("#ns-projects").has_focus)
             await pilot.press("right")
             await pilot.pause()
@@ -7196,6 +7405,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
 
             app.run_worker(_open())
             await pilot.pause(delay=0.2)
+            await pilot.press("down")  # 筛选框 -> 项目列表
             await pilot.press("right")
             with mock.patch.object(app, "bell") as bell:
                 await pilot.press("enter")
@@ -7204,7 +7414,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(app.screen, NewSessionModal)  # 未安装项不应关闭弹窗
 
     async def test_new_session_modal_filters_projects(self) -> None:
-        """左栏筛选框按名/路径收窄项目列表，清空后还原。"""
+        """打开即可打字收窄；落到列表后 / 仍能回到筛选框。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
@@ -7228,8 +7438,6 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             modal = app.screen
             self.assertIsInstance(modal, NewSessionModal)
             self.assertEqual(len(modal.query_one("#ns-projects").children), 3)
-            await pilot.press("slash")
-            await pilot.pause()
             self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
             await pilot.press("c", "o", "r", "r")
             await pilot.pause()
@@ -7239,9 +7447,10 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("down")  # 筛选框 -> 项目列表
             await pilot.pause()
             self.assertTrue(projects.has_focus)
-            filt = modal.query_one("#ns-project-filter")
-            filt.focus()
+            await pilot.press("slash")  # 列表持焦时 / 回到筛选框
             await pilot.pause()
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
+            filt = modal.query_one("#ns-project-filter")
             filt.value = ""
             await pilot.pause()
             self.assertEqual(len(modal.query_one("#ns-projects").children), 3)
@@ -7250,7 +7459,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result_holder.get("result"))
 
     async def test_new_session_modal_initial_query_seeds_filter(self) -> None:
-        """侧边栏 project_query 作初值时，打开即已收窄，且不写回 nav。"""
+        """侧边栏 project_query 作初值时，打开即已收窄、光标在筛选框，且不写回 nav。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(110, 30)) as pilot:
@@ -7274,15 +7483,13 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.3)
             modal = app.screen
             self.assertIsInstance(modal, NewSessionModal)
-            self.assertEqual(modal.query_one("#ns-project-filter").value, "beta")
+            filt = modal.query_one("#ns-project-filter")
+            self.assertEqual(filt.value, "beta")
+            self.assertTrue(filt.has_focus)
+            self.assertEqual(filt.cursor_position, len("beta"))
             self.assertEqual(len(modal.query_one("#ns-projects").children), 1)
             self.assertEqual(modal._row("#ns-projects").value, "/tmp/beta")
-            # 焦点偶发仍在 Input 上时再钉一次，避免套件并行压力下的竞态。
-            if not modal.query_one("#ns-projects").has_focus:
-                modal.set_focus(modal.query_one("#ns-projects"))
-                await pilot.pause()
-            self.assertTrue(modal.query_one("#ns-projects").has_focus)
-            modal.query_one("#ns-project-filter").value = "alpha"
+            filt.value = "alpha"
             await pilot.pause()
             self.assertEqual(len(modal.query_one("#ns-projects").children), 1)
             self.assertEqual(nav.project_query, "sidebar-seed")
@@ -7310,10 +7517,10 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             app.run_worker(_open())
             await pilot.pause(delay=0.2)
             modal = app.screen
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
             self.assertEqual(len(modal.query_one("#ns-projects").children), 0)
-            await pilot.press("right")
             with mock.patch.object(app, "bell") as bell:
-                await pilot.press("enter")
+                await pilot.press("enter")  # 筛选框无命中不得落到列表
                 await pilot.pause()
             bell.assert_called_once()
             self.assertIsInstance(app.screen, NewSessionModal)
@@ -7340,7 +7547,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
             app.run_worker(_open())
             await pilot.pause(delay=0.2)
             modal = app.screen
-            await pilot.press("slash")
+            self.assertTrue(modal.query_one("#ns-project-filter").has_focus)
             await pilot.press("b", "e")
             await pilot.pause()
             self.assertEqual(len(modal.query_one("#ns-projects").children), 1)
@@ -7370,6 +7577,8 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await pilot.pause(delay=0.2)
                 self.assertIsInstance(app.screen, NewSessionModal)
+                self.assertTrue(app.screen.query_one("#ns-project-filter").has_focus)
+                await pilot.press("enter")  # 筛选框 -> 项目列表
                 await pilot.press("enter")  # 项目栏 -> 运行时栏
                 await pilot.press("down")  # Claude -> Codex
                 await pilot.press("enter")

@@ -19,6 +19,18 @@ def _fast_version() -> None:
     print(f"  python:       {sys.executable}")
 
 
+def _migrate_pi_history() -> None:
+    """交互启动时幂等补齐旧 Pi 历史；失败不阻断 Corral 首屏。"""
+    try:
+        from corral.pi_migration import migrate_legacy_sessions
+
+        migrate_legacy_sessions()
+    except Exception:
+        # 迁移本身逐目录记录错误；这里只兜住磁盘/环境级异常。源文件从不删除，
+        # 因此失败时安全地留待下次启动重试。
+        pass
+
+
 def main() -> None:
     argv = sys.argv[1:]
     if argv and argv[0] in {"--version", "-V", "-v"}:
@@ -55,6 +67,7 @@ def main() -> None:
         from corral.shim import auto_install
 
         auto_install()
+        _migrate_pi_history()
     from corral.cli import main as cli_main
 
     cli_main()

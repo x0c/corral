@@ -317,6 +317,25 @@ class GenerateTitlesBatchTests(unittest.TestCase):
     def test_generator_failure_returns_empty(self) -> None:
         self.assertEqual(titles.generate_titles_batch([_session("s1")], _StaticGenerator(None)), {})
 
+    def test_prompt_matches_user_prompt_language_not_prefer_chinese(self) -> None:
+        """生成说明必须跟用户提问语言，禁止旧的「英文也可以优先中文」。"""
+        from corral import i18n
+
+        i18n.set_lang("en")
+        prompt = titles._build_batch_prompt([_session("s1")])
+        self.assertTrue(prompt.startswith(titles.PROMPT_MARKER))
+        self.assertNotIn("优先用简洁的中文", prompt)
+        self.assertNotIn("也可以用中文描述", prompt)
+        self.assertIn("用户提问的主语言", prompt)
+        self.assertIn("English prompts → English title", prompt)
+        self.assertIn("才用英文", prompt)
+        self.assertIn("不要因为本说明是中文就把英文会话译成中文", prompt)
+
+        i18n.set_lang("zh")
+        zh_prompt = titles._build_batch_prompt([_session("s1")])
+        self.assertIn("才用中文", zh_prompt)
+        i18n.set_lang("en")
+
 
 class RefreshTitlesGeneratorTests(unittest.TestCase):
     def test_uses_injected_generator_and_writes_cache(self) -> None:

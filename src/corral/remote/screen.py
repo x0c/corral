@@ -133,12 +133,16 @@ class ScreenEncoder:
         self._cols = 0
         self._rows = 0
         self._offset = -1
+        self._cursor = (0, 0, False)
+        self._history_size = -1
 
     def reset(self) -> None:
         self._fingerprints = []
         self._cols = 0
         self._rows = 0
         self._offset = -1
+        self._cursor = (0, 0, False)
+        self._history_size = -1
 
     def encode(
         self,
@@ -157,6 +161,7 @@ class ScreenEncoder:
             or history_offset != self._offset
             or len(self._fingerprints) != rows
         )
+        metadata_changed = cursor != self._cursor or history_size != self._history_size
         lines: list[list] = []
         fingerprints: list[int] = []
         for index, cells in enumerate(grid):
@@ -169,7 +174,9 @@ class ScreenEncoder:
         self._cols = cols
         self._rows = rows
         self._offset = history_offset
-        if not full and not lines:
+        self._cursor = cursor
+        self._history_size = history_size
+        if not full and not lines and not metadata_changed:
             return None
         return ScreenFrame(
             cols=cols,

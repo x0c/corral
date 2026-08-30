@@ -55,6 +55,9 @@ def _request(url: str, payload: dict | None = None, token: str = "") -> tuple[in
 
 
 def login(relay_url: str) -> tuple[bool, str]:
+    # 自建或兼容单租户中继不使用账号控制面，不能再发起必然 404 的设备码请求。
+    if not remote_config.is_public_relay(relay_url):
+        return True, t("remote.login.not_needed")
     base = http_base(relay_url)
     status, body = _request(f"{base}/v2/auth/device", {})
     if status != 200 or not body.get("device_code"):

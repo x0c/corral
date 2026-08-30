@@ -11,6 +11,7 @@
 - ``crypto``    X25519 + HKDF-SHA256 + ChaCha20-Poly1305 的端到端加密通道
 - ``protocol``  应用层消息格式与方法名常量
 - ``richmsg``   富消息解析：在现有对话读取之外保留工具调用摘要
+- ``transcript_cache`` 规范化消息的本机持久缓存，打开会话按签名增量读取
 - ``screen``    终端画面网格的序列化与行级差分
 - ``sessions``  会话视图：包一层 SessionStore，提供订阅与查询
 - ``service``   方法路由与订阅管理，传输无关

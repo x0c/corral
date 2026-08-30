@@ -52,6 +52,16 @@ class ScreenEncoderDiffTests(unittest.TestCase):
         encoder.encode(grid)
         self.assertIsNone(encoder.encode(grid))
 
+    def test_cursor_move_emits_incremental_metadata_frame(self) -> None:
+        encoder = ScreenEncoder()
+        grid = _grid(["same", "line"])
+        encoder.encode(grid, cursor=(1, 1, True), history_size=10)
+        frame = encoder.encode(grid, cursor=(2, 1, True), history_size=10)
+        assert frame is not None
+        self.assertFalse(frame.full)
+        self.assertEqual(frame.lines, [])
+        self.assertEqual((frame.cursor_x, frame.cursor_y), (2, 1))
+
     def test_only_changed_lines_are_sent(self) -> None:
         encoder = ScreenEncoder()
         grid = _grid(["row0", "row1", "row2"])

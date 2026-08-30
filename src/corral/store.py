@@ -84,6 +84,9 @@ class SessionStore:
         # 会话且 tmux 还活着，就重新灌回列表；真实会话一经 annotate 挂上同一
         # keepalive 名，占位卡即退役（见 _merge_scanned）。
         self._provisional: dict[str, dict] = {}
+        # 占位卡转正：旧会话键 → 新会话键。分屏组记忆可能还挂着旧键，
+        # 而右栏已经切走，不能只靠当前格子上的托管名去迁。
+        self._session_key_migrations: dict[str, str] = {}
         # 用户刚用 q 结束的会话键：杀掉到进程真正退出之间，扫描仍可能报 live=True。
         # 在确认已死之前强制按已结束展示，避免「托管 → 运行中 → 已结束」闪烁。
         self._force_ended: set[str] = set()
@@ -539,6 +542,7 @@ class SessionStore:
         self.hosted[new_key] = str(name)
         self._provisional.pop(key, None)
         if key != new_key:
+            self._session_key_migrations[key] = new_key
             self.hosted.pop(key, None)
 
     def _claim_unique_hosted_newcomer(
@@ -778,6 +782,11 @@ class SessionStore:
                 missing.sort(key=lambda session: float(session.get("mtime") or 0), reverse=True)
                 ordered = missing + ordered
             return ordered
+
+    def session_key_migrations(self) -> dict[str, str]:
+        """占位卡转正产生的旧键→新键，供分屏记忆在右栏已切走时仍能跟上。"""
+        with self.lock:
+            return dict(self._session_key_migrations)
 
     def find_session(self, key: str) -> dict | None:
         """按跨运行时会话键返回当前扫描快照中的会话对象。"""

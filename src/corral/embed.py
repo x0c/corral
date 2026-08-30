@@ -107,13 +107,19 @@ def host_session(
     查询之间，仍然存在无法从时序上完全消灭的竞态窗口——这是 tmux 控制协议本
     身的限制，不是可以单靠调整 corral 这边调用顺序解决的。
     """
-    session_dir = ""
+    identity_env: list[str] = []
     if runtime_id == "pi":
-        from corral.runtime.pi import bind_hosted_ident, hosted_session_dir_from_plan
-        from corral.scan.pi import PI_SESSION_DIR_ENV
+        from corral import pi_identity
+        from corral.runtime.pi import bind_hosted_ident
 
         plan = bind_hosted_ident(plan, ident)
-        session_dir = hosted_session_dir_from_plan(plan)
+        # 身份桥：安装 corral-session-identity 扩展并注入 pane instance；
+        # 失败则中止这条托管启动，绝不静默退回猜测绑定。
+        try:
+            pi_identity.ensure_extension_installed()
+        except pi_identity.PiExtensionInstallError as exc:
+            raise EmbedError(str(exc)) from exc
+        identity_env = pi_identity.instance_env_pairs(pi_identity.new_instance_id())
     name = keepalive._session_name(runtime_id, ident)
     argv = [
         *keepalive.tmux_argv(), "-f", keepalive._ensure_config_file(),
@@ -123,8 +129,7 @@ def host_session(
     if plan.cwd:
         argv += ["-c", plan.cwd]
     argv += hosted_env_pairs(runtime_id, ident)
-    if session_dir:
-        argv += ["-e", f"{PI_SESSION_DIR_ENV}={session_dir}"]
+    argv += identity_env
     argv += ["--", *plan.argv]
     try:
         proc = subprocess.run(argv, check=True, stdout=subprocess.PIPE,

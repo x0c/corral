@@ -7,6 +7,10 @@
 
 from __future__ import annotations
 
+import atexit
+import os
+import sys
+
 from textual.app import App, ScreenError
 from textual.theme import Theme
 from textual.timer import Timer
@@ -289,6 +293,79 @@ class CorralApp(App):
                 self.theme = target
 
 
+# 强停时直接写给终端的关闭序列。必须同步 os.write，不能走 Textual 写线程：
+# Ctrl+C 常打断在 asyncio 等后台线程收尾（Python 3.14 默认可等 300 秒），那时
+# 写线程可能已经停了，正常退出路径发不出「关掉鼠标跟踪 / 离开备用屏」。
+# 序列对齐 Textual linux_driver.stop_application_mode 与 Gemini CLI 的
+# TERMINAL_CLEANUP_SEQUENCE：鼠标 1000/1002/1003/1006/1015、焦点 1004、
+# 粘贴 2004、Kitty 键盘弹出、同步输出 2026、带内尺寸 2048、备用屏 1049、
+# 显示光标、恢复自动换行。
+_TERMINAL_RESTORE = (
+    b"\x1b[<u"
+    b"\x1b[?2004l"
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l"
+    b"\x1b[?1004l"
+    b"\x1b[?2026l"
+    b"\x1b[?2048l"
+    b"\x1b[?1049l"
+    b"\x1b[?25h"
+    b"\x1b[?7h"
+)
+
+_atexit_restore_registered = False
+
+
+def restore_terminal() -> None:
+    """强停或进程退出时同步恢复终端模式，不经过 Textual 写线程。
+
+    正常 Esc 退出仍由 Textual 自己收尾；本函数只保证强停路径不会把鼠标跟踪
+    留给外壳——否则一点击就会打出 ``^[[<0;21;2M`` 这类 SGR 鼠标码。
+    """
+    written = False
+    for stream in (sys.__stdout__, sys.stdout, sys.__stderr__):
+        try:
+            fd = stream.fileno()
+        except Exception:
+            continue
+        try:
+            if not os.isatty(fd):
+                continue
+            os.write(fd, _TERMINAL_RESTORE)
+            written = True
+            break
+        except OSError:
+            continue
+    if not written:
+        try:
+            fd = os.open("/dev/tty", os.O_WRONLY)
+        except OSError:
+            fd = -1
+        else:
+            try:
+                os.write(fd, _TERMINAL_RESTORE)
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
+    try:
+        import termios
+
+        infd = sys.__stdin__.fileno()
+        if os.isatty(infd):
+            termios.tcflush(infd, termios.TCIFLUSH)
+    except Exception:
+        pass
+
+
+def _ensure_atexit_restore() -> None:
+    """进程被强杀到只剩 atexit 时仍尝试关掉鼠标跟踪；重复注册无害。"""
+    global _atexit_restore_registered
+    if _atexit_restore_registered:
+        return
+    atexit.register(restore_terminal)
+    _atexit_restore_registered = True
+
+
 def run_app(store, embed_ok: bool, direct=None, osc_report: bytes | None = None):
     """启动 Textual 界面并阻塞直至用户退出或选择启动某个会话。
 
@@ -299,5 +376,13 @@ def run_app(store, embed_ok: bool, direct=None, osc_report: bytes | None = None)
     from corral import i18n
 
     i18n.init()  # 按 CORRAL_LANG / 系统 locale 选定界面语言
+    _ensure_atexit_restore()
     app = CorralApp(store, embed_ok, direct, osc_report)
-    return app.run()
+    try:
+        return app.run()
+    except KeyboardInterrupt:
+        # Warp 等终端会把 Ctrl+C 直接打成 SIGINT，绕过界面自己的按键处理。
+        # asyncio.run 收尾再等默认线程池（最长 300 秒），第二次 Ctrl+C 就会把
+        # Python 堆栈打到壳层。这里吞掉中断、同步恢复终端，当作正常退出。
+        restore_terminal()
+        return None

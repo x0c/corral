@@ -199,8 +199,8 @@ def _main_bindings() -> list[Binding]:
         Binding("end", "preview_end", t("action.preview_end"), show=False, priority=True),
         Binding("pageup", "preview_page_up", t("action.preview_page_up"), show=False, priority=True),
         Binding("pagedown", "preview_page_down", t("action.preview_page_down"), show=False, priority=True),
-        Binding("left_square_bracket", "board_prev", t("action.board_prev"), show=False),
-        Binding("right_square_bracket", "board_next", t("action.board_next"), show=False),
+        Binding("left_square_bracket", "board_prev", t("action.board_prev")),
+        Binding("right_square_bracket", "board_next", t("action.board_next")),
         Binding("escape", "quit_app", t("action.quit")),
         # 不再单独绑 ctrl+c 退出：Textual 的 Screen 基类自带 ctrl+c -> copy_text。
         # 划词抬起已由 on_text_selected 自动复制；Ctrl+C 仍作手动再复制/无选区时
@@ -1332,6 +1332,10 @@ class MainScreen(
                 return False
             snap = self.query_one(SessionListView).board_snapshot
             if snap is None or snap.page_count <= 1:
+                return False
+            if action == "board_prev" and snap.page <= 0:
+                return False
+            if action == "board_next" and snap.page >= snap.page_count - 1:
                 return False
         if action in _LIST_ONLY_ACTIONS and self._live_embed_focused():
             return False

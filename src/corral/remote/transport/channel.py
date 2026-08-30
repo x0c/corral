@@ -6,6 +6,9 @@
 **密钥确认**：握手阶段对端自称的长期公钥还不足以授权——公钥在局域网明文与中继
 上都可见，任何人都能重放 HELLO。必须等对端用派生出的会话密钥发出第一条可解密
 帧，才证明它持有对应私钥，此时才 `attach` 并写盘。
+
+控制面与数据面是两条物理连接、两套独立握手（各自的 channel_id 与计数器）。
+数据面附着到同一逻辑 Connection；校验失败或数据面溢出只关这一条，不得踢控制面。
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from corral.remote.service import Connection, RemoteService
 _STOP = object()
 # 首条密文若带毫秒时间戳，允许的时钟偏差（防重放 HELLO+旧 DATA）
 _CONFIRM_SKEW_MS = 5 * 60 * 1000
+_DEFAULT_QUEUE_SIZE = 256
 
 
 class HostChannel:
@@ -44,6 +48,7 @@ class HostChannel:
         *,
         address: str = "",
         close_transport=None,
+        queue_size: int = _DEFAULT_QUEUE_SIZE,
     ) -> None:
         self.service = service
         self.channel_id = channel_id
@@ -55,8 +60,11 @@ class HostChannel:
         self._connection: Connection | None = None
         self._pending_device_key: str = ""
         self._confirmed = False
+        # True = 本通道拥有逻辑 Connection（控制面）。数据面为 False。
+        self._owns_logical_connection = True
+        self._closed = False
         self._lock = threading.Lock()
-        self._queue: queue.Queue = queue.Queue(maxsize=256)
+        self._queue: queue.Queue = queue.Queue(maxsize=max(1, queue_size))
         # 延迟到首帧再起线程：避免中继灌未知通道号时「建对象即占 OS 线程」
         self._worker: threading.Thread | None = None
 
@@ -64,20 +72,35 @@ class HostChannel:
     def ready(self) -> bool:
         return self._secure is not None and self._confirmed
 
+    @property
+    def is_data_plane(self) -> bool:
+        return self._confirmed and not self._owns_logical_connection
+
     def _ensure_worker(self) -> None:
-        if self._worker is not None:
+        if self._worker is not None or self._closed:
             return
         worker = threading.Thread(target=self._run, daemon=True, name="remote-channel")
         self._worker = worker
         worker.start()
 
     def submit(self, frame_type: int, payload: bytes) -> None:
-        """由网络侧调用，把一帧交给工作线程。队列满说明手机端在灌数据，直接断开。"""
+        """由网络侧调用，把一帧交给工作线程。
+
+        控制面队列满说明手机在灌数据，断开这一条（可能连带设备离线）。
+        数据面队列满只丢弃这一帧，禁止因此 close() 控制面。
+        """
+        if self._closed:
+            return
         self._ensure_worker()
         try:
             self._queue.put_nowait((frame_type, payload))
         except queue.Full:
-            observe.event("remote_channel_overflow")
+            observe.event(
+                "remote_channel_overflow",
+                plane="data" if self.is_data_plane else "control",
+            )
+            if self.is_data_plane:
+                return
             self.close()
 
     def _run(self) -> None:
@@ -124,12 +147,15 @@ class HostChannel:
             raise ChannelError("尚未握手")
         with self._lock:
             plaintext = self._secure.decrypt(payload)
-        message = protocol.loads(plaintext)
+        if self._connection is not None and self._connection.compression_enabled:
+            message = protocol.unpack(plaintext)
+        else:
+            message = protocol.loads(plaintext)
         if not self._confirmed:
             self._confirm_and_attach(message)
         if self._connection is None:
             raise ChannelError("通道未确认")
-        self.service.handle(self._connection, message)
+        self.service.handle(self._connection, message, reply=self._send_message)
 
     def _confirm_and_attach(self, message: dict) -> None:
         """首条可解密帧 = 密钥确认。可选校验毫秒时间戳防重放。"""
@@ -147,30 +173,64 @@ class HostChannel:
                     raise ChannelError("握手确认时间戳超出允许范围")
             except (TypeError, ValueError) as exc:
                 raise ChannelError("握手确认时间戳不合法") from exc
+        params = message.get("p") if isinstance(message.get("p"), dict) else {}
+        if str(params.get("plane") or "") == protocol.PLANE_DATA:
+            connection = self.service.attach_data_plane(
+                str(params.get("bind") or ""),
+                self._pending_device_key,
+                self._send_message,
+                self.close,
+                self,
+            )
+            if connection is None:
+                observe.event("remote_data_plane_rejected", address=self._address)
+                # 只关数据通道，不得踢已配对的控制连接。
+                self._owns_logical_connection = False
+                raise ChannelError("数据面绑定失败")
+            self._owns_logical_connection = False
+            self._connection = connection
+            self._confirmed = True
+            observe.event("remote_data_plane_confirmed", address=self._address)
+            return
         connection = Connection(
             self._pending_device_key,
             self._send_message,
             address=self._address,
         )
         connection.close_hook = self.close
+        self._owns_logical_connection = True
         self._connection = connection
         self._confirmed = True
         self.service.attach(connection)
         observe.event("remote_channel_confirmed", address=self._address)
 
     def _send_message(self, message: dict) -> None:
-        if self._secure is None:
+        if self._secure is None or self._closed:
             return
         with self._lock:
-            frame = self._secure.encrypt(protocol.dumps(message))
+            payload = protocol.pack(
+                message,
+                compress=self._connection is not None and self._connection.compression_enabled,
+            )
+            frame = self._secure.encrypt(payload)
         self._writer(protocol.FRAME_DATA, frame)
 
     def close(self) -> None:
-        if self._connection is not None:
-            self.service.detach(self._connection)
-            self._connection = None
+        if self._closed:
+            return
+        self._closed = True
+        connection = self._connection
+        self._connection = None
         self._secure = None
         self._confirmed = False
+        if self._owns_logical_connection:
+            if connection is not None:
+                # detach 会顺带关掉数据面；先摘掉 close_hook 避免递归回本通道。
+                if connection.close_hook is self.close:
+                    connection.close_hook = None
+                self.service.detach(connection)
+        elif connection is not None:
+            self.service.detach_data_plane(connection, self)
         try:
             self._queue.put_nowait(_STOP)
         except queue.Full:

@@ -470,6 +470,185 @@ class ReconcileSplitKeysTests(unittest.TestCase):
         self.assertEqual(migrated, {"pi:placeholder": "pi:ccc"})
         self.assertEqual(host._area.reconciled.get("corral-pi-ccc"), "pi:ccc")
 
+    def test_stored_group_migrates_when_right_pane_already_left(self) -> None:
+        """右栏已切走时，占位卡转正仍须改写 sqlite 里的组成员。"""
+        from corral.keepalive import session_name
+        from corral.split_layout import SplitLayoutStore
+        from corral.ui.controllers.layout_controller import LayoutControllerMixin
+
+        old_key = "cursor:abcd1234"
+        new_key = "cursor:11111111-2222-4333-8444-555555555555"
+        companion = "cursor:companion"
+        kname = session_name("cursor", "abcd1234")
+
+        class _Spec:
+            session_key = companion
+            keepalive_name = "corral-cursor-companion"
+
+        class _Area:
+            def pane_specs(self):
+                return [_Spec()]
+
+            def reconcile_session_keys(self, mapping):
+                self.mapping = dict(mapping)
+
+        class _SessionStore:
+            sessions = {
+                "cursor": [
+                    {
+                        "source": "cursor",
+                        "id": "11111111-2222-4333-8444-555555555555",
+                        "keepalive_name": kname,
+                    },
+                    {
+                        "source": "cursor",
+                        "id": "companion",
+                        "keepalive_name": "corral-cursor-companion",
+                    },
+                ],
+            }
+            hosted = {
+                new_key: kname,
+                companion: "corral-cursor-companion",
+            }
+
+            def find_session(self, key: str):
+                if key == new_key:
+                    return self.sessions["cursor"][0]
+                if key == companion:
+                    return self.sessions["cursor"][1]
+                return None
+
+            def session_key_migrations(self):
+                return {old_key: new_key}
+
+        class _Host(LayoutControllerMixin):
+            def __init__(self) -> None:
+                self.store = _SessionStore()
+                self._area = _Area()
+                self._split_store = SplitLayoutStore()
+                self._split_store.set_group(
+                    "/tmp", [old_key, companion], focus_key=old_key,
+                )
+
+            def _split_area(self):
+                return self._area
+
+            def _apply_layout_change(self, mutate):
+                mutate(self._split_store)
+                return self._split_store
+
+        host = _Host()
+        migrated = host._reconcile_split_session_keys()
+        self.assertEqual(migrated.get(old_key), new_key)
+        group = host._split_store.get_group(new_key)
+        self.assertIsNotNone(group)
+        self.assertEqual(set(group.session_keys), {new_key, companion})
+        self.assertIsNone(host._split_store.get_group(old_key))
+
+    def test_stale_group_key_migrates_via_keepalive_without_recorded_map(self) -> None:
+        """进程内转正记录已丢失时，仍能凭托管名把组里的占位键迁到正式键。"""
+        from corral.keepalive import session_name
+        from corral.split_layout import SplitLayoutStore
+        from corral.ui.controllers.layout_controller import LayoutControllerMixin
+
+        old_key = "cursor:abcd1234"
+        new_key = "cursor:11111111-2222-4333-8444-555555555555"
+        companion = "cursor:companion"
+        kname = session_name("cursor", "abcd1234")
+
+        class _Spec:
+            session_key = companion
+            keepalive_name = "corral-cursor-companion"
+
+        class _Area:
+            def pane_specs(self):
+                return [_Spec()]
+
+            def reconcile_session_keys(self, mapping):
+                pass
+
+        class _SessionStore:
+            sessions = {
+                "cursor": [
+                    {
+                        "source": "cursor",
+                        "id": "11111111-2222-4333-8444-555555555555",
+                        "keepalive_name": kname,
+                    },
+                    {
+                        "source": "cursor",
+                        "id": "companion",
+                        "keepalive_name": "corral-cursor-companion",
+                    },
+                ],
+            }
+            hosted = {new_key: kname}
+
+            def find_session(self, key: str):
+                if key == new_key:
+                    return self.sessions["cursor"][0]
+                if key == companion:
+                    return self.sessions["cursor"][1]
+                return None
+
+            def session_key_migrations(self):
+                return {}
+
+        class _Host(LayoutControllerMixin):
+            def __init__(self) -> None:
+                self.store = _SessionStore()
+                self._area = _Area()
+                self._split_store = SplitLayoutStore()
+                self._split_store.set_group(
+                    "/tmp", [old_key, companion], focus_key=old_key,
+                )
+
+            def _split_area(self):
+                return self._area
+
+            def _apply_layout_change(self, mutate):
+                mutate(self._split_store)
+                return self._split_store
+
+        host = _Host()
+        migrated = host._reconcile_split_session_keys()
+        self.assertEqual(migrated.get(old_key), new_key)
+        group = host._split_store.get_group(new_key)
+        self.assertIsNotNone(group)
+        self.assertEqual(set(group.session_keys), {new_key, companion})
+
+    def test_retire_provisional_records_key_migration(self) -> None:
+        from corral.models import session_key
+        from corral.store import SessionStore
+
+        store = SessionStore(limit=5)
+        provisional = store.register_hosted_session(
+            runtime_id="cursor",
+            keepalive_name="corral-cursor-abcd1234",
+            title="新会话",
+            cwd="/tmp",
+            ident="abcd1234",
+        )
+        old_key = session_key(provisional)
+        real = {
+            "source": "cursor",
+            "id": "11111111-2222-4333-8444-555555555555",
+            "short_id": "111111112222",
+            "cwd": "/tmp",
+            "mtime": 1.0,
+            "size_bytes": 1,
+            "size_kb": 1,
+            "live": True,
+            "keepalive_name": "corral-cursor-abcd1234",
+        }
+        with store.lock:
+            store._reconcile_provisional_sessions({"cursor": [real]})
+        self.assertEqual(
+            store.session_key_migrations().get(old_key),
+            session_key(real),
+        )
+
 
 class DedupeKeepaliveNameTests(unittest.TestCase):
     def test_store_keeps_hosted_owner_when_two_sessions_share_a_name(self) -> None:

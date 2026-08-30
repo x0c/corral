@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import zlib
 from typing import Any
 
 # --- 中继层帧类型 ---------------------------------------------------------
@@ -39,6 +40,13 @@ CHANNEL_ID_LEN = 16
 FRAME_VERSION = 2
 SUBPROTOCOL = "corral.v2"
 _MAX_FRAME_BYTES = 8 * 1024 * 1024
+_MAX_UNCOMPRESSED_BYTES = 4 * 1024 * 1024
+_PAYLOAD_MAGIC = b"CR"
+_PAYLOAD_VERSION = 1
+_PAYLOAD_HEADER_BYTES = 8
+_CODEC_NONE = 0
+_CODEC_DEFLATE = 1
+_COMPRESSION_THRESHOLD = 1024
 
 
 class ProtocolError(RuntimeError):
@@ -64,10 +72,15 @@ def decode_frame(raw: bytes) -> tuple[int, bytes, bytes]:
 # --- 应用层消息 -----------------------------------------------------------
 
 def dumps(message: dict) -> bytes:
-    return json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    raw = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(raw) > _MAX_UNCOMPRESSED_BYTES:
+        raise ProtocolError("消息未压缩体积过大")
+    return raw
 
 
 def loads(raw: bytes) -> dict:
+    if len(raw) > _MAX_UNCOMPRESSED_BYTES:
+        raise ProtocolError("消息未压缩体积过大")
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
@@ -75,6 +88,74 @@ def loads(raw: bytes) -> dict:
     if not isinstance(value, dict):
         raise ProtocolError("消息顶层必须是对象")
     return value
+
+
+def pack(message: dict, *, compress: bool = False) -> bytes:
+    """把应用消息封装成可在加密前压缩的载荷。
+
+    未协商压缩时继续返回旧版裸 JSON，保证旧手机客户端可以继续连接；
+    协商成功后才加上 ``CR`` 载荷头。``deflate`` 编码使用 raw DEFLATE
+    （RFC 1951），与 Apple Compression ``COMPRESSION_ZLIB`` 的实际输出互通。
+    """
+    raw = dumps(message)
+    if not compress or len(raw) < _COMPRESSION_THRESHOLD:
+        return raw
+    compressor = zlib.compressobj(level=5, wbits=-15)
+    encoded = compressor.compress(raw) + compressor.flush()
+    if len(encoded) + _PAYLOAD_HEADER_BYTES >= len(raw):
+        return raw
+    header = (
+        _PAYLOAD_MAGIC
+        + bytes([_PAYLOAD_VERSION, _CODEC_DEFLATE])
+        + len(raw).to_bytes(4, "big")
+    )
+    return header + encoded
+
+
+def _inflate(body: bytes) -> bytes:
+    """解开 raw DEFLATE；也接受 zlib 包装，避免半升级连接解不开。"""
+    errors: list[Exception] = []
+    for wbits in (15, -15):
+        try:
+            decompressor = zlib.decompressobj(wbits=wbits)
+            decoded = decompressor.decompress(body, _MAX_UNCOMPRESSED_BYTES + 1)
+            if len(decoded) > _MAX_UNCOMPRESSED_BYTES:
+                raise ProtocolError("解压后消息过大")
+            if not decompressor.eof:
+                raise ProtocolError("压缩载荷解压失败")
+            if decompressor.unused_data:
+                raise ProtocolError("压缩载荷包含尾随数据")
+            decoded += decompressor.flush()
+            return decoded
+        except zlib.error as exc:
+            errors.append(exc)
+            continue
+    raise ProtocolError("压缩载荷解压失败") from (errors[-1] if errors else None)
+
+
+def unpack(raw: bytes) -> dict:
+    """解开新载荷；也接受未协商客户端发送的裸 JSON。"""
+    if not raw.startswith(_PAYLOAD_MAGIC):
+        return loads(raw)
+    if len(raw) < _PAYLOAD_HEADER_BYTES:
+        raise ProtocolError("压缩载荷头不完整")
+    version = raw[2]
+    codec = raw[3]
+    expected = int.from_bytes(raw[4:8], "big")
+    if version != _PAYLOAD_VERSION:
+        raise ProtocolError("压缩载荷版本不支持")
+    if expected > _MAX_UNCOMPRESSED_BYTES:
+        raise ProtocolError("解压后消息过大")
+    body = raw[_PAYLOAD_HEADER_BYTES:]
+    if codec == _CODEC_NONE:
+        decoded = body
+    elif codec == _CODEC_DEFLATE:
+        decoded = _inflate(body)
+    else:
+        raise ProtocolError("压缩算法不支持")
+    if len(decoded) != expected:
+        raise ProtocolError("解压后长度不匹配")
+    return loads(decoded)
 
 
 def request(req_id: int, method: str, params: dict | None = None) -> dict:
@@ -102,6 +183,13 @@ def event(channel: str, data: Any) -> dict:
 # 只读查询放在 `sessions.` / `projects.` / `search` 下，便于日后按前缀做权限分级。
 
 M_HELLO = "hello"                    # 客户端自报家门 + 取服务端能力
+
+# 控制/数据双连接（两条物理 WebSocket；帧头仍是 v2，中继只转发密文）。
+# 旧客户端忽略 capabilities 里的未知字段，也不带 want_data_plane，行为与单连接时一致。
+PLANE_CONTROL = "control"
+PLANE_DATA = "data"
+CAPABILITY_PLANES = [PLANE_CONTROL, PLANE_DATA]
+DATA_BIND_TTL_SEC = 120              # data_bind 最长存活秒数；一次性且绑定设备公钥
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 

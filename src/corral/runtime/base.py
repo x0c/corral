@@ -46,7 +46,10 @@ class BaseRuntime(ABC):
     executable_aliases: tuple[str, ...] = ()
 
     def is_available(self) -> bool:
-        return shutil.which(self.executable) is not None
+        return any(
+            shutil.which(name) is not None
+            for name in (self.executable, *self.executable_aliases)
+        )
 
     def scan_signature(self) -> object | None:
         """返回一个廉价、可哈希的"本地历史是否可能有变化"签名，供 `RuntimeRegistry.scan_all`

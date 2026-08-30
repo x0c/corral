@@ -339,8 +339,12 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     # 与 main() 的 TUI 入口相同：趁 Textual 接管终端前探测外层终端前景/背景色。
     theme_mod._OSC_REPORT = pkg._probe_osc_colours(timeout=0.25)
 
-    from corral.ui.app import run_app
-    chosen = run_app(store, True, _DirectLaunch(plan, runtime_id, ident), theme_mod._OSC_REPORT)
+    from corral.ui.app import restore_terminal, run_app
+    try:
+        chosen = run_app(store, True, _DirectLaunch(plan, runtime_id, ident), theme_mod._OSC_REPORT)
+    except KeyboardInterrupt:
+        restore_terminal()
+        chosen = None
     pkg.embed.close_channel()
     if isinstance(chosen, pkg.updater.RestartRequest):
         if not pkg._finish_self_update(chosen):
@@ -519,8 +523,13 @@ def main() -> None:
     from corral.schedprio import boost_interactive
 
     boost_interactive()
-    from corral.ui.app import run_app
-    chosen = run_app(store, embed.available(args.no_keepalive), osc_report=theme_mod._OSC_REPORT)
+    from corral.ui.app import restore_terminal, run_app
+    try:
+        chosen = run_app(store, embed.available(args.no_keepalive), osc_report=theme_mod._OSC_REPORT)
+    except KeyboardInterrupt:
+        # run_app 已吞一次；若收尾阶段再次被打断，仍恢复终端、不当成崩溃。
+        restore_terminal()
+        chosen = None
     # 兜底关闭内嵌控制通道：pane 聚焦时打开的 `tmux -C attach` 控制 client 只有
     # c 键关分栏才会关，Esc 退出/回车全屏接管等退出路径不经那条分支——不在这里统一
     # 兜底就会把孤儿控制 client 留在保活服务端上。close_channel 无通道时是空操作。

@@ -115,6 +115,10 @@ PROCESS_ENV_KEYS: tuple[str, ...] = (
     "PICKUP_RUNTIME",
     "SC_RUNTIME",
     "PI_CODING_AGENT_SESSION_DIR",
+    # Pi 身份桥：macOS `ps eww` 只提取白名单键；漏掉这两项会让 Linux
+    # 精确绑定、Mac 却退回旧启发式。
+    "CORRAL_PI_INSTANCE_ID",
+    "CORRAL_PI_CLAIM_PATH",
 )
 
 
@@ -170,6 +174,9 @@ def hosted_env_pairs(runtime_id: str, ident: str) -> list[str]:
             "-e", f"{prefix}RUNTIME={runtime_id}",
             "-e", f"{prefix}SESSION_ID={ident}",
         ]
+    if runtime_id == "codex":
+        from corral.codex_identity import claim_env_pairs
+        pairs += claim_env_pairs(ident)
     return pairs
 
 

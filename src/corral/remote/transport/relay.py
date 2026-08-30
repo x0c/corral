@@ -30,6 +30,7 @@ from corral.remote.transport.channel import HostChannel
 _INITIAL_BACKOFF = 1.0
 _MAX_BACKOFF = 60.0
 _PING_INTERVAL = 20.0
+_PING_TIMEOUT = 60.0  # 解析大历史会占 GIL；20s 超时会把手机正在等的回包连同连接一起掐掉
 # 正常用户个位数手机；略大于中继侧 16，给瞬断重连留余量，但仍是硬顶
 _MAX_CHANNELS = 8
 
@@ -86,6 +87,7 @@ class RelayClient:
                     additional_headers=self._headers(),
                     subprotocols=[protocol.SUBPROTOCOL],
                     ping_interval=_PING_INTERVAL,
+                    ping_timeout=_PING_TIMEOUT,
                     max_size=8 * 1024 * 1024,
                 ) as socket:
                     self._socket = socket
@@ -177,6 +179,9 @@ class RelayClient:
             lambda frame_type, payload: self._write(frame_type, channel_id, payload),
             address="relay",
         )
+        # 中继上每个 DEVICE_OPEN 是一条独立通道（独立握手与计数器）。
+        # 数据面第二条 WebSocket 会再开一个 channel_id，由 HostChannel 在 hello
+        # 里 bind 到同一逻辑 Connection，而不是当成第二台设备。
         self._channels[channel_id] = channel
         return channel
 

@@ -390,7 +390,14 @@ class PerformanceCache:
 
     def clear(self, *, dry_run: bool = False) -> dict:
         status = self.status()
-        existed = bool(status["session_count"] or status["conversation_count"])
+        remote_base = cache_dir() / "remote-transcripts.sqlite3"
+        remote_files = (
+            remote_base,
+            Path(str(remote_base) + "-wal"),
+            Path(str(remote_base) + "-shm"),
+        )
+        remote_exists = any(path.exists() for path in remote_files)
+        existed = bool(status["session_count"] or status["conversation_count"] or remote_exists)
         if dry_run or not existed:
             return {"status": "would_clear" if dry_run and existed else "unchanged", **status}
         with self._connect(create=False) as conn:
@@ -399,6 +406,11 @@ class PerformanceCache:
                 conn.execute("DELETE FROM session_meta")
                 conn.commit()
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        for candidate in remote_files:
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
         return {"status": "cleared", **self.status()}
 
 

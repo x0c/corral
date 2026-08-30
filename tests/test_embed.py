@@ -150,21 +150,25 @@ class HostSessionTests(unittest.TestCase):
         self.assertEqual(argv[-2:], ["--resume", "abc"])
 
     def test_pi_new_session_argv_includes_session_id(self):
-        from corral.scan.pi import PI_SESSION_DIR_ENV, hosted_session_dir
+        from corral import pi_identity
 
         plan = LaunchPlan(argv=("pi", "--approve"), cwd="/tmp/work")
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok) as run, \
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
-                mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
+                mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
+                mock.patch.object(pi_identity, "ensure_extension_installed", return_value={"status": "ok"}):
             embed.host_session(plan, "pi", "abcd1234", 120, 40)
         argv = run.call_args.args[0]
-        expected_dir = hosted_session_dir("/tmp/work", "abcd1234")
         tail = argv[argv.index("--") + 1:]
-        self.assertEqual(
-            tail,
-            ["pi", "--approve", "--session-dir", expected_dir, "--session-id", "abcd1234"],
+        # 新架构：不再注入 --session-dir；身份由扩展 claim 提供。
+        self.assertEqual(tail, ["pi", "--approve", "--session-id", "abcd1234"])
+        env_pairs = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-e"]
+        self.assertTrue(
+            any(pair.startswith(pi_identity.INSTANCE_ENV + "=") for pair in env_pairs)
         )
-        self.assertIn(f"{PI_SESSION_DIR_ENV}={expected_dir}", argv)
+        self.assertTrue(
+            any(pair.startswith(pi_identity.CLAIM_PATH_ENV + "=") for pair in env_pairs)
+        )
 
     def test_duplicate_session_falls_back_to_reuse(self):
         plan = LaunchPlan(argv=("claude",), cwd=None)

@@ -17,6 +17,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from corral import titles
 from corral.cache import file_signature, get_cache
+from corral.codex_identity import live_claims
 from corral.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
 from corral.scan.common import is_ephemeral_agent_cwd
 from corral.scan.common import parse_timestamp as _parse_timestamp
@@ -406,6 +407,9 @@ def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[Sessio
     index_version = repr((file_signature(SESSION_INDEX), "response-item-v2"))
     all_files = _find_all_session_files()
     live_ids = _live_session_ids()
+    # 启动包装器已从 app-server 得到真实 thread id 时，回执优先于 lsof：
+    # 回执 pid 正是 tmux pane 顶层，避免多层 Codex 子进程带来的祖先链歧义。
+    live_ids.update(live_claims(SESSIONS_DIR))
 
     candidates: list[tuple[float, str]] = []
     for path in all_files:
