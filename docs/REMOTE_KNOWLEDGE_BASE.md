@@ -111,7 +111,7 @@
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| 换网后对话像重新加载整段历史、重连后聊天闪空 | 旧手机重连会再要一整段尾部窗口。新契约：`session.watch` 带已应用到的序号和历史代次；开发机只补缺口（`resume=replay`，空包不是清空），对不上才给尾部（`resume=tail`）。终端画面仍只留最新帧。契约见 `docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md` §4.3；未发版、常驻服务未重启前手机上还是旧行为 |
+| 换网后对话像重新加载整段历史、重连后聊天闪空 | 旧手机重连会再要一整段尾部窗口。新契约：`session.watch` 带已应用到的序号和历史代次；开发机只补缺口（`resume=replay`，空包不是清空），对不上才给尾部（`resume=tail`）。终端画面仍只留最新帧。契约见 `docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md` §4.3。自 CLI **0.24.150** / iOS **1.0.11** 起（本机与 suzhou 常驻远程已于 2026-08-30 17:05 左右换成该版）；旧客户端不带序号仍走整段尾部。真机换网体感仍须在手机上点一次确认 |
 | 蜂窝下要等很久才连上 | 旧客户端串行先试局域网、无超时；不可达局域网会卡到系统默认约 60 秒。必须并发抢答 + 局域网 2 秒超时。重连若仍复用旧局域网地址也会同样慢 |
 | 本机以为中继「TLS/证书坏了」其实域名根本不存在 | 旧默认 `relay.corral.sh` 是 **NXDOMAIN**。家里 OpenClash fake-ip 会给未解析域名塞 `198.18.x`，本地 `dig`/`curl` 看起来像「连上了再 TLS 挂」。判真伪：用 DoH（或非本机网络）查权威解析；正确默认是 `wss://corral-relay.caozc.top` |
 | 手机一开终端，电脑窗口变窄 | 某处发了 `screen.resize`；手机端必须删掉这条调用；服务端应拒绝而非执行 |
@@ -162,6 +162,9 @@ python3 scripts/phone_remote_acceptance.py \
   --key <hello/pair 输出的公钥> \
   --code <只读配对码>
 # 必须打用户正在连的那台开发机（本机和开发机公钥不同）。只抽一条 Codex 不算过。
+# 2026-08-30 17:11 本机 `dev`（0.24.150 常驻已重启）经 `wss://pickup-relay.caozc.top`：
+# 整表首包 0.52s / 80 条；Cursor、Codex、Pi、OpenCode、Claude 详情均在 2s 内有正文；
+# 双连接竞速与空闲 25s 心跳通过。首包窗口里没有 Kimi 样本，不能据此说 Kimi 详情已验。
 # 可选：叠加蜂窝近似（额外往返 + 带宽上限）
 #   --rtt-ms 80 --bytes-per-sec 50000
 ```
