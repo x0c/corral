@@ -93,11 +93,10 @@ class RuntimeRegistry:
         bug）被隔离在这里：该运行时降级为空列表，不拖垮其余运行时的结果，
         也不让 corral 首屏因为一条脏数据直接崩溃退出。
 
-        实现了 `scan_signature()`（目前只有 OpenCode）的运行时会先做一次廉价
-        签名比对：签名和上一次调用相同就直接复用上一次的扫描结果，跳过完整的
-        `scan_sessions()`；没实现（返回 `None`）的运行时不受影响，行为与优化前
-        完全一致。见 `BaseRuntime.scan_signature` 文档里为什么 Claude/Codex 故意
-        不接入这个机制。
+        实现了 `scan_signature()` 的运行时会先做一次廉价签名比对：签名和上一次
+        调用相同就直接复用上一次的扫描结果，跳过完整的 `scan_sessions()`；返回
+        `None` 的运行时不受影响。Claude/Codex/Cursor/Kimi/Pi 走逐文件 stat + pid
+        快照，OpenCode 走库文件/WAL + 进程快照；禁止用祖先目录 mtime。
 
         ``keep_ids_by_runtime`` 把侧边栏置顶/分组成员的会话 id 交给各扫描器，
         避免 mtime 配额把仍被钉住的历史挤出列表。

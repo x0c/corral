@@ -1,9 +1,8 @@
-"""跨扫描器共享的纯函数 helper。
+"""跨扫描器共享的 helper。
 
-各运行时扫描器（scan_claude.py/scan_codex.py/scan_opencode.py/scan_kimi.py/scan_cursor.py）
-互不依赖，但各自都需要几个完全相同的小工具函数；集中到这里避免多份重复实现
-各自演进出细微差异。这里只放无状态、无副作用的纯函数，运行时私有的解析格式
-仍留在各自的 scan_*.py 里。
+各运行时扫描器互不依赖，但都需要相同的小工具；集中到这里避免多份重复实现。
+运行时私有的解析格式仍留在各自的 scan_*.py 里。cwd / 命令行 / 环境按 pid
+集合做进程内缓存，避免后台重扫对同一批仍活着的进程反复 fork。
 """
 
 from __future__ import annotations
@@ -228,7 +227,9 @@ def live_pid_snapshot(process_name: str) -> tuple[int, ...]:
     ``live_processes``，且按 pid 集合缓存，避免后台重扫每 3 秒对每个 pid 再 fork
     一次 ``lsof``（本机 15 个 Cursor agent 曾测到单轮 ~800ms）。
     """
-    return tuple(sorted(_pids_for_process_name(process_name)))
+    pids = _pids_for_process_name(process_name)
+    _track_live_pids(process_name, pids)
+    return tuple(sorted(pids))
 
 
 def stat_signature(paths) -> tuple[tuple[str, int, int], ...]:
@@ -249,11 +250,27 @@ def stat_signature(paths) -> tuple[tuple[str, int, int], ...]:
 
 
 _LIVE_CWD_CACHE: dict[str, tuple[tuple[int, ...], list[tuple[int, str]]]] = {}
+_PROC_CMDLINE_CACHE: dict[int, str] = {}
+_PROC_ENVIRON_CACHE: dict[int, dict[str, str]] = {}
+_LIVE_PIDS_BY_NAME: dict[str, frozenset[int]] = {}
+
+
+def _track_live_pids(process_name: str, pids: list[int]) -> None:
+    """记下本轮仍活着的 pid；离开集合的进程丢掉命令行/环境缓存，避免 pid 复用串味。"""
+    current = frozenset(pids)
+    previous = _LIVE_PIDS_BY_NAME.get(process_name, frozenset())
+    for pid in previous - current:
+        _PROC_CMDLINE_CACHE.pop(pid, None)
+        _PROC_ENVIRON_CACHE.pop(pid, None)
+    _LIVE_PIDS_BY_NAME[process_name] = current
 
 
 def clear_live_cwd_cache() -> None:
-    """测试用：清掉按 pid 集缓存的 cwd，避免用例之间串味。"""
+    """测试用：清掉按 pid 集缓存的 cwd / 命令行 / 环境，避免用例之间串味。"""
     _LIVE_CWD_CACHE.clear()
+    _PROC_CMDLINE_CACHE.clear()
+    _PROC_ENVIRON_CACHE.clear()
+    _LIVE_PIDS_BY_NAME.clear()
 
 
 def _cwds_for_pids(pids: list[int]) -> list[tuple[int, str]]:
@@ -316,6 +333,7 @@ def live_processes(process_name: str) -> list[tuple[int, str]]:
     pid 集合没变时复用上一轮 cwd，避免后台重扫把 macOS ``lsof`` 再付一遍。
     """
     pids = _pids_for_process_name(process_name)
+    _track_live_pids(process_name, pids)
     key = tuple(sorted(pids))
     cached = _LIVE_CWD_CACHE.get(process_name)
     if cached is not None and cached[0] == key:
@@ -385,18 +403,27 @@ def live_pids_by_process_name(process_name: str) -> dict[str, int]:
 
 
 def process_command_line(pid: int) -> str:
-    """读取进程命令行；失败返回空串。供扫描器从 `--resume <id>` 等参数精确绑会话。"""
+    """读取进程命令行；失败返回空串。供扫描器从 `--resume <id>` 等参数精确绑会话。
+
+    同一 pid 在仍存活期间复用上一轮结果，避免后台重扫对每个 agent 再 ``ps`` 一次。
+    """
+    cached = _PROC_CMDLINE_CACHE.get(pid)
+    if cached is not None:
+        return cached
     try:
         if sys.platform.startswith("linux"):
             with open(f"/proc/{pid}/cmdline", "rb") as f:
-                return f.read().replace(b"\x00", b" ").decode(errors="replace").strip()
-        out = subprocess.check_output(
-            ["ps", "-p", str(pid), "-o", "command="],
-            stderr=subprocess.DEVNULL,
-        )
-        return out.decode(errors="replace").strip()
+                text = f.read().replace(b"\x00", b" ").decode(errors="replace").strip()
+        else:
+            out = subprocess.check_output(
+                ["ps", "-p", str(pid), "-o", "command="],
+                stderr=subprocess.DEVNULL,
+            )
+            text = out.decode(errors="replace").strip()
     except (OSError, subprocess.CalledProcessError, FileNotFoundError):
-        return ""
+        text = ""
+    _PROC_CMDLINE_CACHE[pid] = text
+    return text
 
 
 def process_environ(pid: int) -> dict[str, str]:
@@ -405,12 +432,17 @@ def process_environ(pid: int) -> dict[str, str]:
     供扫描器从托管注入的 ``CORRAL_SESSION_ID`` / ``SC_SESSION_ID`` /
     ``PI_CODING_AGENT_SESSION_DIR`` 精确绑会话。
     Linux 读 ``/proc/<pid>/environ``；macOS 用 ``ps eww``（输出混在命令行尾部）。
+    同一 pid 在仍存活期间复用上一轮结果。
     """
+    cached = _PROC_ENVIRON_CACHE.get(pid)
+    if cached is not None:
+        return dict(cached)
     try:
         if sys.platform.startswith("linux"):
             with open(f"/proc/{pid}/environ", "rb") as f:
                 raw = f.read()
             if not raw:
+                _PROC_ENVIRON_CACHE[pid] = {}
                 return {}
             env: dict[str, str] = {}
             for item in raw.split(b"\x00"):
@@ -418,12 +450,14 @@ def process_environ(pid: int) -> dict[str, str]:
                     continue
                 key, value = item.decode(errors="replace").split("=", 1)
                 env[key] = value
-            return env
+            _PROC_ENVIRON_CACHE[pid] = env
+            return dict(env)
         out = subprocess.check_output(
             ["ps", "eww", "-p", str(pid)],
             stderr=subprocess.DEVNULL,
         ).decode(errors="replace")
     except (OSError, subprocess.CalledProcessError, FileNotFoundError):
+        _PROC_ENVIRON_CACHE[pid] = {}
         return {}
     env: dict[str, str] = {}
     # ps eww 把环境变量拼在同一行；只提取我们关心的键，避免把命令参数误当环境。
@@ -437,7 +471,8 @@ def process_environ(pid: int) -> dict[str, str]:
         while end < len(out) and not out[end].isspace():
             end += 1
         env[key] = out[start:end]
-    return env
+    _PROC_ENVIRON_CACHE[pid] = env
+    return dict(env)
 
 
 def open_file_paths(pids: list[int]) -> dict[int, list[str]]:

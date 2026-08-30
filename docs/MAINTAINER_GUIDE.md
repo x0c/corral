@@ -32,9 +32,10 @@
 `live_processes` / `live_pids_by_process_name`（存活同名进程及其 cwd）、
 `process_command_line` / `process_environ` / `open_file_paths`（读命令行、环境变量、
 打开的文件路径，供 Cursor 等按正向证据精确绑会话）。这些集中在 `scan/common.py`，
+这个模块集中跨扫描器共用的探测与缓存（cwd / 命令行 / 环境按 pid 集合记忆），
 避免多份重复实现各自演进出细微差异；新增运行时扫描器时优先检查这里有没有能复用的
-helper，不要先照抄再改。这个模块只放无状态纯函数，运行时私有的解析格式
-（JSONL 字段、SQLite 表结构等）仍留在各自的 scan/*.py 里。
+helper，不要先照抄再改。运行时私有的解析格式（JSONL 字段、SQLite 表结构等）
+仍留在各自的 scan/*.py 里。
 
 ## Claude 扫描
 

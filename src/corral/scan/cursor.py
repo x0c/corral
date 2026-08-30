@@ -35,9 +35,11 @@ from corral.legacy_names import hosted_session_id
 from corral.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
 from corral.scan.common import (
     is_ephemeral_agent_cwd,
+    live_pid_snapshot,
     live_processes,
     process_command_line,
     process_environ,
+    stat_signature,
 )
 
 CHATS_DIR = os.path.expanduser("~/.cursor/chats")
@@ -86,7 +88,8 @@ def _cursor_store_paths_for_pids(pids: list[int]) -> dict[int, list[str]]:
                     paths.append(path)
             if paths:
                 result[pid] = paths
-        return result
+        _STORE_PATH_CACHE = (key, {pid: list(paths) for pid, paths in result.items()})
+        return {pid: list(paths) for pid, paths in result.items()}
     try:
         out = subprocess.check_output(
             ["lsof", "-Fn", "-p", ",".join(str(pid) for pid in pids)],
@@ -212,6 +215,31 @@ def _build_session_info(chat_dir: str, chat_id: str) -> dict | None:
         last_user_msg=last_user_msg,
         # Cursor 历史里没有独立的「助手最终答复」字段可提取，保持空串。
     )
+
+
+def scan_signature() -> tuple | None:
+    """逐 chat 文件 stat + agent pid 快照；禁止用工作区目录 mtime。"""
+    paths: list[str] = []
+    if os.path.isdir(CHATS_DIR):
+        try:
+            workspaces = os.listdir(CHATS_DIR)
+        except OSError:
+            workspaces = []
+        for workspace_id in workspaces:
+            workspace_dir = os.path.join(CHATS_DIR, workspace_id)
+            if not os.path.isdir(workspace_dir):
+                continue
+            try:
+                chat_ids = os.listdir(workspace_dir)
+            except OSError:
+                continue
+            for chat_id in chat_ids:
+                chat_dir = os.path.join(workspace_dir, chat_id)
+                if not os.path.isdir(chat_dir):
+                    continue
+                for name in _CHAT_SIG_FILES:
+                    paths.append(os.path.join(chat_dir, name))
+    return (stat_signature(paths), live_pid_snapshot("agent"))
 
 
 def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:

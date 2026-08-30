@@ -32,10 +32,12 @@ from corral.legacy_names import hosted_session_id
 from corral.models import ConversationMessage, SessionInfo, effective_session_time, make_session_info
 from corral.scan.common import (
     is_ephemeral_agent_cwd,
+    live_pid_snapshot,
     live_processes,
     process_command_line,
     process_environ,
     process_start_time,
+    stat_signature,
 )
 from corral.scan.common import parse_timestamp as _parse_iso
 
@@ -450,6 +452,31 @@ def _build_session_info(session_dir: str, session_id: str) -> dict | None:
         last_user_msg=last_user_msg,
         last_agent_msg=last_agent_msg,
     )
+
+
+def scan_signature() -> tuple | None:
+    """逐会话 state/wire stat + kimi pid 快照；禁止用工作区目录 mtime。"""
+    paths: list[str] = []
+    if os.path.isdir(SESSIONS_DIR):
+        try:
+            workspaces = os.listdir(SESSIONS_DIR)
+        except OSError:
+            return ((), live_pid_snapshot("kimi"))
+        for workspace_id in workspaces:
+            workspace_dir = os.path.join(SESSIONS_DIR, workspace_id)
+            if not os.path.isdir(workspace_dir):
+                continue
+            try:
+                session_ids = os.listdir(workspace_dir)
+            except OSError:
+                continue
+            for session_id in session_ids:
+                session_dir = os.path.join(workspace_dir, session_id)
+                if not os.path.isdir(session_dir):
+                    continue
+                paths.append(os.path.join(session_dir, "state.json"))
+                paths.append(_wire_path(session_dir))
+    return (stat_signature(paths), live_pid_snapshot("kimi"))
 
 
 def scan_sessions(cwd_filter: str | None = None, limit: int = 50) -> list[SessionInfo]:

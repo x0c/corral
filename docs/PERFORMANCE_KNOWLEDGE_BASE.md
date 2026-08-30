@@ -79,7 +79,7 @@
 
 要降占用，优先让「助手还在跑」时不必每 3 秒付一次完整扫描代价（廉价签名跳过、多窗口共用一轮结果、或把「只有相对时间变了」从完整重扫里拆出去），而不是先砍实时画面帧率。
 
-**已落地（v0.24.153）**：嵌套历史改为逐文件 `stat` + pid 快照做 `scan_signature`，签名未变的运行时跳过完整扫描（含 macOS `lsof`）；`live_processes` 在 Darwin 上一次合并查询 cwd，并按 pid 集合缓存。不要退回祖先目录 mtime 或逐 pid `lsof`。未变化窗口的重扫应从秒级降到几十毫秒量级；正在写 WAL 的 Cursor 仍会重扫该运行时，但 cwd/`store.db` 探测不再对每个 agent 各 fork 一次。
+**已落地（v0.24.153）**：嵌套历史改为逐文件 `stat` + pid 快照做 `scan_signature`（含 Cursor/Kimi），签名未变的运行时跳过完整扫描（含 macOS `lsof`）；`live_processes` 在 Darwin 上一次合并查询 cwd，并按 pid 集合缓存 cwd / 命令行 / 环境。不要退回祖先目录 mtime 或逐 pid `lsof`。未变化窗口的重扫应从秒级降到几十毫秒量级；正在写 WAL 的 Cursor 仍会重扫该运行时，但 cwd/`store.db`/命令行探测不再对每个 agent 各 fork 一次。
 
 ## 性能架构
 

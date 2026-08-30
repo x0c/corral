@@ -2301,6 +2301,28 @@ class KimiScanTests(TimezoneMixin, unittest.TestCase):
              ):
             return scan_kimi.scan_sessions(limit=limit)
 
+    def test_scan_signature_tracks_file_stat_not_parent_dir_mtime(self) -> None:
+        """祖先目录 touch 不得改变签名；wire 追加必须改变。"""
+        with tempfile.TemporaryDirectory() as td:
+            sessions_dir = Path(td) / "sessions"
+            _make_kimi_session(
+                sessions_dir, "wd_demo", "session_sig",
+                state={"title": "签名", "workDir": td, "lastPrompt": "hi",
+                       "createdAt": "2026-07-17T08:00:00.000Z", "updatedAt": "2026-07-17T08:05:00.000Z"},
+                wire_rows=[_kimi_user_event("hello", 1_784_275_205_000)],
+            )
+            with mock.patch.object(scan_kimi, "SESSIONS_DIR", str(sessions_dir)), mock.patch.object(
+                scan_kimi, "live_pid_snapshot", return_value=()
+            ):
+                first = scan_kimi.scan_signature()
+                os.utime(sessions_dir / "wd_demo", None)
+                after_dir = scan_kimi.scan_signature()
+                wire = sessions_dir / "wd_demo" / "session_sig" / "agents" / "main" / "wire.jsonl"
+                wire.write_text(wire.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
+                after_file = scan_kimi.scan_signature()
+        self.assertEqual(first, after_dir)
+        self.assertNotEqual(first, after_file)
+
     def test_field_mapping_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             sessions_dir = Path(td) / "sessions"
@@ -5490,6 +5512,38 @@ class CursorScanTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][:5], ["lsof", "-a", "-d", "cwd", "-Fn"])
         self.assertEqual(calls[0][-2:], ["-p", "11,22"])
+        common.clear_live_cwd_cache()
+
+    def test_process_command_line_caches_until_pid_leaves_live_set(self) -> None:
+        """同一 pid 在仍存活期间不得反复 ps；离开 live 集合后才失效。"""
+        from corral.scan import common
+
+        common.clear_live_cwd_cache()
+        calls: list[list[str]] = []
+
+        def fake_check_output(argv, **kwargs):
+            calls.append(list(argv))
+            if argv[:2] == ["ps", "-p"]:
+                return b"agent --resume abc\n"
+            raise AssertionError(f"unexpected check_output: {argv}")
+
+        with mock.patch.object(
+            common, "_pids_for_process_name", side_effect=[[99], [88]]
+        ), mock.patch.object(
+            common.sys, "platform", "darwin"
+        ), mock.patch.object(
+            common.subprocess, "check_output", side_effect=fake_check_output
+        ):
+            common.live_pid_snapshot("agent")
+            first = common.process_command_line(99)
+            second = common.process_command_line(99)
+            common.live_pid_snapshot("agent")
+            third = common.process_command_line(99)
+
+        self.assertEqual(first, "agent --resume abc")
+        self.assertEqual(second, first)
+        self.assertEqual(third, first)
+        self.assertEqual(len(calls), 2)
         common.clear_live_cwd_cache()
 
 
