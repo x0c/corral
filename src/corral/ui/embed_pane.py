@@ -173,6 +173,11 @@ WHEEL_SCROLL_LINES = 3
 IDLE_POLL_INTERVAL = 2.0
 NO_CHANNEL_POLL_INTERVAL = 0.2
 MIN_CAPTURE_INTERVAL = 0.04  # 事件驱动下的最小抓帧间隔，避免 %output 风暴时刷屏
+# 助手连续自动输出时，只保留用户实际来得及看到的最新画面。100ms 不用于用户
+# 输入、切换或滚动后的回显：这些路径会打开下面的即时窗口，仍按 40ms 抓取。
+# 这既压低 capture-pane 的读取量，也保证 Textual 主线程不会积压不可见中间帧。
+AUTO_OUTPUT_CAPTURE_INTERVAL = 0.1
+_INTERACTIVE_CAPTURE_GRACE = 0.25
 # pane_state 降频查询间隔：光标位置/鼠标标志/回滚量都是慢变状态，但它每次也是
 # 一次 tmux fork（约 10ms）。输出风暴期若每帧都查，抓帧循环的 fork 频率直接
 # 翻倍（25fps×2，2026-07-19 实测是 corral 常驻 40%+ CPU 的主要来源）。降到
@@ -361,6 +366,12 @@ class EmbedPane(Widget):
         self._poke = threading.Event()  # 输入/滚动/resize 后立即唤醒抓帧线程补抓一帧
         self._stop = threading.Event()
         self._capture_thread: threading.Thread | None = None
+        # 抓帧线程与主线程之间只允许一项待回写任务。自动输出比界面消费得快时，
+        # 后到的快照只覆盖“最新见过的帧”，绝不继续往 Textual 消息队列塞任务。
+        self._capture_delivery_lock = threading.Lock()
+        self._capture_delivery_pending = False
+        self._latest_capture_key: tuple | None = None
+        self._interactive_capture_until = 0.0
         # 每次切换展示对象都提升版本。抓帧线程不能只比较 session_name：主线程可能
         # 在它醒来前经历“实时会话 → 详情 → 同一个实时会话”，最终名字虽然没变，
         # 旧帧缓存却已经失效；版本号能让这种快速往返也强制重抓，并拦住旧回调回写。
@@ -415,7 +426,7 @@ class EmbedPane(Widget):
     def on_unmount(self) -> None:
         self._set_real_cursor(False)  # 卸载时收起我们打开的真实光标，别把它漏给退出后的终端
         self._stop.set()
-        self._poke.set()
+        self._request_immediate_capture()
         if self.session_name:
             embed.close_channel(self.session_name)
 
@@ -702,6 +713,50 @@ class EmbedPane(Widget):
         # 控制通道读线程本来就跑在子线程里，这里只是唤醒抓帧线程，不跨线程动 UI 状态
         self._poke.set()
 
+    def _request_immediate_capture(self) -> None:
+        """用户明确操作后短暂放开自动输出的取样间隔。"""
+        self._interactive_capture_until = max(
+            self._interactive_capture_until,
+            time.monotonic() + _INTERACTIVE_CAPTURE_GRACE,
+        )
+        self._poke.set()
+
+    def _minimum_capture_interval(self, channel, now: float) -> float:
+        """本轮抓帧的最小间隔：自动输出降载，交互操作优先回显。"""
+        if channel is None or now < self._interactive_capture_until:
+            return MIN_CAPTURE_INTERVAL
+        return AUTO_OUTPUT_CAPTURE_INTERVAL
+
+    def _note_latest_capture(self, frame_key: tuple) -> None:
+        """记住最新快照；旧快照回写前到达时可被安全跳过。"""
+        with self._capture_delivery_lock:
+            self._latest_capture_key = frame_key
+
+    def _reserve_capture_delivery(self) -> bool:
+        """为一帧占用唯一主线程回写名额，防止输出风暴排队。"""
+        with self._capture_delivery_lock:
+            if self._capture_delivery_pending:
+                return False
+            self._capture_delivery_pending = True
+            return True
+
+    def _release_capture_delivery(self) -> None:
+        with self._capture_delivery_lock:
+            self._capture_delivery_pending = False
+
+    def _apply_capture_delivery(
+        self, generation: int, name: str, frame_key: tuple, grid, cursor, state,
+    ) -> None:
+        """主线程只消费仍是最新的那一帧，释放名额后立即补看最新快照。"""
+        try:
+            with self._capture_delivery_lock:
+                still_latest = self._latest_capture_key == frame_key
+            if still_latest:
+                self._apply_capture(generation, name, grid, cursor, state)
+        finally:
+            self._release_capture_delivery()
+            self._poke.set()
+
     def _capture_loop(self) -> None:
         # 抓帧线程喂右栏画面：抬到 User Initiated，避免系统忙时回显掉帧。
         from corral.schedprio import boost_ui_worker
@@ -731,9 +786,15 @@ class EmbedPane(Widget):
                     continue
 
                 channel = embed.active_channel(name)
-                gap = time.monotonic() - last_capture
-                if 0 < gap < MIN_CAPTURE_INTERVAL:
-                    time.sleep(MIN_CAPTURE_INTERVAL - gap)
+                now = time.monotonic()
+                gap = now - last_capture
+                min_interval = self._minimum_capture_interval(channel, now)
+                if 0 < gap < min_interval:
+                    # %output 只代表“可能有新画面”。高输出时等到最新采样点再取，
+                    # 不为用户看不到的中间屏做 capture、解析和局部重绘。
+                    self._poke.wait(min_interval - gap)
+                    self._poke.clear()
+                    continue
                 pane_w, pane_h = self._capture_size()
                 capture_t0 = time.perf_counter()
                 text = embed.capture(name, history_offset, pane_h)
@@ -774,32 +835,46 @@ class EmbedPane(Widget):
                             pane_w, pane_h = real
                     frame_key = (generation, history_offset, pane_w, pane_h, text)
                     if frame_key != last_frame_key:
-                        grid = embed.parse_screen_rows(text, pane_w, pane_h)
-                        capture_ms = int((time.perf_counter() - capture_t0) * 1000)
-                        if capture_ms >= 100:
-                            from corral import observe
-                            observe.event(
-                                "capture_slow",
-                                duration_ms=capture_ms,
-                                session_prefix=(name or "")[:16],
-                            )
-                        cursor = state[:3] if state is not None else None
-                        self.app.call_from_thread(
-                            self._apply_capture, generation, name, grid, cursor, state,
-                        )
-                        # 解析和主线程回写都成功后才提交缓存键；任一步异常都要在
-                        # 下一轮重试同一帧，不能又制造一个新的“连接中…”永久中间态。
-                        last_frame_key = frame_key
-                        if not polled_state:
-                            # 输出事件可能在上次状态查询后的 200ms 限速窗口内到达。
-                            # 此时画面已是新的、光标却还是旧的；控制通道随后若没有
-                            # 更多输出，常规 2s 空闲轮询会让 IME 光标长时间停错位置。
-                            # 只补一次恰好落在限速窗口末端的短轮询，既保持 5Hz 上限，
-                            # 又保证静止新帧的光标状态及时收敛。
-                            state_refresh_delay = max(
-                                MIN_CAPTURE_INTERVAL,
-                                STATE_POLL_INTERVAL - (now - last_state_at),
-                            )
+                        self._note_latest_capture(frame_key)
+                        if self._reserve_capture_delivery():
+                            try:
+                                grid = embed.parse_screen_rows(text, pane_w, pane_h)
+                                capture_ms = int((time.perf_counter() - capture_t0) * 1000)
+                                if capture_ms >= 100:
+                                    from corral import observe
+                                    observe.event(
+                                        "capture_slow",
+                                        duration_ms=capture_ms,
+                                        session_prefix=(name or "")[:16],
+                                    )
+                                cursor = state[:3] if state is not None else None
+                                self.app.call_from_thread(
+                                    self._apply_capture_delivery,
+                                    generation,
+                                    name,
+                                    frame_key,
+                                    grid,
+                                    cursor,
+                                    state,
+                                )
+                            except Exception:
+                                # 解析异常时没有回写会替我们释放名额；本轮必须自己
+                                # 归还，下一轮才能重试同一帧而不是永久卡住。
+                                self._release_capture_delivery()
+                                raise
+                            # 只有成功交给主线程的帧才算已提交。若主线程尚未消费，
+                            # 后续快照会留在 _latest_capture_key，永远不积压为任务队列。
+                            last_frame_key = frame_key
+                            if not polled_state:
+                                # 输出事件可能在上次状态查询后的 200ms 限速窗口内到达。
+                                # 此时画面已是新的、光标却还是旧的；控制通道随后若没有
+                                # 更多输出，常规 2s 空闲轮询会让 IME 光标长时间停错位置。
+                                # 只补一次恰好落在限速窗口末端的短轮询，既保持 5Hz 上限，
+                                # 又保证静止新帧的光标状态及时收敛。
+                                state_refresh_delay = max(
+                                    MIN_CAPTURE_INTERVAL,
+                                    STATE_POLL_INTERVAL - (now - last_state_at),
+                                )
                     elif state is not None:
                         cursor = state[:3]
                         if cursor != self._cursor:
@@ -1353,6 +1428,7 @@ class EmbedPane(Widget):
             if selected:
                 self.app.copy_to_clipboard(selected)
             else:
+                self._request_immediate_capture()
                 embed.send_key(name, "C-c")
             return
         event.stop()
@@ -1361,8 +1437,9 @@ class EmbedPane(Widget):
             # 回滚状态下方向键先退回直播画面，和旧版「按键直接发往会话」一致，
             # 但滚轮之外的操作应先让用户看清直播画面再决定是否继续操作
             self.history_offset = 0
-            self._poke.set()
+            self._request_immediate_capture()
             return
+        self._request_immediate_capture()
         if event.is_printable and event.character:
             embed.send_literal(name, event.character)
             return
@@ -1387,6 +1464,7 @@ class EmbedPane(Widget):
             self._paste_image_worker(self.session_name, image_bytes)
         else:
             embed.paste(self.session_name, event.text)
+        self._request_immediate_capture()
         event.stop()
 
     @work(thread=True, group="paste-image")
@@ -1440,7 +1518,7 @@ class EmbedPane(Widget):
         if new_offset == self.history_offset:
             return
         self.history_offset = new_offset
-        self._poke.set()  # 唤醒后台线程按新 offset 立即补抓一帧，主线程不等待
+        self._request_immediate_capture()  # 唤醒后台线程按新 offset 立即补抓一帧，主线程不等待
 
     def _on_resize(self, event: events.Resize) -> None:
         # 静态详情按尺寸缓存；尺寸变了必须失效。实时画面行宽由 render_line 按当前

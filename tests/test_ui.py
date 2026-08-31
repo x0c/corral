@@ -6483,6 +6483,81 @@ class EmbedPaneSelectionStyleTests(unittest.IsolatedAsyncioTestCase):
 class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
     """窗口缩放：行宽即时裁补；tmux resize + 抓帧必须防抖，不能拖动期狂刷。"""
 
+    def test_capture_delivery_keeps_only_latest_frame_while_main_thread_is_busy(self) -> None:
+        """高输出时旧回写不得排队或覆盖更新的画面。"""
+        pane = EmbedPane()
+        pane.session_name = "corral-cursor-backpressure"
+        pane._capture_generation = 7  # noqa: SLF001
+        first = (7, 0, 80, 24, "first")
+        latest = (7, 0, 80, 24, "latest")
+        pane._note_latest_capture(first)  # noqa: SLF001
+        self.assertTrue(pane._reserve_capture_delivery())  # noqa: SLF001
+        pane._note_latest_capture(latest)  # noqa: SLF001
+        self.assertFalse(
+            pane._reserve_capture_delivery(),  # noqa: SLF001
+            "已有主线程回写时不能继续排入第二项",
+        )
+
+        with mock.patch.object(pane, "_apply_capture") as apply_capture:
+            pane._apply_capture_delivery(7, pane.session_name, first, [], None, None)  # noqa: SLF001
+        apply_capture.assert_not_called()
+        self.assertFalse(pane._capture_delivery_pending)  # noqa: SLF001
+        self.assertTrue(pane._poke.is_set())  # noqa: SLF001
+
+        self.assertTrue(pane._reserve_capture_delivery())  # noqa: SLF001
+        with mock.patch.object(pane, "_apply_capture") as apply_capture:
+            pane._apply_capture_delivery(7, pane.session_name, latest, [], None, None)  # noqa: SLF001
+        apply_capture.assert_called_once()
+
+    def test_interactive_capture_window_bypasses_auto_output_sampling(self) -> None:
+        """输入、切换或滚动后必须立即抓取，不受高输出取样间隔拖慢。"""
+        import corral.ui.embed_pane as embed_pane_mod
+
+        pane = EmbedPane()
+        before = time.monotonic()
+        pane._request_immediate_capture()  # noqa: SLF001
+
+        self.assertGreater(
+            pane._interactive_capture_until,  # noqa: SLF001
+            before + embed_pane_mod._INTERACTIVE_CAPTURE_GRACE * 0.9,
+        )
+        self.assertTrue(pane._poke.is_set())  # noqa: SLF001
+
+    def test_continuous_control_output_uses_100ms_sampling_except_interaction(self) -> None:
+        """持续 %output 唤醒不能退回 40ms；交互窗口仍保留原有回显节奏。"""
+        import corral.ui.embed_pane as embed_pane_mod
+
+        pane = EmbedPane()
+        channel = object()
+
+        def sample_times() -> list[float]:
+            now = 0.0
+            last_capture = 0.0
+            captured: list[float] = [now]  # 首帧沿用生产循环，不额外等待。
+            for _ in range(3):
+                # 模拟控制通道在每次抓取 1ms 后再次发来 %output 唤醒。
+                now = last_capture + 0.001
+                interval = pane._minimum_capture_interval(channel, now)  # noqa: SLF001
+                wait = max(0.0, interval - (now - last_capture))
+                now += wait
+                last_capture = now
+                captured.append(round(now, 2))
+            return captured
+
+        self.assertEqual(
+            sample_times(),
+            [0.0, 0.1, 0.2, 0.3],
+            "纯自动输出必须按 100ms 取样，不能连续按旧 40ms 抓帧",
+        )
+
+        pane._interactive_capture_until = 1.0  # noqa: SLF001
+        self.assertEqual(
+            sample_times(),
+            [0.0, 0.04, 0.08, 0.12],
+            "交互窗口内仍必须走 40ms 最小间隔，保证输入回显即时",
+        )
+        self.assertEqual(embed_pane_mod.AUTO_OUTPUT_CAPTURE_INTERVAL, 0.1)
+
     def test_sync_strips_accepts_native_parsed_rows(self) -> None:
         """原生解析器返回预编译行时，首帧和逐行更新都不能按 Cell 列表取长度。"""
         pane = EmbedPane()
