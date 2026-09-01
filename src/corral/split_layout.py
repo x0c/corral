@@ -196,9 +196,19 @@ class SplitLayoutStore:
         return True
 
     def toggle_group_pin(self, group_id: str) -> bool:
-        """切换整个会话组置顶状态，返回切换后的状态。"""
+        """切换整个会话组置顶状态，返回切换后的状态。
+
+        取消整组置顶时必须同时清掉成员的独立 pin。`_mutate` / `_read_conn` 每次都会跑
+        `_normalize_store` → `_promote_member_pins_to_group`：进组保留独立键是为了筛选
+        解散后还能回到 pinned，但如果 unpin 只删 `pinned_group_ids`，成员键还在就会立刻
+        把组钉回去，界面弹出 Pinned / 已置顶，分组却取消不了。
+        """
         if group_id in self.pinned_group_ids:
             del self.pinned_group_ids[group_id]
+            group = self.groups.get(group_id)
+            if group is not None:
+                for key in group.session_keys:
+                    self.pinned_session_keys.pop(key, None)
             return False
         if group_id not in self.groups:
             return False
@@ -387,7 +397,8 @@ class SplitLayoutStore:
 
         进组不再毁掉独立置顶：组后来不足两名可见成员时（筛选、对端电脑的
         另一成员没被扫到），独立置顶还能回到 pinned 区。组正在展示时用组
-        置顶，避免同一会话既在组里又单独钉一份。
+        置顶，避免同一会话既在组里又单独钉一份。用户明确取消整组置顶时由
+        `toggle_group_pin` 先清成员键，再走到这里才不会被立刻钉回去。
         """
         group = self.groups.get(gid)
         if group is None or gid in self.pinned_group_ids:

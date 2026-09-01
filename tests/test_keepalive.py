@@ -168,6 +168,17 @@ def _fake_check_output(list_sessions_output: str, ps_output: str):
     return _run
 
 
+def _list_sessions_only(list_sessions_output: str):
+    """无 pid 路径只该打 tmux list-sessions，不得为祖先链再 fork 一次 ps。"""
+    def _run(argv, **kwargs):
+        if argv[:1] == ["ps"]:
+            raise AssertionError("annotate without pid must not call ps")
+        if "list-sessions" in argv:
+            return list_sessions_output.encode()
+        raise AssertionError(f"unexpected subprocess call: {argv}")
+    return _run
+
+
 class AnnotateTests(unittest.TestCase):
     def test_matches_session_by_pid_ancestor_chain(self) -> None:
         # tmux pane 顶层 pid 是 100（tmux 直接 exec 的进程），但运行时自己注册的
@@ -248,14 +259,52 @@ class AnnotateTests(unittest.TestCase):
 
         self.assertNotIn("keepalive_name", sessions[0])
 
-    def test_sessions_without_pid_are_skipped(self) -> None:
-        sessions = [{"id": "s1", "pid": None}, {"id": "s2"}]
+    def test_sessions_without_pid_match_unique_managed_name(self) -> None:
+        """扫描没标 pid 时仍按 wrap_plan 同款名贴回还活着的 pane。
+
+        Pi 的 jsonl 写完即关、claim 过期后经常拿不到 pid；旧逻辑直接跳过 tmux，
+        侧栏就把还在跑的托管会话画成 Enter restart，回车却走 ``new-session -A``。
+        """
+        sessions = [
+            {"id": "39f9df6b-aaaa-bbbb-cccc-ddddeeeeffff", "source": "pi", "pid": None},
+            {"id": "s2", "source": "pi"},
+        ]
+        list_sessions_out = "corral-pi-39f9df6b|4242\n"
 
         with mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
-             mock.patch("corral.liveness.subprocess.check_output") as mocked:
+             mock.patch("corral.liveness.subprocess.check_output",
+                         side_effect=_list_sessions_only(list_sessions_out)):
             keepalive.annotate(sessions)
 
-        mocked.assert_not_called()
+        self.assertEqual(sessions[0]["keepalive_name"], "corral-pi-39f9df6b")
+        self.assertNotIn("keepalive_name", sessions[1])
+
+    def test_sessions_without_source_are_not_name_matched(self) -> None:
+        """缺 source 的历史不得靠 8 位 ident 猜绑；pid 测试夹具也没有 source。"""
+        sessions = [{"id": "39f9df6b"}]
+        list_sessions_out = "corral-pi-39f9df6b|4242\n"
+
+        with mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("corral.liveness.subprocess.check_output",
+                         side_effect=_list_sessions_only(list_sessions_out)):
+            keepalive.annotate(sessions)
+
+        self.assertNotIn("keepalive_name", sessions[0])
+
+    def test_ambiguous_name_match_assigns_neither(self) -> None:
+        sessions = [
+            {"id": "39f9df6b-aaaa-bbbb-cccc-111111111111", "source": "pi"},
+            {"id": "39f9df6b-aaaa-bbbb-cccc-222222222222", "source": "pi"},
+        ]
+        list_sessions_out = "corral-pi-39f9df6b|4242\n"
+
+        with mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch("corral.liveness.subprocess.check_output",
+                         side_effect=_list_sessions_only(list_sessions_out)):
+            keepalive.annotate(sessions)
+
+        self.assertNotIn("keepalive_name", sessions[0])
+        self.assertNotIn("keepalive_name", sessions[1])
 
     def test_one_pane_is_not_assigned_to_two_sessions(self) -> None:
         """父进程和子进程被扫成两张卡时，祖先链不得把同一份 tmux 画面贴给两张卡。

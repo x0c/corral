@@ -4,11 +4,13 @@
 判活查询（`is_alive` / `note_alive` / `forget_alive`）与扫描后按 pid 祖先链
 贴上 `keepalive_name`（`annotate`）都在这里；启动包装仍在 keepalive。
 
-匹配保活会话到已扫描出的会话时，不能只靠 tmux 会话名：`claude --resume`
+匹配保活会话到已扫描出的会话时，优先走 pid 祖先链：`claude --resume`
 之类的原生恢复可能在内部 fork/重新注册进程，pane 里的顶层 pid 未必等于
 运行时自己记录的"活跃 pid"。因此用一次 `ps -eo pid,ppid` 建出整机父子
 关系表，逐个候选 pid 向上追祖先链，只要能追到某个 tmux pane 的顶层 pid，
-就判定命中——对是否发生过 fork 免疫。
+就判定命中——对是否发生过 fork 免疫。扫描没标出 pid 时（Pi claim 过期、
+jsonl 已关）仍按 ``corral-<runtime>-<ident>`` 唯一命中贴名，避免把还在跑
+的托管会话画成 Enter restart。
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import time
 
 from corral import keepalive
 from corral.legacy_names import (
+    ALL_SESSION_PREFIXES,
     ALL_SOCKET_NAMES,
     is_managed_session,
     tmux_argv_for_session,
@@ -133,6 +136,33 @@ def _is_descendant(pid: int, ancestor_pid: int, ppid_map: dict[int, int]) -> boo
     return False
 
 
+def _parse_managed_session_name(name: str) -> tuple[str, str] | None:
+    """从 ``corral-pi-abcd1234`` / ``sc-claude-…`` 拆出 (runtime_id, ident)。"""
+    for prefix in ALL_SESSION_PREFIXES:
+        if not name.startswith(prefix):
+            continue
+        rest = name[len(prefix):]
+        runtime, sep, ident = rest.rpartition("-")
+        if sep and runtime and ident:
+            return runtime, ident
+    return None
+
+
+def _name_matches_session(name: str, session: dict) -> bool:
+    """托管名末段 ident 是否对得上这条会话 id（占位 8 位或完整 id）。
+
+    与 ``store._session_matches_keepalive_ident`` 同口径；liveness 不得 import store。
+    """
+    ident = str(name or "").rsplit("-", 1)[-1]
+    sid = str(session.get("id") or "")
+    if not ident or not sid:
+        return False
+    if sid == ident or sid.startswith(ident):
+        return True
+    compact = sid.replace("-", "")
+    return compact.startswith(ident) or ident.startswith(compact[:8])
+
+
 def annotate(sessions) -> None:
     """给命中保活的会话就地加上 `keepalive_name` 字段；不生成新列表，不改变顺序。
 
@@ -141,16 +171,18 @@ def annotate(sessions) -> None:
     一 pane 也只挂一条会话：扫描若把父进程和子进程绑到两张卡上，祖先链会让
     两张卡都命中同一份 tmux 画面，分屏两格就会一模一样。同一 pane 有多个
     候选时优先「pid 恰好就是 pane 顶层进程」的精确命中，再考虑祖先链。
-    """
-    candidates = {s.get("pid"): s for s in sessions if s.get("pid")}
-    if not candidates:
-        return  # 没有任何会话带存活 pid，不值得为此打一次 tmux/ps 子进程
 
+    扫描没标出 pid 时仍要按 tmux 名贴回去。Pi 的 jsonl 写完即关、claim 过期
+    后 `_apply_live_flags` 经常拿不到 pid；旧逻辑这里直接 return，侧栏就把还
+    在跑的托管会话画成 Enter restart，回车却走 ``new-session -A`` 接回原进程。
+    """
+    if not sessions:
+        return
+    candidates = {s.get("pid"): s for s in sessions if s.get("pid")}
     tmux_sessions = _list_tmux_sessions("#{session_name}|#{pane_pid}")
     if not tmux_sessions:
         return
 
-    ppid_map = _build_ppid_map()
     assigned_pids: set[int] = set()
     assigned_names: set[str] = set()
 
@@ -170,28 +202,62 @@ def annotate(sessions) -> None:
         assigned_pids.add(pid)
         assigned_names.add(name)
 
-    # 第一遍只认「pid 恰好就是 pane 顶层进程」的精确命中（进程树嵌套时，深祖
-    # 先链命中的可能是外层 pane，精确命中才是进程真正性所在的那个 pane）。
+    if candidates:
+        ppid_map = _build_ppid_map()
+        # 第一遍只认「pid 恰好就是 pane 顶层进程」的精确命中（进程树嵌套时，深祖
+        # 先链命中的可能是外层 pane，精确命中才是进程真正性所在的那个 pane）。
+        for row in tmux_sessions:
+            if len(row) < 2:
+                continue
+            name, pane_pid_text = row[0], row[1]
+            try:
+                pane_pid = int(pane_pid_text)
+            except ValueError:
+                continue
+            _claim(name, pane_pid, exact_only=True)
+        # 第二遍祖先链兜底；已对上 pane 的 pid / 名字不再改绑：一个进程只挂一个
+        # 名字，一个 pane 也只挂一条会话。
+        for row in tmux_sessions:
+            if len(row) < 2:
+                continue
+            name, pane_pid_text = row[0], row[1]
+            try:
+                pane_pid = int(pane_pid_text)
+            except ValueError:
+                continue
+            _claim(name, pane_pid, exact_only=False)
+
+    _annotate_unmatched_by_session_name(sessions, tmux_sessions, assigned_names)
+
+
+def _annotate_unmatched_by_session_name(
+    sessions, tmux_sessions: list[list[str]], assigned_names: set[str],
+) -> None:
+    """pid 没贴上时，用 wrap_plan 同款的 ``corral-<runtime>-<ident>`` 名接回还活着的 pane。"""
+    unnamed = [session for session in sessions if not session.get("keepalive_name")]
+    if not unnamed:
+        return
     for row in tmux_sessions:
-        if len(row) < 2:
+        if not row:
             continue
-        name, pane_pid_text = row[0], row[1]
-        try:
-            pane_pid = int(pane_pid_text)
-        except ValueError:
+        name = row[0]
+        if name in assigned_names:
             continue
-        _claim(name, pane_pid, exact_only=True)
-    # 第二遍祖先链兜底；已对上 pane 的 pid / 名字不再改绑：一个进程只挂一个
-    # 名字，一个 pane 也只挂一条会话。
-    for row in tmux_sessions:
-        if len(row) < 2:
+        parsed = _parse_managed_session_name(name)
+        if parsed is None:
             continue
-        name, pane_pid_text = row[0], row[1]
-        try:
-            pane_pid = int(pane_pid_text)
-        except ValueError:
+        runtime, _ident = parsed
+        matches = [
+            session
+            for session in unnamed
+            if str(session.get("source") or "") == runtime
+            and _name_matches_session(name, session)
+        ]
+        if len(matches) != 1:
             continue
-        _claim(name, pane_pid, exact_only=False)
+        matches[0]["keepalive_name"] = name
+        assigned_names.add(name)
+        unnamed.remove(matches[0])
 
 
 # 在 liveness 加载完成后绑定，避免与 keepalive 顶层互相 import 形成环。

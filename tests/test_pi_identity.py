@@ -26,6 +26,7 @@ def _claim(
     state: str = "active",
     updated: datetime | None = None,
     sequence: int = 1,
+    session_file: str | None = None,
 ) -> dict:
     return {
         "protocolVersion": 1,
@@ -35,7 +36,7 @@ def _claim(
         "instanceNonce": "n" * 16,
         "state": state,
         "sessionId": session_id,
-        "sessionFile": None,
+        "sessionFile": session_file,
         "cwd": "/tmp/proj",
         "parentSession": None,
         "reason": "startup",
@@ -318,6 +319,36 @@ class ClaimLiveFlagTests(unittest.TestCase):
             by_id = {item["id"]: item for item in sessions}
             self.assertTrue(by_id[session_id]["live"])
             self.assertEqual(by_id[session_id]["pid"], 61)
+
+    def test_claim_session_file_binds_when_session_id_misses(self) -> None:
+        """header id 对不上 claim.sessionId 时，精确 sessionFile 仍是正向证据。"""
+        with tempfile.TemporaryDirectory() as td:
+            cwd = str(Path(td) / "proj")
+            Path(cwd).mkdir()
+            real_id = "0198abcdef01234567890123456789ab"
+            path = self._write_pi_session(Path(td), real_id, cwd)
+            real_cwd = os.path.realpath(cwd)
+            claim = _claim("inst-file", "abcd1234", 81, session_file=str(path))
+            with mock.patch.object(self.scan_pi, "SESSIONS_DIR", td), mock.patch.object(
+                self.scan_pi, "live_processes", return_value=[(81, real_cwd)]
+            ), mock.patch.object(
+                self.scan_pi, "process_command_line", return_value="pi --approve"
+            ), mock.patch.object(
+                self.scan_pi, "open_file_paths", return_value={81: []}
+            ), mock.patch.object(
+                self.scan_pi, "process_start_time", return_value=None
+            ), mock.patch.object(
+                self.scan_pi, "process_environ",
+                side_effect=lambda pid: (
+                    {pi_identity.INSTANCE_ENV: "inst-file"} if pid == 81 else {}
+                ),
+            ), mock.patch.object(
+                pi_identity, "read_claims", return_value=[claim]
+            ):
+                sessions = self.scan_pi.scan_sessions(limit=10)
+            by_id = {item["id"]: item for item in sessions}
+            self.assertTrue(by_id[real_id]["live"])
+            self.assertEqual(by_id[real_id]["pid"], 81)
 
     def test_switching_claim_keeps_old_identity_live(self) -> None:
         """switching 期间保留旧会话 live，等新 session_start 覆盖。"""

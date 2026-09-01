@@ -128,6 +128,16 @@ class SessionHubPayloadTests(unittest.TestCase):
             payload = self.hub.session_payload(session, layout)
         self.assertTrue(payload["group"]["pinned"])
 
+    def test_toggle_pin_unpins_group_promoted_from_member_pin(self) -> None:
+        """先钉成员再进组：远程再切一次必须取消整组置顶，不能被 promote 钉回去。"""
+        self.hub.layout_db.toggle_session_pin("claude:a")
+        self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])
+        self.assertFalse(self.hub.toggle_pin("claude:a"))
+        layout = self.hub.layout_db.read()
+        gid = layout.get_group("claude:a").group_id
+        self.assertNotIn(gid, layout.pinned_group_ids)
+        self.assertNotIn("claude:a", layout.pinned_session_keys)
+
     def test_list_sessions_respects_limit_and_searches_group_name(self) -> None:
         sessions = [
             _session(sid="a", title="alpha"),

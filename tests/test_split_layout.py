@@ -183,6 +183,24 @@ class SplitLayoutStoreTests(unittest.TestCase):
         self.assertIsNone(store.get_group("claude:a"))
         self.assertIn("claude:a", store.pinned_session_keys)
 
+    def test_unpin_group_clears_promoted_member_pins(self) -> None:
+        """先钉成员再进组后，取消整组置顶不得被 promote 立刻钉回去。
+
+        Pi 会话尤其容易踩：先钉独立卡再分屏进组，sqlite 里独立键还在；只删组 pin
+        时 `_normalize_store` 会马上 `_promote_member_pins_to_group`，toast 读到的
+        快照仍是 pinned。
+        """
+        store = split_layout.SplitLayoutStore()
+        store.toggle_session_pin("pi:a")
+        store.set_group("/p", ["pi:a", "pi:b"])
+        gid = store.get_group("pi:a").group_id
+        self.assertIn(gid, store.pinned_group_ids)
+        self.assertFalse(store.toggle_group_pin(gid))
+        split_layout._normalize_store(store)
+        self.assertNotIn(gid, store.pinned_group_ids)
+        self.assertNotIn("pi:a", store.pinned_session_keys)
+        self.assertNotIn("pi:b", store.pinned_session_keys)
+
     def test_sidebar_fingerprint_ignores_focus_only_changes(self) -> None:
         """焦点变化不该触发别的窗口重建列表（全量重建是秒级重活）。"""
         store = split_layout.SplitLayoutStore()
@@ -219,6 +237,20 @@ class SidebarLayoutDBTests(_TempLayoutDB):
         self.assertIn(gid, loaded.pinned_group_ids)
         self.assertIn("claude:a", loaded.pinned_session_keys)
         self.assertTrue(loaded.groups[gid].collapsed)
+
+    def test_unpin_promoted_group_survives_reload(self) -> None:
+        """库读写也会跑 normalize：取消提升上来的整组 pin 必须落盘后仍保持取消。"""
+        db = self.db()
+        db.toggle_session_pin("pi:a")
+        snapshot = db.set_group("/p", ["pi:a", "pi:b"])
+        gid = snapshot.get_group("pi:a").group_id
+        self.assertIn(gid, snapshot.pinned_group_ids)
+        snapshot = db.toggle_group_pin(gid)
+        self.assertNotIn(gid, snapshot.pinned_group_ids)
+        self.assertNotIn("pi:a", snapshot.pinned_session_keys)
+        loaded = self.db().read()
+        self.assertNotIn(gid, loaded.pinned_group_ids)
+        self.assertNotIn("pi:a", loaded.pinned_session_keys)
 
     def test_remembered_ids_include_pins_and_group_members(self) -> None:
         """扫描 limit 豁免必须覆盖独立置顶和分组成员，不能只看当前可见列表。"""

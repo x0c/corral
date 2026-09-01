@@ -885,9 +885,9 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
     envs = {pid: process_environ(pid) for pid, _cwd in tui_procs}
 
     # 身份桥 claim（corral-session-identity 扩展）：有效 claim 是 live 归属的
-    # 第一权威，只按 claim 里的精确 session id 绑定；同一 pid 取 sequence
-    # 最大的一条。托管进程的 claim instance 必须与 env 注入值一致，裸 Pi 的
-    # native claim 直接按 pid 对号。
+    # 第一权威，按 claim 的精确 sessionId，对不上再按 sessionFile 路径绑定；
+    # 同一 pid 取 sequence 最大的一条。托管进程的 claim instance 必须与 env
+    # 注入值一致，裸 Pi 的 native claim 直接按 pid 对号。
     claims_by_pid: dict[int, list[dict]] = {}
     for claim in pi_identity.read_claims():
         if not pi_identity.claim_is_live(claim):
@@ -1027,9 +1027,12 @@ def _apply_live_flags(sessions: list[dict], created_ts: dict[str, float]) -> Non
             default=None,
         )
         if claim is not None:
-            session = by_id.get(str(claim.get("sessionId") or ""))
-            if session is not None and not (session.get("live") and session.get("pid") != pid):
-                _mark_live(session, pid)
+            session = bind_by_id_or_path(pid, str(claim.get("sessionId") or ""))
+            if session is None:
+                # header id 与 claim.sessionId 对不上时（占位 ident vs uuid），
+                # 精确路径仍是正向证据，不能只查 by_id 然后把 pid 钉死不绑。
+                session = bind_by_id_or_path(pid, str(claim.get("sessionFile") or ""))
+            if session is not None:
                 _remember_live_session(pid, str(session.get("id") or ""), starts.get(pid))
             # claim 指向的会话尚未落盘或不在扫描窗口：保持 provisional，
             # 绝不回落到 cwd/mtime 猜测。

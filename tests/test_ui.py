@@ -2575,6 +2575,37 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertNotIn(keys[0], list_view.group_store.pinned_session_keys)
 
+    async def test_p_unpins_group_promoted_from_member_pin(self) -> None:
+        """先钉独立会话再进组：再按 p 必须取消整组置顶，不能弹出 Pinned 后钉回去。"""
+        store, app = await self._grouped_app()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = [
+                corral.session_key(session)
+                for session in store.all_sessions()[:2]
+            ]
+            list_view.on_layout_change(lambda s: s.toggle_session_pin(keys[0]))
+            list_view.on_layout_change(
+                lambda s: s.set_group("/tmp", keys, focus_key=keys[0])
+            )
+            await list_view.rebuild()
+            list_view.focus()
+            group = list_view.group_store.get_group(keys[0])
+            self.assertIsNotNone(group)
+            self.assertIn(group.group_id, list_view.group_store.pinned_group_ids)
+            group_item = list_view._group_items()[0][0]
+            list_view.index = list(list_view.list_children).index(group_item)
+            await pilot.press("p")
+            gid = group.group_id
+            await _wait_until(
+                lambda: gid not in list_view.group_store.pinned_group_ids
+            )
+            self.assertNotIn(keys[0], list_view.group_store.pinned_session_keys)
+            first_card = list_view.list_children[len(STICKY_IDS)].children[0]
+            self.assertIsInstance(first_card, SessionGroupCard)
+            self.assertNotIn("↑", first_card.render().plain.splitlines()[0])
+
     async def test_ctrl_p_pins_selected_session_from_sidebar(self) -> None:
         store, app = await self._grouped_app()
         async with app.run_test(size=(100, 30)) as pilot:
