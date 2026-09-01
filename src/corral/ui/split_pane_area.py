@@ -76,6 +76,7 @@ class PaneSpec:
 
 class _PaneClose(Static):
     ALLOW_SELECT = False
+    can_focus = False
 
     DEFAULT_CSS = """
     _PaneClose {
@@ -95,8 +96,15 @@ class _PaneClose(Static):
         super().__init__("✕", **kwargs)
         self._on_close = on_close
 
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        # 点 ✕ 不得让本格抢到焦点：否则延迟 DescendantFocus 会把侧栏切到被关会话，
+        # 节流的选择跟随再把它当单格打开。
+        event.stop()
+        event.prevent_default()
+
     def on_click(self, event: events.Click) -> None:
         event.stop()
+        event.prevent_default()
         self._on_close()
 
 
@@ -467,9 +475,12 @@ class PaneCell(Vertical):
         self._sync_active_marker()
 
     def _notify_pane_focused(self) -> None:
-        if not self.has_focus_within or self._on_pane_focused is None:
+        if self._pooled or not self.has_focus_within or self._on_pane_focused is None:
             return
-        self._on_pane_focused(self.spec.session_key)
+        key = self.spec.session_key
+        if key.startswith("__"):
+            return
+        self._on_pane_focused(key)
 
     def _is_restart_chrome_target(self) -> bool:
         """预览/已结束格才在顶底 chrome 写 Enter 重启；占位格与托管中不算。"""
@@ -958,6 +969,12 @@ class SplitPaneArea(Vertical):
         return False
 
     def _handle_pane_focused(self, session_key: str) -> None:
+        if session_key.startswith("__"):
+            return
+        if session_key not in {p.session_key for p in self._panes}:
+            # 关格后才送到的 DescendantFocus：格子已不在当前分屏里，写回
+            # _focus_key 会让选择跟随把右栏切到刚被关掉的会话。
+            return
         self._focus_key = session_key
         # 收到真实焦点事件才结束输入归属声明。Widget.focus() 本身是延迟落地的，
         # 在这里之前的任何蒙版同步都必须继续认为右栏可输入。
@@ -1040,10 +1057,29 @@ class SplitPaneArea(Vertical):
             detail_renderer=renderer,
         )
 
+    def _remaining_focus_key(self, closed: PaneSpec) -> str | None:
+        """关格后右栏该停在哪一格：未关的当前焦点优先，否则左侧邻居。"""
+        remaining = [p for p in self._panes if p.cell_id != closed.cell_id]
+        if not remaining:
+            return None
+        if (
+            self._focus_key
+            and self._focus_key != closed.session_key
+            and any(p.session_key == self._focus_key for p in remaining)
+        ):
+            return self._focus_key
+        try:
+            idx = next(i for i, p in enumerate(self._panes) if p.cell_id == closed.cell_id)
+        except StopIteration:
+            return remaining[-1].session_key
+        if idx > 0:
+            return self._panes[idx - 1].session_key
+        return remaining[0].session_key
+
     def _close_spec(self, spec: PaneSpec, *, notify: bool = True) -> None:
+        remaining_focus = self._remaining_focus_key(spec)
         self._panes = [p for p in self._panes if p.cell_id != spec.cell_id]
-        if self._focus_key == spec.session_key:
-            self._focus_key = self._panes[-1].session_key if self._panes else None
+        self._focus_key = remaining_focus
         if notify:
             self._on_pane_close(spec.session_key)
         # 只把该格收回池里，勿销毁——同伴格与格池本身都要留下来供下次改绑。

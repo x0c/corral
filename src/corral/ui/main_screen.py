@@ -260,6 +260,7 @@ class MainScreen(
         # 选择跟随的节流状态，见 _schedule_follow_selection
         self._follow_timer = None
         self._follow_last_run = 0.0
+        self._suppress_selection_follow = 0
         # 静态详情 renderer 的内容签名缓存：同一份内容（会话键+mtime+标题+
         # 关注态都未变）复用同一个闭包，EmbedPane 才能靠 renderer 身份命中
         # 全文排版 LRU，A->B->A 切回与无变化重扫都零重排（见 _detail_renderer_for）。
@@ -755,6 +756,17 @@ class MainScreen(
         delay = max(0.01, _FOLLOW_THROTTLE - (now - self._follow_last_run))
         self._follow_timer = self.set_timer(delay, self._run_follow_selection)
 
+    def _cancel_follow_selection(self) -> None:
+        """丢掉已排队的选择跟随，避免关格前那次高亮在 120ms 后把被关会话打开。"""
+        if self._follow_timer is not None:
+            self._follow_timer.stop()
+            self._follow_timer = None
+
+    def _release_selection_follow_suppress(self) -> None:
+        self._suppress_selection_follow = max(
+            0, getattr(self, "_suppress_selection_follow", 0) - 1
+        )
+
     def _run_follow_selection(self) -> None:
         import time as _time
 
@@ -766,13 +778,14 @@ class MainScreen(
 
     def on_unmount(self) -> None:
         # 待触发的节流定时器不能活过屏幕本身，否则回调会打到已卸载的控件树上。
-        if self._follow_timer is not None:
-            self._follow_timer.stop()
-            self._follow_timer = None
+        self._cancel_follow_selection()
+        self._suppress_selection_follow = 0
         self._cancel_attention_read()
 
 
     def _follow_current_selection(self) -> None:
+        if getattr(self, "_suppress_selection_follow", 0):
+            return
         if not self.embed_ok:
             return
         session_list = self.query_one(SessionListView)
@@ -1343,6 +1356,10 @@ class MainScreen(
 
     def _on_pane_focused(self, session_key: str) -> None:
         """右栏某格拿到焦点后，侧边栏高亮切到同一会话（不改右栏布局）。"""
+        if session_key.startswith("__"):
+            return
+        if self.embed_ok and session_key not in self._split_area().ordered_session_keys():
+            return
         list_view = self.query_one(SessionListView)
         list_view.clear_multi()
         if getattr(self, "_activity_board_active", False):

@@ -133,12 +133,50 @@ async def _wait_for_embed_session(
 
 
 async def _wait_until(predicate, *, tries: int = 500, interval: float = 0.01) -> None:
-    """等待后台 worker 达到断言条件；成功立即返回，慢速 Runner 最多等五秒。"""
+    """等到 predicate() 为真，超时则抛 AssertionError。"""
     for _ in range(tries):
         if predicate():
             return
         await asyncio.sleep(interval)
-    raise AssertionError(f"等待 {tries * interval:.2f}s 后条件仍未满足")
+    raise AssertionError("timed out waiting for condition")
+
+
+def _live_split_sessions(n: int) -> list[dict]:
+    return [
+        {
+            "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+            "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+            "native_title": None, "fallback_title": f"会话{i}",
+            "cwd": "/tmp", "live": True,
+            "keepalive_name": f"corral-claude-s{i}",
+        }
+        for i in range(n)
+    ]
+
+
+async def _open_split_group(pilot, app, sessions, *, focus_idx: int = 0):
+    """把给定会话铺成右栏分屏组，并写入侧栏记忆。"""
+    await pilot.pause(delay=0.2)
+    area = app.screen.query_one(SplitPaneArea)
+    keys = [corral.session_key(session) for session in sessions]
+    focus_key = keys[focus_idx]
+    app.screen._apply_layout_change(  # noqa: SLF001
+        lambda s: s.set_group("/tmp", keys, focus_key=focus_key)
+    )
+    area.show_hosted_group(
+        "/tmp",
+        [
+            (session, session.get("keepalive_name"), lambda: "")
+            for session in sessions
+        ],
+        focus_key=focus_key,
+    )
+    await _wait_until(
+        lambda: len(area.cells()) == len(sessions)
+        and all(cell.embed_pane() is not None for cell in area.cells()),
+    )
+    await pilot.pause()
+    return area, keys
 
 
 async def _wait_for_pane_text(pane, text: str, *, tries: int = 60, interval: float = 0.1) -> None:
@@ -1002,6 +1040,102 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(area.cells()[0], keeper)
             self.assertIs(area.cells()[0].embed_pane(), keeper_pane)
             self.assertEqual(area.ordered_session_keys(), [key1])
+
+    async def test_closing_unfocused_split_pane_keeps_remaining_split(self) -> None:
+        """关掉未聚焦的那一格后，右栏必须留在剩余分屏，不得切到被关会话。"""
+        sessions = _live_split_sessions(3)
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(160, 30)) as pilot:
+            area, keys = await _open_split_group(pilot, app, sessions, focus_idx=0)
+            closed = area.pane_specs()[2]
+            area._close_spec(closed)  # noqa: SLF001
+            await _wait_until(lambda: len(area.cells()) == 2)
+            app.screen._follow_current_selection()  # noqa: SLF001
+            await pilot.pause()
+            self.assertEqual(area.ordered_session_keys(), [keys[0], keys[1]])
+            self.assertEqual(area.focus_key, keys[0])
+            self.assertNotIn(keys[2], area.ordered_session_keys())
+
+    async def test_closing_focused_split_pane_stays_on_remaining_not_closed(self) -> None:
+        """关掉当前聚焦格后，右栏留在剩余那一格，不得切回刚关掉的会话。"""
+        sessions = _live_split_sessions(2)
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            area, keys = await _open_split_group(pilot, app, sessions, focus_idx=0)
+            list_view = app.screen.query_one(SessionListView)
+            area._close_spec(area.pane_specs()[0])  # noqa: SLF001
+            await _wait_until(lambda: len(area.cells()) == 1)
+            app.screen._follow_current_selection()  # noqa: SLF001
+            await pilot.pause()
+            self.assertEqual(area.ordered_session_keys(), [keys[1]])
+            self.assertEqual(area.focus_key, keys[1])
+            selected = list_view.selected_session()
+            if selected is not None:
+                self.assertEqual(corral.session_key(selected), keys[1])
+
+    async def test_stale_focus_notify_after_close_is_ignored(self) -> None:
+        """关格后迟到的 DescendantFocus 不得把焦点键写回已关会话。"""
+        sessions = _live_split_sessions(2)
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            area, keys = await _open_split_group(pilot, app, sessions, focus_idx=0)
+            area._close_spec(area.pane_specs()[0])  # noqa: SLF001
+            await _wait_until(lambda: len(area.cells()) == 1)
+            area._handle_pane_focused(keys[0])  # noqa: SLF001
+            self.assertEqual(area.focus_key, keys[1])
+            self.assertEqual(area.ordered_session_keys(), [keys[1]])
+
+    async def test_pending_selection_follow_after_close_does_not_open_closed_session(
+        self,
+    ) -> None:
+        """关格前侧栏已高亮被关会话时，排队的选择跟随也不得把它当单格打开。"""
+        sessions = _live_split_sessions(2)
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            area, keys = await _open_split_group(pilot, app, sessions, focus_idx=0)
+            list_view = app.screen.query_one(SessionListView)
+            list_view.select_session_key(keys[1])
+            area._close_spec(area.pane_specs()[1])  # noqa: SLF001
+            await _wait_until(lambda: len(area.cells()) == 1)
+            app.screen._follow_current_selection()  # noqa: SLF001
+            await pilot.pause()
+            self.assertEqual(area.ordered_session_keys(), [keys[0]])
+            self.assertNotIn(keys[1], area.ordered_session_keys())
+
+    async def test_clicking_close_on_unfocused_pane_does_not_switch_to_it(self) -> None:
+        """点未聚焦格上的 ✕，右栏仍留在当前分屏剩余格。"""
+        from corral.ui.split_pane_area import _PaneClose
+
+        sessions = _live_split_sessions(2)
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(120, 30)) as pilot:
+            area, keys = await _open_split_group(pilot, app, sessions, focus_idx=0)
+            close_btn = area.cells()[1].query_one(_PaneClose)
+            await pilot.click(close_btn)
+            await _wait_until(lambda: len(area.cells()) == 1)
+            app.screen._follow_current_selection()  # noqa: SLF001
+            await pilot.pause()
+            self.assertEqual(area.ordered_session_keys(), [keys[0]])
+            self.assertEqual(area.focus_key, keys[0])
+
+    async def test_closing_middle_focused_pane_keeps_left_neighbor(self) -> None:
+        """三格分屏关掉中间聚焦格时，焦点交给左侧邻居，其余两格仍在。"""
+        sessions = _live_split_sessions(3)
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(160, 30)) as pilot:
+            area, keys = await _open_split_group(pilot, app, sessions, focus_idx=1)
+            area._close_spec(area.pane_specs()[1])  # noqa: SLF001
+            await _wait_until(lambda: len(area.cells()) == 2)
+            app.screen._follow_current_selection()  # noqa: SLF001
+            await pilot.pause()
+            self.assertEqual(area.ordered_session_keys(), [keys[0], keys[2]])
+            self.assertEqual(area.focus_key, keys[0])
 
     async def test_same_hosted_identity_skips_remount_keeps_live_grid(self) -> None:
         """同 (session_key, keepalive) 再 show_hosted_group 不得整排 remount 清掉 live 画面。"""
