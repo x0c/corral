@@ -1346,10 +1346,7 @@ class MainScreen(
             snap = self.query_one(SessionListView).board_snapshot
             if snap is None or snap.page_count <= 1:
                 return False
-            if action == "board_prev" and snap.page <= 0:
-                return False
-            if action == "board_next" and snap.page >= snap.page_count - 1:
-                return False
+            # 循环翻页：多页时两侧都可用，不要到头把键藏起来。
         if action in _LIST_ONLY_ACTIONS and self._live_embed_focused():
             return False
         return True

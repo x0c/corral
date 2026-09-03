@@ -154,15 +154,22 @@ class ActivityBoard:
         翻页控件可以：调用方先清打字钉再切页。
 
         翻页是用户的主动导航：被钉住但已不在队列里的成员（跑完、已读）
-        随重切让位，不再跨页钉住。
+        随重切让位，不再跨页钉住。多页时循环：末页再下一页回到首页，
+        首页再上一页到末页。
         """
         eligible = [key for key in self._eligible if key not in self._skipped]
         if not eligible:
             self._page = 0
             self._locked = []
             return
+        if not delta:
+            return
         page_count = max(1, math.ceil(len(eligible) / MAX_PANES))
-        self._page = max(0, min(self._page + delta, page_count - 1))
+        if page_count <= 1:
+            self._page = 0
+            self._locked = eligible[:MAX_PANES]
+            return
+        self._page = (self._page + delta) % page_count
         start = self._page * MAX_PANES
         self._locked = eligible[start:start + MAX_PANES]
 

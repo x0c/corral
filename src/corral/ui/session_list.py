@@ -2,7 +2,8 @@
 
 侧边栏布局硬约定（凡往左栏加控件都必须遵守，见 AGENTS.md / MAINTAINER_GUIDE）：
 搜索框/新建项最后一行是间隔空行，画在控件自身高度内并算进命中区；禁止用 margin
-或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、会话卡高 3（标题 / 运行时 /
+或兄弟空隙做分隔。当前：搜索框高 2、新建项高 2、活跃会话看板高 3（首行名称 /
+第二行上一页·下一页 / 第三行留白）、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
 无末行空行）。筛选框在列表外固定；`＋ 新建` 和活跃会话看板在 `#sidebar-sticky` 里也不随
 列表滚。置顶块、Pinned 分隔线与未置顶（Today / 更早）都在 `#sidebar-scroll`
@@ -719,9 +720,9 @@ class NewSessionCard(Widget):
 
 
 def activity_board_label(snap: BoardSnapshot | None) -> str:
-    """侧栏入口左侧文案：没人盯时只写名称；有人时写成「活跃会话 · N 个会话」。
+    """侧栏入口首行文案：没人盯时只写名称；有人时写成「活跃会话 · N 个会话」。
 
-    页码不写进这段：只有一页时保持干净；多于一页时由右侧可点的 ``[1/2]`` 承担。
+    页码不写进这段：只有一页时保持干净；多于一页时由第二行「上一页 / 下一页」承担。
     """
     if snap is None or not snap.total:
         return t("list.activity_board")
@@ -734,36 +735,35 @@ def activity_board_label(snap: BoardSnapshot | None) -> str:
 
 
 def activity_board_pager_text(snap: BoardSnapshot | None) -> str:
-    """多于一页时返回 ``[1/2]``；只有一页或没人时为空。"""
+    """多于一页时返回 ``1/2``；只有一页或没人时为空。"""
     if snap is None or snap.page_count <= 1:
         return ""
-    return f"[{snap.page + 1}/{snap.page_count}]"
+    return f"{snap.page + 1}/{snap.page_count}"
 
 
 @dataclass(frozen=True)
 class BoardRowLayout:
-    """活跃会话入口第一行：左侧名称、可选等待圆点、右侧翻页。"""
+    """活跃会话入口三行：首行名称、第二行上一页/下一页、第三行留白。"""
 
     label: str
     waiting: bool
-    pager: str
-    pager_start: int
-    can_prev: bool
-    can_next: bool
+    show_pager: bool
+    prev_label: str
+    next_label: str
+    page_text: str
+    prev_start: int
+    prev_end: int
+    next_start: int
+    next_end: int
+    page_start: int
 
-    def hit(self, x: int) -> int | None:
-        """点在翻页上返回 -1 / 0 / 1（上一页 / 只进入 / 下一页）；点在名称上返回 None。"""
-        if self.pager_start < 0 or not self.pager:
+    def hit(self, x: int, y: int = 0) -> int | None:
+        """点在第二行上一页 / 下一页上返回 -1 / 1；点在第二行其余位置返回 0；其它行返回 None。"""
+        if y != 1 or not self.show_pager:
             return None
-        import corral
-
-        pager_w = corral._text_width(self.pager)
-        end = self.pager_start + pager_w
-        if x < self.pager_start or x >= end:
-            return None
-        if x == self.pager_start:
+        if self.prev_start <= x < self.prev_end:
             return -1
-        if x == end - 1:
+        if self.next_start <= x < self.next_end:
             return 1
         return 0
 
@@ -771,49 +771,65 @@ class BoardRowLayout:
 def layout_activity_board_row(
     snap: BoardSnapshot | None, width: int
 ) -> BoardRowLayout:
-    """按侧栏宽度排入口第一行，给绘制和点击命中共用。"""
+    """按侧栏宽度排入口三行，给绘制和点击命中共用。"""
     import corral
 
     width = max(10, width)
     label = activity_board_label(snap)
     waiting = bool(snap is not None and snap.waiting_off_page)
-    pager = activity_board_pager_text(snap)
-    can_prev = bool(snap is not None and snap.page > 0)
-    can_next = bool(snap is not None and snap.page + 1 < snap.page_count)
-    extra = 0
-    if waiting:
-        extra += 2
-    pager_w = corral._text_width(pager) if pager else 0
-    if pager:
-        extra += 1 + pager_w
+    extra = 2 if waiting else 0
     fitted = corral._fit_cell(label, max(1, width - extra)).rstrip()
-    used = corral._text_width(fitted)
-    if waiting:
-        used += 2
-    if pager:
-        pager_start = max(used + 1, width - pager_w)
-        if pager_start + pager_w > width:
-            pager_start = max(0, width - pager_w)
+    show_pager = bool(snap is not None and snap.page_count > 1)
+    prev_label = t("action.board_prev") if show_pager else ""
+    next_label = t("action.board_next") if show_pager else ""
+    page_text = activity_board_pager_text(snap) if show_pager else ""
+    prev_w = corral._text_width(prev_label)
+    next_w = corral._text_width(next_label)
+    page_w = corral._text_width(page_text)
+    min_gap = 1 + page_w + (1 if page_w else 0)
+    if show_pager and prev_w + next_w + min_gap > width:
+        budget = max(2, width - min_gap)
+        prev_budget = max(1, budget // 2)
+        next_budget = max(1, budget - prev_budget)
+        prev_label = corral._fit_cell(prev_label, prev_budget).rstrip()
+        next_label = corral._fit_cell(next_label, next_budget).rstrip()
+        prev_w = corral._text_width(prev_label)
+        next_w = corral._text_width(next_label)
+    prev_start = 0
+    prev_end = prev_w
+    next_start = width - next_w if next_label else width
+    next_end = width if next_label else width
+    gap_start = prev_end
+    gap_end = next_start
+    gap = gap_end - gap_start
+    if page_text and gap >= page_w + 2:
+        page_start = gap_start + (gap - page_w) // 2
     else:
-        pager_start = -1
+        page_text = ""
+        page_start = -1
     return BoardRowLayout(
         label=fitted,
         waiting=waiting,
-        pager=pager,
-        pager_start=pager_start,
-        can_prev=can_prev,
-        can_next=can_next,
+        show_pager=show_pager,
+        prev_label=prev_label,
+        next_label=next_label,
+        page_text=page_text,
+        prev_start=prev_start,
+        prev_end=prev_end,
+        next_start=next_start,
+        next_end=next_end,
+        page_start=page_start,
     )
 
 
 class ActivityBoardCard(Widget):
-    """列表顶部「活跃会话」看板入口：一行正文 + 末行间隔（总高 2）。"""
+    """列表顶部「活跃会话」看板入口：名称 + 翻页 + 末行间隔（总高 3）。"""
 
     ALLOW_SELECT = False
 
     DEFAULT_CSS = """
     ActivityBoardCard {
-        height: 2;
+        height: 3;
         width: 1fr;
         pointer: pointer;
     }
@@ -837,17 +853,30 @@ class ActivityBoardCard(Widget):
             out.append(" ")
             out.append("●", style="bold yellow")
             used += 2
-        if layout.pager:
-            gap = max(0, layout.pager_start - used)
-            if gap:
-                out.append(" " * gap)
-            out.append(layout.pager[0], style="dim" if not layout.can_prev else None)
-            out.append(layout.pager[1:-1])
-            out.append(layout.pager[-1], style="dim" if not layout.can_next else None)
-            used = layout.pager_start + corral._text_width(layout.pager)
         pad = max(0, width - used)
         if pad:
             out.append(" " * pad)
+        out.append("\n")
+        if layout.show_pager:
+            cur = 0
+            if layout.prev_label:
+                out.append(layout.prev_label)
+                cur = layout.prev_end
+            if layout.page_text and layout.page_start >= 0:
+                gap = max(0, layout.page_start - cur)
+                if gap:
+                    out.append(" " * gap)
+                out.append(layout.page_text, style="dim")
+                cur = layout.page_start + corral._text_width(layout.page_text)
+            if layout.next_label:
+                gap = max(0, layout.next_start - cur)
+                if gap:
+                    out.append(" " * gap)
+                out.append(layout.next_label)
+                cur = layout.next_end
+            pad = max(0, width - cur)
+            if pad:
+                out.append(" " * pad)
         out.append("\n")
         return out
 
@@ -857,7 +886,7 @@ class ActivityBoardCard(Widget):
             layout = layout_activity_board_row(
                 self._owner.board_snapshot, max(10, self.size.width or 39)
             )
-        delta = layout.hit(event.x)
+        delta = layout.hit(event.x, event.y)
         if delta is None:
             return
         event.stop()

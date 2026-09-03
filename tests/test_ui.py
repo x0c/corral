@@ -2007,6 +2007,8 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(card.region.height == 3 for card in cards))
             new_card = app.screen.query_one(NewSessionCard)
             self.assertEqual(new_card.region.height, 2)
+            board_card = app.screen.query_one(ActivityBoardCard)
+            self.assertEqual(board_card.region.height, 3)
             # 搜索框底边紧贴新建项顶边（搜索的末行间隔已含在 height: 2 内）
             self.assertEqual(items[0].region.y - search.region.bottom, 0)
 
@@ -4100,7 +4102,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.screen._split_store.groups, {})
 
     async def test_activity_board_shows_pager_and_bracket_turns_page(self) -> None:
-        """多于一页时入口画出 [1/2]、底栏露出下一页，按 ] 切到后页。"""
+        """多于一页时第二行画出上一页/下一页、底栏两侧都露，按 ] 切页并循环。"""
         from corral.activity_board import BoardCandidate
 
         sessions = [
@@ -4134,24 +4136,42 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     == ["claude:s0", "claude:s1", "claude:s2", "claude:s3"]
                 )
                 card = app.screen.query_one(ActivityBoardCard)
-                self.assertIn("[1/2]", card.render().plain)
+                self.assertEqual(card.region.height, 3)
+                plain = card.render().plain
+                self.assertIn("Prev page", plain)
+                self.assertIn("Next page", plain)
+                self.assertIn("1/2", plain)
+                self.assertNotIn("[1/2]", plain)
+                lines = plain.split("\n")
+                self.assertGreaterEqual(len(lines), 3)
+                self.assertIn("Active sessions", lines[0])
+                self.assertIn("Prev page", lines[1])
+                self.assertEqual(lines[2], "")
                 screen = app.screen
                 self.assertTrue(screen.check_action("board_next", ()))
-                self.assertFalse(screen.check_action("board_prev", ()))
+                self.assertTrue(screen.check_action("board_prev", ()))
                 shown = [
                     (binding.key, binding.description)
                     for binding in screen.BINDINGS
                     if binding.show and screen.check_action(binding.action, ())
                 ]
                 self.assertIn(("right_square_bracket", "Next page"), shown)
+                self.assertIn(("left_square_bracket", "Prev page"), shown)
                 await pilot.press("]")
                 await pilot.pause()
                 await _wait_until(
                     lambda: area.ordered_session_keys() == ["claude:s4"]
                 )
-                self.assertIn("[2/2]", card.render().plain)
-                self.assertFalse(screen.check_action("board_next", ()))
+                self.assertIn("2/2", card.render().plain)
+                self.assertTrue(screen.check_action("board_next", ()))
                 self.assertTrue(screen.check_action("board_prev", ()))
+                await pilot.press("]")
+                await pilot.pause()
+                await _wait_until(
+                    lambda: area.ordered_session_keys()
+                    == ["claude:s0", "claude:s1", "claude:s2", "claude:s3"]
+                )
+                self.assertIn("1/2", card.render().plain)
 
     async def test_activity_board_holds_panes_while_hosted_during_viewing(self) -> None:
         """观看期间不撤格：会话跑完但仍托管时钉在原格，真正结束（不再托管）才撤。"""

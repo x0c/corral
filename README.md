@@ -178,9 +178,10 @@ block Cursor. Use the `corral observer ... cursor` commands above to audit, prev
   hosted session. The row under it is **Active sessions** (Chinese: `活跃会话`): it auto-tiles up to
   four hosted sessions that currently need you — waiting for an answer, working, or a new unread
   result. The label shows how many of those sessions there are (`Active sessions  ·  3 sessions`).
-  A page number appears only when there is more than one page: the row then shows a clickable
-  `[1/2]`, and the footer spells out `[` previous page / `]` next page while the list has focus
-  (laptop keyboards without Page Up / Page Down still work). A session that just finished stays
+  The board is a three-line card: name on the first line, clickable previous/next on the
+  second when there is more than one page (wrapping from last back to first), and a blank
+  third line. The footer also spells out `[` previous page / `]` next page while the list
+  has focus (laptop keyboards without Page Up / Page Down still work). A session that just finished stays
   on the current page for a moment so the grid does not jump while you are still reading it.
   Sessions idle in another window are left out (no live picture). A yellow dot means more waiting
   off the current page. Opening a specific sidebar session leaves the board and restores your usual

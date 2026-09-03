@@ -187,6 +187,22 @@ class ActivityBoardSyncTests(unittest.TestCase):
         self.assertEqual(snap.page, 1)
         self.assertEqual(list(snap.keys), [f"s{i}" for i in range(MAX_PANES, MAX_PANES + 2)])
 
+    def test_turn_page_wraps_around(self) -> None:
+        """末页再下一页回到首页，首页再上一页到末页。"""
+        board = ActivityBoard()
+        items = [_cand(f"s{i}", "working", 20 - i) for i in range(MAX_PANES + 2)]
+        board.sync(items)
+        board.turn_page(-1)
+        snap = board.sync(items)
+        self.assertEqual(snap.page, 1)
+        self.assertEqual(
+            list(snap.keys), [f"s{i}" for i in range(MAX_PANES, MAX_PANES + 2)]
+        )
+        board.turn_page(1)
+        snap = board.sync(items)
+        self.assertEqual(snap.page, 0)
+        self.assertEqual(list(snap.keys), [f"s{i}" for i in range(MAX_PANES)])
+
     def test_later_page_does_not_pull_earlier_members_when_queue_shifts(self) -> None:
         board = ActivityBoard()
         first = [_cand(f"s{i}", "working", 20 - i) for i in range(MAX_PANES + 2)]
@@ -451,12 +467,12 @@ class ActivityBoardLabelTests(unittest.TestCase):
         label = activity_board_label(many)
         self.assertEqual(label, "Active sessions  ·  5 sessions")
         self.assertNotIn("/", label)
-        self.assertEqual(activity_board_pager_text(many), "[2/2]")
+        self.assertEqual(activity_board_pager_text(many), "2/2")
         i18n.set_lang("zh")
         self.assertEqual(activity_board_label(one), "活跃会话  ·  1 个会话")
         self.assertEqual(activity_board_label(many), "活跃会话  ·  5 个会话")
 
-    def test_pager_is_right_aligned_and_clickable_when_multi_page(self) -> None:
+    def test_pager_is_second_row_and_clickable_when_multi_page(self) -> None:
         snap = BoardSnapshot(
             keys=("a", "b", "c", "d"),
             page=0,
@@ -465,14 +481,21 @@ class ActivityBoardLabelTests(unittest.TestCase):
             waiting_off_page=1,
             waiting_total=2,
         )
+        i18n.set_lang("en")
         layout = layout_activity_board_row(snap, 39)
-        self.assertEqual(layout.pager, "[1/2]")
-        self.assertFalse(layout.can_prev)
-        self.assertTrue(layout.can_next)
-        self.assertEqual(layout.hit(layout.pager_start), -1)
-        self.assertEqual(layout.hit(layout.pager_start + 4), 1)
-        self.assertEqual(layout.hit(layout.pager_start + 2), 0)
-        self.assertIsNone(layout.hit(0))
+        self.assertTrue(layout.show_pager)
+        self.assertEqual(layout.prev_label, "Prev page")
+        self.assertEqual(layout.next_label, "Next page")
+        self.assertEqual(layout.page_text, "1/2")
+        self.assertEqual(layout.hit(layout.prev_start, 1), -1)
+        self.assertEqual(layout.hit(layout.next_start, 1), 1)
+        self.assertEqual(layout.hit(layout.page_start, 1), 0)
+        self.assertIsNone(layout.hit(0, 0))
+        self.assertIsNone(layout.hit(layout.prev_start, 2))
+        i18n.set_lang("zh")
+        zh = layout_activity_board_row(snap, 39)
+        self.assertEqual(zh.prev_label, "上一页")
+        self.assertEqual(zh.next_label, "下一页")
 
     def test_card_keeps_off_page_waiting_dot(self) -> None:
         class _Owner:
@@ -488,9 +511,14 @@ class ActivityBoardLabelTests(unittest.TestCase):
         i18n.set_lang("en")
         card = ActivityBoardCard(_Owner())  # type: ignore[arg-type]
         plain = card.render().plain
-        self.assertIn("Active sessions  ·  5 sessions", plain)
-        self.assertIn("●", plain)
-        self.assertIn("[1/2]", plain)
+        lines = plain.split("\n")
+        self.assertIn("Active sessions  ·  5 sessions", lines[0])
+        self.assertIn("●", lines[0])
+        self.assertIn("Prev page", lines[1])
+        self.assertIn("Next page", lines[1])
+        self.assertIn("1/2", lines[1])
+        self.assertNotIn("[1/2]", plain)
+        self.assertEqual(lines[2], "")
 
 
 if __name__ == "__main__":
