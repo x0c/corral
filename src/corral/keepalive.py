@@ -57,8 +57,12 @@ set -g status off
 set -g mouse on
 set -g default-terminal "tmux-256color"
 set -ga terminal-overrides ",*256col*:Tc"
-set -g window-size latest
-setw -g aggressive-resize on
+# 内嵌从不 attach 可视客户端，只 capture。控制通道 `tmux -C attach` 走管道，
+# 客户端尺寸常是默认 80x24。window-size latest 会把托管窗打回 80 列，右栏格子
+# 仍是分屏全宽，观感就是「Claude 只占约 1/3、右侧大块空白」。改成 manual：
+# 只有 embed.resize-window 改尺寸。aggressive-resize 对每会话单窗没有意义。
+set -g window-size manual
+setw -g aggressive-resize off
 set -sg escape-time 0
 set -g history-limit 10000
 

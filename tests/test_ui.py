@@ -3720,43 +3720,64 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(pane._heal_count, 0)  # noqa: SLF001
         self.assertGreaterEqual(embed_pane_mod._HOST_SIZE_HEAL_MAX, 3)
 
-    def test_host_size_heal_yields_after_another_window_wins(self) -> None:
-        """本格对齐成功后，真实宽度被另一布局改走时不得抢回来。
-
-        现场：同一 Cursor 会话在单格(~165)与两格(~82)之间来回 host_size_drift，
-        助手整屏重排，观感就是宽度抽动；只被一扇窗口看着的会话不会抖。
-        """
+    def test_host_size_heal_retries_after_cooldown(self) -> None:
+        """打满 3 次仍对不上时，冷却后再试，不能把约 1/3 宽钉死。"""
         pane = EmbedPane()
         pane._capture_size_override = None  # noqa: SLF001
         with (
-            mock.patch.object(pane, "_pane_size", return_value=(165, 60)),
+            mock.patch.object(pane, "_pane_size", return_value=(240, 50)),
             mock.patch("corral.embed.should_resize_host", return_value=True),
             mock.patch("corral.embed.resize") as resize,
             mock.patch("corral.observe.event"),
         ):
-            pane._heal_host_size_if_needed("corral-cursor-65", (165, 60))  # noqa: SLF001
+            for _ in range(3):
+                pane._heal_last_at = 0.0  # noqa: SLF001
+                pane._heal_host_size_if_needed("corral-claude-cooldown", (80, 24))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 3)
+            pane._heal_host_size_if_needed("corral-claude-cooldown", (80, 24))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 3, "冷却内不得再打")
+            pane._heal_last_at = time.monotonic() - 11.0  # noqa: SLF001
+            pane._heal_host_size_if_needed("corral-claude-cooldown", (80, 24))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 4, "冷却后必须再拉回全宽")
+
+    def test_host_size_heal_grows_back_when_shrunk(self) -> None:
+        """本格是最宽观看方时，被打到约 80 列（1/3）必须拉回，不能让出。"""
+        pane = EmbedPane()
+        pane._capture_size_override = None  # noqa: SLF001
+        with (
+            mock.patch.object(pane, "_pane_size", return_value=(240, 50)),
+            mock.patch("corral.embed.should_resize_host", return_value=True),
+            mock.patch("corral.embed.resize") as resize,
+            mock.patch("corral.observe.event") as event,
+        ):
+            pane._heal_host_size_if_needed("corral-claude-third", (240, 50))  # noqa: SLF001
             self.assertEqual(resize.call_count, 0)
-            pane._heal_host_size_if_needed("corral-cursor-65", (82, 60))  # noqa: SLF001
-            self.assertEqual(resize.call_count, 0, "另一扇窗口改走宽度后不得抢回")
+            pane._heal_host_size_if_needed("corral-claude-third", (80, 24))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 1, "被压到约 1/3 必须拉回")
+            resize.assert_called_with("corral-claude-third", 240, 50)
+            self.assertEqual(event.call_args.args[0], "host_size_drift")
+
+    def test_host_size_heal_does_not_shrink_for_narrower_view(self) -> None:
+        """另一扇更宽的窗口还在看时，本格不得把共享窗收到自己的窄宽。"""
+        from corral import embed
+
+        pid = os.getpid()
+        name = "corral-claude-crop"
+        embed.desired_host_size(name, f"{pid}:wide", 240, 50)
+        pane = EmbedPane()
+        pane._capture_size_override = None  # noqa: SLF001
         with (
-            mock.patch.object(pane, "_pane_size", return_value=(82, 60)),
+            mock.patch.object(pane, "_pane_size", return_value=(80, 24)),
             mock.patch("corral.embed.should_resize_host", return_value=True),
             mock.patch("corral.embed.resize") as resize,
             mock.patch("corral.observe.event"),
         ):
+            pane._heal_host_size_if_needed(name, (240, 50))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 0, "较窄方应 crop，不得 resize 压窄")
             pane._heal_last_at = 0.0  # noqa: SLF001
-            pane._heal_host_size_if_needed("corral-cursor-65", (82, 60))  # noqa: SLF001
-            self.assertEqual(resize.call_count, 0, "本格改成两格且已经对齐则不必 resize")
-        with (
-            mock.patch.object(pane, "_pane_size", return_value=(165, 60)),
-            mock.patch("corral.embed.should_resize_host", return_value=True),
-            mock.patch("corral.embed.resize") as resize,
-            mock.patch("corral.observe.event"),
-        ):
-            pane._heal_last_at = 0.0  # noqa: SLF001
-            pane._heal_host_size_if_needed("corral-cursor-65", (82, 60))  # noqa: SLF001
-            self.assertEqual(resize.call_count, 1, "本格自己改回单格时仍可对齐")
-            resize.assert_called_with("corral-cursor-65", 165, 60)
+            pane._heal_host_size_if_needed(name, (80, 24))  # noqa: SLF001
+            self.assertEqual(resize.call_count, 1, "真实窗口已被压窄时仍要拉回最宽方")
+            resize.assert_called_with(name, 240, 50)
 
     async def test_browsing_existing_groups_persists_focus_not_composition(self) -> None:
         """浏览已有会话组只 set_focus，不得 set_group（会抬 updated_at 并整表写盘）。"""

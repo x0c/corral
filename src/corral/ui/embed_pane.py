@@ -41,6 +41,8 @@ fork 开销见上面的说明；这里是抓完之后、画到屏幕前的开销
 
 from __future__ import annotations
 
+import itertools
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -65,6 +67,8 @@ from textual.widget import Widget
 
 from corral import embed, liveness
 from corral.split_layout import MAX_PANES as _LAYOUT_MAX_PANES
+
+_VIEWER_SEQ = itertools.count(1)
 
 
 class ModeChanged(Message):
@@ -193,9 +197,12 @@ _RESIZE_CAPTURE_HOLD_MIN = 0.35
 _RESIZE_CAPTURE_HOLD_MAX = 3.0
 _RESIZE_CAPTURE_STABLE_FRAMES = 2
 # 托管窗真实尺寸与格子期望不符时，后台抓帧线程重发 resize-window。
-# 间隔与次数限制避免 tmux 拒绝时空转；同一目标尺寸用尽次数后等期望再变才重试。
+# 间隔与次数限制避免 tmux 拒绝时空转；连打 3 次仍对不上时歇一会再试，
+# 不能永久让出——控制通道曾把窗打回 80 列后，旧逻辑「对齐后让出」就是这样
+# 把分屏钉在约 1/3 宽上的。
 _HOST_SIZE_HEAL_INTERVAL = 2.0
 _HOST_SIZE_HEAL_MAX = 3
+_HOST_SIZE_HEAL_COOLDOWN = 10.0
 
 # 按会话名缓存「切走时的最后一屏」。切回来先把这一屏摆上去，后台抓帧几毫秒后
 # 用新帧覆盖；否则每次切回都要先退回静态对话回退、等首帧到了才跳成实时画面，
@@ -356,6 +363,8 @@ class EmbedPane(Widget):
         # 静态预览是否跟随底部（最新消息）。选中/异步加载完成时为 True；
         # 用户上滚或 Home 后为 False，此后 invalidate 只保当前位置不强制钉回。
         self._detail_stick_bottom = False
+        self._viewer_id = f"{os.getpid()}:{next(_VIEWER_SEQ)}"
+        self._claimed_session: str | None = None
 
         # 下面这些字段只由后台抓帧线程写入、主线程（按键/滚轮处理）只读，
         # 避免任何事件处理路径同步调用 embed.capture/embed.pane_state。
@@ -395,10 +404,9 @@ class EmbedPane(Widget):
         self._heal_target: tuple[int, int] | None = None
         self._heal_count = 0
         self._heal_last_at = 0.0
-        # 这一格最近一次用来对齐的期望尺寸，以及曾经真正对齐成功的尺寸。
-        # 对齐成功后若期望没变、真实宽度却被改走，视为另一扇窗口赢了，不再抢。
+        # 这一格最近一次用来对齐的期望尺寸。布局变了才重置 heal 退避。
+        # 有效尺寸由 embed.desired_host_size 取最宽观看方，不再用「对齐后让出」。
         self._heal_layout: tuple[int, int] | None = None
-        self._heal_applied: tuple[int, int] | None = None
         # resize 后抓帧冻结：主线程开启；抓帧线程判定稳定后解除并放行一帧。
         self._resize_hold_active = False
         self._resize_hold_until_min = 0.0
@@ -425,6 +433,7 @@ class EmbedPane(Widget):
 
     def on_unmount(self) -> None:
         self._set_real_cursor(False)  # 卸载时收起我们打开的真实光标，别把它漏给退出后的终端
+        self._release_claimed_host_view()
         self._stop.set()
         self._request_immediate_capture()
         if self.session_name:
@@ -474,6 +483,8 @@ class EmbedPane(Widget):
             or self._grid is None
             or discard_stale_screen
         )
+        if self.session_name and self.session_name != name:
+            self._release_claimed_host_view()
         if reset_capture:
             self._stash_screen()
             self._capture_generation += 1
@@ -512,9 +523,7 @@ class EmbedPane(Widget):
         # 过窄时不 resize：布局尚未稳定或用户把终端缩得很小时，避免 agent
         # 按几列硬换行写进 scrollback（恢复宽度后往上滚仍会看到窄条历史）。
         if resize_immediately and embed.should_resize_host(pane_w, pane_h):
-            embed.resize(name, pane_w, pane_h)
-            self._host_size = (name, pane_w, pane_h)
-            self._tmux_pane_size = None
+            self._resize_host(name, pane_w, pane_h)
         # 终端背景色注入：此后 pane 内 agent 的 OSC 11 查询由 tmux 按真实值应答，
         # 深/浅主题自动检测才不会瞎猜（tmux 默认不应答 pane 内的查询）。
         if channel is not None and self._osc_report and embed.supports_theme_report():
@@ -551,6 +560,7 @@ class EmbedPane(Widget):
         """
         self._stash_screen()
         self._capture_generation += 1
+        self._release_claimed_host_view()
         self.session_name = None
         self._grid = None
         self._strips = None
@@ -570,6 +580,7 @@ class EmbedPane(Widget):
         self._stash_screen()
         self._capture_generation += 1
         old_name = self.session_name
+        self._release_claimed_host_view()
         self.session_name = None
         self._detail_renderer = None
         self._grid = None
@@ -647,55 +658,71 @@ class EmbedPane(Widget):
         return self._pane_size()
 
     def _reset_heal_state(self) -> None:
-        """切会话 / 清格时丢掉对齐记忆，避免把上一格的「已让出」带到新会话。"""
+        """切会话 / 清格时丢掉对齐记忆，避免把上一格的退避带到新会话。"""
         self._heal_target = None
         self._heal_count = 0
         self._heal_last_at = 0.0
         self._heal_layout = None
-        self._heal_applied = None
+
+    def _release_claimed_host_view(self) -> None:
+        name = self._claimed_session
+        if not name:
+            return
+        embed.release_host_view(name, self._viewer_id)
+        self._claimed_session = None
+
+    def _resize_host(self, name: str, width: int, height: int) -> tuple[int, int]:
+        """按最宽观看方的有效尺寸调窗；`_host_size` 仍记本格请求，供 Resize 防抖去重。"""
+        effective = embed.desired_host_size(name, self._viewer_id, width, height)
+        self._claimed_session = name
+        if embed.should_resize_host(effective[0], effective[1]):
+            embed.resize(name, effective[0], effective[1])
+        self._host_size = (name, width, height)
+        self._tmux_pane_size = None
+        return effective
 
     def _expected_host_size(self) -> tuple[int, int]:
         """这一格希望托管窗变成的尺寸：预测优先，否则用控件当前尺寸。"""
         return self._capture_size_override or self._pane_size()
 
     def _heal_host_size_if_needed(self, name: str, real: tuple[int, int]) -> None:
-        """tmux 真实尺寸与格子期望不符时，带退避重发 resize-window。
+        """tmux 真实尺寸与有效尺寸不符时，带退避重发 resize-window。
 
         必须在抓帧线程调用：fork/控制通道不能进 Textual 主线程。
 
-        多扇窗口共用同一份真实画面。本格一旦见过「真实尺寸 == 我的期望」，
-        之后期望没变、真实宽度却被改走，视为另一扇窗口赢了，不再抢回来——
-        否则单格与两格会来回改宽度，Cursor 整屏重排看起来像宽度抽动。
+        多扇窗口共用同一份真实画面。有效尺寸取仍在看的窗口里最宽的那一格；
+        本格更窄就 crop，不得把共享窗压到自己的 1/3。被较窄方或控制通道 80 列
+        打窄之后，只要本格仍是最宽观看方，就必须拉回来。
         """
         expected = self._expected_host_size()
         if self._heal_layout != expected:
-            # 这一格自己的布局变了，允许重新对齐。
             self._heal_layout = expected
-            self._heal_applied = None
             self._heal_target = None
             self._heal_count = 0
             self._heal_last_at = 0.0
-        if real == expected:
-            self._heal_applied = expected
+        effective = embed.desired_host_size(name, self._viewer_id, expected[0], expected[1])
+        self._claimed_session = name
+        if real == effective:
             self._heal_count = 0
             self._heal_target = None
             return
-        if self._heal_applied == expected:
-            return
-        if not embed.should_resize_host(expected[0], expected[1]):
+        if not embed.should_resize_host(effective[0], effective[1]):
             return
         now = time.monotonic()
-        if self._heal_target != expected:
-            self._heal_target = expected
+        if self._heal_target != effective:
+            self._heal_target = effective
             self._heal_count = 0
             self._heal_last_at = 0.0
         if self._heal_count >= _HOST_SIZE_HEAL_MAX:
-            return
+            # last_at==0 是测试里用来绕过间隔的哨兵，不得当成「冷却已过」。
+            if not self._heal_last_at or now - self._heal_last_at < _HOST_SIZE_HEAL_COOLDOWN:
+                return
+            self._heal_count = 0
         if self._heal_last_at and now - self._heal_last_at < _HOST_SIZE_HEAL_INTERVAL:
             return
         self._heal_count += 1
         self._heal_last_at = now
-        embed.resize(name, expected[0], expected[1])
+        embed.resize(name, effective[0], effective[1])
         self._host_size = (name, expected[0], expected[1])
         self._tmux_pane_size = None
         from corral import observe
@@ -704,8 +731,8 @@ class EmbedPane(Widget):
             session_prefix=(name or "")[:16],
             actual_w=real[0],
             actual_h=real[1],
-            expected_w=expected[0],
-            expected_h=expected[1],
+            expected_w=effective[0],
+            expected_h=effective[1],
             attempt=self._heal_count,
         )
 
@@ -969,6 +996,7 @@ class EmbedPane(Widget):
         # 会话确认结束，缓存的最后一屏必须丢掉：留着的话下次选中这条会话会先
         # 摆出一屏「像还在跑」的旧画面，比直接显示已结束更误导人。
         forget_cached_screen(name)
+        self._release_claimed_host_view()
         self.dead = True
         self.input_masked = False  # 已结束的画面不再压暗，否则像"还能输入只是没聚焦"
         self.invalidate_detail()
@@ -1565,9 +1593,7 @@ class EmbedPane(Widget):
             return
         if not embed.should_resize_host(size[0], size[1]):
             return
-        embed.resize(name, size[0], size[1])
-        self._host_size = (name, size[0], size[1])
-        self._tmux_pane_size = None
+        self._resize_host(name, size[0], size[1])
         # 已有直播画面时冻结抓帧显示：Cursor 等重排中间态不刷到右栏。
         if self._grid is not None:
             self._begin_resize_capture_hold()

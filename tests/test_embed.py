@@ -307,6 +307,79 @@ class SessionIoTests(unittest.TestCase):
             embed.resize("corral-claude-x", 20, 18)
         run.assert_not_called()
 
+    def test_tmux_config_uses_manual_window_size(self):
+        from corral import keepalive
+
+        self.assertIn("set -g window-size manual", keepalive._TMUX_CONFIG)
+        self.assertNotIn("set -g window-size latest", keepalive._TMUX_CONFIG)
+
+    def test_ensure_manual_window_size_retries_after_failure(self):
+        embed._manual_window_size_sockets.clear()
+        failed = mock.Mock(returncode=1)
+        ok = mock.Mock(returncode=0)
+        with mock.patch.object(embed.subprocess, "run", side_effect=[failed, ok]) as run:
+            embed._ensure_manual_window_size("corral-claude-retry")
+            self.assertEqual(run.call_count, 1)
+            embed._ensure_manual_window_size("corral-claude-retry")
+            self.assertEqual(run.call_count, 2, "失败不得记住 socket，否则永远不再改 window-size")
+            embed._ensure_manual_window_size("corral-claude-retry")
+            self.assertEqual(run.call_count, 2, "成功后才缓存")
+        embed._manual_window_size_sockets.clear()
+
+
+class HostViewRegistryTests(unittest.TestCase):
+    """较窄观看方不得压窄共享画面：有效尺寸取仍存活观看方的最大宽。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = os.environ.get("CORRAL_CACHE_DIR")
+        os.environ["CORRAL_CACHE_DIR"] = self._tmp.name
+        with embed._VIEWER_LOCK:
+            embed._viewer_last_write.clear()
+
+    def tearDown(self) -> None:
+        with embed._VIEWER_LOCK:
+            embed._viewer_last_write.clear()
+        if self._old is None:
+            os.environ.pop("CORRAL_CACHE_DIR", None)
+        else:
+            os.environ["CORRAL_CACHE_DIR"] = self._old
+        self._tmp.cleanup()
+
+    def test_desired_host_size_prefers_widest_live_viewer(self) -> None:
+        pid = os.getpid()
+        name = "corral-claude-wide"
+        wide = embed.desired_host_size(name, f"{pid}:wide", 240, 50)
+        self.assertEqual(wide, (240, 50))
+        narrow = embed.desired_host_size(name, f"{pid}:narrow", 80, 24)
+        self.assertEqual(narrow, (240, 50), "较窄方必须跟最宽观看方，不能把窗压成 80 列")
+
+    def test_release_host_view_lets_remaining_viewer_shrink(self) -> None:
+        pid = os.getpid()
+        name = "corral-claude-release"
+        embed.desired_host_size(name, f"{pid}:wide", 240, 50)
+        embed.desired_host_size(name, f"{pid}:narrow", 80, 24)
+        embed.release_host_view(name, f"{pid}:wide")
+        remaining = embed.desired_host_size(name, f"{pid}:narrow", 80, 24)
+        self.assertEqual(remaining, (80, 24))
+
+    def test_dead_pid_claims_are_ignored(self) -> None:
+        pid = os.getpid()
+        name = "corral-claude-dead"
+        conn = embed._connect_host_viewers()
+        self.assertIsNotNone(conn)
+        assert conn is not None
+        conn.execute(
+            "INSERT INTO host_viewers"
+            " (session_name, viewer_id, width, height, pid, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (name, "999999:gone", 240, 50, 999999, time.monotonic()),
+        )
+        conn.commit()
+        conn.close()
+        mine = embed.desired_host_size(name, f"{pid}:mine", 80, 24)
+        self.assertEqual(mine, (80, 24))
+
 
 class ImagePasteTests(unittest.TestCase):
     """浏览器增强脚本裹哨兵的图片粘贴：识别、落盘、送路径进 pane。"""

@@ -25,11 +25,13 @@ import os
 import queue
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from rich.cells import cell_len as _rich_cell_len
 from rich.color import Color
@@ -39,9 +41,11 @@ from corral import keepalive, liveness
 from corral.legacy_names import (
     IMG_SENTINEL_BEGIN,
     IMG_SENTINEL_END,
+    cache_dir,
     env_is_disabled,
     hosted_env_pairs,
     image_sentinel_payload,
+    socket_for_session,
 )
 from corral.models import LaunchPlan
 from corral.native import parse_ansi_rows as _native_parse_ansi_rows
@@ -144,6 +148,7 @@ def host_session(
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise EmbedError(f"无法创建内嵌会话 {name}：{exc}") from exc
     note_alive(name)
+    _ensure_manual_window_size(name)
     if osc_report and supports_theme_report():
         open_channel(name)  # 让 report_theme 依赖的"当前有客户端连接"前提尽早成立
         channel = active_channel(name)
@@ -276,14 +281,208 @@ def should_resize_host(width: int, height: int) -> bool:
     return int(width) >= MIN_HOST_WIDTH and int(height) >= MIN_HOST_HEIGHT
 
 
+# 已运行的保活 server 可能仍加载旧 `window-size latest`；每个 socket 只补一次。
+_manual_window_size_sockets: set[str] = set()
+
+# 跨窗口观看尺寸：较窄方不得把共享窗压窄。失败降级为本格自己的宽高。
+_HOST_VIEW_STALE_SECONDS = 8.0
+_HOST_VIEW_WRITE_INTERVAL = 1.0
+_VIEWER_LOCK = threading.Lock()
+_viewer_last_write: dict[tuple[str, str], tuple[int, int, float]] = {}
+_VIEWER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS host_viewers (
+    session_name TEXT NOT NULL,
+    viewer_id TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    pid INTEGER NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (session_name, viewer_id)
+)
+"""
+
+
+def _ensure_manual_window_size(name: str) -> None:
+    """把保活 server 的 window-size 打成 manual，避免控制通道 80x24 打回托管窗。
+
+    只在成功后记住该 socket：server 尚未起来时失败，后续 resize / 开通道还要再试。
+    """
+    socket = socket_for_session(name)
+    if socket in _manual_window_size_sockets:
+        return
+    try:
+        proc = subprocess.run(
+            [*keepalive.tmux_argv(name), "set-option", "-g", "window-size", "manual"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=_CALL_TIMEOUT, check=False,
+        )
+        if proc.returncode == 0:
+            _manual_window_size_sockets.add(socket)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _host_viewers_path() -> Path:
+    return cache_dir() / "host-viewers.sqlite3"
+
+
+def _connect_host_viewers() -> sqlite3.Connection | None:
+    try:
+        path = _host_viewers_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path), timeout=1.0, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(_VIEWER_SCHEMA)
+        return conn
+    except sqlite3.Error:
+        return None
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def desired_host_size(
+    name: str, viewer_id: str, width: int, height: int,
+) -> tuple[int, int]:
+    """登记本格观看尺寸，返回所有仍存活观看方里最宽（同宽取最大高）的尺寸。
+
+    库不可用时退回本格自己的宽高，不得阻断抓帧。低于下限的尺寸不登记，
+    以免把有效尺寸拉到会污染 scrollback 的窄宽。
+    """
+    local = (max(1, int(width)), max(1, int(height)))
+    if not name or not viewer_id:
+        return local
+    now = time.monotonic()
+    key = (name, viewer_id)
+    with _VIEWER_LOCK:
+        last = _viewer_last_write.get(key)
+        should_write = (
+            last is None
+            or last[0] != local[0]
+            or last[1] != local[1]
+            or now - last[2] >= _HOST_VIEW_WRITE_INTERVAL
+        )
+        conn = _connect_host_viewers()
+        if conn is None:
+            return local
+        try:
+            if should_write and local[0] >= MIN_HOST_WIDTH and local[1] >= MIN_HOST_HEIGHT:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT INTO host_viewers"
+                    " (session_name, viewer_id, width, height, pid, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(session_name, viewer_id) DO UPDATE SET"
+                    " width=excluded.width, height=excluded.height,"
+                    " pid=excluded.pid, updated_at=excluded.updated_at",
+                    (name, viewer_id, local[0], local[1], os.getpid(), now),
+                )
+                conn.commit()
+                _viewer_last_write[key] = (local[0], local[1], now)
+            rows = conn.execute(
+                "SELECT viewer_id, width, height, pid, updated_at"
+                " FROM host_viewers WHERE session_name = ?",
+                (name,),
+            ).fetchall()
+        except sqlite3.Error:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            return local
+        finally:
+            conn.close()
+    best = local
+    stale: list[str] = []
+    for other_id, w, h, pid, updated_at in rows:
+        try:
+            w, h = int(w), int(h)
+            pid = int(pid)
+            updated_at = float(updated_at)
+        except (TypeError, ValueError):
+            stale.append(str(other_id))
+            continue
+        if now - updated_at > _HOST_VIEW_STALE_SECONDS or not _pid_is_alive(pid):
+            stale.append(str(other_id))
+            continue
+        if (w, h) > (best[0], best[1]):
+            best = (w, h)
+    if stale:
+        _drop_host_viewers(name, stale)
+    return best
+
+
+def release_host_view(name: str | None, viewer_id: str) -> None:
+    """本格切走 / 卸载时丢掉登记，让剩下的观看方按自己的格宽收窗。"""
+    if not name or not viewer_id:
+        return
+    with _VIEWER_LOCK:
+        _viewer_last_write.pop((name, viewer_id), None)
+        conn = _connect_host_viewers()
+        if conn is None:
+            return
+        try:
+            conn.execute(
+                "DELETE FROM host_viewers WHERE session_name = ? AND viewer_id = ?",
+                (name, viewer_id),
+            )
+            conn.commit()
+        except sqlite3.Error:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+        finally:
+            conn.close()
+
+
+def _drop_host_viewers(name: str, viewer_ids: list[str]) -> None:
+    if not viewer_ids:
+        return
+    with _VIEWER_LOCK:
+        for viewer_id in viewer_ids:
+            _viewer_last_write.pop((name, viewer_id), None)
+        conn = _connect_host_viewers()
+        if conn is None:
+            return
+        try:
+            conn.executemany(
+                "DELETE FROM host_viewers WHERE session_name = ? AND viewer_id = ?",
+                [(name, viewer_id) for viewer_id in viewer_ids],
+            )
+            conn.commit()
+        except sqlite3.Error:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+        finally:
+            conn.close()
+
+
 def resize(name: str, width: int, height: int) -> None:
     """把托管会话的窗口调整为面板尺寸；失败静默（会话可能刚好退出）。
 
     调用方应先用 `should_resize_host` 过滤过窄尺寸；此处再兜底一次，
-    防止遗漏路径把几列宽烧进历史。
+    防止遗漏路径把几列宽烧进历史。已运行的保活 server 可能仍是旧的
+    `window-size latest`，每次 resize 前补成 manual。
     """
     if not should_resize_host(width, height):
         return
+    _ensure_manual_window_size(name)
     ch = _active_channel(name)
     if ch is not None and ch.command(
             "resizew", "-t", name, "-x", str(width), "-y", str(height)):
@@ -821,6 +1020,7 @@ def open_channel(name: str, on_output=None) -> ControlChannel | None:
             ch = None
         if ch is None:
             try:
+                _ensure_manual_window_size(name)
                 ch = ControlChannel(name, on_output)
                 _channels[name] = ch
             except OSError:
