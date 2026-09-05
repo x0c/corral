@@ -1,0 +1,5 @@
+# 开源仓文档里故意写明的本机 Forgejo Remote（供 Agent 导航），不是凭据泄漏。
+# 指纹随「规则+路径+命中内容」稳定；换行号不失效。
+rule:internal-endpoint:AGENTS.md
+rule:internal-endpoint:**/AGENTS.md
+fp:24972d42abb655eb
