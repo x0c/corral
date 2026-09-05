@@ -3762,6 +3762,76 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertIsNotNone(store.find_session("cursor:real-uuid"))
         self.assertNotIn(key, store._provisional)
 
+    def test_cursor_fresh_listed_session_retires_provisional_without_duplicate(self) -> None:
+        """正式 Cursor 历史先于占位卡进列表时，仍须退役占位，避免侧栏双卡。
+
+        真机/竞态：扫描先看到新 UUID（尚无 keepalive），随后分屏托管才登记占位卡；
+        旧逻辑只认「本轮 newcomers」，正式卡已在 ``_order`` 里就认领失败，占位与
+        正式卡并存——分屏组里一份、组外再挂一份，下一轮 annotate 才并掉。
+        """
+        cursor_runtime = mock.Mock()
+        cursor_runtime.id = "cursor"
+        cursor_runtime.display_name = "Cursor"
+        cursor_runtime.scan_signature.return_value = None
+
+        def _sessions(*, include_new: bool):
+            rows = [
+                {
+                    "source": "cursor", "id": "old-uuid", "short_id": "olduuid",
+                    "mtime": 1.0, "size_bytes": 1, "size_kb": 1,
+                    "native_title": "旧", "fallback_title": "旧",
+                    "cwd": "/tmp/proj", "live": False,
+                },
+            ]
+            if include_new:
+                rows.append(
+                    {
+                        "source": "cursor", "id": "early-uuid", "short_id": "earlyuuid",
+                        "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+                        "native_title": "新", "fallback_title": "新",
+                        "cwd": "/tmp/proj", "live": False, "pid": None,
+                    }
+                )
+            return rows
+
+        cursor_runtime.scan_sessions.side_effect = (
+            lambda *a, **k: _sessions(include_new=True)
+        )
+        registry = corral.RuntimeRegistry((cursor_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
+            store.load()
+
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "is_alive", return_value=True
+        ):
+            store.refresh()
+
+        provisional = store.register_hosted_session(
+            runtime_id="cursor",
+            keepalive_name="corral-cursor-efgh5678",
+            title="分屏新建",
+            cwd="/tmp/proj",
+            ident="efgh5678",
+        )
+        old_key = corral.session_key(provisional)
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "is_alive", return_value=True
+        ):
+            store.refresh()
+
+        self.assertIsNone(store.find_session(old_key))
+        claimed = store.find_session("cursor:early-uuid")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.get("keepalive_name"), "corral-cursor-efgh5678")
+        self.assertNotIn(old_key, store._provisional)
+        self.assertEqual(
+            store.session_key_migrations().get(old_key),
+            "cursor:early-uuid",
+        )
+        # 同目录更早的旧卡不得被误认领。
+        self.assertIsNone(store.find_session("cursor:old-uuid").get("keepalive_name"))
+
     def test_pi_unique_newcomer_retires_provisional_instead_of_duplicating(self) -> None:
         """Pi 落盘 uuid 与占位 ident 不同、又没 pid 可 annotate 时，同 cwd 唯一新卡应退役占位。
 

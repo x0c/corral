@@ -514,7 +514,10 @@ class SessionStore:
                 continue
             provisional["keepalive_name"] = name
             provisional["live"] = True
-            bucket.insert(0, provisional)
+            # 与 register_hosted_session 相同：不要原地改扫描器可能复用的 list。
+            self.sessions[runtime_id] = [provisional, *[
+                item for item in bucket if session_key(item) != key
+            ]]
         return attention_migrations
 
     def _retire_provisional(
@@ -548,11 +551,17 @@ class SessionStore:
     def _claim_unique_hosted_newcomer(
         self, key: str, provisional: dict,
     ) -> dict | None:
-        """Pi 等「真实 id 与占位 ident 不同、annotate 又没贴上 keepalive」时的兜底。
+        """真实 id 与占位 ident 不同、annotate 又没贴上 keepalive 时的兜底。
 
         优先按托管 ``corral-<ident>/`` 目录一对一认领（同 cwd 两个分屏不再放弃）。
-        匹配不到时仍仅当「这个 cwd 里活着的占位卡恰好一张，且本轮新出现、尚未
-        托管的真实会话也恰好一条」才认领，避免无 path 的旧卡串台。
+        匹配不到时仅当「这个 cwd 里活着的占位卡恰好一张，且可认领的真实会话也
+        恰好一条」才认领，避免无 path 的旧卡串台。
+
+        可认领集合 = 本轮新出现的卡 ∪ 已在列表里、但 mtime 落在占位登记前后窗口
+        内的未托管卡。后者盖住「正式历史比占位卡更早进列表」的竞态（Cursor 分屏
+        新建尤甚）：旧逻辑只认 newcomers，正式卡已进 ``_order`` 后占位永远退不掉，
+        侧栏会短暂甚至持续「组里一份 + 组外一份」。禁止用同目录任意旧卡兜底——
+        mtime 必须够新，两条及以上仍放弃。
         """
         runtime_id = str(provisional.get("source") or "")
         if not runtime_id:
@@ -560,16 +569,25 @@ class SessionStore:
         cwd = normalize_cwd(provisional.get("cwd"))
         known = set(self._order)
         bucket = self.sessions.get(runtime_id) or []
-        newcomers = [
-            session
-            for session in bucket
-            if not session.get("provisional")
-            and session_key(session) != key
-            and session_key(session) not in known
-            and session_key(session) not in self.hosted
-            and not session.get("keepalive_name")
-            and normalize_cwd(session.get("cwd")) == cwd
-        ]
+        now = time.time()
+        prov_mtime = float(provisional.get("mtime") or now)
+        # 占位登记前几秒落盘的正式卡仍算「这次新建」；再早的同目录历史一律不碰。
+        # 墙上时钟上限防止占位卡挂很久后误认领被 touch 的旧会话。
+        fresh_floor = max(prov_mtime - 5.0, now - 600.0)
+
+        def _is_claim_candidate(session: dict) -> bool:
+            sk = session_key(session)
+            if session.get("provisional") or sk == key:
+                return False
+            if sk in self.hosted or session.get("keepalive_name"):
+                return False
+            if normalize_cwd(session.get("cwd")) != cwd:
+                return False
+            if sk not in known:
+                return True
+            return float(session.get("mtime") or 0) >= fresh_floor
+
+        candidates = [session for session in bucket if _is_claim_candidate(session)]
         if runtime_id == "pi":
             from corral.scan.pi import hosted_session_dir, normalize_session_dir, session_file_dir
 
@@ -581,7 +599,7 @@ class SessionStore:
             if expected_dir:
                 matches = [
                     session
-                    for session in newcomers
+                    for session in candidates
                     if session_file_dir(str(session.get("path") or "")) == expected_dir
                 ]
                 if len(matches) == 1:
@@ -604,8 +622,8 @@ class SessionStore:
             other_name = self.hosted.get(other_key) or other.get("keepalive_name")
             if other_name and liveness.is_alive(str(other_name)):
                 sibling_provisionals += 1
-        if len(newcomers) == 1 and sibling_provisionals == 0:
-            return newcomers[0]
+        if len(candidates) == 1 and sibling_provisionals == 0:
+            return candidates[0]
         return None
 
     def _rebuild_order_and_titles(self) -> list[dict]:
@@ -921,9 +939,15 @@ class SessionStore:
             self.hosted[key] = keepalive_name
             self._force_ended.discard(key)
             self._provisional[key] = session
-            bucket = self.sessions.setdefault(runtime_id, [])
-            bucket[:] = [item for item in bucket if session_key(item) != key]
-            bucket.insert(0, session)
+            # 扫描器有时会把同一 list 对象再次 return；若直接在上面 insert，
+            # 下一轮 scan 结果会被占位卡污染，same-id 分支误清占位却不退役。
+            existing = [
+                item
+                for item in list(self.sessions.get(runtime_id) or [])
+                if session_key(item) != key
+            ]
+            existing.insert(0, session)
+            self.sessions[runtime_id] = existing
             self._order = [key] + [item for item in self._order if item != key]
             self.display_titles[key] = session["fallback_title"]
             self.generating.discard(key)
