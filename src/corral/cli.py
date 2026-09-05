@@ -296,7 +296,7 @@ def _dispatch_direct_launch(argv: list[str], registry: RuntimeRegistry) -> None:
     store = None
 
     if use_tui:
-        pkg.keepalive.reap_idle()
+        pkg.keepalive.reap()
         store = pkg.SessionStore(limit=_DIRECT_LAUNCH_LIMIT, registry=registry)
         store._title_spawn_fn = pkg._spawn_title_daemon
         store.load()
@@ -466,7 +466,7 @@ def main() -> None:
 
     keepalive_on = keepalive.enabled(args.no_keepalive)
     if keepalive_on:
-        keepalive.reap_idle()  # 顺带回收空闲太久没人管的后台保活会话，不常驻额外进程
+        keepalive.reap()  # 空闲超时 + 超软上限时压掉闲置非执行中会话，不常驻额外进程
 
     store = SessionStore(limit=args.limit, registry=registry)
     store._title_spawn_fn = _spawn_title_daemon

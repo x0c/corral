@@ -41,7 +41,10 @@ write_dispatcher() {
 #!/usr/bin/env bash
 # 全局 pre-push：先跑 leakgate 泄漏门禁，再转调仓库内 .githooks/pre-push（如 Corral）。
 # 由 Corral scripts/install-git-hooks.sh 与 agentsync leakgate 共同约定；勿改成只保留一侧。
+# 关键：先缓存 stdin 再分别喂给两侧，避免 leakgate 读完后仓内钩子拿不到 refs。
 set -euo pipefail
+
+input="$(cat || true)"
 
 # --- leakgate：对本机所有仓库生效 ---
 if [ "$(git config --bool --get leakgate.disabled 2>/dev/null || true)" != "true" ]; then
@@ -51,7 +54,7 @@ if [ "$(git config --bool --get leakgate.disabled 2>/dev/null || true)" != "true
     if ! command -v python3 >/dev/null 2>&1; then
       PY=python
     fi
-    "$PY" "$LEAKGATE_PY" prepush
+    printf '%s' "$input" | "$PY" "$LEAKGATE_PY" prepush
   else
     echo "leakgate: 未找到扫描器 $LEAKGATE_PY，本次跳过泄漏门禁（请检查 agentsync 是否已同步）" >&2
   fi
@@ -61,7 +64,7 @@ fi
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 hook="$root/.githooks/pre-push"
 if [ -x "$hook" ]; then
-  exec "$hook" "$@"
+  printf '%s' "$input" | exec "$hook" "$@"
 fi
 exit 0
 EOF

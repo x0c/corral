@@ -31,6 +31,8 @@ from corral.legacy_names import (
 from corral.models import LaunchPlan
 
 _DEFAULT_IDLE_HOURS = 2.0
+_DEFAULT_MAX_SESSIONS = 12
+_DEFAULT_PRESSURE_IDLE_MINUTES = 10.0
 _SUBPROCESS_TIMEOUT = 1.5
 SUBPROCESS_TIMEOUT = _SUBPROCESS_TIMEOUT
 
@@ -167,6 +169,58 @@ def _idle_threshold_hours() -> float:
         return _DEFAULT_IDLE_HOURS
 
 
+def _max_sessions() -> int:
+    raw = getenv("KEEPALIVE_MAX_SESSIONS")
+    if raw is None:
+        return _DEFAULT_MAX_SESSIONS
+    try:
+        return int(float(raw))
+    except ValueError:
+        return _DEFAULT_MAX_SESSIONS
+
+
+def _pressure_idle_seconds() -> float:
+    raw = getenv("KEEPALIVE_PRESSURE_IDLE_MINUTES")
+    if raw is None:
+        return _DEFAULT_PRESSURE_IDLE_MINUTES * 60.0
+    try:
+        return max(0.0, float(raw) * 60.0)
+    except ValueError:
+        return _DEFAULT_PRESSURE_IDLE_MINUTES * 60.0
+
+
+def _ident_matches_session_id(ident: str, session_id: str) -> bool:
+    """托管名末段 ident 是否对得上会话 id（与 liveness 贴名口径一致）。"""
+    if not ident or not session_id:
+        return False
+    if session_id == ident or session_id.startswith(ident):
+        return True
+    compact = session_id.replace("-", "")
+    return compact.startswith(ident) or ident.startswith(compact[:8])
+
+
+def _is_working_keepalive(name: str, working_pairs: list[tuple[str, str]]) -> bool:
+    """关注状态 phase=working 的会话不得被压力回收。"""
+    from corral import liveness
+
+    parsed = liveness._parse_managed_session_name(name)
+    if parsed is None:
+        return False
+    runtime_id, ident = parsed
+    for rid, sid in working_pairs:
+        if rid != runtime_id:
+            continue
+        if _ident_matches_session_id(ident, sid):
+            return True
+    return False
+
+
+def _load_working_pairs() -> list[tuple[str, str]]:
+    from corral.attention import AttentionStore
+
+    return AttentionStore().working_pairs()
+
+
 def kill(name: str) -> bool:
     """手动/自动回收指定保活会话；不存在或 tmux 不可用时静默失败。"""
     if shutil.which("tmux") is None:
@@ -209,6 +263,62 @@ def reap_idle(now: float | None = None) -> list[str]:
         if now - activity > threshold_hours * 3600 and kill(name):
             reaped.append(name)
     return reaped
+
+
+def reap_pressure(now: float | None = None) -> list[str]:
+    """托管数超过软上限时，关掉闲置够久且非「执行中」的会话。
+
+    默认上限 12（`CORRAL_KEEPALIVE_MAX_SESSIONS`，`0` 禁用）；候选须 tmux
+    无活动超过默认 10 分钟（`CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES`），且关注
+    状态不是 working。按空闲最久优先，关到 ≤ 上限或没有合格候选为止——软上限，
+    不会拦新建。
+    """
+    max_sessions = _max_sessions()
+    if max_sessions <= 0:
+        return []
+    from corral import liveness
+
+    rows = liveness._list_tmux_sessions("#{session_name}|#{session_activity}")
+    if not rows:
+        return []
+    if now is None:
+        now = time.time()
+    sessions: list[tuple[str, float]] = []
+    for row in rows:
+        if len(row) < 2:
+            continue
+        name, activity_text = row[0], row[1]
+        try:
+            activity = float(activity_text)
+        except ValueError:
+            continue
+        sessions.append((name, activity))
+    if len(sessions) <= max_sessions:
+        return []
+
+    idle_needed = _pressure_idle_seconds()
+    working_pairs = _load_working_pairs()
+    candidates = [
+        (name, activity)
+        for name, activity in sessions
+        if (now - activity) > idle_needed and not _is_working_keepalive(name, working_pairs)
+    ]
+    candidates.sort(key=lambda item: item[1])  # 空闲最久（activity 最小）优先
+
+    reaped: list[str] = []
+    remaining = len(sessions)
+    for name, _activity in candidates:
+        if remaining <= max_sessions:
+            break
+        if kill(name):
+            reaped.append(name)
+            remaining -= 1
+    return reaped
+
+
+def reap(now: float | None = None) -> list[str]:
+    """先按时长空闲回收，再按软上限压力回收；返回本轮关掉的托管名。"""
+    return [*reap_idle(now=now), *reap_pressure(now=now)]
 
 
 def __getattr__(name: str):

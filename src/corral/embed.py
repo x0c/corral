@@ -4,7 +4,7 @@
 SSH 断线保活」，本模块管「不 attach——用 capture-pane 拿画面、send-keys 送按键」，
 让右栏展示会话现场，会话在后台 tmux 里持续运行，随时经列表切换。与保活共用
 `tmux -L corral-keepalive` socket 和 corral-* 命名空间：liveness.annotate()
-状态标注、reap_idle() 空闲回收对内嵌会话全部照旧生效（`keepalive.annotate`
+状态标注、reap() 空闲/压力回收对内嵌会话全部照旧生效（`keepalive.annotate`
 仍是兼容别名）。键盘焦点由界面层管理
 （默认侧边栏，点右栏才交互）；本模块不感知焦点。
 适配器不感知本模块；主要调用方是 `ui.embed_pane.EmbedPane`。
@@ -124,6 +124,8 @@ def host_session(
         except pi_identity.PiExtensionInstallError as exc:
             raise EmbedError(str(exc)) from exc
         identity_env = pi_identity.instance_env_pairs(pi_identity.new_instance_id())
+    # 新开托管前先压一轮：超软上限时关掉闲置够久且非执行中的旧会话。
+    keepalive.reap_pressure()
     name = keepalive._session_name(runtime_id, ident)
     argv = [
         *keepalive.tmux_argv(), "-f", keepalive._ensure_config_file(),

@@ -384,6 +384,95 @@ class ReapIdleTests(unittest.TestCase):
         mocked_kill.assert_called_once()
 
 
+class ReapPressureTests(unittest.TestCase):
+    def _rows(self, items: list[tuple[str, float]]) -> str:
+        return "".join(f"{name}|{activity:.0f}\n" for name, activity in items)
+
+    def test_under_cap_does_nothing(self) -> None:
+        now = 100_000.0
+        # 13 以下：即使都很闲也不压
+        items = [(f"corral-claude-{i:08x}", now - 3600) for i in range(12)]
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch(
+                 "corral.liveness.subprocess.check_output",
+                 return_value=self._rows(items).encode(),
+             ), \
+             mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill, \
+             mock.patch("corral.keepalive._load_working_pairs", return_value=[]):
+            reaped = keepalive.reap_pressure(now=now)
+
+        self.assertEqual(reaped, [])
+        mocked_kill.assert_not_called()
+
+    def test_over_cap_reaps_oldest_idle_non_working(self) -> None:
+        now = 100_000.0
+        idle = now - 11 * 60  # >10 分钟
+        fresh = now - 60
+        items = [(f"corral-claude-{i:08x}", idle - i) for i in range(14)]
+        items[0] = ("corral-claude-00000000", fresh)  # 刚活动过，不收
+        # 00000001 标记为执行中，不收
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch(
+                 "corral.liveness.subprocess.check_output",
+                 return_value=self._rows(items).encode(),
+             ), \
+             mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill, \
+             mock.patch(
+                 "corral.keepalive._load_working_pairs",
+                 return_value=[("claude", "00000001abcd")],
+             ):
+            reaped = keepalive.reap_pressure(now=now)
+
+        # 14 个 → 需关到 12，即关 2 个；跳过 fresh 与 working，从最闲开始
+        self.assertEqual(len(reaped), 2)
+        self.assertEqual(mocked_kill.call_count, 2)
+        # activity 最小的是 index 13（idle-13），然后 12
+        self.assertEqual(reaped[0], "corral-claude-0000000d")
+        self.assertEqual(reaped[1], "corral-claude-0000000c")
+        self.assertNotIn("corral-claude-00000000", reaped)
+        self.assertNotIn("corral-claude-00000001", reaped)
+
+    def test_zero_max_disables_pressure(self) -> None:
+        with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_MAX_SESSIONS": "0"}, clear=True), \
+             mock.patch("corral.keepalive.subprocess.check_output") as mocked:
+            reaped = keepalive.reap_pressure(now=100000.0)
+
+        self.assertEqual(reaped, [])
+        mocked.assert_not_called()
+
+    def test_custom_pressure_idle_minutes(self) -> None:
+        now = 10_000.0
+        # 默认 10 分钟不够，自定义 1 分钟后应收
+        items = [(f"corral-claude-{i:08x}", now - 90) for i in range(13)]
+        with mock.patch.dict(
+            "os.environ",
+            {"CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES": "1"},
+            clear=True,
+        ), \
+             mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
+             mock.patch(
+                 "corral.liveness.subprocess.check_output",
+                 return_value=self._rows(items).encode(),
+             ), \
+             mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill, \
+             mock.patch("corral.keepalive._load_working_pairs", return_value=[]):
+            reaped = keepalive.reap_pressure(now=now)
+
+        self.assertEqual(len(reaped), 1)
+        mocked_kill.assert_called_once()
+
+    def test_reap_runs_idle_then_pressure(self) -> None:
+        with mock.patch("corral.keepalive.reap_idle", return_value=["a"]) as idle, \
+             mock.patch("corral.keepalive.reap_pressure", return_value=["b"]) as pressure:
+            result = keepalive.reap(now=1.0)
+
+        idle.assert_called_once_with(now=1.0)
+        pressure.assert_called_once_with(now=1.0)
+        self.assertEqual(result, ["a", "b"])
+
+
 class KillTests(unittest.TestCase):
     def test_kill_invokes_tmux_kill_session(self) -> None:
         with mock.patch("corral.keepalive.shutil.which", return_value="/usr/bin/tmux"), \

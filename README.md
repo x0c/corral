@@ -328,6 +328,11 @@ the remote machine. Reopen `corral` and the session shows `后台运行中` (run
 - Idle sessions (no tmux activity) are auto-reaped after 2h by default; tune with
   `CORRAL_KEEPALIVE_IDLE_HOURS` (`0` disables reaping; the legacy name `SC_KEEPALIVE_IDLE_HOURS`
   still works). Reaping only closes the background tmux session — history stays on disk.
+- Soft cap of 12 hosted agent processes (`CORRAL_KEEPALIVE_MAX_SESSIONS`; `0` disables).
+  When over the cap, Corral closes the longest-idle sessions that are **not** actively working
+  and have had no tmux activity for over 10 minutes
+  (`CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES`). Sessions still executing are never pressure-reaped;
+  if nothing qualifies, the count may temporarily exceed 12.
 - Disable keep-alive for a single run with `corral --no-keepalive`, or permanently with
   `CORRAL_KEEPALIVE=0` (legacy `SC_KEEPALIVE=0` also works).
 - Keep-alive of the full-screen attach form is skipped when `corral` is already running inside a

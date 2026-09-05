@@ -554,6 +554,33 @@ class AttentionStore:
         finally:
             conn.close()
 
+    def working_pairs(self) -> list[tuple[str, str]]:
+        """返回当前 phase=working 的 (runtime_id, session_id)；库不可用时返回空列表。
+
+        供保活压力回收判断「进行中」：长任务可能长时间无终端输出，不得只靠
+        tmux session_activity 判断。
+        """
+        conn = self._open()
+        if conn is None:
+            return []
+        try:
+            rows = conn.execute(
+                "SELECT runtime_id, session_id FROM session_attention "
+                "WHERE phase = 'working'"
+            ).fetchall()
+            pairs: list[tuple[str, str]] = []
+            for row in rows:
+                runtime_id = str(row["runtime_id"] or "").strip()
+                session_id = str(row["session_id"] or "").strip()
+                if runtime_id and session_id:
+                    pairs.append((runtime_id, session_id))
+            return pairs
+        except (OSError, sqlite3.Error) as error:
+            self._report_degraded(error)
+            return []
+        finally:
+            conn.close()
+
     def get(self, runtime_id: str, session_id: str) -> AttentionState:
         conn = self._open()
         if conn is None:

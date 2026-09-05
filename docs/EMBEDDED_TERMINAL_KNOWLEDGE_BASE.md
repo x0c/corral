@@ -194,6 +194,8 @@ stateDiagram-v2
 | `SC_RUNTIME` / `SC_SESSION_ID` | 上述标识的旧名称 | 创建托管会话时继续注入 |
 | `CORRAL_KEEPALIVE` / `SC_KEEPALIVE` | 禁用会话保活和内嵌可用性的开关 | 任一值为 `0` 都应生效 |
 | `CORRAL_KEEPALIVE_IDLE_HOURS` / `SC_KEEPALIVE_IDLE_HOURS` | 会话保活的空闲回收时长（默认 2 小时，`0` 禁用） | 属于会话保活域，本域只需保持同一命名与兼容 |
+| `CORRAL_KEEPALIVE_MAX_SESSIONS` / `SC_KEEPALIVE_MAX_SESSIONS` | 托管进程软上限（默认 12，`0` 关闭压力回收） | 同上；超限才关闲置且非执行中的会话 |
+| `CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES` / `SC_KEEPALIVE_PRESSURE_IDLE_MINUTES` | 压力回收最短闲置（默认 10 分钟） | 同上 |
 
 ## §5 本域流程 / 组件 / 任务 / MQ 入口索引
 

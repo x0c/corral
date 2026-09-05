@@ -62,6 +62,28 @@ class AttentionStoreTests(unittest.TestCase):
         self.assertEqual(state.kind, "unread")
         self.assertEqual(self.store.mark_read("codex", "one").kind, "none")
 
+    def test_working_pairs_lists_only_working_phase(self):
+        self.store.reconcile([_session("codex", "one"), _session("claude", "two")], {})
+        self.store.record_event(
+            "codex",
+            "one",
+            AttentionEvidence(
+                phase="working", activity_token="w1", observed_at=2, source="observer"
+            ),
+        )
+        self.store.record_event(
+            "claude",
+            "two",
+            AttentionEvidence(
+                phase="waiting",
+                activity_token="q1",
+                question_token="c1",
+                observed_at=3,
+                source="observer",
+            ),
+        )
+        self.assertEqual(self.store.working_pairs(), [("codex", "one")])
+
     def test_waiting_requires_structured_question_token(self):
         self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
         state = self.store.record_event(

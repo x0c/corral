@@ -134,6 +134,7 @@ class HostSessionTests(unittest.TestCase):
         plan = LaunchPlan(argv=("claude", "--resume", "abc"), cwd="/tmp/work")
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok) as run, \
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
+                mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]), \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
             name = embed.host_session(plan, "claude", "0123456789abcdef", 120, 40)
         self.assertEqual(name, "corral-claude-01234567")
@@ -155,6 +156,7 @@ class HostSessionTests(unittest.TestCase):
         plan = LaunchPlan(argv=("pi", "--approve"), cwd="/tmp/work")
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok) as run, \
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
+                mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]), \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
                 mock.patch.object(pi_identity, "ensure_extension_installed", return_value={"status": "ok"}):
             embed.host_session(plan, "pi", "abcd1234", 120, 40)
@@ -180,6 +182,7 @@ class HostSessionTests(unittest.TestCase):
 
         with mock.patch.object(embed.subprocess, "run", side_effect=run_side_effect), \
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
+                mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]), \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
             self.assertEqual(embed.host_session(plan, "claude", "0123456789abcdef", 80, 24),
                              "corral-claude-01234567")
@@ -192,6 +195,7 @@ class HostSessionTests(unittest.TestCase):
 
         with mock.patch.object(embed.subprocess, "run", side_effect=run_side_effect), \
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
+                mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]), \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
             with self.assertRaises(embed.EmbedError):
                 embed.host_session(plan, "claude", "0123456789abcdef", 80, 24)
@@ -1221,7 +1225,8 @@ class ControlChannelIntegrationTests(unittest.TestCase):
         subprocess.run(["tmux", "-L", self.SOCKET, "kill-session", "-t", self.SESSION],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with mock.patch.object(embed.keepalive, "_BASE_ARGV", ("tmux", "-L", self.SOCKET)), \
-             mock.patch.object(embed.keepalive, "tmux_argv", lambda name=None: ("tmux", "-L", self.SOCKET)):
+             mock.patch.object(embed.keepalive, "tmux_argv", lambda name=None: ("tmux", "-L", self.SOCKET)), \
+             mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]):
             probe_script = (
                 "import os,sys,termios,tty,select,time;"
                 "fd=sys.stdin.fileno();old=termios.tcgetattr(fd);tty.setraw(fd);"
