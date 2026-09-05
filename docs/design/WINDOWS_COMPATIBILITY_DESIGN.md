@@ -117,3 +117,5 @@
 | shim | `shim.py`（`SUPPORTED_SHELLS`） |
 | 安装 | `install.sh`、`.github/workflows/release.yml` |
 | remote 信号 | `remote/cli.py`、`remote/daemon.py` |
+
+<!-- 该文档整理/压缩于 2026-09-05 -->

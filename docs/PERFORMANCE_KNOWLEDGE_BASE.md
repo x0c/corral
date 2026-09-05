@@ -295,4 +295,4 @@ python3 scripts/benchmark.py
 CORRAL_NATIVE=0 python3 scripts/benchmark.py
 python3 -c "import time; from corral.runtime import default_registry; r
 
-<!-- 该文档整理/压缩于 2026-08-08 -->
+<!-- 该文档整理/压缩于 2026-09-05 -->

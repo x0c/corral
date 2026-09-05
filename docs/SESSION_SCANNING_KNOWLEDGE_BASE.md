@@ -6,7 +6,7 @@
 |---|------|------|
 | §1 | 业务背景与核心概念 | 首次接触会话扫描时读 |
 | §1.5 | 架构概览 | 理解本地历史到预览的分层与调用关系 |
-| §2 | 核心业务流程 | 修改扫描、排序、缓存或预览前读 |
+| §2 | 核心业务流程 | 修改扫描、排序、缓存或预览时查 |
 | §2.5 | 物理路径速查 | 直接定位扫描与适配实现 |
 | §3 | 代码入口索引 | 按任务场景找正确入口 |
 | §4 | 外部数据入口索引 | 排查本地历史格式、路径和存储形态时读 |
@@ -211,7 +211,7 @@ flowchart TD
 | 修改 OpenCode 完整预览 | OpenCode 扫描器 | `scan.opencode.load_conversation()` | 从 `message` 与 `part` 表合并同一消息的多个 text part |
 | 修改 Kimi 事件过滤、预览或判活 | Kimi 扫描器 | `scan.kimi.scan_sessions()`、`_apply_live_flags()`、`_iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent；同 cwd 多 TUI 必须按 `-S` / 完整 `CORRAL_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`-p`/`server`/`web` 不算 TUI |
 | 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；对话缓存签名含 `store.db-wal`；同 cwd 多 `agent` 必须按打开的 store.db / 完整 CORRAL_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底。**子代理 chat 仍过滤出列表，但 live 进程绑到子代理时必须改记父会话进行中** |
-| 修改 Pi 扫描或预览 | Pi 扫描器 | `scan.pi.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | JSONL 首行必须是 session；列表身份 = header `id`；v2+ 从最新叶子沿 `parentId` 回溯，v1 无 id 则按文件顺序；`-p`/`auth`/`install` 不算 TUI；`live_processes("pi")` 需 cmdline 兜底（comm 常是 `node`）。**live 只消费 claim，动手前必读 §2.2.1 与身份设计；禁止在扫描里用最新文件或隔离目录修 pane 属主。** |
+| 修改 Pi 扫描或预览 | Pi 扫描器 | `scan.pi.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | JSONL 首行必须是 session；列表身份 = header `id`；v2+ 从最新叶子沿 `parentId` 回溯，v1 无 id 则按文件顺序；`-p`/`auth`/`install` 不算 TUI；`live_processes("pi")` 需 cmdline 兜底（comm 常是 `node`）。**live 只消费 claim；改前先核 §2.2.1 与身份设计；禁止在扫描里用最新文件或隔离目录修 pane 属主。** |
 | 修改统一 transcript / `corral share` | `transcript.py`、`agent_api.py` | `load_events()`、`_parse_*`、`export_share_to_cache()` | 不改 `load_conversation` 的纯文本契约；按各助手原始落盘抽出 thinking 与工具调用。TUI 高级操作「导出会话」走同一套 `load_events`，写到缓存目录 `share/`。Cursor `store.db` 里 tool-result 的 rowid 可以早于对应 tool-call，必须按完整 `toolCallId`（常含换行，禁止按 `\n` 拆）攒着、见到 call 再按 call→result 发出。核对以原始 JSONL/SQLite 为权威，禁止用 `show`/`export` 对照 |
 | 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`process_environ()`、`process_start_time()`、`is_cursor_agent_cmdline()`、`is_pi_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`）；`pi` 同样要 cmdline 兜底（comm 常是 `node`）；OpenCode / Kimi / Pi 判活禁止再按 cwd 折叠 |
 | 修改跨运行时并发或扫描复用 | 注册表 | `runtime.registry.RuntimeRegistry.scan_all()` | 各运行时并发、异常隔离、结果副本隔离、签名命中跳过 |
@@ -401,4 +401,4 @@ print(f'{(time.perf_counter()-t)*1000:.0f}ms')
 
 <!-- 该文档由 doc-init 生成于 2026-07-19；定位：AI 修改会话扫描、对话预览、判活、缓存或扫描性能前的快速参考文档 -->
 
-<!-- 该文档整理/压缩于 2026-08-08 -->
+<!-- 该文档整理/压缩于 2026-09-05 -->

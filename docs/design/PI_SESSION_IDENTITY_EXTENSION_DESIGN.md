@@ -712,3 +712,5 @@ Pi Server/SessionLease 稳定并提供可依赖的会话身份与写入租约后
 不要再以历史扫描作为新托管会话的身份来源。Corral 启动时生成不可预测的宿主 nonce，并将 nonce、目标 tmux 名和一次性私有 claim 路径传给启动包装器；包装器已在 Codex TUI 与 `codex app-server` 的双向 JSON-RPC 通道上，必须从 `thread/start` 返回值或 `thread/started` 通知取得完整 `threadId` 后，以原子方式写入 `{nonce, threadId, rolloutPath, pid}`。Corral 只接受 nonce 精确相同、路径在 Codex 会话根内、threadId/rolloutPath 一致且 pane 仍存活的单一 claim，然后用真实 threadId 取代占位卡；`/new`、`/resume`、`/fork` 发生时同样以 app-server 生命周期事件更新 claim。缺 claim、重复 claim、路径不一致或子线程声明时，一律停在占位/未托管态并记录诊断，绝不回落到 cwd、mtime、短 id 或祖先链猜测。
 
 历史扫描只保留给外部/旧会话发现和崩溃恢复。短托管标识不是 Codex 原生会话 ID；包装器还可能在同一祖先链内拉起多层 `codex` 进程。验收必须包括同 cwd 三个并行托管窗口、会话内新建/恢复/分叉、包装器重连与 Corral 重启；每个窗口的真实 threadId、首条任务和实时终端必须一一对应。实现入口：`codex_identity.py`。
+
+<!-- 该文档整理/压缩于 2026-09-05 -->
