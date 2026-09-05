@@ -2,15 +2,14 @@
 
 形态与取舍（改之前先读）：
 
-- **默认收起成「条数 + 最初 + 最近」三行**，展开才补上中间那段。小窗是盖在托管画面 /
-  静态预览上的浮层，盖住多少行就有多少行正文看不见；Textual 没有「点击穿透」，
-  被盖住的区域滚轮不会再转发给托管会话、也划不了词。收起态只留这两头，把这两笔
-  代价压到最小。
-- **顺序恒为从上到下、由旧到新**，与右栏完整对话一致。条数超上限时砍中间、留两头。
+- **默认展开列出全部真人提问**；浮层有高度上限，多出来的靠区域内滚动看。
+  不要再砍中间或画「中间省略 N 条」——那会让中间提问不可见。收起态才只留
+  「条数 + 最初 + 最近」三行，把遮挡与滚轮穿透代价压到最小（Textual 没有点击穿透）。
+- **顺序恒为从上到下、由旧到新**，与右栏完整对话一致。
 - **只列真人提问**：`load_conversation` 仍保留完整 user 轮次（导出/预览要看原文），
   但小窗标题是 Your prompts，必须再滤掉 runtime 注入、接力词、管家角色提示等。
 - **过长提问折叠**：展开态每条最多 `_MAX_PROMPT_LINES` 行，超出末行加 `...`；
-  整窗高度仍靠滚动封顶。条纹按提问块交替，半透明叠在浮层底上，不跟 hover 抢底。
+  整窗高度靠滚动封顶。条纹按提问块交替，半透明叠在浮层底上，不跟 hover 抢底。
 - **实时托管格与静态对话预览格都画，且每个分屏格各自一份**。长对话里完整预览仍
   要翻很久，小窗用来扫提问脉络；多分屏时每一格画自己的提问摘要。
 - 用 `dock: right` + `width/height: auto` 把浮层贴到右上角：这样浮层的命中区域**只有
@@ -37,8 +36,6 @@ from corral.i18n import t
 from corral.models import ConversationMessage
 from corral.textutil import fit_cell, text_width, wrap_preview_text
 
-# 展开态最多列几条提问；再多就靠"更早 N 条"一行如实说明，不做静默截断。
-MAX_ENTRIES = 6
 _MIN_WIDTH = 16
 # 内容宽度上限。展开态每条提问会折叠，不必为了读完整句把浮层铺满整格。
 # 这只是**上限**：真实宽度仍取 `min(上限, 本格可用宽度 - 4)`，三分屏那种窄格
@@ -108,13 +105,11 @@ class HudData:
 
     `entries` 是 (时间, 单行正文)，**从旧到新**排——与右栏完整对话、与人读聊天记录
     的方向一致。`entries[0]` 恒为本会话**最早**那条提问（判断"这个会话本来是要干嘛"），
-    `entries[-1]` 是最新一条（判断"现在做到哪"）；条数超上限时省掉的是中间那段，
-    数量记在 `omitted` 里，由界面如实说明，不做静默截断。
+    `entries[-1]` 是最新一条（判断"现在做到哪"）。展开态列出全部条目；收起态只取两头。
     """
 
     count: int
     entries: tuple[tuple[str, str], ...] = ()
-    omitted: int = 0
 
     @property
     def oldest(self) -> tuple[str, str] | None:
@@ -192,9 +187,7 @@ def _hud_stripe_color(background: TextualColor, accent: TextualColor) -> Textual
     return background.blend(accent, _STRIPE_BLEND)
 
 
-def summarize_user_messages(
-    messages: list[ConversationMessage], limit: int = MAX_ENTRIES,
-) -> HudData:
+def summarize_user_messages(messages: list[ConversationMessage]) -> HudData:
     """从会话对话里挑出真人提问，按从旧到新整理成小窗摘要。
 
     只认 `role == "user"`，并丢掉 `is_injected_user_prompt` 命中的注入轮次。
@@ -206,8 +199,8 @@ def summarize_user_messages(
     一遍 `response_item` 和 `event_msg`，扫描层已按原文去重，这里再按展示
     正文兜一层。不相邻的重复（人过一会又发同一句）照常保留。
 
-    超过 `limit` 条时**保留最早那条、砍中间**：最早一条决定"这个会话本来要干嘛"，
-    没有它就只剩一串近期动作，看不出来龙去脉；被砍掉的条数原样返回给界面说明。
+    过滤后的提问**全部**进入 `entries`；遮挡面积只靠展开态高度上限 + 滚动控制，
+    禁止砍中间。
     """
     users = [
         m for m in messages
@@ -229,12 +222,7 @@ def summarize_user_messages(
         stamp = _short_time(message.timestamp) if message.timestamp else ""
         return stamp, _one_line(message.text)
 
-    limit = max(2, limit)
-    if len(users) <= limit:
-        return HudData(len(users), tuple(_entry(m) for m in users), 0)
-    tail = users[-(limit - 1):]
-    entries = (_entry(users[0]), *(_entry(m) for m in tail))
-    return HudData(len(users), entries, len(users) - 1 - len(tail))
+    return HudData(len(users), tuple(_entry(m) for m in users))
 
 
 def _plural(key: str, count: int, **kwargs: object) -> str:
@@ -397,13 +385,6 @@ class SessionHud(Widget):
         """展开态除页眉/页脚外的全部内容行（未按可见高度裁切）。"""
         out: list[Text] = []
         for index, (stamp, body) in enumerate(self._data.entries):
-            if index == 1 and self._data.omitted:
-                # 省略的是中间那段，说明行就画在被省掉的位置上。页眉页脚和这行
-                # 都不参与斑马纹，避免把「中间省略 N 条」涂成一块实心。
-                out.append(Text(
-                    fit_cell(_plural("hud.omitted", self._data.omitted), width, ellipsis=True),
-                    style="dim", no_wrap=True,
-                ))
             paint = stripe_on if index % 2 else ""
             out.extend(
                 self._paint_stripe(line, paint)
@@ -415,7 +396,7 @@ class SessionHud(Widget):
         """按给定内容宽度生成每一行；所有行补齐到同宽，浮层底色才是规整的矩形。
 
         两种形态都是**从上到下、从旧到新**：收起态只留两头（最初一条 + 最近一条），
-        展开态把中间那段补上。方向和右栏完整对话一致，不要改成最新在最前。
+        展开态列出全部提问。方向和右栏完整对话一致，不要改成最新在最前。
 
         展开态超过 `max_height` 时不截断内容，而是**只画一个窗口**（页眉与页脚始终
         可见，中间正文按 `_scroll` 滚动）——页脚是唯一写着"点击收起"的地方，被滚出去

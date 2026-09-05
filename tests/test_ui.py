@@ -8864,21 +8864,18 @@ class SessionHudSummaryTests(unittest.TestCase):
         self.assertEqual([body for _stamp, body in data.entries], ["问题0", "问题1", "问题2"])
         self.assertEqual(data.oldest[1], "问题0")
         self.assertEqual(data.latest[1], "问题2")
-        self.assertEqual(data.omitted, 0)
 
-    def test_long_session_keeps_both_ends_and_drops_the_middle(self) -> None:
-        """最早那条决定「这个会话本来要干嘛」，不能跟着中间那段一起被砍掉。"""
-        from corral.ui.session_hud import MAX_ENTRIES, summarize_user_messages
+    def test_long_session_keeps_every_prompt_in_order(self) -> None:
+        """展开态要能滚看全部提问；摘要不得砍中间。"""
+        from corral.ui.session_hud import summarize_user_messages
 
         data = summarize_user_messages(self._messages(20))
         self.assertEqual(data.count, 20)
-        self.assertEqual(len(data.entries), MAX_ENTRIES)
+        self.assertEqual(len(data.entries), 20)
         self.assertEqual(data.oldest[1], "问题0")
         self.assertEqual(data.latest[1], "问题19")
-        # 被省略的是中间那段：总数 - 最早一条 - 展示的最近几条
-        self.assertEqual(data.omitted, 20 - 1 - (MAX_ENTRIES - 1))
         bodies = [body for _stamp, body in data.entries]
-        self.assertEqual(bodies, ["问题0", "问题15", "问题16", "问题17", "问题18", "问题19"])
+        self.assertEqual(bodies, [f"问题{i}" for i in range(20)])
 
     def test_time_column_drops_the_date_for_todays_prompts(self) -> None:
         """横向寸土寸金：当天只给 HH:MM，更早只给 MM-DD，两者都恰好 5 格宽。"""
@@ -8970,18 +8967,31 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertIn("1 prompt", lines[0])
         self.assertIn("问题0", lines[1])
 
-    def test_expanded_is_oldest_to_newest_with_the_middle_reported(self) -> None:
-        from corral.ui.session_hud import MAX_ENTRIES
-
+    def test_expanded_lists_every_prompt_and_scrolls_when_capped(self) -> None:
+        """展开态保留全部提问；高度封顶时靠滚动看中间与最早几条。"""
         hud = self._hud(10, expanded=True)
-        lines = [line.plain for line in hud.lines(40)]
-        # 标题 + 最早一条 + "中间省略 N 条" + 最近 (MAX_ENTRIES-1) 条 + 收起提示
-        self.assertEqual(len(lines), MAX_ENTRIES + 3)
-        self.assertIn("Your prompts (10)", lines[0])
-        self.assertIn("问题0", lines[1], "最早那条必须排在最上面")
-        self.assertIn(f"{10 - MAX_ENTRIES} more in between", lines[2])
-        self.assertIn("问题9", lines[-2], "最新那条必须排在最下面")
-        self.assertIn("Click to collapse", lines[-1])
+        full = [line.plain for line in hud.lines(40)]
+        # 标题 + 10 条 + 收起提示（未封顶时全部可见）
+        self.assertEqual(len(full), 12)
+        self.assertIn("Your prompts (10)", full[0])
+        self.assertIn("问题0", full[1], "最早那条必须排在最上面")
+        self.assertIn("问题5", full[6], "中间提问必须保留，不得省略")
+        self.assertIn("问题9", full[-2], "最新那条必须排在最下面")
+        self.assertNotIn("in between", " ".join(full))
+        self.assertNotIn("省略", " ".join(full))
+        self.assertIn("Click to collapse", full[-1])
+
+        capped = hud.lines(40, 8)
+        self.assertEqual(len(capped), 8)
+        self.assertGreater(hud._max_scroll, 0)  # noqa: SLF001
+        visible = " ".join(line.plain for line in capped[1:-1])
+        self.assertIn("问题9", visible, "默认钉底应看到最新")
+        self.assertNotIn("问题0", visible)
+        while hud._scroll_by(-3):  # noqa: SLF001
+            pass
+        top = " ".join(line.plain for line in hud.lines(40, 8)[1:-1])
+        self.assertIn("问题0", top, "上滚必须能看到最早提问")
+        self.assertIn("问题5", top, "上滚必须能看到中间提问")
 
     def test_expanded_without_truncation_lists_everything_in_order(self) -> None:
         hud = self._hud(3, expanded=True)
@@ -9119,7 +9129,7 @@ class SessionHudRenderTests(unittest.TestCase):
         self.assertEqual(hud.lines(40), [])
 
     def test_expanded_zebra_paints_odd_prompt_blocks(self) -> None:
-        """提问块按奇偶交替涂条纹；页眉、中间省略行、页脚都不涂。"""
+        """提问块按奇偶交替涂条纹；页眉、页脚都不涂。"""
         from corral.ui.session_hud import SessionHud, summarize_user_messages
 
         def has_bg(line) -> bool:
@@ -9136,13 +9146,12 @@ class SessionHudRenderTests(unittest.TestCase):
         hud.update_data(summarize_user_messages(msgs), expanded=True)
         body = hud._expanded_body(40, "on #334455")  # noqa: SLF001
         plains = [line.plain for line in body]
-        omitted_at = next(i for i, text in enumerate(plains) if "in between" in text or "省略" in text)
-        self.assertFalse(has_bg(body[omitted_at]), "中间省略行不得涂条纹")
-        prompt_rows = [(i, line) for i, line in enumerate(body) if i != omitted_at]
-        # entries: 问题0, 问题3..问题7（limit=6 留两头砍中间）→ 奇偶按 entries index
-        self.assertIn("问题0", prompt_rows[0][1].plain)
-        self.assertFalse(has_bg(prompt_rows[0][1]), "最早一条是偶数块，不涂")
-        self.assertTrue(has_bg(prompt_rows[1][1]), "第二条提问是奇数块，要涂")
+        self.assertEqual(len(plains), 8)
+        self.assertIn("问题0", plains[0])
+        self.assertFalse(has_bg(body[0]), "最早一条是偶数块，不涂")
+        self.assertTrue(has_bg(body[1]), "第二条提问是奇数块，要涂")
+        self.assertIn("问题7", plains[-1])
+        self.assertTrue(has_bg(body[-1]), "第 8 条是奇数块，要涂")
 
     def test_hud_stripe_stays_in_pane_blue_family(self) -> None:
         """条纹叠 `$primary`，必须仍是蓝，不能被 `$foreground` 洗成灰。"""

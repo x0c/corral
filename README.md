@@ -189,16 +189,14 @@ block Cursor. Use the `corral observer ... cursor` commands above to audit, prev
 - Click a runtime button above the right side to add that agent as another pane in the current project.
   Up to four panes may run together; click a pane to focus it and sync the sidebar selection.
 - A small **session card floats in the top-right corner of each live pane**, so every split
-  tells you at a glance what that session is about and how far along it is. It is expanded by default, showing up
-  to six timestamped prompts. When collapsed it shows the two ends — `▶ 12 prompts`, then
+  tells you at a glance what that session is about and how far along it is. It is expanded by default, listing
+  every timestamped prompt you typed (oldest to newest). When collapsed it shows the two ends — `▶ 12 prompts`, then
   `First <your very first prompt>` and `Latest <your newest one>`:
   the first prompt says what this session set out to do, the latest says where it is now. Click it
-  (or press `Ctrl+G`) to toggle the two forms. Expanded prompts are always ordered oldest to newest;
-  when there are more than six, the middle is dropped (never the first one) and the card says how many
-  it left out. Long prompts fold to two lines with an ellipsis; continuation lines stay aligned
-  under the first. Prompt rows use a light zebra stripe. If the card still runs past its maximum
-  height, the body scrolls under a pinned header and footer, sticking to the latest prompts by
-  default (scroll up to read earlier ones). Runtime-injected prompts (plan attachments, handoff
+  (or press `Ctrl+G`) to toggle the two forms. Long prompts fold to two lines with an ellipsis; continuation lines stay aligned
+  under the first. Prompt rows use a light zebra stripe. The card has a maximum height: when there are
+  more prompts than fit, the body scrolls under a pinned header and footer, sticking to the latest prompts by
+  default (scroll up to read earlier ones—including the middle, which is never dropped). Runtime-injected prompts (plan attachments, handoff
   text, conductor role prompts) are hidden. The card is drawn on live panes and on static
   transcript previews. Note that
   whatever it covers is hidden from the agent's screen and the mouse wheel cannot reach through it;

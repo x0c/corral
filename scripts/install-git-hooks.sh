@@ -28,7 +28,9 @@ case "$HOOKS_ABS" in
   *) is_shared=1 ;;
 esac
 
-# 通用分发器：任意带 .githooks/pre-push 的仓库都能用，不绑死 corral 路径
+# 通用分发器：任意带 .githooks/pre-push 的仓库都能用，不绑死 corral 路径。
+# 本机常与 leakgate 共用 ~/.git-hooks/pre-push：必须先跑泄漏门禁，再转调仓内钩子。
+# 禁止再写入「仅 Corral」的旧分发器，否则会盖掉全局密钥扫描。
 write_dispatcher() {
   local dest="$1"
   # 若 dest 是指向本仓脚本的软链，cat > 会顺着链把真脚本盖掉——先拆链再写
@@ -37,9 +39,25 @@ write_dispatcher() {
   fi
   cat >"$dest" <<'EOF'
 #!/usr/bin/env bash
-# 由 corral scripts/install-git-hooks.sh 安装的通用 pre-push 分发器。
-# 仅当当前仓库存在可执行的 .githooks/pre-push 时转调；其它仓库直接放行。
+# 全局 pre-push：先跑 leakgate 泄漏门禁，再转调仓库内 .githooks/pre-push（如 Corral）。
+# 由 Corral scripts/install-git-hooks.sh 与 agentsync leakgate 共同约定；勿改成只保留一侧。
 set -euo pipefail
+
+# --- leakgate：对本机所有仓库生效 ---
+if [ "$(git config --bool --get leakgate.disabled 2>/dev/null || true)" != "true" ]; then
+  LEAKGATE_PY="${HOME}/.config/agentsync/scripts/leakgate/leakgate.py"
+  if [ -f "$LEAKGATE_PY" ]; then
+    PY=python3
+    if ! command -v python3 >/dev/null 2>&1; then
+      PY=python
+    fi
+    "$PY" "$LEAKGATE_PY" prepush
+  else
+    echo "leakgate: 未找到扫描器 $LEAKGATE_PY，本次跳过泄漏门禁（请检查 agentsync 是否已同步）" >&2
+  fi
+fi
+
+# --- 仓库级钩子分发（Corral 等）---
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 hook="$root/.githooks/pre-push"
 if [ -x "$hook" ]; then
@@ -55,16 +73,16 @@ mkdir -p "$HOOKS_ABS"
 if [ "$is_shared" -eq 1 ]; then
   dest="$HOOKS_ABS/pre-push"
   if [ -e "$dest" ] && [ ! -L "$dest" ]; then
-    # 已有实体文件：若已是我们的分发器则覆盖更新；否则备份后写入
-    if ! grep -q '由 corral scripts/install-git-hooks.sh 安装的通用 pre-push 分发器' "$dest" 2>/dev/null; then
+    # 已有实体文件：合并版 / 旧分发器可直接覆盖更新；其它内容先备份
+    if ! grep -qE 'leakgate|由 corral scripts/install-git-hooks.sh 安装的通用 pre-push 分发器|全局 pre-push：先跑 leakgate' "$dest" 2>/dev/null; then
       bak="$dest.backup-$(date +%Y%m%d%H%M%S)"
       cp -p "$dest" "$bak"
       echo "已备份原有 $dest → $bak"
     fi
   fi
-  # 若当前是指向本仓专用脚本的错误软链（旧版安装），改成通用分发器
+  # 若当前是指向本仓专用脚本的错误软链（旧版安装），改成「leakgate + 仓内钩子」合并分发器
   write_dispatcher "$dest"
-  echo "已安装通用分发器: $dest"
+  echo "已安装合并分发器（leakgate + .githooks/pre-push）: $dest"
   echo "检测到共享 hooksPath: $HOOKS_ABS"
   echo "本仓检查脚本: $ROOT/.githooks/pre-push"
 else

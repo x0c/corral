@@ -92,14 +92,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "▼ Your prompts ({count})",
         "zh": "▼ 本会话提问（{count}）",
     },
-    "hud.omitted": {
-        "en": "… {count} more in between",
-        "zh": "… 中间省略 {count} 条",
-    },
-    "hud.omitted_one": {
-        "en": "… 1 more in between",
-        "zh": "… 中间省略 1 条",
-    },
     "hud.collapse_hint": {
         "en": "Click to collapse",
         "zh": "点击收起",
