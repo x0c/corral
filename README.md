@@ -182,7 +182,9 @@ block Cursor. Use the `corral observer ... cursor` commands above to audit, prev
   second when there is more than one page (wrapping from last back to first), and a blank
   third line. The footer also spells out `[` previous page / `]` next page while the list
   has focus (laptop keyboards without Page Up / Page Down still work). A session that just finished stays
-  on the current page for a moment so the grid does not jump while you are still reading it.
+  on the current page while you are still watching the board so the grid does not jump, but it no
+  longer counts in the Active sessions label once its attention dot is gone — that count always
+  matches how many hosted sessions still show a yellow / green / red dot.
   Sessions idle in another window are left out (no live picture). A yellow dot means more waiting
   off the current page. Opening a specific sidebar session leaves the board and restores your usual
   single pane or split. The board never writes a named split group.

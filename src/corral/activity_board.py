@@ -1,35 +1,31 @@
 """活跃会话看板：自动铺当前需要盯的托管会话，不写入持久分屏组合。
 
-成员资格：corral 自己托管、且关注态是等待回答 / 执行中 / 未读新结果，或
-「刚刚」（与侧栏时间行同一条 3 分钟界）内还有真实对话活动。别的窗口里跑的
-会话没有实时画面，不进格子。超过一页时当前页成员冻结，
+成员资格与侧栏关注圆点同源：corral 自己托管、且关注态是等待回答 /
+执行中 / 未读新结果（``attention.ATTENTION_MARKER_KINDS``）。别的窗口
+里跑的会话没有实时画面，不进格子。超过一页时当前页成员冻结，
 新急件排到后面；格子空出来才从队列按优先级补位。**正在看看板期间
-当前页成员不主动撤**：只要会话仍被 corral 托管，跑完、已读、不再
-活跃都继续钉在原格，直到离开看板、显式关格或会话不再托管；
-显式翻页按当时的队列重切，不在队列里的成员随之让位。
+当前页成员不主动撤**：只要会话仍被 corral 托管，跑完、已读都继续
+钉在原格，直到离开看板、显式关格或会话不再托管；显式翻页按当时的
+队列重切，不在队列里的成员随之让位。角标人数只计仍带关注圆点的成员，
+钉住已消退的格不虚高。
 """
 
 from __future__ import annotations
 
 import math
-import time
 from dataclasses import dataclass
 
-from corral.attention import AttentionKind, AttentionState
-from corral.display import JUST_NOW_SECONDS
+from corral.attention import (
+    ATTENTION_MARKER_KINDS,
+    AttentionKind,
+    AttentionState,
+    attention_marker_rank,
+    has_attention_marker,
+)
 from corral.split_layout import MAX_PANES
 
-BOARD_KINDS: frozenset[AttentionKind] = frozenset({"waiting", "working", "unread"})
-_KIND_RANK: dict[AttentionKind, int] = {
-    "waiting": 0,
-    "working": 1,
-    "unread": 2,
-    # 「刚刚还在用」档：没有待办信号，只是最近仍在活动，排在三档待办之后。
-    "none": 3,
-}
-# 「刚刚还在活跃」与侧栏时间行「刚刚」共用同一条界（display.JUST_NOW_SECONDS）
-# 和同一时间源（会话最近真实活动时间）：侧栏显示「刚刚」的托管会话，看板也认活跃。
-RECENT_ACTIVE_SECONDS = JUST_NOW_SECONDS
+# 兼容旧调用方：看板成员种类 ≡ 关注圆点种类。
+BOARD_KINDS: frozenset[AttentionKind] = ATTENTION_MARKER_KINDS
 
 
 @dataclass(frozen=True)
@@ -54,18 +50,15 @@ class BoardSnapshot:
 
 
 def collect_candidates(store, now: float | None = None) -> list[BoardCandidate]:
-    """从会话库收集够格的托管会话，按「等回话 > 干活 > 未读 > 刚刚活跃」排。
+    """从会话库收集够格的托管会话，按「等回话 > 干活 > 未读」排。
 
-    「刚刚活跃」档没有待办信号：会话最近真实活动（mtime，与侧栏「刚刚」文案
-    同源）还在 ``RECENT_ACTIVE_SECONDS`` 窗口内即算，覆盖用户正在正常使用、
-    但本轮既没在等回话也没未读的托管会话。未来时间 / 时钟漂移出的负差值按
-    刚刚活跃处理（与 display 的相对时间同规则）。
+    ``now`` 保留给调用方兼容，成员资格不再看墙钟「刚刚」窗口——
+    那条旁路曾让 Active sessions 人数比带圆点的会话更多。
     """
+    del now  # 成员资格与圆点同源，不再用墙钟旁路。
     import corral
     from corral.models import is_shell_session
 
-    if now is None:
-        now = time.time()
     candidates: list[BoardCandidate] = []
     for session in store.all_sessions():
         if is_shell_session(session):
@@ -74,19 +67,18 @@ def collect_candidates(store, now: float | None = None) -> list[BoardCandidate]:
             continue
         key = corral.session_key(session)
         state: AttentionState = store.attention_for(key)
+        if not has_attention_marker(state.kind):
+            continue
         mtime = float(session.get("mtime") or 0.0)
-        if state.kind not in BOARD_KINDS:
-            if not mtime or now - mtime > RECENT_ACTIVE_SECONDS:
-                continue
         candidates.append(
             BoardCandidate(
                 key=key,
-                kind=state.kind if state.kind in BOARD_KINDS else "none",
+                kind=state.kind,  # type: ignore[arg-type]
                 updated_at=max(state.updated_at, mtime),
             )
         )
     candidates.sort(
-        key=lambda item: (_KIND_RANK.get(item.kind, 9), -item.updated_at, item.key)
+        key=lambda item: (attention_marker_rank(item.kind), -item.updated_at, item.key)
     )
     return candidates
 
@@ -181,9 +173,12 @@ class ActivityBoard:
         """按「当前页不插队、空位才补」更新锁定成员，返回这一帧快照。
 
         正在看看板期间不主动撤格：当前页成员只要仍在 ``hosted_keys`` 里
-        就保留，即使关注态已经消退（跑完、已读、不再活跃）。撤格只发生在
+        就保留，即使关注态已经消退（跑完、已读）。撤格只发生在
         离开看板（``reset``）、显式关格（``dismiss``）、会话不再被托管，
         或显式翻页按当前队列重切时。
+
+        角标 ``total`` 只计仍带关注圆点的成员，与侧栏圆点强一致；钉住
+        已消退的格可以留在右栏，但不虚高人数。
 
         补位不得把更前页的人拉进本页：队头新插进来的急件算前页，
         翻到后页后空位只从本页已有成员之后的队列取。
@@ -242,13 +237,12 @@ class ActivityBoard:
             self._locked = kept
 
         visible = tuple(self._locked)
-        # 被钉住的「已不够格但仍托管」成员也计入角标总数，否则侧栏会话数
-        # 与右栏实际格子数对不上；打字钉住的格子沿用旧口径不计入。
         held = [
             key for key in visible
             if key not in eligible_set and key != typing
         ]
-        total = len(eligible) + len(held)
+        # 角标与圆点同源：只计够格（仍带关注圆点）的成员。
+        total = len(eligible)
         page_count = max(1, math.ceil(total / MAX_PANES)) if total else 1
         if self._page >= page_count:
             if held:

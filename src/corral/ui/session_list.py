@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from corral.split_layout import SplitGroup, SplitLayoutStore
 
 from corral.activity_board import BoardSnapshot
+from corral.attention import attention_marker_style
 from corral.display import TODAY_SECONDS
 from corral.i18n import t
 
@@ -474,11 +475,8 @@ class SessionCard(Widget):
         runtime_id = getattr(runtime, "id", None) or str(session.get("source") or "")
 
         attention_kind = str(session.get("attention_kind") or "none")
-        dot_style = {
-            "waiting": "bold yellow",
-            "working": "bold green",
-            "unread": "bold red",
-        }.get(attention_kind)
+        # 与 Active sessions 角标同源：只认 waiting / working / unread。
+        dot_style = attention_marker_style(attention_kind)
         # 有圆点才让出「圆点 + 空格」这两列；没有圆点的卡片不留占位空格，标题
         # 直接顶到最左并吃满整行宽度。
         dot_width = 0 if dot_style is None else 2
@@ -594,22 +592,23 @@ class SessionGroupCard(Widget):
         import corral
 
         statuses = (
-            ("waiting", "bold yellow", "group.attention_waiting"),
-            ("working", "bold green", "group.attention_working"),
-            ("unread", "bold red", "group.attention_unread"),
+            ("waiting", "group.attention_waiting"),
+            ("working", "group.attention_working"),
+            ("unread", "group.attention_unread"),
         )
         counts = {
             kind: sum(
                 str(session.get("attention_kind") or "none") == kind
                 for session in self.member_sessions
             )
-            for kind, _, _ in statuses
+            for kind, _ in statuses
         }
         out = Text(indent)
         has_status = False
-        for kind, style, label_key in statuses:
+        for kind, label_key in statuses:
             count = counts[kind]
-            if count == 0:
+            style = attention_marker_style(kind)
+            if count == 0 or style is None:
                 continue
             if has_status:
                 out.append(" · ", style="dim")

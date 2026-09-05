@@ -24,11 +24,42 @@ AttentionPhase = Literal["working", "waiting", "idle", "unknown"]
 AttentionSource = Literal["history", "observer"]
 AttentionKind = Literal["none", "unread", "working", "waiting"]
 
+# 侧栏关注圆点与 Active sessions 角标共用：黄等回话 / 绿干活 / 红未读。
+# 禁止看板另开「刚刚活跃」旁路——否则角标人数会比带圆点的会话更多。
+ATTENTION_MARKER_KINDS: frozenset[AttentionKind] = frozenset(
+    {"waiting", "working", "unread"}
+)
+ATTENTION_MARKER_STYLES: dict[AttentionKind, str] = {
+    "waiting": "bold yellow",
+    "working": "bold green",
+    "unread": "bold red",
+}
+_MARKER_RANK: dict[AttentionKind, int] = {
+    "waiting": 0,
+    "working": 1,
+    "unread": 2,
+}
+
 _SCHEMA_VERSION = 1
 _DEFAULT_MAX_AGE_SECONDS = 180 * 24 * 60 * 60
 _SOURCE_RANK: dict[AttentionSource, int] = {"history": 0, "observer": 1}
 
 logger = logging.getLogger(__name__)
+
+
+def has_attention_marker(kind: str | None) -> bool:
+    """是否应画关注圆点 / 计入 Active sessions（两边必须同判）。"""
+    return str(kind or "none") in ATTENTION_MARKER_KINDS
+
+
+def attention_marker_style(kind: str | None) -> str | None:
+    """圆点 Rich 样式；无关注态时返回 None（不留占位空格）。"""
+    return ATTENTION_MARKER_STYLES.get(str(kind or "none"))  # type: ignore[arg-type]
+
+
+def attention_marker_rank(kind: str | None) -> int:
+    """看板排序位：等回话 > 干活 > 未读；非标记态排最后。"""
+    return _MARKER_RANK.get(str(kind or "none"), 9)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)

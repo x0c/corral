@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import time
 import unittest
 
 from corral import i18n
 from corral.activity_board import (
-    RECENT_ACTIVE_SECONDS,
     ActivityBoard,
     BoardCandidate,
     BoardSnapshot,
@@ -55,8 +53,10 @@ class CollectCandidatesTests(unittest.TestCase):
         keys = [item.key for item in collect_candidates(_Store())]
         self.assertEqual(keys, ["claude:wait", "claude:work", "claude:unread"])
 
-    def test_recently_active_hosted_session_joins_board(self) -> None:
-        """「刚刚」窗口内还在动的无信号托管会话也算活跃成员。"""
+    def test_recently_active_without_marker_does_not_join_board(self) -> None:
+        """「刚刚」无信号托管会话不得进看板——否则角标会比圆点多。"""
+        import time
+
         now = time.time()
 
         class _Store:
@@ -71,43 +71,39 @@ class CollectCandidatesTests(unittest.TestCase):
                         "mtime": now + 30,
                     },
                     {
-                        "source": "claude", "id": "stale", "keepalive_name": "k2",
-                        "mtime": now - RECENT_ACTIVE_SECONDS - 60,
+                        "source": "claude", "id": "waiting", "keepalive_name": "k2",
+                        "mtime": now - 60,
                     },
-                    {
-                        "source": "claude", "id": "nomtime", "keepalive_name": "k3",
-                    },
-                    # 刚活跃但不是本窗口托管：不进格。
-                    {"source": "claude", "id": "freshext", "mtime": now - 10},
                 ]
 
             def attention_for(self, key: str) -> AttentionState:
-                return AttentionState(kind="none")
+                kind = "waiting" if key == "claude:waiting" else "none"
+                return AttentionState(kind=kind)  # type: ignore[arg-type]
 
         keys = [item.key for item in collect_candidates(_Store())]
-        self.assertEqual(keys, ["claude:future", "claude:fresh"])
+        self.assertEqual(keys, ["claude:waiting"])
 
-    def test_recent_member_ranks_after_unread(self) -> None:
-        now = time.time()
-
+    def test_marker_rank_waiting_before_working_before_unread(self) -> None:
         class _Store:
             def all_sessions(self):
                 return [
-                    {
-                        "source": "claude", "id": "fresh", "keepalive_name": "k1",
-                        "mtime": now,
-                    },
-                    {"source": "claude", "id": "unread", "keepalive_name": "k2"},
+                    {"source": "claude", "id": "unread", "keepalive_name": "k1"},
+                    {"source": "claude", "id": "work", "keepalive_name": "k2"},
+                    {"source": "claude", "id": "wait", "keepalive_name": "k3"},
                 ]
 
             def attention_for(self, key: str) -> AttentionState:
-                kind = "unread" if key == "claude:unread" else "none"
+                kind = {
+                    "claude:wait": "waiting",
+                    "claude:work": "working",
+                    "claude:unread": "unread",
+                }.get(key, "none")
                 return AttentionState(kind=kind)  # type: ignore[arg-type]
 
         items = collect_candidates(_Store())
         self.assertEqual(
-            [(item.key, item.kind) for item in items],
-            [("claude:unread", "unread"), ("claude:fresh", "none")],
+            [item.key for item in items],
+            ["claude:wait", "claude:work", "claude:unread"],
         )
 
 
@@ -333,7 +329,8 @@ class ActivityBoardHoldTests(unittest.TestCase):
         board.sync([_cand("a", "working"), _cand("b", "working")], hosted_keys={"a", "b"})
         snap = board.sync([_cand("b", "working")], hosted_keys={"a", "b"})
         self.assertEqual(snap.keys, ("a", "b"))
-        self.assertEqual(snap.total, 2)
+        # 钉住的 a 已无圆点：角标只计仍带关注态的 b。
+        self.assertEqual(snap.total, 1)
 
     def test_held_member_drops_once_no_longer_hosted(self) -> None:
         board = ActivityBoard()

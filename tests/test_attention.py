@@ -7,7 +7,13 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from corral.attention import AttentionEvidence, AttentionStore
+from corral.attention import (
+    ATTENTION_MARKER_KINDS,
+    AttentionEvidence,
+    AttentionStore,
+    attention_marker_style,
+    has_attention_marker,
+)
 
 
 def _session(runtime: str, session_id: str, *, live: bool = False) -> dict:
@@ -364,6 +370,22 @@ class AttentionStoreTests(unittest.TestCase):
         broken.remove_session("codex", "one")
         broken.migrate_session("codex", "one", "two")
         self.assertEqual(broken.prune(), 0)
+
+
+class AttentionMarkerHelperTests(unittest.TestCase):
+    """圆点与 Active sessions 共用判定，禁止各写一份。"""
+
+    def test_marker_kinds_match_dot_styles(self) -> None:
+        self.assertEqual(ATTENTION_MARKER_KINDS, frozenset({"waiting", "working", "unread"}))
+        self.assertTrue(has_attention_marker("waiting"))
+        self.assertTrue(has_attention_marker("working"))
+        self.assertTrue(has_attention_marker("unread"))
+        self.assertFalse(has_attention_marker("none"))
+        self.assertFalse(has_attention_marker(None))
+        self.assertEqual(attention_marker_style("waiting"), "bold yellow")
+        self.assertEqual(attention_marker_style("working"), "bold green")
+        self.assertEqual(attention_marker_style("unread"), "bold red")
+        self.assertIsNone(attention_marker_style("none"))
 
 
 if __name__ == "__main__":
