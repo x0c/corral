@@ -9,6 +9,8 @@ Corral 是面向 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Age
 
 `corral` 扫描你本机的 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Agent CLI 和 Pi 历史，在终端界面（基于 [Textual](https://github.com/Textualize/textual)）里列出最近的编码会话，并让你用它原本的助手恢复选中的会话。它还能把会话从一个助手接力到另一个（例如 Claude 转 Codex、Pi 转 Claude）：在目标助手里新建会话，并把指向原始历史的结构化线索交给它。
 
+如果它帮你找到或接力了会话，请给仓库[点个 star](https://github.com/x0c/corral)，方便更多人发现。
+
 关键词：Claude Code 会话管理、Codex CLI 恢复会话、OpenCode 会话管理、Kimi Code CLI 会话管理、终端 TUI、AI 编码助手工作流、JSONL 聊天历史、跨助手接力。
 
 ![会话列表与右栏完整对话预览](docs/screenshots/list.png)

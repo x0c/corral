@@ -9,6 +9,8 @@ Corral is a terminal session handoff tool for Claude Code, Codex CLI, OpenCode, 
 
 `corral` scans your local Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi history, shows recent coding sessions in a terminal UI (built with [Textual](https://github.com/Textualize/textual)), and lets you resume the selected session in its native runtime. It can also hand off a session from one runtime to another (e.g. Claude to Codex, or Pi to Claude) by starting a new target session with a structured pointer to the original history.
 
+If Corral helps you find or hand off a session, please [star the repo](https://github.com/x0c/corral) so others can discover it.
+
 Keywords: Claude Code session manager, Codex CLI resume, OpenCode session manager, Kimi Code CLI session manager, terminal TUI, AI coding agent workflow, JSONL chat history, cross-runtime handoff.
 
 ![Session list with right-pane conversation preview](docs/screenshots/list.png)
