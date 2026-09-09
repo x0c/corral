@@ -6,9 +6,11 @@
 
 ## 产品边界
 
-- 开发机服务由 `corral remote start` 启动后，必须立即在启动它的终端输出可供手机客户端扫描的配对二维码与手动配对码；不要求再执行第二条配对命令，也不以打开图形窗口作为前提。二维码沿用当前一次性、十分钟有效的配对凭据与 v2 载荷（含中继地址），不得为方便展示而弱化配对或换网可达性。
-- 服务已经运行时再次执行 `corral remote start`，必须不重启服务、直接刷新并输出新的二维码；禁止只返回「已在运行」让用户另找配对命令。
-- 服务**未**运行时，`corral remote start` **就是**常驻进程：打完二维码后占住当前终端，直到被停掉。不得把「命令一直不结束」当成卡死去杀；需要本回合继续干活时放到后台，再用 `corral remote status` 确认 running。`--quiet` 同样占进程。只有已在运行的第二次 `start` 才会打完二维码就退出。
+- 开发机远程服务是**开关**：`corral remote on` 打开、`corral remote off` 关掉，都幂等。打开后进程在**后台**常驻，命令立刻返回；不要把 `on` 当成前台守护进程，也不要因为命令马上结束就以为服务没起来——用 `corral remote status` 看是否 on。
+- **配对与开关拆开**：二维码 / 手动配对码只由 `corral remote pair`（或 `pair --readonly`）输出。`on` / `off` / 再次 `on` **不得**顺带打开配对窗口。二维码仍是一次性、十分钟有效的 v2 载荷（含中继地址），不得为方便展示而弱化配对或换网可达性。
+- `on` 已打开时再次执行：不重启、不刷码，只回报已打开（`--force` 才先停再开）。`off` 已关闭时再次执行也成功（幂等）。
+- 需要前台占终端时（调试 / systemd `Type=simple`）才用 `corral remote on --foreground`；默认路径禁止占终端。
+- `start` / `stop` 仍是 `on` / `off` 的兼容别名，行为已切到开关语义（后台、不刷码），禁止再按旧「前台 start + 顺带打码」理解。
 - 手机与开发机的远程接力须按端到端链路持续优化：没有会话或画面变化时，不得反复编码、复制或广播同一份数据；有变化时仍须及时送达所有已订阅页面。性能改动不得把事件改回单消费者，也不得恢复手机改变开发机窗口尺寸的能力。
 - 手机端远程数据必须遵守明确的数据边界：一次只传当前会话和当前页面需要的字段，不把无关会话、无关参与者、内部事件或无界历史塞进移动端首包；历史、增量和画面必须分别定义上限、游标/序号与重同步方式。
 - 远程协议必须把「快照、增量、确认、重连」作为一套契约设计：每个订阅都能说明数据范围、版本、序号与是否完整；断线后按游标补增量，游标失效才请求受限快照，不能靠客户端猜测或把整份历史反复重传。
@@ -30,9 +32,10 @@
 | 命令 | 作用 |
 |---|---|
 | `corral login` / `logout` / `whoami` | 公共中继 GitHub 设备码登录（自建单租户不需要） |
-| `corral remote start` | 启动常驻服务（局域网 WebSocket + 可选连中继），并立即输出配对二维码。未运行时本命令即守护进程、不自行退出；已在运行则只刷新二维码后返回 |
-| `corral remote pair` | 打开配对窗口，展示二维码 / `corral://pair?v=2...` |
-| `corral remote status` | 查看服务、账号与已配对设备 |
+| `corral remote on` | 打开常驻服务（后台：局域网 WebSocket + 可选连中继）；已打开则幂等回报。别名 `start` |
+| `corral remote off` | 关掉常驻服务；已关闭则幂等回报。别名 `stop` |
+| `corral remote pair` | 打开配对窗口，展示二维码 / `corral://pair?v=2...`（与开关无关） |
+| `corral remote status` | 查看服务、账号与已配对设备（人读状态为 on/off） |
 | `corral remote rotate-key` | 轮换 Ed25519 注册密钥；路由标识不变，手机不必重扫 |
 
 入口挂在 `bootstrap.py` 的 `remote` 分支，不进 TUI、不碰 Agent 只读接口。
@@ -119,7 +122,7 @@
 
 - 中继对手机接入仍只先验路由标识（未配对读不到、也控制不了）。大规模对公众开放前再加配对时签发的短时票据；见中继 README「当前尚未覆盖的边界」。
 - 局域网口听在全部网卡：给 Tailscale / 同网直连用。有公网地址或端口转发时这个口会暴露到互联网；未配对仍要猜配对码。
-- 每次 `corral remote start`（含已在运行时刷新二维码）都会重新打开十分钟配对窗口。终端回滚、SSH 录像、把配对链接发到聊天里，等于把根凭据交出去。
+- 每次 `corral remote pair` 都会重新打开十分钟配对窗口。终端回滚、SSH 录像、把配对链接发到聊天里，等于把根凭据交出去。`on` 本身不打开配对窗口。
 - 中继能看见谁在连谁、每帧多大、何时连——零知识中继的固有元数据。
 - 未做中继证书钉扎：证书体系被劫持时对方最多变成另一台中继。
 - 已配对手机能向助手粘贴任意文本 = 完整执行权。丢失手机用 `corral remote unpair`。
@@ -161,10 +164,10 @@
 | 推送仍是占位文案 | NSE 解不开：缺 `host_id`、钥匙串 access group 两边不一致、或主 App 未把开发机公钥写入共享组 |
 | Swift 里写了 `$(AppIdentifierPrefix)...` 却永远对不上钥匙串 | 宏只在 entitlements 展开；源码必须写死 `TEAMID.com.x0c.corral` |
 | 只装主包没装 `[remote]` | `corral remote` 导入失败；提示用户装可选依赖 |
-| `corral remote start` 一直不结束 / 超时被标失败 / 随后通道没了 | 服务本来没在跑时，该命令前台就是守护进程，不会自行退出。超时杀掉它等于把刚拉起来的通道掐掉。放到后台再 `corral remote status` 看是否 running；不要把 `start; sleep; status` 串在同一条前台命令里等 start 返回。已在运行时再执行 start 才会打完二维码就退出。`--quiet` 同样占进程 |
-| 执行 `corral remote start` 提示缺 `cryptography` / `websockets` / `segno`，或只显示手动配对码没有终端二维码 | 当前实际运行的 Corral 安装副本没有远程组件；启动或配对命令必须自动补齐。pipx 是隔离环境且默认不含 pip，必须走 `pipx inject corral …`，不能把包装到系统 Python；若自动补齐失败，才提示检查网络或软件源后重试 |
+| 还按旧习惯以为 `corral remote start` 会占住终端 / 会打二维码 | 服务已是开关：`on` 后台打开并立刻返回，二维码只走 `pair`。`start`/`stop` 只是别名。要用前台调试加 `--foreground` |
+| 执行 `corral remote on` / `pair` 提示缺 `cryptography` / `websockets` / `segno`，或只显示手动配对码没有终端二维码 | 当前实际运行的 Corral 安装副本没有远程组件；打开服务或配对命令必须自动补齐。pipx 是隔离环境且默认不含 pip，必须走 `pipx inject corral …`，不能把包装到系统 Python；若自动补齐失败，才提示检查网络或软件源后重试 |
 | 单租户中继上执行 `corral login` | 登录并不适用；客户端必须立即说明该中继无需账号并继续可用，不得向不存在的设备码入口发请求后抛 404。主域名若返回 404，说明公共多租户尚未部署；若要启用，必须先在服务器配置数据库、会话密钥和 GitHub OAuth 应用，禁止把单租户实例伪装成已隔离的公共服务 |
-| 守护进程还是旧名 `pickup`（改名前起的），想换新名重启 | `corral remote stop` 停旧进程后 `corral remote start` 即可，`identity.key` 与手机配对都在 `~/.local/state/corral/remote/`，不会丢。**relay_url 保持在别名 `wss://pickup-relay.caozc.top`**：`is_public_relay()` 只认主域名，改成主域名反而会被要求先 `corral login`（多租户账号路径）；别名与主域名是同一服务（2026-08-25 实操验证） |
+| 守护进程还是旧名 `pickup`（改名前起的），想换新名重启 | `corral remote off` 再 `corral remote on` 即可，`identity.key` 与手机配对都在 `~/.local/state/corral/remote/`，不会丢。**relay_url 保持在别名 `wss://pickup-relay.caozc.top`**：`is_public_relay()` 只认主域名，改成主域名反而会被要求先 `corral login`（多租户账号路径）；别名与主域名是同一服务（2026-08-25 实操验证） |
 | 新版 CLI 守护进程连中继报 `HTTP 404`（events.log `remote_relay_disconnected`） | 首尔中继二进制落后（只有 `/v1`，新版 CLI 走 `/v2/host`）。按 agentsync 基础设施知识库 `corral-relay.caozc.top` 节升级中继，升级后 v1/v2 并存；注意实际单元名是 `pickup-relay.service`，不是文档早年写的 `corral-relay.service`（2026-08-25 已升级） |
 | 手机 App 突然连不上、守护进程状态一切正常 | 手机 App 已升 v2 协议（`/v2/device`，路由 id 由主机 X25519 公钥派生），而守护进程还是旧版只登记 v1（旧路由 id 是十六进制老格式）。把守护进程升到当前版本即恢复；配对按设备公钥绑定，手机无需重扫。端到端验证用 `corral remote pair --readonly --json` 拿 `--code` 交给 `relay/scripts/device_probe.py`（探针钥匙若重新生成过，旧配对作废须重新配对） |
 | 空状态目录里 `corral remote` 测试或首次启动卡住 | `load_state` 持锁时会再进 `load_or_create_identity` / `host_key`；`config._lock` 必须是 `RLock`，改回普通 `Lock` 会在没有 `identity.key` 时死锁 |
@@ -176,7 +179,7 @@
 | Pi（或任意新助手）会话在手机上是空聊天，电脑预览却有对话 | 远程富消息有独立解析表，不会回落到桌面扫描器。Pi 曾完全未登记，打开详情只能拿到空窗口。补登记后必须抬高规范化缓存版本并重启常驻远程服务，否则会继续命中「空结果」缓存 |
 | Codex 详情第一句是系统说明 / 打开像空白 | 首轮 `response_item` 常把 `# AGENTS.md instructions`、环境块写成 user；桌面扫描器会丢掉，旧远程解析会整段当人话。中断标记 `<turn_aborted>`、`<subagent_notification>`、`<user_action>` 同理。手机时间线若再抄桌面小窗黑名单，还会把「对本仓库做 code review」这种真人可见提问滤成空白。服务端丢掉高置信系统包装，真人提问必须留下 |
 | Claude 详情多出一条「到点了」系统通知 | 到点任务通知挂在 user 轮次下，桌面预览按 `origin.kind` 丢掉，远程必须同样丢掉，不能当成用户气泡 |
-| 电脑预览正常、手机某个助手仍是旧内容或空聊天 | **本机和开发机是两套常驻进程**。源码改了不等于手机已换新解析。2026-08-29 真机：开发机远程进程从 8 月 25 日起一直没重启，Pi/Codex 修复写进源码后手机仍走旧进程。修完必须重启**用户正在连的那台**的 `corral remote`，并抬高规范化缓存版本 |
+| 电脑预览正常、手机某个助手仍是旧内容或空聊天 | **本机和开发机是两套常驻进程**。源码改了不等于手机已换新解析。2026-08-29 真机：开发机远程进程从 8 月 25 日起一直没重启，Pi/Codex 修复写进源码后手机仍走旧进程。修完必须对**用户正在连的那台**执行 `corral remote off && corral remote on`，并抬高规范化缓存版本 |
 | 只抽了一条 Codex 就说「详情修好了」 | 六个助手历史格式不同，问题不会碰巧相同。验收必须每个助手各打开一条有最后一句的真实会话：首句不能是系统说明，列表有最后一句则详情不能空。`phone_remote_acceptance.py` 按助手抽样，禁止只验体积最大的那一条 |
 | 同一连接第二次 `session.watch` 历史为空 | 连接级订阅已存在时 `_subscribe` 返回 false，旧实现直接回空列表；应走 `conversation_page`（与 `screen.watch`→`resync_screen` 同理），且不增加中枢订阅计数 |
 | 聊天状态条与终端页叠订后第二帧空白 | 同连接重复 `screen.watch` 必须 `resync_screen`，不能只加订阅 |

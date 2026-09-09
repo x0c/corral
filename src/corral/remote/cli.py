@@ -1,7 +1,13 @@
 """`corral remote` 子命令：把开发机接到手机上。
 
+远程服务是开关语义：`on` 打开（后台常驻，命令立刻返回）、`off` 关掉，
+都幂等。配对二维码只走 `pair`，不跟开关联动。
+
 退出码沿用 corral 既有的一套：0 成功、1 一般失败、2 用法错误。带 `--json` 的
 子命令输出与 `agent_api` 同形状的 envelope，方便脚本和管家 Agent 调用。
+
+兼容别名：`start`→`on`、`stop`→`off`（行为已改为开关，不再前台占终端、
+也不再顺带刷配对码）。
 """
 
 from __future__ import annotations
@@ -26,6 +32,8 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 
 _PAIRING_TTL = 10 * 60
+_READY_WAIT_SECONDS = 15.0
+_READY_POLL_SECONDS = 0.05
 
 
 def _envelope(ok: bool, data=None, message: str = "") -> str:
@@ -132,30 +140,22 @@ def _stop_pid(pid: int) -> None:
         os.kill(pid, signal.SIGKILL)
 
 
-# ---------------------------------------------------------------------------
-# start
-# ---------------------------------------------------------------------------
-
-def _cmd_start(args) -> int:
-    problem = _ensure_dependencies()
-    if problem:
-        return _fail(problem, args.json)
-
-    state = remote_config.load_state()
+def _apply_service_flags(args, state: remote_config.RemoteState) -> str | None:
+    """把 on 上的中继/局域网开关写进 state；失败返回错误文案。"""
     if args.relay_url:
         try:
             state.relay_url = remote_config.validate_relay_url(
                 args.relay_url, allow_insecure=args.insecure_relay
             )
         except ValueError as exc:
-            return _fail(str(exc), args.json)
+            return str(exc)
     elif state.relay_enabled and not args.no_relay:
         try:
             state.relay_url = remote_config.validate_relay_url(
                 state.relay_url, allow_insecure=args.insecure_relay
             )
         except ValueError as exc:
-            return _fail(str(exc), args.json)
+            return str(exc)
     if args.no_relay:
         state.relay_enabled = False
     if args.no_local:
@@ -163,26 +163,89 @@ def _cmd_start(args) -> int:
     if args.port:
         state.local_port = int(args.port)
     remote_config.save_state(state)
+    return None
+
+
+def _print_on_status(state: remote_config.RemoteState, pid: int | None) -> None:
+    print(t("remote.on.ready", name=state.host_name, pid=pid or "?"))
+    if state.relay_enabled:
+        print(t("remote.on.relay", url=state.relay_url))
+    if state.local_enabled:
+        print(t("remote.on.local_on"))
+    if not state.devices:
+        print(t("remote.on.pair_hint"))
+
+
+def _run_daemon_foreground(state: remote_config.RemoteState) -> int:
+    from corral.remote.daemon import RemoteDaemon
+
+    daemon = RemoteDaemon(state)
+    try:
+        asyncio.run(daemon.run())
+    except KeyboardInterrupt:
+        pass
+    return EXIT_OK
+
+
+def _serve_argv() -> list[str]:
+    """子进程 argv：同一解释器里的 `python -m corral remote _serve`。"""
+    return [sys.executable, "-m", "corral", "remote", "_serve"]
+
+
+def _spawn_background_daemon() -> subprocess.Popen:
+    """脱离当前终端拉起常驻服务；与标题后台进程同一套路。"""
+    return subprocess.Popen(
+        _serve_argv(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        env=os.environ.copy(),
+    )
+
+
+def _wait_until_running(timeout: float = _READY_WAIT_SECONDS) -> int | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pid = remote_config.read_pid()
+        if pid:
+            return pid
+        time.sleep(_READY_POLL_SECONDS)
+    return remote_config.read_pid()
+
+
+# ---------------------------------------------------------------------------
+# on / off / _serve
+# ---------------------------------------------------------------------------
+
+def _cmd_on(args) -> int:
+    problem = _ensure_dependencies()
+    if problem:
+        return _fail(problem, args.json)
+
+    state = remote_config.load_state()
+    flag_error = _apply_service_flags(args, state)
+    if flag_error:
+        return _fail(flag_error, args.json)
 
     running = remote_config.read_pid()
-    if running:
-        if not args.force:
-            if args.quiet:
-                return EXIT_OK
-            public_key = crypto.public_key_bytes(remote_config.load_or_create_identity())
-            code = crypto.new_pairing_code()
-            remote_config.write_pairing(code, _PAIRING_TTL)
-            if args.json:
-                pairing_payload = pairing.as_json(state, code, public_key, state.local_port)
-                print(_envelope(True, {"running": True, "pairing": pairing_payload}))
-            else:
-                _print_pairing(state, code, public_key, state.local_port)
-                print(t("remote.start.qr_refreshed", pid=running))
-            return EXIT_OK
+    if running and not args.force:
+        data = {
+            "enabled": True,
+            "running": True,
+            "pid": running,
+            "changed": False,
+            "host_name": state.host_name,
+        }
+        if args.json:
+            print(_envelope(True, data))
+        elif not args.quiet:
+            print(t("remote.on.already", pid=running))
+        return EXIT_OK
+
+    if running and args.force:
         _stop_pid(running)
         remote_config.clear_pid()
-
-    from corral.remote.daemon import RemoteDaemon
 
     if state.relay_enabled and not args.no_relay:
         from corral.remote import account as remote_account
@@ -191,24 +254,94 @@ def _cmd_start(args) -> int:
         if not ok:
             return _fail(message, args.json)
 
-    daemon = RemoteDaemon(state)
-    public_key = crypto.public_key_bytes(daemon.static_private)
+    if args.foreground:
+        if args.json:
+            # 前台占进程时 JSON 呼叫方拿不到回包；先打一行再进主循环。
+            print(
+                _envelope(
+                    True,
+                    {
+                        "enabled": True,
+                        "running": True,
+                        "pid": os.getpid(),
+                        "changed": True,
+                        "foreground": True,
+                        "host_name": state.host_name,
+                    },
+                )
+            )
+            sys.stdout.flush()
+        elif not args.quiet:
+            _print_on_status(state, os.getpid())
+            print(t("remote.on.foreground_hint"))
+        return _run_daemon_foreground(state)
 
-    if not args.quiet:
-        code = daemon.service.begin_pairing(_PAIRING_TTL)
-        _print_pairing(state, code, public_key, state.local_port)
-
-    if not args.quiet:
-        print(t("remote.start.ready", name=state.host_name))
-        if state.relay_enabled:
-            print(t("remote.start.relay", url=state.relay_url))
-        if state.local_enabled:
-            print(t("remote.start.local_on"))
     try:
-        asyncio.run(daemon.run())
-    except KeyboardInterrupt:
-        pass
+        child = _spawn_background_daemon()
+    except OSError as exc:
+        return _fail(t("remote.on.spawn_failed", error=exc), args.json)
+
+    pid = _wait_until_running()
+    if not pid:
+        # 子进程可能立刻挂了；尽量带上它的退出码。
+        code = child.poll()
+        detail = f"exit {code}" if code is not None else "no pid"
+        return _fail(t("remote.on.not_ready", detail=detail), args.json)
+
+    data = {
+        "enabled": True,
+        "running": True,
+        "pid": pid,
+        "changed": True,
+        "host_name": state.host_name,
+    }
+    if args.json:
+        print(_envelope(True, data))
+    elif not args.quiet:
+        _print_on_status(state, pid)
     return EXIT_OK
+
+
+def _cmd_off(args) -> int:
+    pid = remote_config.read_pid()
+    if not pid:
+        data = {"enabled": False, "running": False, "pid": None, "changed": False}
+        if args.json:
+            print(_envelope(True, data))
+        elif not getattr(args, "quiet", False):
+            print(t("remote.off.already"))
+        return EXIT_OK
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        return _fail(t("remote.off.failed", error=exc), args.json)
+    # 等进程真正退出，避免立刻 on 时撞上旧 pid 文件。
+    for _ in range(50):
+        time.sleep(0.1)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
+    else:
+        with suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+    remote_config.clear_pid()
+    data = {"enabled": False, "running": False, "pid": pid, "changed": True}
+    if args.json:
+        print(_envelope(True, data))
+    else:
+        print(t("remote.off.done", pid=pid))
+    return EXIT_OK
+
+
+def _cmd_serve(_args) -> int:
+    """内部入口：后台子进程跑常驻服务；不进 --help。"""
+    problem = _ensure_dependencies()
+    if problem:
+        print(problem, file=sys.stderr)
+        return EXIT_ERROR
+    state = remote_config.load_state()
+    return _run_daemon_foreground(state)
 
 
 def _print_pairing(state, code: str, public_key: bytes, local_port: int, *, mode: str = "full") -> None:
@@ -250,7 +383,7 @@ def _cmd_pair(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# status / devices / unpair / stop / rotate-key
+# status / devices / unpair / rotate-key / account
 # ---------------------------------------------------------------------------
 
 def _cmd_status(args) -> int:
@@ -259,6 +392,7 @@ def _cmd_status(args) -> int:
     window = remote_config.read_pairing()
     data = {
         "running": bool(pid),
+        "enabled": bool(pid),
         "pid": pid,
         "host_id": state.host_id,
         "host_name": state.host_name,
@@ -483,19 +617,35 @@ def _cmd_whoami(args) -> int:
     return EXIT_OK
 
 
-def _cmd_stop(args) -> int:
-    pid = remote_config.read_pid()
-    if not pid:
-        return _fail(t("remote.stop.not_running"), args.json)
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError as exc:
-        return _fail(t("remote.stop.failed", error=exc), args.json)
-    print(_envelope(True, {"pid": pid}) if args.json else t("remote.stop.done"))
-    return EXIT_OK
+# 兼容旧名：行为已切到开关语义。
+_cmd_start = _cmd_on
+_cmd_stop = _cmd_off
 
 
 # ---------------------------------------------------------------------------
+
+def _add_service_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--relay-url", help=t("remote.help.relay_url"))
+    parser.add_argument(
+        "--insecure-relay",
+        action="store_true",
+        help=t("remote.help.insecure_relay"),
+    )
+    parser.add_argument("--no-relay", action="store_true", help=t("remote.help.no_relay"))
+    parser.add_argument("--no-local", action="store_true", help=t("remote.help.no_local"))
+    parser.add_argument("--port", type=int, help=t("remote.help.port"))
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=t("remote.help.force"),
+    )
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help=t("remote.help.foreground"),
+    )
+    parser.add_argument("--quiet", action="store_true", help=t("remote.help.quiet"))
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -506,23 +656,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command")
 
+    on = sub.add_parser("on", help=t("remote.help.on"))
+    _add_service_flags(on)
+    on.set_defaults(func=_cmd_on)
+
+    # 兼容旧名；help 写明已是开关别名。
     start = sub.add_parser("start", help=t("remote.help.start"))
-    start.add_argument("--relay-url", help=t("remote.help.relay_url"))
-    start.add_argument(
-        "--insecure-relay",
-        action="store_true",
-        help=t("remote.help.insecure_relay"),
-    )
-    start.add_argument("--no-relay", action="store_true", help=t("remote.help.no_relay"))
-    start.add_argument("--no-local", action="store_true", help=t("remote.help.no_local"))
-    start.add_argument("--port", type=int, help=t("remote.help.port"))
-    start.add_argument(
-        "--force",
-        action="store_true",
-        help=t("remote.help.force"),
-    )
-    start.add_argument("--quiet", action="store_true", help=t("remote.help.quiet"))
-    start.set_defaults(func=_cmd_start)
+    _add_service_flags(start)
+    start.set_defaults(func=_cmd_on)
+
+    off = sub.add_parser("off", help=t("remote.help.off"))
+    off.set_defaults(func=_cmd_off)
+
+    stop = sub.add_parser("stop", help=t("remote.help.stop"))
+    stop.set_defaults(func=_cmd_off)
+
+    serve = sub.add_parser("_serve", help=argparse.SUPPRESS)
+    serve.set_defaults(func=_cmd_serve)
 
     pair = sub.add_parser("pair", help=t("remote.help.pair"))
     pair.add_argument(
@@ -555,10 +705,7 @@ def build_parser() -> argparse.ArgumentParser:
     whoami = sub.add_parser("whoami", help=t("remote.help.whoami"))
     whoami.set_defaults(func=_cmd_whoami)
 
-    stop = sub.add_parser("stop", help=t("remote.help.stop"))
-    stop.set_defaults(func=_cmd_stop)
-
-    for action in (start, pair, status, devices, unpair, rotate, login, logout, whoami, stop):
+    for action in (on, start, off, stop, pair, status, devices, unpair, rotate, login, logout, whoami):
         action.add_argument("--json", action="store_true", help=t("remote.help.json"))
     return parser
 

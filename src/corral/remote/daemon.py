@@ -43,10 +43,12 @@ class RemoteDaemon:
             with contextlib.suppress(NotImplementedError, ValueError):
                 loop.add_signal_handler(sig, stop.set)
 
+        # 开关语义：`on` 要立刻看到 pid。先落盘再扫盘，首轮扫描再久也不挡住开。
+        remote_config.write_pid()
+        observe.event("remote_started", host=self.state.host_name)
+
         # 首轮扫描是纯磁盘活儿，别把事件循环堵在这儿——中继连接可以并行建起来。
         await asyncio.to_thread(self.hub.start)
-        observe.event("remote_started", host=self.state.host_name)
-        remote_config.write_pid()
 
         tasks = []
         if self.relay is not None:

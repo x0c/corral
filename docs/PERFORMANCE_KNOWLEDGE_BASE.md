@@ -93,7 +93,7 @@
 | `/proc/<pid>/io` `rchar` | **~24 MB/s** | `capture-pane -e` 把正在刷的 Cursor 屏灌进来（`MIN_CAPTURE_INTERVAL=0.04`，上限约 25fps） |
 | `scan_all`（界面，`session_count≈292`） | 每 3–4s 一轮；近 10 分钟 P50 **242ms** / P95 1319ms / 尖峰 **4224ms** | 约 **10% 核**；尖峰会握住 GIL，整机都顿 |
 | 侧栏 `list_rebuild` | 144 次扫描里 128 次重建 | 退避到 10s **从未生效**：Cursor WAL/mtime/首尾消息每轮都在变 |
-| `corral remote start` | 另一次 `session_count≈578`、约 15s 一轮，P50 275ms | 独立再扫一遍同一批历史，约 **2% 核** |
+| `corral remote on`（后台常驻） | 另一次 `session_count≈578`、约 15s 一轮，P50 275ms | 独立再扫一遍同一批历史，约 **2% 核** |
 | `capture_slow` | 10 分钟 60 条，P50 164ms，最大 1.3s | 多格同时刷 + `host_size_drift` |
 | Cursor 历史体量 | `~/.cursor/chats` 30 个工作区 / **518** 条会话 | WAL 一写，签名未命中就得重扫该运行时 |
 
@@ -101,7 +101,7 @@
 
 马上减占用：在调度界面结束不看的托管会话（结束进程不删历史）；少开几格正在刷屏的实时画面。不要为了这次去关图形版 Cursor，也不要给抓帧再加一层中间态过滤。
 
-还没做、且值得做的（不要先砍帧率）：助手还在写时用更廉价的「只有这几条 live 会话变了」路径，避免 518 条 Cursor 目录每 3 秒走一遍；TUI 与 `remote start` 共用一轮扫描结果。
+还没做、且值得做的（不要先砍帧率）：助手还在写时用更廉价的「只有这几条 live 会话变了」路径，避免 518 条 Cursor 目录每 3 秒走一遍；TUI 与 `remote on` 常驻进程共用一轮扫描结果。
 
 ### 高输出时的画面降载原则（2026-08-31）
 

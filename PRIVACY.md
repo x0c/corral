@@ -152,6 +152,8 @@ The target runtime may choose to read that local history after it starts.
 
 Optional phone relay (`pip install 'corral[remote]'`) lets a paired phone list sessions, watch
 live terminal frames, send input, and start or stop hosted sessions on this machine.
+Turn the host service on/off with `corral remote on` / `corral remote off` (background daemon);
+print a pairing QR with `corral remote pair`.
 
 - **What leaves the machine.** After pairing, session titles, project paths, conversation text,
   and live terminal frames are end-to-end encrypted to the phone. The optional public relay only

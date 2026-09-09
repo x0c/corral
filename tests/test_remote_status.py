@@ -97,7 +97,32 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
         ):
             self.assertEqual(remote_cli._ensure_dependencies(), t("remote.deps.auto_install_failed"))
 
-    def test_start_prints_a_fresh_pairing_code_even_when_a_phone_is_paired(self) -> None:
+    def test_on_is_idempotent_when_already_running(self) -> None:
+        state = remote_config.RemoteState(
+            host_id="h1", host_name="suzhou", relay_url="", relay_enabled=False,
+            local_enabled=False, local_port=8737, devices=[]
+        )
+        args = mock.Mock(
+            relay_url=None, insecure_relay=False, no_relay=False, no_local=False,
+            port=None, force=False, foreground=False, quiet=False, json=False,
+        )
+        with (
+            mock.patch.object(remote_cli, "_ensure_dependencies", return_value=""),
+            mock.patch.object(remote_config, "load_state", return_value=state),
+            mock.patch.object(remote_config, "save_state"),
+            mock.patch.object(remote_config, "read_pid", return_value=12345),
+            mock.patch.object(remote_cli, "_spawn_background_daemon") as spawn,
+            mock.patch.object(remote_config, "write_pairing") as write_pairing,
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                self.assertEqual(remote_cli._cmd_on(args), 0)
+
+        spawn.assert_not_called()
+        write_pairing.assert_not_called()
+        self.assertIn(t("remote.on.already", pid=12345), buf.getvalue())
+
+    def test_on_spawns_background_daemon_without_pairing(self) -> None:
         state = remote_config.RemoteState(
             host_id="h1",
             host_name="suzhou",
@@ -105,11 +130,8 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
             relay_enabled=False,
             local_enabled=False,
             local_port=8737,
-            devices=[{"id": "existing-phone"}],
+            devices=[],
         )
-        service = mock.Mock()
-        service.begin_pairing.return_value = "新配对码"
-        daemon = mock.Mock(static_private=object(), service=service)
         args = mock.Mock(
             relay_url=None,
             insecure_relay=False,
@@ -117,48 +139,65 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
             no_local=False,
             port=None,
             force=False,
+            foreground=False,
             quiet=False,
             json=False,
         )
-        with (
-            mock.patch.object(remote_cli, "_check_dependencies", return_value=""),
-            mock.patch.object(remote_config, "load_state", return_value=state),
-            mock.patch.object(remote_config, "save_state"),
-            mock.patch.object(remote_config, "read_pid", return_value=None),
-            mock.patch("corral.remote.daemon.RemoteDaemon", return_value=daemon),
-            mock.patch.object(remote_cli.crypto, "public_key_bytes", return_value=b"public-key"),
-            mock.patch.object(remote_cli, "_print_pairing") as print_pairing,
-            mock.patch.object(remote_cli.asyncio, "run"),
-        ):
-            self.assertEqual(remote_cli._cmd_start(args), 0)
-
-        service.begin_pairing.assert_called_once_with(remote_cli._PAIRING_TTL)
-        print_pairing.assert_called_once_with(state, "新配对码", b"public-key", 8737)
-
-    def test_start_refreshes_pairing_code_when_service_is_already_running(self) -> None:
-        state = remote_config.RemoteState(
-            host_id="h1", host_name="suzhou", relay_url="", relay_enabled=False,
-            local_enabled=False, local_port=8737, devices=[]
-        )
-        args = mock.Mock(
-            relay_url=None, insecure_relay=False, no_relay=False, no_local=False,
-            port=None, force=False, quiet=False, json=False,
-        )
+        child = mock.Mock()
+        child.poll.return_value = None
         with (
             mock.patch.object(remote_cli, "_ensure_dependencies", return_value=""),
             mock.patch.object(remote_config, "load_state", return_value=state),
             mock.patch.object(remote_config, "save_state"),
-            mock.patch.object(remote_config, "read_pid", return_value=12345),
+            mock.patch.object(remote_config, "read_pid", side_effect=[None, 4242]),
+            mock.patch.object(remote_cli, "_spawn_background_daemon", return_value=child) as spawn,
+            mock.patch.object(remote_cli, "_print_pairing") as print_pairing,
+            mock.patch.object(remote_cli, "_run_daemon_foreground") as foreground,
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                self.assertEqual(remote_cli._cmd_on(args), 0)
+
+        spawn.assert_called_once()
+        foreground.assert_not_called()
+        print_pairing.assert_not_called()
+        self.assertIn(t("remote.on.ready", name="suzhou", pid=4242), buf.getvalue())
+        self.assertIn(t("remote.on.pair_hint"), buf.getvalue())
+
+    def test_start_alias_matches_on(self) -> None:
+        self.assertIs(remote_cli._cmd_start, remote_cli._cmd_on)
+        self.assertIs(remote_cli._cmd_stop, remote_cli._cmd_off)
+
+    def test_off_is_idempotent_when_already_off(self) -> None:
+        args = mock.Mock(json=False, quiet=False)
+        with mock.patch.object(remote_config, "read_pid", return_value=None):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                self.assertEqual(remote_cli._cmd_off(args), 0)
+        self.assertIn(t("remote.off.already"), buf.getvalue())
+
+    def test_pair_still_prints_qr_when_service_is_on(self) -> None:
+        state = remote_config.RemoteState(
+            host_id="h1", host_name="suzhou", relay_url="", relay_enabled=False,
+            local_enabled=False, local_port=8737, devices=[]
+        )
+        args = mock.Mock(readonly=False, json=False)
+        with (
+            mock.patch.object(remote_cli, "_ensure_dependencies", return_value=""),
+            mock.patch.object(remote_config, "load_state", return_value=state),
             mock.patch.object(remote_config, "load_or_create_identity", return_value=object()),
             mock.patch.object(remote_config, "write_pairing") as write_pairing,
+            mock.patch.object(remote_config, "read_pid", return_value=99),
             mock.patch.object(remote_cli.crypto, "public_key_bytes", return_value=b"public-key"),
             mock.patch.object(remote_cli.crypto, "new_pairing_code", return_value="新配对码"),
             mock.patch.object(remote_cli, "_print_pairing") as print_pairing,
         ):
-            self.assertEqual(remote_cli._cmd_start(args), 0)
+            self.assertEqual(remote_cli._cmd_pair(args), 0)
 
-        write_pairing.assert_called_once_with("新配对码", remote_cli._PAIRING_TTL)
-        print_pairing.assert_called_once_with(state, "新配对码", b"public-key", 8737)
+        write_pairing.assert_called_once_with("新配对码", remote_cli._PAIRING_TTL, mode="full")
+        print_pairing.assert_called_once_with(
+            state, "新配对码", b"public-key", 8737, mode="full"
+        )
 
     def test_status_text_shows_relay_online_from_snapshot(self) -> None:
         state = remote_config.RemoteState(

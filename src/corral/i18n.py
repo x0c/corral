@@ -864,27 +864,35 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": (
             "Common flow:\n"
             "  corral login               # sign in to the public relay (GitHub device flow)\n"
-            "  corral remote start        # first start prints a pairing QR code\n"
-            "  corral remote pair         # pair another phone\n"
+            "  corral remote on           # turn the phone handoff service on (background)\n"
+            "  corral remote pair         # print a pairing QR code\n"
             "  corral remote pair --readonly  # read-only pairing (no input/delete)\n"
-            "  corral remote status       # check whether it is running\n"
+            "  corral remote status       # check whether it is on\n"
             "  corral remote rotate-key   # rotate the relay registration key\n"
-            "  corral remote stop         # stop\n"
+            "  corral remote off          # turn it off\n"
         ),
         "zh": (
             "常用流程：\n"
             "  corral login               # 登录公共中继（GitHub 设备码）\n"
-            "  corral remote start        # 首次启动会直接打一个配对二维码\n"
-            "  corral remote pair         # 再配一部手机\n"
+            "  corral remote on           # 打开手机接力服务（后台常驻）\n"
+            "  corral remote pair         # 打出配对二维码\n"
             "  corral remote pair --readonly  # 只读配对（不能输入/删改）\n"
-            "  corral remote status       # 看看跑起来没有\n"
+            "  corral remote status       # 看看开着没有\n"
             "  corral remote rotate-key   # 轮换中继注册密钥\n"
-            "  corral remote stop         # 停掉\n"
+            "  corral remote off          # 关掉\n"
         ),
     },
+    "remote.help.on": {
+        "en": "Turn the phone handoff service on (runs in the background)",
+        "zh": "打开手机接力服务（后台常驻）",
+    },
+    "remote.help.off": {
+        "en": "Turn the phone handoff service off",
+        "zh": "关掉手机接力服务",
+    },
     "remote.help.start": {
-        "en": "Start the always-on service",
-        "zh": "启动常驻服务",
+        "en": "Alias for “on” (switch semantics; no longer holds the terminal)",
+        "zh": "on 的别名（开关语义；不再占住终端）",
     },
     "remote.help.relay_url": {
         "en": "Self-hosted relay URL (default is the public relay; must be wss://)",
@@ -907,24 +915,28 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "局域网直连监听端口",
     },
     "remote.help.force": {
-        "en": "If an instance is already running, stop it first then start (never run two)",
-        "zh": "已有实例在跑时先停掉旧进程再启动（不会双开）",
+        "en": "If already on, stop the old process then turn on again (never run two)",
+        "zh": "已经开着时先停旧进程再打开（不会双开）",
+    },
+    "remote.help.foreground": {
+        "en": "Run in this terminal instead of the background (debug / systemd)",
+        "zh": "在当前终端前台跑，不进后台（调试 / systemd）",
     },
     "remote.help.quiet": {
-        "en": "Do not print the QR code or hints",
-        "zh": "不打印二维码和提示",
+        "en": "Do not print status hints",
+        "zh": "不打印状态提示",
     },
     "remote.help.pair": {
-        "en": "Generate a pairing QR code",
-        "zh": "生成配对二维码",
+        "en": "Generate a pairing QR code (service must be on to connect after scanning)",
+        "zh": "生成配对二维码（扫码后要服务已打开才能连上）",
     },
     "remote.help.readonly": {
         "en": "Read-only pairing: the phone can view sessions and screens, but cannot type, create, or delete",
         "zh": "只读配对：手机只能看会话与画面，不能输入、新建、删除",
     },
     "remote.help.status": {
-        "en": "Show running status",
-        "zh": "查看运行状态",
+        "en": "Show whether the service is on",
+        "zh": "查看服务是否打开",
     },
     "remote.help.devices": {
         "en": "List paired phones",
@@ -951,34 +963,56 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "查看已登录的中继账号",
     },
     "remote.help.stop": {
-        "en": "Stop the always-on service",
-        "zh": "停止常驻服务",
+        "en": "Alias for “off”",
+        "zh": "off 的别名",
     },
     "remote.help.json": {
         "en": "Print machine-readable JSON",
         "zh": "输出机器可读的 JSON",
     },
-    "remote.start.already_running": {
-        "en": (
-            "The always-on service is already running (pid {pid}). "
-            "To restart, run corral remote stop first, or add --force to stop the old process then start"
-        ),
-        "zh": (
-            "常驻服务已经在跑了（进程 {pid}）。要重开先执行 corral remote stop，"
-            "或加 --force 先停旧进程再启动"
-        ),
+    "remote.on.already": {
+        "en": "Phone handoff is already on (pid {pid}).",
+        "zh": "手机接力已经打开（进程 {pid}）。",
     },
-    "remote.start.ready": {
-        "en": "Development machine “{name}” is ready. Press Ctrl+C to exit.",
-        "zh": "开发机「{name}」已就绪，按 Ctrl+C 退出。",
+    "remote.on.ready": {
+        "en": "Phone handoff is on for “{name}” (pid {pid}).",
+        "zh": "开发机「{name}」的手机接力已打开（进程 {pid}）。",
     },
-    "remote.start.relay": {
+    "remote.on.relay": {
         "en": "  Relay: {url}",
         "zh": "  中继：{url}",
     },
-    "remote.start.local_on": {
+    "remote.on.local_on": {
         "en": "  LAN direct connect: on",
         "zh": "  局域网直连：已开启",
+    },
+    "remote.on.pair_hint": {
+        "en": "  No phones paired yet — run corral remote pair to print a QR code.",
+        "zh": "  还没有配对手机——执行 corral remote pair 打出二维码。",
+    },
+    "remote.on.foreground_hint": {
+        "en": "  Running in the foreground. Press Ctrl+C to turn off.",
+        "zh": "  当前在前台运行。按 Ctrl+C 关掉。",
+    },
+    "remote.on.spawn_failed": {
+        "en": "Could not start the background service: {error}",
+        "zh": "没法拉起后台服务：{error}",
+    },
+    "remote.on.not_ready": {
+        "en": "Background service did not become ready ({detail}).",
+        "zh": "后台服务没有就绪（{detail}）。",
+    },
+    "remote.off.already": {
+        "en": "Phone handoff is already off.",
+        "zh": "手机接力已经关掉。",
+    },
+    "remote.off.failed": {
+        "en": "Could not turn off: {error}",
+        "zh": "关不掉：{error}",
+    },
+    "remote.off.done": {
+        "en": "Phone handoff turned off (was pid {pid}).",
+        "zh": "已关掉手机接力（原进程 {pid}）。",
     },
     "remote.pair.scan": {
         "en": "\nScan this code with the corral phone app to pair{mode_hint}:\n",
@@ -1008,10 +1042,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
     "remote.pair.service_not_running": {
         "en": (
-            "Note: the always-on service is not running yet. "
-            "After scanning, wait until corral remote start is running before you can connect.\n"
+            "Note: phone handoff is off. "
+            "Run corral remote on before the phone can connect after scanning.\n"
         ),
-        "zh": "提示：常驻服务还没启动，扫码后要等 corral remote start 跑起来才能连上。\n",
+        "zh": "提示：手机接力还没打开。扫码后要先执行 corral remote on 才能连上。\n",
     },
     "remote.pair.fallback": {
         "en": (
@@ -1044,12 +1078,12 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "账号：未登录（公共中继请先执行 corral login）",
     },
     "remote.status.running": {
-        "en": "running",
-        "zh": "运行中",
+        "en": "on",
+        "zh": "已打开",
     },
     "remote.status.not_running": {
-        "en": "not running",
-        "zh": "未启动",
+        "en": "off",
+        "zh": "已关闭",
     },
     "remote.status.line": {
         "en": "Status: {state}{pid_suffix}",
@@ -1157,22 +1191,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
     },
     "remote.unpair.done": {
         "en": (
-            "Unpaired. If the always-on service is running, that phone will be kicked off "
+            "Unpaired. If phone handoff is on, that phone will be kicked off "
             "within about two seconds; it will need to scan again to reconnect."
         ),
         "zh": (
-            "已解除配对。若常驻服务在跑，那台手机最多约两秒内会被踢下线；"
+            "已解除配对。若手机接力开着，那台手机最多约两秒内会被踢下线；"
             "之后需要重新扫码才能再连上。"
         ),
     },
     "remote.rotate.done": {
         "en": (
-            "Relay registration key rotated. Restart the always-on service "
-            "(corral remote stop && corral remote start) for the new key to take "
+            "Relay registration key rotated. Toggle the service "
+            "(corral remote off && corral remote on) for the new key to take "
             "effect; already-paired phones do not need to scan again."
         ),
         "zh": (
-            "已轮换中继注册密钥。请重启常驻服务（corral remote stop && corral remote start）"
+            "已轮换中继注册密钥。请开关一次服务（corral remote off && corral remote on）"
             "使新密钥生效；已配对手机不必重新扫码。"
         ),
     },
@@ -1183,10 +1217,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "remote.login.not_needed": {
         "en": "This relay does not require an account. Phone handoff is ready.",
         "zh": "这个中继不需要登录账号，手机接力已可用。",
-    },
-    "remote.start.qr_refreshed": {
-        "en": "The service is already running (PID {pid}); a fresh pairing QR code is shown above.",
-        "zh": "服务已在运行（进程 {pid}），上方已生成新的配对二维码。",
     },
     "remote.login.visit": {
         "en": "Open {uri} and enter this code: {code}",
@@ -1215,18 +1245,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "remote.logout.ok": {
         "en": "Signed out.",
         "zh": "已退出登录。",
-    },
-    "remote.stop.not_running": {
-        "en": "The always-on service is not running",
-        "zh": "常驻服务没有在跑",
-    },
-    "remote.stop.failed": {
-        "en": "Could not stop: {error}",
-        "zh": "停不下来：{error}",
-    },
-    "remote.stop.done": {
-        "en": "Told the always-on service to exit.",
-        "zh": "已通知常驻服务退出。",
     },
     "remote.deps.missing": {
         "en": (
