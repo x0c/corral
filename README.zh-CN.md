@@ -13,6 +13,8 @@ Corral 是面向 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Age
 
 关键词：Claude Code 会话管理、Codex CLI 恢复会话、OpenCode 会话管理、Kimi Code CLI 会话管理、终端 TUI、AI 编码助手工作流、JSONL 聊天历史、跨助手接力。
 
+![`corral --json` 会话列表动画示例](docs/screenshots/demo-list.gif)
+
 ![会话列表与右栏完整对话预览](docs/screenshots/list.png)
 
 按 `Ctrl+F` 可以在所有会话的对话正文里搜索，并直接跳到命中的那一行：

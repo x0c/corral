@@ -13,6 +13,8 @@ If Corral helps you find or hand off a session, please [star the repo](https://g
 
 Keywords: Claude Code session manager, Codex CLI resume, OpenCode session manager, Kimi Code CLI session manager, terminal TUI, AI coding agent workflow, JSONL chat history, cross-runtime handoff.
 
+![Animated session list sample from `corral --json`](docs/screenshots/demo-list.gif)
+
 ![Session list with right-pane conversation preview](docs/screenshots/list.png)
 
 Press `Ctrl+F` to search the conversation bodies of every session and jump straight to the matching line:
