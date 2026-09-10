@@ -70,7 +70,10 @@ class TranscriptUtilityTests(unittest.TestCase):
         self.assertEqual(counts["user_message"], 1)
         self.assertEqual(counts["assistant_message"], 2)
         self.assertEqual(counts["tool_call"], 1)
-        self.assertEqual(SCHEMA_ID, "corral.share/v1")
+        self.assertEqual(SCHEMA_ID, "sesskit.transcript/v1")
+        from corral.transcript import LEGACY_SCHEMA_IDS
+
+        self.assertIn("corral.share/v1", LEGACY_SCHEMA_IDS)
 
 
 class ClaudeTranscriptTests(unittest.TestCase):

@@ -1,1 +1,1 @@
-"""各助手会话历史扫描器。"""
+"""Agent session history parsers (implemented in SessKit)."""

@@ -917,7 +917,7 @@ COMMANDS = [
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "定位会话时的扫描深度"}},
         ],
         "fields": {
-            "schema": "固定为 corral.share/v1，调用方据此识别事件流版本",
+            "schema": "固定为 sesskit.transcript/v1（兼容读 corral.share/v1），调用方据此识别事件流版本",
             "...": "与 list 命令的会话元数据字段相同（runtime / id / title / cwd / history_path 等）",
             "runtime_name": "运行时显示名（如 Claude Code）",
             "events": "按原始历史顺序的统一事件数组，type 为 user_message / assistant_message / thinking / tool_call / tool_result；tool_call 含 id/name/kind/input，tool_result 含 call_id/status/output，均不截断",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档

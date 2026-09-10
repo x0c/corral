@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "corral"
-version = "0.24.168"
+version = "0.24.169"
 description = "Corral: terminal session handoff for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,7 +36,10 @@ classifiers = [
   "Topic :: Software Development",
   "Topic :: Terminals",
 ]
-dependencies = ["textual>=8.0"]
+dependencies = [
+  "textual>=8.0",
+  "sesskit @ git+https://github.com/x0c/sesskit.git@v0.1.0",
+]
 
 # 手机端接力（corral remote）需要的额外组件。刻意不进主依赖：只在终端里用 corral
 # 的人不该为一个用不上的功能付出安装体积和导入时间。

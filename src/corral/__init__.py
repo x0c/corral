@@ -17,7 +17,21 @@ import sys as sys
 # 回归用例全挂正是这么来的。包顶层是唯一「任何用法都必经」的位置。
 os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
 
-__version__ = "0.24.168"
+# SessKit owns session parsers; wire Corral's performance cache into SessKit.
+def _wire_sesskit_cache() -> None:
+    try:
+        from sesskit.cache import set_cache
+
+        from corral.cache import get_cache
+
+        set_cache(get_cache())
+    except Exception:
+        pass
+
+
+_wire_sesskit_cache()
+
+__version__ = "0.24.169"
 
 _MODULE_EXPORTS = {
     "embed", "keepalive", "liveness", "titles", "updater", "split_layout", "observe", "theme", "search",

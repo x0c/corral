@@ -5609,7 +5609,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(os.path.isfile(path), path)
             with open(path, encoding="utf-8") as fp:
                 envelope = json.load(fp)
-            self.assertEqual(envelope["data"]["schema"], "corral.share/v1")
+            self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
             self.assertIn("events", envelope["data"])
             self.assertEqual(type(app.screen).__name__, "MainScreen")
 

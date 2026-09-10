@@ -335,7 +335,7 @@ class AgentApiTests(unittest.TestCase):
             registry,
         )
         data = share["data"]
-        self.assertEqual(data["schema"], "corral.share/v1")
+        self.assertEqual(data["schema"], "sesskit.transcript/v1")
         self.assertEqual([e["type"] for e in data["events"]], [
             "user_message", "thinking", "assistant_message", "tool_call", "tool_result",
         ])
@@ -363,7 +363,7 @@ class AgentApiTests(unittest.TestCase):
         self.assertNotIn("events", result["data"])
         with open(out_path, encoding="utf-8") as fp:
             envelope = json.load(fp)
-        self.assertEqual(envelope["data"]["schema"], "corral.share/v1")
+        self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
         self.assertIn("events", envelope["data"])
 
     def test_export_share_to_cache_writes_envelope(self) -> None:
@@ -376,7 +376,7 @@ class AgentApiTests(unittest.TestCase):
         with open(path, encoding="utf-8") as fp:
             envelope = json.load(fp)
         self.assertTrue(envelope["ok"])
-        self.assertEqual(envelope["data"]["schema"], "corral.share/v1")
+        self.assertEqual(envelope["data"]["schema"], "sesskit.transcript/v1")
         self.assertIn("events", envelope["data"])
 
     def test_describe_includes_share(self) -> None:

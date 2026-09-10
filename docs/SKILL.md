@@ -163,7 +163,7 @@ corral list --live --status pending --compact # 更进一步：正在跑、且�
   相对量 `7d`/`24h`/`30m`（距今）或 Unix 时间戳；只给日期时 `--until` 自动补到当天 23:59:59。范围内会话
   多时合并结果可达数 MB，**强烈建议加 `--out <path>`**——stdout 只回文件路径、字节数、会话数与消息总数，
   完整内容写在文件里。时间过滤按会话的 `mtime`（最后更新时间）判定。
-- `corral share` 是给其他 Agent 做元认知 / 迭代用的统一 transcript：`data.schema` 为 `corral.share/v1`，
+- `corral share` 是给其他 Agent 做元认知 / 迭代用的统一 transcript：`data.schema` 为 `sesskit.transcript/v1`（兼容读旧 `corral.share/v1`），
   `data.events[]` 按原始历史顺序包含 `user_message` / `assistant_message` / `thinking` / `tool_call` /
   `tool_result`（工具参数与结果不截断）。**不要用 `show`/`export` 的 `messages` 充当这一用途**——那两条
   命令仍然只出纯文本。大结果同样优先 `--out`。`tool_result.status` 在 Claude 认 `is_error`、OpenCode 认
