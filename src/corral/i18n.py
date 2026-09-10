@@ -990,9 +990,13 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "  No phones paired yet — run corral remote pair to print a QR code.",
         "zh": "  还没有配对手机——执行 corral remote pair 打出二维码。",
     },
+    "remote.on.remembered": {
+        "en": "  Remembered: on (comes back after login or reboot).",
+        "zh": "  开关记忆：开（登录或重启后会自动打开）。",
+    },
     "remote.on.foreground_hint": {
-        "en": "  Running in the foreground. Press Ctrl+C to turn off.",
-        "zh": "  当前在前台运行。按 Ctrl+C 关掉。",
+        "en": "  Running in the foreground. Press Ctrl+C to leave the foreground; the remembered switch stays on.",
+        "zh": "  当前在前台运行。按 Ctrl+C 离开前台；开关记忆仍为开，后台会再拉起。",
     },
     "remote.on.spawn_failed": {
         "en": "Could not start the background service: {error}",
@@ -1088,6 +1092,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "remote.status.line": {
         "en": "Status: {state}{pid_suffix}",
         "zh": "状态：{state}{pid_suffix}",
+    },
+    "remote.status.wanted_on": {
+        "en": "Remembered switch: on (autostart armed)",
+        "zh": "开关记忆：开（已登记开机自启）",
+    },
+    "remote.status.wanted_on_no_autostart": {
+        "en": "Remembered switch: on (autostart not armed on this OS session)",
+        "zh": "开关记忆：开（当前环境未能登记开机自启）",
+    },
+    "remote.status.wanted_off": {
+        "en": "Remembered switch: off",
+        "zh": "开关记忆：关",
     },
     "remote.status.pid_suffix": {
         "en": " (pid {pid})",

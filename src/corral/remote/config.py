@@ -227,6 +227,8 @@ class RemoteState:
     relay_enabled: bool = True
     local_enabled: bool = True
     local_port: int = 0
+    # Remembered switch: True means login/reboot must bring the service back.
+    wanted: bool = False
     cwd_whitelist: list[str] = field(default_factory=list)
     devices: list[PairedDevice] = field(default_factory=list)
 
@@ -249,6 +251,7 @@ class RemoteState:
             relay_enabled=bool(raw.get("relay_enabled", True)),
             local_enabled=bool(raw.get("local_enabled", True)),
             local_port=int(raw.get("local_port") or 0),
+            wanted=bool(raw.get("wanted", False)),
             cwd_whitelist=whitelist,
             devices=[
                 PairedDevice.from_dict(d) for d in raw.get("devices") or [] if isinstance(d, dict)

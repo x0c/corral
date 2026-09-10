@@ -113,6 +113,8 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
             mock.patch.object(remote_config, "read_pid", return_value=12345),
             mock.patch.object(remote_cli, "_spawn_background_daemon") as spawn,
             mock.patch.object(remote_config, "write_pairing") as write_pairing,
+            mock.patch.object(remote_cli.remote_autostart, "enable", return_value="") as enable,
+            mock.patch.object(remote_cli.remote_autostart, "is_installed", return_value=True),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -120,7 +122,10 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
 
         spawn.assert_not_called()
         write_pairing.assert_not_called()
+        enable.assert_called_once()
+        self.assertTrue(state.wanted)
         self.assertIn(t("remote.on.already", pid=12345), buf.getvalue())
+        self.assertIn(t("remote.on.remembered"), buf.getvalue())
 
     def test_on_spawns_background_daemon_without_pairing(self) -> None:
         state = remote_config.RemoteState(
@@ -149,10 +154,12 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
             mock.patch.object(remote_cli, "_ensure_dependencies", return_value=""),
             mock.patch.object(remote_config, "load_state", return_value=state),
             mock.patch.object(remote_config, "save_state"),
-            mock.patch.object(remote_config, "read_pid", side_effect=[None, 4242]),
+            mock.patch.object(remote_config, "read_pid", side_effect=[None, None, 4242]),
             mock.patch.object(remote_cli, "_spawn_background_daemon", return_value=child) as spawn,
             mock.patch.object(remote_cli, "_print_pairing") as print_pairing,
             mock.patch.object(remote_cli, "_run_daemon_foreground") as foreground,
+            mock.patch.object(remote_cli.remote_autostart, "enable", return_value="no launchd"),
+            mock.patch.object(remote_cli.remote_autostart, "is_installed", return_value=False),
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -161,20 +168,64 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
         spawn.assert_called_once()
         foreground.assert_not_called()
         print_pairing.assert_not_called()
+        self.assertTrue(state.wanted)
         self.assertIn(t("remote.on.ready", name="suzhou", pid=4242), buf.getvalue())
         self.assertIn(t("remote.on.pair_hint"), buf.getvalue())
+        self.assertIn(t("remote.on.remembered"), buf.getvalue())
 
     def test_start_alias_matches_on(self) -> None:
         self.assertIs(remote_cli._cmd_start, remote_cli._cmd_on)
         self.assertIs(remote_cli._cmd_stop, remote_cli._cmd_off)
 
     def test_off_is_idempotent_when_already_off(self) -> None:
+        state = remote_config.RemoteState(
+            host_id="h1", host_name="suzhou", relay_url="", relay_enabled=False,
+            local_enabled=False, local_port=8737, wanted=False, devices=[],
+        )
         args = mock.Mock(json=False, quiet=False)
-        with mock.patch.object(remote_config, "read_pid", return_value=None):
+        with (
+            mock.patch.object(remote_config, "load_state", return_value=state),
+            mock.patch.object(remote_config, "save_state"),
+            mock.patch.object(remote_config, "read_pid", return_value=None),
+            mock.patch.object(remote_cli.remote_autostart, "disable", return_value="") as disable,
+            mock.patch.object(remote_cli.remote_autostart, "is_installed", return_value=False),
+        ):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(remote_cli._cmd_off(args), 0)
+        disable.assert_called_once()
+        self.assertFalse(state.wanted)
         self.assertIn(t("remote.off.already"), buf.getvalue())
+
+    def test_off_disarms_autostart_before_stopping(self) -> None:
+        state = remote_config.RemoteState(
+            host_id="h1", host_name="suzhou", relay_url="", relay_enabled=False,
+            local_enabled=False, local_port=8737, wanted=True, devices=[],
+        )
+        args = mock.Mock(json=False, quiet=False)
+        order: list[str] = []
+
+        def disable() -> str:
+            order.append("disable")
+            return ""
+
+        def kill(pid: int, sig: int) -> None:
+            if sig == 0:
+                raise OSError("gone")
+            order.append("kill")
+
+        with (
+            mock.patch.object(remote_config, "load_state", return_value=state),
+            mock.patch.object(remote_config, "save_state"),
+            mock.patch.object(remote_config, "read_pid", return_value=777),
+            mock.patch.object(remote_config, "clear_pid"),
+            mock.patch.object(remote_cli.remote_autostart, "disable", side_effect=disable),
+            mock.patch.object(remote_cli.remote_autostart, "is_installed", return_value=False),
+            mock.patch.object(remote_cli.os, "kill", side_effect=kill),
+        ):
+            self.assertEqual(remote_cli._cmd_off(args), 0)
+        self.assertEqual(order, ["disable", "kill"])
+        self.assertFalse(state.wanted)
 
     def test_pair_still_prints_qr_when_service_is_on(self) -> None:
         state = remote_config.RemoteState(

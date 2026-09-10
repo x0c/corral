@@ -434,7 +434,12 @@ class SessionStore:
         """
         # 每个适配器负责按时间倒序返回，无需在界面层二次排序
         scanned = self._drop_tombstoned_sessions(scanned)
-        liveness.annotate([session for bucket in scanned.values() for session in bucket])
+        annotated = [session for bucket in scanned.values() for session in bucket]
+        liveness.annotate(annotated)
+        # Remote (and any other process) hosts panes without sharing this store.
+        # Adopt unmatched managed panes as provisional interactive cards so the
+        # desktop sidebar does not wait for history / lag through a preview phase.
+        self._adopt_foreign_hosted(annotated)
 
         with self.lock:
             attention_migrations = self._reconcile_provisional_sessions(scanned)
@@ -454,6 +459,65 @@ class SessionStore:
         # 运行中新出现的待生成会话也要拉后台；只靠启动时那一次 spawn 会永久漏生成。
         if has_pending_titles:
             self.request_title_generation()
+
+    def _adopt_foreign_hosted(self, annotated: list[dict]) -> None:
+        """Register provisional cards for managed panes this process did not host.
+
+        ``corral remote`` hosts into the shared keepalive socket but only calls
+        ``register_hosted_session`` in the daemon. Until formal history exists,
+        a separate TUI store sees nothing; once history appears, annotate may
+        still miss the pane for a cycle or two (Cursor uuid ≠ 8-char ident), so
+        the card first shows as a static preview then flips interactive. Adopting
+        unmatched live panes closes both gaps.
+        """
+        from corral.i18n import t
+
+        claimed: set[str] = set()
+        for session in annotated:
+            name = session.get("keepalive_name")
+            if name:
+                claimed.add(str(name))
+        with self.lock:
+            claimed.update(str(name) for name in self.hosted.values() if name)
+            for provisional in self._provisional.values():
+                name = provisional.get("keepalive_name")
+                if name:
+                    claimed.add(str(name))
+            for bucket in self.sessions.values():
+                for session in bucket:
+                    name = session.get("keepalive_name")
+                    if name:
+                        claimed.add(str(name))
+            known_runtimes = set(self.registry.ids)
+
+        try:
+            hosts = liveness.list_managed_hosts()
+        except Exception:
+            return
+        for host in hosts:
+            name = str(host.get("name") or "")
+            runtime_id = str(host.get("runtime_id") or "")
+            ident = str(host.get("ident") or "")
+            if not name or not runtime_id or not ident:
+                continue
+            if name in claimed or runtime_id not in known_runtimes:
+                continue
+            key = f"{runtime_id}:{ident}"
+            with self.lock:
+                if key in self._provisional or key in self.hosted:
+                    continue
+            try:
+                display = self.registry.get(runtime_id).display_name
+            except KeyError:
+                display = runtime_id
+            self.register_hosted_session(
+                runtime_id=runtime_id,
+                keepalive_name=name,
+                title=t("session.title.new", name=display),
+                cwd=host.get("cwd"),
+                ident=ident,
+            )
+            claimed.add(name)
 
     def _drop_tombstoned_sessions(
         self, scanned: dict[str, list[dict]],

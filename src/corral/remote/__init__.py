@@ -8,6 +8,7 @@
 模块划分：
 
 - ``config``    本机身份、已配对设备、中继地址等持久化状态
+- ``autostart`` 开关记忆的开机自启（LaunchAgent / systemd --user）
 - ``crypto``    X25519 + HKDF-SHA256 + ChaCha20-Poly1305 的端到端加密通道
 - ``protocol``  应用层消息格式与方法名常量
 - ``richmsg``   富消息解析：在现有对话读取之外保留工具调用摘要

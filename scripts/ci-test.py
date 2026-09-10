@@ -132,6 +132,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.lint_only:
         return 0
 
+    # Keep developer keepalive panes out of SessionStore unit fixtures.
+    os.environ.setdefault("CORRAL_ISOLATE_MANAGED_HOSTS", "1")
+
     faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
 
     loader = unittest.TestLoader()

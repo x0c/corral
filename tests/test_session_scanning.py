@@ -3762,6 +3762,90 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertIsNotNone(store.find_session("cursor:real-uuid"))
         self.assertNotIn(key, store._provisional)
 
+    def test_foreign_tmux_host_is_adopted_as_interactive_provisional(self) -> None:
+        """Other-process hosted panes (phone remote) must appear interactive before history.
+
+        Desktop TUI does not share the remote daemon's SessionStore. Without
+        adoption, the sidebar stays empty until Cursor/Codex write history, then
+        briefly shows a static preview until annotate attaches keepalive.
+        """
+        cursor_runtime = mock.Mock()
+        cursor_runtime.id = "cursor"
+        cursor_runtime.display_name = "Cursor"
+        cursor_runtime.scan_signature.return_value = None
+        cursor_runtime.scan_sessions.return_value = []
+        registry = corral.RuntimeRegistry((cursor_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}), mock.patch.object(
+            corral.liveness, "list_managed_hosts", return_value=[]
+        ), mock.patch.object(corral.liveness, "annotate"):
+            store = corral.SessionStore(limit=20, registry=registry)
+            store.load()
+
+        foreign = {
+            "name": "corral-cursor-deadbeef",
+            "runtime_id": "cursor",
+            "ident": "deadbeef",
+            "cwd": "/tmp/phone-proj",
+            "pane_pid": 4242,
+        }
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "list_managed_hosts", return_value=[foreign]
+        ), mock.patch.object(corral.liveness, "is_alive", return_value=True):
+            changed = store.refresh()
+        self.assertTrue(changed)
+        card = store.find_session("cursor:deadbeef")
+        self.assertIsNotNone(card)
+        self.assertTrue(card.get("provisional"))
+        self.assertTrue(card.get("live"))
+        self.assertEqual(card.get("keepalive_name"), "corral-cursor-deadbeef")
+        self.assertEqual(card.get("cwd"), "/tmp/phone-proj")
+
+    def test_foreign_adopted_provisional_retires_onto_real_history(self) -> None:
+        """Adopted remote provisional must retire when formal history appears."""
+        cursor_runtime = mock.Mock()
+        cursor_runtime.id = "cursor"
+        cursor_runtime.display_name = "Cursor"
+        cursor_runtime.scan_signature.return_value = None
+        cursor_runtime.scan_sessions.return_value = []
+        registry = corral.RuntimeRegistry((cursor_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}), mock.patch.object(
+            corral.liveness, "list_managed_hosts", return_value=[]
+        ), mock.patch.object(corral.liveness, "annotate"):
+            store = corral.SessionStore(limit=20, registry=registry)
+            store.load()
+
+        foreign = {
+            "name": "corral-cursor-cafebabe",
+            "runtime_id": "cursor",
+            "ident": "cafebabe",
+            "cwd": "/tmp/phone-proj",
+            "pane_pid": 99,
+        }
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "list_managed_hosts", return_value=[foreign]
+        ), mock.patch.object(corral.liveness, "is_alive", return_value=True):
+            store.refresh()
+        self.assertIsNotNone(store.find_session("cursor:cafebabe"))
+
+        real = {
+            "source": "cursor", "id": "bbbbbbbb-1111-2222-3333-444444444444",
+            "short_id": "bbbbbbbb1111", "mtime": time.time(),
+            "size_bytes": 1, "size_kb": 1, "native_title": "手机开的",
+            "fallback_title": "手机开的", "cwd": "/tmp/phone-proj",
+            "live": True, "pid": 99,
+        }
+        cursor_runtime.scan_sessions.return_value = [real]
+        # annotate intentionally does not attach keepalive (uuid ≠ ident).
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "list_managed_hosts", return_value=[foreign]
+        ), mock.patch.object(corral.liveness, "is_alive", return_value=True):
+            store.refresh()
+        self.assertIsNone(store.find_session("cursor:cafebabe"))
+        real_card = store.find_session("cursor:bbbbbbbb-1111-2222-3333-444444444444")
+        self.assertIsNotNone(real_card)
+        self.assertEqual(real_card.get("keepalive_name"), "corral-cursor-cafebabe")
+        self.assertTrue(real_card.get("live"))
+
     def test_cursor_fresh_listed_session_retires_provisional_without_duplicate(self) -> None:
         """正式 Cursor 历史先于占位卡进列表时，仍须退役占位，避免侧栏双卡。
 

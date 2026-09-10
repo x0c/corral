@@ -24,6 +24,7 @@ from contextlib import suppress
 
 from corral import updater
 from corral.i18n import join_names, t
+from corral.remote import autostart as remote_autostart
 from corral.remote import config as remote_config
 from corral.remote import crypto, pairing
 
@@ -218,6 +219,11 @@ def _wait_until_running(timeout: float = _READY_WAIT_SECONDS) -> int | None:
 # on / off / _serve
 # ---------------------------------------------------------------------------
 
+def _remember_wanted(state: remote_config.RemoteState, wanted: bool) -> None:
+    state.wanted = wanted
+    remote_config.save_state(state)
+
+
 def _cmd_on(args) -> int:
     problem = _ensure_dependencies()
     if problem:
@@ -228,11 +234,17 @@ def _cmd_on(args) -> int:
     if flag_error:
         return _fail(flag_error, args.json)
 
+    _remember_wanted(state, True)
+    state = remote_config.load_state()
+
     running = remote_config.read_pid()
     if running and not args.force:
+        remote_autostart.enable()
         data = {
             "enabled": True,
+            "wanted": True,
             "running": True,
+            "autostart": remote_autostart.is_installed(),
             "pid": running,
             "changed": False,
             "host_name": state.host_name,
@@ -241,9 +253,11 @@ def _cmd_on(args) -> int:
             print(_envelope(True, data))
         elif not args.quiet:
             print(t("remote.on.already", pid=running))
+            print(t("remote.on.remembered"))
         return EXIT_OK
 
     if running and args.force:
+        remote_autostart.disable()
         _stop_pid(running)
         remote_config.clear_pid()
 
@@ -254,6 +268,9 @@ def _cmd_on(args) -> int:
         if not ok:
             return _fail(message, args.json)
 
+    # Arm OS autostart before starting so a crash mid-on still comes back after reboot.
+    autostart_error = remote_autostart.enable()
+
     if args.foreground:
         if args.json:
             # 前台占进程时 JSON 呼叫方拿不到回包；先打一行再进主循环。
@@ -262,7 +279,9 @@ def _cmd_on(args) -> int:
                     True,
                     {
                         "enabled": True,
+                        "wanted": True,
                         "running": True,
+                        "autostart": remote_autostart.is_installed(),
                         "pid": os.getpid(),
                         "changed": True,
                         "foreground": True,
@@ -273,24 +292,29 @@ def _cmd_on(args) -> int:
             sys.stdout.flush()
         elif not args.quiet:
             _print_on_status(state, os.getpid())
+            print(t("remote.on.remembered"))
             print(t("remote.on.foreground_hint"))
         return _run_daemon_foreground(state)
 
-    try:
-        child = _spawn_background_daemon()
-    except OSError as exc:
-        return _fail(t("remote.on.spawn_failed", error=exc), args.json)
-
-    pid = _wait_until_running()
+    pid = _wait_until_running(timeout=2.0) if not autostart_error else None
+    child = None
+    if not pid:
+        try:
+            child = _spawn_background_daemon()
+        except OSError as exc:
+            return _fail(t("remote.on.spawn_failed", error=exc), args.json)
+        pid = _wait_until_running()
     if not pid:
         # 子进程可能立刻挂了；尽量带上它的退出码。
-        code = child.poll()
-        detail = f"exit {code}" if code is not None else "no pid"
+        code = child.poll() if child is not None else None
+        detail = f"exit {code}" if code is not None else (autostart_error or "no pid")
         return _fail(t("remote.on.not_ready", detail=detail), args.json)
 
     data = {
         "enabled": True,
+        "wanted": True,
         "running": True,
+        "autostart": remote_autostart.is_installed(),
         "pid": pid,
         "changed": True,
         "host_name": state.host_name,
@@ -299,13 +323,26 @@ def _cmd_on(args) -> int:
         print(_envelope(True, data))
     elif not args.quiet:
         _print_on_status(state, pid)
+        print(t("remote.on.remembered"))
     return EXIT_OK
 
 
 def _cmd_off(args) -> int:
+    state = remote_config.load_state()
+    _remember_wanted(state, False)
+    # Disarm first so KeepAlive / systemd Restart cannot race the stop.
+    remote_autostart.disable()
+
     pid = remote_config.read_pid()
     if not pid:
-        data = {"enabled": False, "running": False, "pid": None, "changed": False}
+        data = {
+            "enabled": False,
+            "wanted": False,
+            "running": False,
+            "autostart": remote_autostart.is_installed(),
+            "pid": None,
+            "changed": False,
+        }
         if args.json:
             print(_envelope(True, data))
         elif not getattr(args, "quiet", False):
@@ -326,7 +363,14 @@ def _cmd_off(args) -> int:
         with suppress(OSError):
             os.kill(pid, signal.SIGKILL)
     remote_config.clear_pid()
-    data = {"enabled": False, "running": False, "pid": pid, "changed": True}
+    data = {
+        "enabled": False,
+        "wanted": False,
+        "running": False,
+        "autostart": remote_autostart.is_installed(),
+        "pid": pid,
+        "changed": True,
+    }
     if args.json:
         print(_envelope(True, data))
     else:
@@ -341,6 +385,14 @@ def _cmd_serve(_args) -> int:
         print(problem, file=sys.stderr)
         return EXIT_ERROR
     state = remote_config.load_state()
+    if not state.wanted:
+        # Stale unit after off, or manual _serve — do not linger under KeepAlive.
+        remote_autostart.disable()
+        return EXIT_OK
+    existing = remote_config.read_pid()
+    if existing and existing != os.getpid():
+        # Another live instance owns the switch; exit cleanly for launchd/systemd.
+        return EXIT_OK
     return _run_daemon_foreground(state)
 
 
@@ -393,6 +445,8 @@ def _cmd_status(args) -> int:
     data = {
         "running": bool(pid),
         "enabled": bool(pid),
+        "wanted": bool(state.wanted),
+        "autostart": remote_autostart.is_installed(),
         "pid": pid,
         "host_id": state.host_id,
         "host_name": state.host_name,
@@ -443,6 +497,14 @@ def _cmd_status(args) -> int:
     state_label = t("remote.status.running") if pid else t("remote.status.not_running")
     pid_suffix = t("remote.status.pid_suffix", pid=pid) if pid else ""
     print(t("remote.status.line", state=state_label, pid_suffix=pid_suffix))
+    if state.wanted:
+        print(
+            t("remote.status.wanted_on")
+            if remote_autostart.is_installed()
+            else t("remote.status.wanted_on_no_autostart")
+        )
+    else:
+        print(t("remote.status.wanted_off"))
     if not state.relay_enabled:
         print(t("remote.status.relay_off"))
     else:

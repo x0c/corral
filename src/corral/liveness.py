@@ -15,6 +15,7 @@ jsonl 已关）仍按 ``corral-<runtime>-<ident>`` 唯一命中贴名，避免�
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import threading
@@ -146,6 +147,46 @@ def _parse_managed_session_name(name: str) -> tuple[str, str] | None:
         if sep and runtime and ident:
             return runtime, ident
     return None
+
+
+def list_managed_hosts() -> list[dict]:
+    """Live managed tmux panes with runtime/ident/cwd for cross-process adoption.
+
+    Phone remote hosts panes in a separate daemon; the desktop TUI never sees
+    that process's ``register_hosted_session`` cards. Listing here lets the store
+    invent matching provisional cards before history exists on disk.
+
+    Unit tests set ``CORRAL_ISOLATE_MANAGED_HOSTS=1`` so a developer machine's
+    live keepalive panes do not leak into empty-scan fixtures as foreign cards.
+    """
+    if os.environ.get("CORRAL_ISOLATE_MANAGED_HOSTS") == "1":
+        return []
+    hosts: list[dict] = []
+    for row in _list_tmux_sessions("#{session_name}|#{pane_pid}|#{pane_current_path}"):
+        if not row:
+            continue
+        name = row[0]
+        parsed = _parse_managed_session_name(name)
+        if parsed is None:
+            continue
+        runtime_id, ident = parsed
+        pane_pid = None
+        if len(row) > 1 and row[1]:
+            try:
+                pane_pid = int(row[1])
+            except ValueError:
+                pane_pid = None
+        cwd = row[2].strip() if len(row) > 2 and row[2] else ""
+        hosts.append(
+            {
+                "name": name,
+                "runtime_id": runtime_id,
+                "ident": ident,
+                "cwd": cwd or None,
+                "pane_pid": pane_pid,
+            }
+        )
+    return hosts
 
 
 def _name_matches_session(name: str, session: dict) -> bool:
