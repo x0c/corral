@@ -362,13 +362,15 @@ def desired_host_size(
     """登记本格观看尺寸，返回所有仍存活观看方里最宽（同宽取最大高）的尺寸。
 
     库不可用时退回本格自己的宽高，不得阻断抓帧。低于下限的尺寸不登记，
-    以免把有效尺寸拉到会污染 scrollback 的窄宽。
+    以免把有效尺寸拉到会污染 scrollback 的窄宽；若本格先前登记过更宽的尺寸，
+    必须撤回那一票，否则缩到下限以下后仍会按旧宽把共享窗钉死。
     """
     local = (max(1, int(width)), max(1, int(height)))
     if not name or not viewer_id:
         return local
     now = time.monotonic()
     key = (name, viewer_id)
+    below_min = local[0] < MIN_HOST_WIDTH or local[1] < MIN_HOST_HEIGHT
     with _VIEWER_LOCK:
         last = _viewer_last_write.get(key)
         should_write = (
@@ -381,19 +383,28 @@ def desired_host_size(
         if conn is None:
             return local
         try:
-            if should_write and local[0] >= MIN_HOST_WIDTH and local[1] >= MIN_HOST_HEIGHT:
+            if should_write:
                 conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    "INSERT INTO host_viewers"
-                    " (session_name, viewer_id, width, height, pid, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?)"
-                    " ON CONFLICT(session_name, viewer_id) DO UPDATE SET"
-                    " width=excluded.width, height=excluded.height,"
-                    " pid=excluded.pid, updated_at=excluded.updated_at",
-                    (name, viewer_id, local[0], local[1], os.getpid(), now),
-                )
+                if below_min:
+                    # Withdraw the prior wide vote; do not insert a below-min row.
+                    conn.execute(
+                        "DELETE FROM host_viewers"
+                        " WHERE session_name = ? AND viewer_id = ?",
+                        (name, viewer_id),
+                    )
+                    _viewer_last_write.pop(key, None)
+                else:
+                    conn.execute(
+                        "INSERT INTO host_viewers"
+                        " (session_name, viewer_id, width, height, pid, updated_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?)"
+                        " ON CONFLICT(session_name, viewer_id) DO UPDATE SET"
+                        " width=excluded.width, height=excluded.height,"
+                        " pid=excluded.pid, updated_at=excluded.updated_at",
+                        (name, viewer_id, local[0], local[1], os.getpid(), now),
+                    )
+                    _viewer_last_write[key] = (local[0], local[1], now)
                 conn.commit()
-                _viewer_last_write[key] = (local[0], local[1], now)
             rows = conn.execute(
                 "SELECT viewer_id, width, height, pid, updated_at"
                 " FROM host_viewers WHERE session_name = ?",
@@ -514,48 +525,59 @@ def send_literal(name: str, text: str, *, force_fork: bool = False) -> None:
     _send(name, ["send-keys", "-l", "-t", name, "--", text])
 
 
-def send_key(name: str, *keys: str) -> None:
-    """按 tmux 键名发送特殊键（Enter / C-c / Up / BSpace …）。"""
+def send_key(name: str, *keys: str) -> bool:
+    """按 tmux 键名发送特殊键（Enter / C-c / Up / BSpace …）。
+
+    Returns True only when the injection subprocess (or control channel) completed
+    successfully. Desktop callers may ignore the bool; remote receipts must not.
+    """
     if not keys:
-        return
+        return True
     ch = _active_channel(name)
     if ch is not None and ch.command("send", "-t", name, "--", *keys):
-        return
-    _send(name, ["send-keys", "-t", name, "--", *keys])
+        return True
+    return _send(name, ["send-keys", "-t", name, "--", *keys])
 
 
-def _send(name: str, argv: list[str]) -> None:
+def _send(name: str, argv: list[str]) -> bool:
     try:
-        subprocess.run(
+        completed = subprocess.run(
             [*keepalive.tmux_argv(name), *argv],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        pass  # 会话刚好退出时丢键静默，画面会经 capture 轮询收敛到"已结束"
+        # Dead pane: silent for desktop TUI; callers that care check the bool.
+        return False
+    return completed.returncode == 0
 
 
-def paste(name: str, text: str) -> None:
+def paste(name: str, text: str) -> bool:
     """整段粘贴：经 paste buffer 一次性注入，-p 让目标程序按 bracketed paste 接收。
 
     刻意走外部子进程而不走控制通道：多行文本含换行，无法作为控制模式行协议的
     单条命令参数；且数据注入类命令（与 send-keys -l 同类）外部执行是安全的。
+
+    Returns True only when every subprocess step finished with returncode 0.
     """
     if not text:
-        return
+        return True
     try:
-        subprocess.run(
+        set_buf = subprocess.run(
             [*keepalive.tmux_argv(name), "set-buffer", "-b", _PASTE_BUFFER, "--", text],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=False,
         )
-        subprocess.run(
+        if set_buf.returncode != 0:
+            return False
+        pasted = subprocess.run(
             [*keepalive.tmux_argv(name), "paste-buffer", "-p", "-d", "-b", _PASTE_BUFFER, "-t", name],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        return False
+    return pasted.returncode == 0
 
 
 # ---------------------------------------------------------------------------
@@ -650,7 +672,8 @@ def save_image_and_paste_path(name: str, image_bytes: bytes) -> str | None:
             f.write(image_bytes)
     except OSError:
         return None
-    paste(name, path)
+    if not paste(name, path):
+        return None
     return path
 
 

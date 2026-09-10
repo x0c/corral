@@ -384,6 +384,21 @@ class HostViewRegistryTests(unittest.TestCase):
         mine = embed.desired_host_size(name, f"{pid}:mine", 80, 24)
         self.assertEqual(mine, (80, 24))
 
+    def test_below_min_withdraws_prior_wide_vote(self) -> None:
+        """Shrinking below MIN must not keep pinning the previous wide claim."""
+        pid = os.getpid()
+        name = "corral-claude-below-min"
+        wide = embed.desired_host_size(name, f"{pid}:only", 60, 26)
+        self.assertEqual(wide, (60, 26))
+        narrow = embed.desired_host_size(
+            name, f"{pid}:only", embed.MIN_HOST_WIDTH - 1, 26,
+        )
+        self.assertEqual(
+            narrow,
+            (embed.MIN_HOST_WIDTH - 1, 26),
+            "below-min request must withdraw the prior vote, not return the old width",
+        )
+
 
 class ImagePasteTests(unittest.TestCase):
     """浏览器增强脚本裹哨兵的图片粘贴：识别、落盘、送路径进 pane。"""

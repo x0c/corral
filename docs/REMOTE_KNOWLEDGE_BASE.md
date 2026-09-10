@@ -52,6 +52,7 @@
 - 只读：`sessions.*` / `session.messages` / `session.prompts` / `projects.list` / `runtimes.list` / `search`
 - 订阅：`sessions.watch`、`session.watch`、`screen.watch`（事件通道 `sessions` / `session:<key>` / `screen:<key>`）
 - 输入：`input.text` / `input.keys` / `input.image`
+- 命令回执（可选能力）：`command.status`
 - 会话动作：`session.new` / `session.stop` / `session.delete` / `session.markRead` …
 - 配对与推送：`pair`、`push.register`
 
@@ -59,13 +60,14 @@
 
 | 方法 | 成功 `d` |
 |---|---|
-| `input.text` / `input.keys` / `session.stop` / `session.delete` | `{"ok": true}` |
-| `input.image` | `{"path": "<开发机落盘绝对路径>"}`（JPEG/PNG 等可识别字节；空/坏 base64 → `usage_error`） |
+| `input.text` / `input.keys` / `session.stop` / `session.delete` | 默认 `{"ok": true}`。协商了 `command_receipts` 后，`input.text` / `input.keys` 改为回执：`command_id` / `status`（`accepted`\|`dispatching`\|`delivered`\|`rejected`\|`unknown`）/ `host_run_id`，可选 `reason` / `retryable`。未协商时形状不变。 |
+| `input.image` | 默认 `{"path": "<开发机落盘绝对路径>"}`。协商回执后额外带同上回执字段（仍含 `path` 当注入成功）。 |
+| `command.status` | `{command_id, status, host_run_id, …}`；从未见过该 `command_id` 时 `status` 为 `"unseen"`（只读、可重试）。 |
 | `session.new` / `resume` / `handoff` | `{"session": <SessionSummary>}`（含 `key` 等列表字段） |
 | `session.markRead` | `{"attention": "none\|unread\|working\|waiting"}` |
 | `projects.list` | `{"projects":[{"path","name","cwd","label","count","mtime"}, …]}`（`path`/`name` 给 iOS 新建页；`cwd`/`label` 与桌面项目列表同义） |
 | `runtimes.list` | `{"runtimes":[{"id","name","available"}, …]}` |
-| `hello` | 含 `paired` / `runtimes`（未配对为空）以及 **`relay_url` / `relay_enabled` / `local_enabled`**（未配对也返回；关中继时 `relay_url` 为空串）。`capabilities` **增加** `"planes": ["control", "data"]`（旧客户端忽略未知字段）。请求带 `"want_data_plane": true` 时额外给一次性 `"data_bind"`；不带该字段的旧客户端不发 token，仍单连接。数据面第二条 WebSocket 独立握手后 `hello`：`{"plane":"data","bind":"<token>","name":...}`。令牌绑定设备公钥、TTL ≤ 120 秒、一次性；校验失败只关数据通道，不得踢控制面。 |
+| `hello` | 含 `paired` / `runtimes`（未配对为空）以及 **`relay_url` / `relay_enabled` / `local_enabled`**（未配对也返回；关中继时 `relay_url` 为空串）。另带稳定进程级 `host_run_id`。`capabilities` **增加** `"planes": ["control", "data"]` 与 `"command_receipts": true`（旧客户端忽略未知字段）。请求带 `"want_data_plane": true` 时额外给一次性 `"data_bind"`；带 `"want_command_receipts": true` 时本连接启用回执路径（`input.*` 须带 `command_id`，可选 `payload_digest` / `lease_sec`）。不带这些字段的旧客户端行为与今天完全一致。数据面第二条 WebSocket 独立握手后 `hello`：`{"plane":"data","bind":"<token>","name":...}`。令牌绑定设备公钥、TTL ≤ 120 秒、一次性；校验失败只关数据通道，不得踢控制面。 |
 | `sessions.list` / `sessions.watch` | `{"sessions":[...],"version":"<窗指纹>","unchanged":false,"has_more":bool,"total":int}`。请求可带 `since_version`；版本相同则 `unchanged=true` 且**不带** `sessions`。旧手机忽略多余字段仍读 `sessions`。**禁止**把未变回包当成空表覆盖。列表窗口与截断规则见 `docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md` §4.5 |
 
 画面帧字段见 `remote/screen.py` 的 `to_dict()`：`cols/rows/full/lines/cursor/history/status`。`status` 取画面最后一行有内容的文本，供手机对话页做实时状态条（历史文件可能长时间不落盘）。
@@ -79,6 +81,7 @@
 - 推送 APNs 需 `mutable-content`，以便通知服务扩展改写标题正文。
 - **密钥确认**：握手 HELLO 之后，开发机必须等到对端发出第一条可解密密文才 `attach` 并写盘。仅重放公钥不能完成授权。
 - 身份与状态落在状态目录（`CORRAL_STATE_DIR` / `XDG_STATE_HOME` / `~/.local/state/corral/remote`），不再放缓存目录；旧缓存路径会一次性迁过去。
+- 命令回执落在同一远程状态目录下的 `command_receipts/`（按设备公钥 + `command_id`）；进程重启时 `accepted`→`rejected(interrupted)`，`dispatching`→`unknown`，且不会把 `unknown` 自动改成已送达或已拒绝。
 
 ## 安全边界
 

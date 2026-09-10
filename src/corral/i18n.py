@@ -1552,6 +1552,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "The image could not be saved on the development machine",
         "zh": "图片没能保存到开发机上",
     },
+    "remote.err.inject_failed": {
+        "en": "Could not deliver input to the session",
+        "zh": "没能把输入送进会话",
+    },
+    "remote.err.inject_partial": {
+        "en": "Input may have been partially delivered; outcome is unknown",
+        "zh": "输入可能只送进了一部分，结果不确定",
+    },
     "remote.err.delete_failed": {
         "en": "Delete failed: {error}",
         "zh": "删除失败：{error}",
@@ -1687,6 +1695,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "remote.err.missing_session_key": {
         "en": "Missing session identifier",
         "zh": "缺少会话标识",
+    },
+    "remote.err.missing_command_id": {
+        "en": "Missing command_id",
+        "zh": "缺少 command_id",
+    },
+    "remote.err.digest_mismatch": {
+        "en": "payload_digest does not match the request body",
+        "zh": "payload_digest 与请求内容不一致",
     },
     "remote.err.param_not_int": {
         "en": "Parameter {name} must be an integer",

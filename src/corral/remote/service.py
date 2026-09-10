@@ -25,10 +25,21 @@ from corral import __version__, observe
 from corral.i18n import t
 from corral.remote import config as remote_config
 from corral.remote import crypto, protocol, ratelimit
+from corral.remote.command_receipts import (
+    DEFAULT_LEASE_SEC,
+    MAX_LEASE_SEC,
+    STATUS_DISPATCHING,
+    CommandReceiptStore,
+    digest_for_image,
+    digest_for_keys,
+    digest_for_text,
+    new_host_run_id,
+)
 from corral.remote.sessions import (
     MESSAGE_PAGE_LIMIT,
     MESSAGE_PAGE_LIMIT_MAX,
     ActionError,
+    PartialInjectionError,
     SessionHub,
 )
 
@@ -54,6 +65,7 @@ _READONLY_METHODS = frozenset(
         protocol.M_SEARCH,
         protocol.M_PUSH_REGISTER,
         protocol.M_SESSION_MARK_READ,
+        protocol.M_COMMAND_STATUS,
     }
 )
 
@@ -112,6 +124,7 @@ class Connection:
         self.channels: set[str] = set()
         self.closed = False
         self.compression_enabled = False
+        self.command_receipts = False  # hello 协商 want_command_receipts 后打开
         self.close_hook = None  # 可选：() -> None，用于踢掉控制面底层传输
         self.data_close_hook = None  # 可选：() -> None，只关数据面
         self.data_channel = None  # 数据面 HostChannel 身份，供拆绑时对号入座
@@ -136,6 +149,8 @@ class RemoteService:
         self._subscribers: dict[str, set[Connection]] = {}
         self._audit: list[dict] = []  # 最近远程操作，供 status 展示
         self._data_binds: dict[str, _DataBind] = {}
+        self.host_run_id = new_host_run_id()
+        self.receipts = CommandReceiptStore(self.host_run_id)
 
     # -- 状态同步 ---------------------------------------------------------
 
@@ -561,6 +576,7 @@ class RemoteService:
             "corral_version": __version__,
             "host_id": self.state.host_id,
             "host_name": self.state.host_name,
+            "host_run_id": self.host_run_id,
             "paired": connection.paired,
             "pairing_open": self.pairing_open(),
             "access": connection.access if connection.paired else "",
@@ -573,6 +589,7 @@ class RemoteService:
                 "message_page_limit": MESSAGE_PAGE_LIMIT,
                 "message_page_limit_max": MESSAGE_PAGE_LIMIT_MAX,
                 "planes": list(protocol.CAPABILITY_PLANES),
+                protocol.CAPABILITY_COMMAND_RECEIPTS: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -581,6 +598,9 @@ class RemoteService:
         # 旧客户端不带该字段，不发 token，行为与今天完全一致。
         if params.get("want_data_plane") is True:
             payload["data_bind"] = self._issue_data_bind(connection)
+        # 回执能力：主机已在 capabilities 声明；客户端显式 opt-in 后本连接启用。
+        if params.get("want_command_receipts") is True:
+            connection.command_receipts = True
         return payload
 
     def _sessions_list_payload(self, params: dict) -> dict:
@@ -683,8 +703,19 @@ class RemoteService:
         submit = bool(params.get("submit", True))
         if not text and not submit:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_content"))
-        self.hub.send_text(_key(params), text, submit)
-        return {"ok": True}
+        key = _key(params)
+        if not connection.command_receipts:
+            self.hub.send_text(key, text, submit)
+            return {"ok": True}
+        digest = digest_for_text(key=key, text=text, submit=submit)
+        return self._run_receipted_input(
+            connection,
+            params,
+            method=protocol.M_INPUT_TEXT,
+            target_key=key,
+            digest=digest,
+            side_effect=lambda: self.hub.send_text(key, text, submit),
+        )
 
     def _input_keys(self, connection: Connection, params: dict):
         if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
@@ -705,8 +736,19 @@ class RemoteService:
             cleaned.append(key)
         if not cleaned:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_keys"))
-        self.hub.send_keys(_key(params), cleaned)
-        return {"ok": True}
+        session_key = _key(params)
+        if not connection.command_receipts:
+            self.hub.send_keys(session_key, cleaned)
+            return {"ok": True}
+        digest = digest_for_keys(key=session_key, keys=cleaned)
+        return self._run_receipted_input(
+            connection,
+            params,
+            method=protocol.M_INPUT_KEYS,
+            target_key=session_key,
+            digest=digest,
+            side_effect=lambda: self.hub.send_keys(session_key, cleaned),
+        )
 
     def _input_image(self, connection: Connection, params: dict):
         if not ratelimit.INPUT_ACTIONS.allow_request(connection.device_public_key):
@@ -723,7 +765,89 @@ class RemoteService:
             raise ActionError(protocol.E_USAGE, t("remote.err.image_incomplete")) from exc
         if not raw:
             raise ActionError(protocol.E_USAGE, t("remote.err.no_image"))
-        return {"path": self.hub.send_image(_key(params), raw)}
+        session_key = _key(params)
+        if not connection.command_receipts:
+            return {"path": self.hub.send_image(session_key, raw)}
+        digest = digest_for_image(key=session_key, image_bytes=raw)
+        path_box: dict[str, str] = {}
+
+        def _send() -> None:
+            path_box["path"] = self.hub.send_image(session_key, raw)
+
+        receipt = self._run_receipted_input(
+            connection,
+            params,
+            method=protocol.M_INPUT_IMAGE,
+            target_key=session_key,
+            digest=digest,
+            side_effect=_send,
+        )
+        if "path" in path_box:
+            receipt = {**receipt, "path": path_box["path"]}
+        return receipt
+
+    def _command_status(self, connection: Connection, params: dict):
+        command_id = str(params.get("command_id") or "").strip()
+        if not command_id:
+            raise ActionError(protocol.E_USAGE, t("remote.err.missing_command_id"))
+        return self.receipts.status(connection.device_public_key, command_id)
+
+    def _run_receipted_input(
+        self,
+        connection: Connection,
+        params: dict,
+        *,
+        method: str,
+        target_key: str,
+        digest: str,
+        side_effect,
+    ) -> dict:
+        command_id = str(params.get("command_id") or "").strip()
+        if not command_id:
+            raise ActionError(protocol.E_USAGE, t("remote.err.missing_command_id"))
+        client_digest = str(params.get("payload_digest") or "").strip()
+        if client_digest and client_digest.lower() != digest.lower():
+            raise ActionError(protocol.E_USAGE, t("remote.err.digest_mismatch"))
+        lease_sec = DEFAULT_LEASE_SEC
+        if "lease_sec" in params:
+            lease_sec = _int_param(params, "lease_sec", DEFAULT_LEASE_SEC, max_value=MAX_LEASE_SEC)
+            if lease_sec < 1:
+                lease_sec = 1
+        try:
+            receipt, is_new = self.receipts.begin(
+                device_key=connection.device_public_key,
+                command_id=command_id,
+                payload_digest=digest,
+                target_key=target_key,
+                method=method,
+                lease_sec=float(lease_sec),
+            )
+        except ValueError as exc:
+            raise ActionError(protocol.E_USAGE, str(exc)) from exc
+        if not is_new:
+            return receipt.to_wire()
+        receipt = self.receipts.mark_dispatching(receipt)
+        if receipt.status != STATUS_DISPATCHING:
+            return receipt.to_wire()
+        try:
+            side_effect()
+        except PartialInjectionError:
+            # Paste may have landed; Enter (or a later step) did not — do not claim delivered.
+            receipt = self.receipts.mark_unknown(receipt, reason="partial_injection")
+            return receipt.to_wire()
+        except ActionError as exc:
+            receipt = self.receipts.mark_rejected(
+                receipt,
+                reason=exc.code or "action_error",
+                retryable=exc.code in (protocol.E_UNAVAILABLE, protocol.E_RATE_LIMITED),
+            )
+            return receipt.to_wire()
+        except Exception:
+            receipt = self.receipts.mark_unknown(receipt, reason="ambiguous")
+            return receipt.to_wire()
+        # Only mark delivered when the adapter completed with proven success.
+        receipt = self.receipts.mark_delivered(receipt)
+        return receipt.to_wire()
 
     def _screen_resize(self, connection: Connection, params: dict):
         # 手机与桌面共享同一保活窗格：即使误发也不改桌面窗口尺寸。
@@ -857,6 +981,7 @@ _HANDLERS = {
     protocol.M_INPUT_TEXT: RemoteService._input_text,
     protocol.M_INPUT_KEYS: RemoteService._input_keys,
     protocol.M_INPUT_IMAGE: RemoteService._input_image,
+    protocol.M_COMMAND_STATUS: RemoteService._command_status,
     protocol.M_SESSION_NEW: RemoteService._session_new,
     protocol.M_SESSION_RESUME: RemoteService._session_resume,
     protocol.M_SESSION_HANDOFF: RemoteService._session_handoff,

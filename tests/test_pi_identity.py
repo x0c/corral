@@ -226,7 +226,9 @@ class ClaimLiveFlagTests(unittest.TestCase):
                     {pi_identity.INSTANCE_ENV: "inst-a"} if pid == 31 else {}
                 ),
             ), mock.patch.object(
-                pi_identity, "read_claims", return_value=[claim]
+                # SessKit binds claims via `sesskit.pi_claims as pi_identity` on the
+                # aliased scan module — patch that object, not `corral.pi_identity`.
+                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
             ):
                 sessions = self.scan_pi.scan_sessions(limit=10)
             by_id = {item["id"]: item for item in sessions}
@@ -257,7 +259,7 @@ class ClaimLiveFlagTests(unittest.TestCase):
                     {pi_identity.INSTANCE_ENV: "inst-b"} if pid == 41 else {}
                 ),
             ), mock.patch.object(
-                pi_identity, "read_claims", return_value=[]
+                self.scan_pi.pi_identity, "read_claims", return_value=[]
             ):
                 sessions = self.scan_pi.scan_sessions(limit=10)
             by_id = {item["id"]: item for item in sessions}
@@ -287,7 +289,7 @@ class ClaimLiveFlagTests(unittest.TestCase):
                     {pi_identity.INSTANCE_ENV: "inst-c"} if pid == 51 else {}
                 ),
             ), mock.patch.object(
-                pi_identity, "read_claims", return_value=[claim]
+                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
             ):
                 sessions = self.scan_pi.scan_sessions(limit=10)
             by_id = {item["id"]: item for item in sessions}
@@ -313,7 +315,7 @@ class ClaimLiveFlagTests(unittest.TestCase):
             ), mock.patch.object(
                 self.scan_pi, "process_environ", return_value={}
             ), mock.patch.object(
-                pi_identity, "read_claims", return_value=[claim]
+                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
             ):
                 sessions = self.scan_pi.scan_sessions(limit=10)
             by_id = {item["id"]: item for item in sessions}
@@ -343,7 +345,7 @@ class ClaimLiveFlagTests(unittest.TestCase):
                     {pi_identity.INSTANCE_ENV: "inst-file"} if pid == 81 else {}
                 ),
             ), mock.patch.object(
-                pi_identity, "read_claims", return_value=[claim]
+                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
             ):
                 sessions = self.scan_pi.scan_sessions(limit=10)
             by_id = {item["id"]: item for item in sessions}
@@ -373,7 +375,7 @@ class ClaimLiveFlagTests(unittest.TestCase):
                     {pi_identity.INSTANCE_ENV: "inst-d"} if pid == 71 else {}
                 ),
             ), mock.patch.object(
-                pi_identity, "read_claims", return_value=[claim]
+                self.scan_pi.pi_identity, "read_claims", return_value=[claim]
             ):
                 sessions = self.scan_pi.scan_sessions(limit=10)
             by_id = {item["id"]: item for item in sessions}

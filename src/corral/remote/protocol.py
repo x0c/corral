@@ -33,12 +33,16 @@ FRAME_PING = 0x04
 FRAME_PONG = 0x05
 FRAME_PUSH = 0x06          # 主机 → 中继：请中继代发一条推送（内容已加密）
 FRAME_REGISTERED = 0x07    # 中继 → 主机：注册成功，可以开始接客
+FRAME_LANE_ATTACHED = 0x08 # 中继 → 主机：附加 bulk 通道附着成功
 
 ZERO_CHANNEL = b"\x00" * 16
 
 CHANNEL_ID_LEN = 16
 FRAME_VERSION = 2
 SUBPROTOCOL = "corral.v2"
+CAPABILITY_HOST_LANE_ATTACH = "host_lane_attach"
+LANE_INTERACTION = "interaction"
+LANE_BULK = "bulk"
 _MAX_FRAME_BYTES = 8 * 1024 * 1024
 _MAX_UNCOMPRESSED_BYTES = 4 * 1024 * 1024
 _PAYLOAD_MAGIC = b"CR"
@@ -190,8 +194,11 @@ PLANE_CONTROL = "control"
 PLANE_DATA = "data"
 CAPABILITY_PLANES = [PLANE_CONTROL, PLANE_DATA]
 DATA_BIND_TTL_SEC = 120              # data_bind 最长存活秒数；一次性且绑定设备公钥
+# Durable input receipts (Slice A). Host advertises; client opts in with want_command_receipts.
+CAPABILITY_COMMAND_RECEIPTS = "command_receipts"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
+M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
 
 M_SESSIONS_LIST = "sessions.list"
 M_SESSIONS_WATCH = "sessions.watch"

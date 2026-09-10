@@ -301,6 +301,7 @@ def random_id(length: int = 16) -> str:
 
 _ROUTE_CONTEXT = b"corral/relay/v2 route"
 _AUTH_CONTEXT = b"corral/relay/v2 host-auth"
+_ATTACH_CONTEXT = b"corral/relay/v2 host-lane-attach"
 
 
 def routing_id_from_x25519(public_key: bytes) -> str:
@@ -353,3 +354,41 @@ def sign_host_assertion(private_key_bytes: bytes, routing_id: str, unix_ts: int,
     message = _AUTH_CONTEXT + b"\n" + routing_id.encode("ascii") + b"\n" + str(unix_ts).encode("ascii") + b"\n" + nonce
     sig = Ed25519PrivateKey.from_private_bytes(private_key_bytes).sign(message)
     return f"v2.{routing_id}.{unix_ts}.{_b64url(nonce)}.{_b64url(sig)}"
+
+
+def sign_host_lane_attach(
+    private_key_bytes: bytes,
+    routing_id: str,
+    node_id: str,
+    generation: int,
+    lane: str,
+    unix_ts: int,
+    nonce: bytes,
+) -> str:
+    """生成 ``X-Corral-Lane-Attach: v2attach.<rid>.<node>.<gen>.<lane>.<ts>.<nonce>.<sig>``。"""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    if len(nonce) != 16:
+        raise ChannelError("断言 nonce 长度不合法")
+    if not node_id or generation <= 0:
+        raise ChannelError("附着断言缺少节点或代次")
+    message = (
+        _ATTACH_CONTEXT
+        + b"\n"
+        + routing_id.encode("ascii")
+        + b"\n"
+        + node_id.encode("ascii")
+        + b"\n"
+        + str(int(generation)).encode("ascii")
+        + b"\n"
+        + lane.encode("ascii")
+        + b"\n"
+        + str(unix_ts).encode("ascii")
+        + b"\n"
+        + nonce
+    )
+    sig = Ed25519PrivateKey.from_private_bytes(private_key_bytes).sign(message)
+    return (
+        f"v2attach.{routing_id}.{node_id}.{int(generation)}.{lane}."
+        f"{unix_ts}.{_b64url(nonce)}.{_b64url(sig)}"
+    )

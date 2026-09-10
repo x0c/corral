@@ -3519,7 +3519,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
         ):
-            async with app.run_test(size=(160, 30)) as pilot:
+            # Wide enough that each of MAX_PANES cells stays >= embed.MIN_HOST_WIDTH;
+            # otherwise desired_host_size withdraws the vote and production skips resize.
+            async with app.run_test(size=(220, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 area = app.screen.query_one(SplitPaneArea)
                 mock.patch.object(app.screen, "_follow_current_selection").start()
@@ -3549,6 +3551,10 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     for cell in area.cells()
                     if cell.embed_pane() is not None
                 ]
+                self.assertTrue(
+                    all(width >= 40 for _, width, _ in expected),
+                    f"test fixture panes must be >= MIN_HOST_WIDTH: {expected}",
+                )
                 self.assertEqual(sorted(resize_calls), sorted(expected))
                 await pilot.pause(delay=0.4)
                 self.assertEqual(

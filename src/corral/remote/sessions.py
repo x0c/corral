@@ -55,6 +55,14 @@ class ActionError(RuntimeError):
         self.message = message
 
 
+class PartialInjectionError(RuntimeError):
+    """Some input reached the pane but a later step failed — outcome is ambiguous."""
+
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message or "partial injection")
+        self.message = message or "partial injection"
+
+
 @dataclass
 class _ScreenWatch:
     key: str
@@ -1110,13 +1118,22 @@ class SessionHub:
         走 tmux 粘贴缓冲而不是逐字符发送：这条路径对中文输入法、多行文本和
         括号粘贴语义都是安全的，是桌面端已经验证过的写法。回车单独补一次，
         因为部分助手会把粘贴内容里的换行当成软换行而不是提交。
+
+        Raises ActionError when injection fails with no proven side effect.
+        Raises PartialInjectionError when paste succeeded but Enter failed.
         """
         name = self._keepalive_name(key)
+        pasted = False
         if text:
-            embed.paste(name, text)
+            if not embed.paste(name, text):
+                raise ActionError("unavailable", t("remote.err.inject_failed"))
+            pasted = True
         if submit:
             time.sleep(0.05)  # 给目标程序一点时间收完粘贴，避免回车抢在正文前面
-            embed.send_key(name, "Enter")
+            if not embed.send_key(name, "Enter"):
+                if pasted:
+                    raise PartialInjectionError(t("remote.err.inject_partial"))
+                raise ActionError("unavailable", t("remote.err.inject_failed"))
         if text:
             # 立刻回显到手机传来的通道，不占规范化 seq；助手历史落地后的正式消息才带 seq。
             self._on_event(
@@ -1135,7 +1152,8 @@ class SessionHub:
         cleaned = [str(k) for k in keys if str(k).strip()]
         if not cleaned:
             raise ActionError("usage_error", t("remote.err.no_keys"))
-        embed.send_key(name, *cleaned)
+        if not embed.send_key(name, *cleaned):
+            raise ActionError("unavailable", t("remote.err.inject_failed"))
 
     def send_image(self, key: str, image_bytes: bytes) -> str:
         """把图片落到会话工作目录并把路径交给助手，复用桌面端已有的落盘+粘贴路径协议。"""

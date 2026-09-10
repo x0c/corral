@@ -9,6 +9,9 @@
 
 开发机侧自设通道上限与建通道速率——不把记账交给中继，中继被攻破或被替换时
 也不能靠灌 CHANNEL_OPEN 把本机线程打满。
+
+当中继在 REGISTERED 里宣告 ``host_lane_attach`` 时，再附着一条 bulk 出站 socket，
+把数据面帧与交互面帧拆到两条物理连接上；旧中继无该能力则保持单连接。
 """
 
 from __future__ import annotations
@@ -62,10 +65,16 @@ class RelayClient:
         self.static_private = static_private
         self._channels: dict[bytes, HostChannel] = {}
         self._socket = None
+        self._bulk_socket = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected = asyncio.Event()
         self.connected_at: float | None = None
         self.last_error: str = ""
+        self._registration_generation: int = 0
+        self._registration_node: str = ""
+        self._host_lane_attach: bool = False
+        self._bulk_attached = asyncio.Event()
+        self._bulk_task: asyncio.Task | None = None
 
     @property
     def url(self) -> str:
@@ -73,8 +82,17 @@ class RelayClient:
         return f"{base}/v2/host"
 
     @property
+    def attach_url(self) -> str:
+        base = self.state.relay_url.rstrip("/")
+        return f"{base}/v2/host/attach"
+
+    @property
     def is_connected(self) -> bool:
         return self._connected.is_set()
+
+    @property
+    def bulk_lane_attached(self) -> bool:
+        return self._bulk_attached.is_set() and self._bulk_socket is not None
 
     async def run(self, stop: asyncio.Event) -> None:
         websockets = _websockets()
@@ -97,16 +115,21 @@ class RelayClient:
                     backoff = _INITIAL_BACKOFF
                     observe.event("remote_relay_connected", url=self.url)
                     remote_config.clear_host_prev_key()
-                    await self._pump(socket, stop)
+                    await self._pump(socket, stop, on_registered=lambda: self._maybe_start_bulk(stop))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.last_error = str(exc)
                 observe.event("remote_relay_disconnected", error=str(exc))
             finally:
+                await self._stop_bulk_task()
+                await self._close_bulk()
                 self._socket = None
                 self._connected.clear()
                 self.connected_at = None
+                self._registration_generation = 0
+                self._registration_node = ""
+                self._host_lane_attach = False
                 self._drop_channels()
             if stop.is_set():
                 break
@@ -115,6 +138,58 @@ class RelayClient:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=delay)
             backoff = min(backoff * 2, _MAX_BACKOFF)
+
+    def _maybe_start_bulk(self, stop: asyncio.Event) -> None:
+        if not self._host_lane_attach or self._registration_generation <= 0:
+            return
+        if self._bulk_task is not None and not self._bulk_task.done():
+            return
+        self._bulk_task = asyncio.create_task(self._run_bulk_lane(stop), name="relay-bulk-lane")
+
+    async def _stop_bulk_task(self) -> None:
+        task = self._bulk_task
+        self._bulk_task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    async def _run_bulk_lane(self, stop: asyncio.Event) -> None:
+        if self.bulk_lane_attached or not self._host_lane_attach:
+            return
+        websockets = _websockets()
+        try:
+            async with websockets.connect(
+                self.attach_url,
+                additional_headers=self._attach_headers(protocol.LANE_BULK),
+                subprotocols=[protocol.SUBPROTOCOL],
+                ping_interval=_PING_INTERVAL,
+                ping_timeout=_PING_TIMEOUT,
+                max_size=8 * 1024 * 1024,
+            ) as socket:
+                self._bulk_socket = socket
+                observe.event(
+                    "remote_relay_bulk_attached",
+                    generation=self._registration_generation,
+                    node=self._registration_node,
+                )
+                await self._pump(socket, stop, bulk=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            observe.event("remote_relay_bulk_disconnected", error=str(exc))
+        finally:
+            await self._close_bulk()
+
+    async def _close_bulk(self) -> None:
+        self._bulk_attached.clear()
+        socket = self._bulk_socket
+        self._bulk_socket = None
+        if socket is None:
+            return
+        with contextlib.suppress(Exception):
+            await socket.close()
 
     def _headers(self) -> dict:
         from corral.remote import crypto as remote_crypto
@@ -138,7 +213,29 @@ class RelayClient:
             )
         return headers
 
-    async def _pump(self, socket, stop: asyncio.Event) -> None:
+    def _attach_headers(self, lane: str) -> dict:
+        from corral.remote import crypto as remote_crypto
+
+        host_key = remote_config.load_or_create_host_key()
+        nonce = os.urandom(16)
+        ts = int(time.time())
+        pub = remote_crypto.host_public_key_bytes(host_key)
+        attach = remote_crypto.sign_host_lane_attach(
+            host_key,
+            self.state.host_id,
+            self._registration_node,
+            self._registration_generation,
+            lane,
+            ts,
+            nonce,
+        )
+        return {
+            "X-Corral-Host-Pub": pub.hex(),
+            "X-Corral-Version": __version__,
+            "X-Corral-Lane-Attach": attach,
+        }
+
+    async def _pump(self, socket, stop: asyncio.Event, *, bulk: bool = False, on_registered=None) -> None:
         stopper = asyncio.create_task(stop.wait())
         try:
             while not stop.is_set():
@@ -150,14 +247,20 @@ class RelayClient:
                 raw = receiver.result()
                 if isinstance(raw, str):
                     continue  # 中继的文本消息只用于人读的诊断，业务一律走二进制
-                self._on_frame(raw)
+                self._on_frame(raw, bulk=bulk, on_registered=on_registered)
         finally:
             stopper.cancel()
 
-    def _on_frame(self, raw: bytes) -> None:
+    def _on_frame(self, raw: bytes, *, bulk: bool = False, on_registered=None) -> None:
         try:
             frame_type, channel_id, payload = protocol.decode_frame(raw)
         except protocol.ProtocolError:
+            return
+        if frame_type == protocol.FRAME_REGISTERED and not bulk:
+            self._on_registered(payload, on_registered)
+            return
+        if frame_type == protocol.FRAME_LANE_ATTACHED and bulk:
+            self._bulk_attached.set()
             return
         if frame_type == protocol.FRAME_DEVICE_OPEN:
             self._open_channel(channel_id)
@@ -168,6 +271,36 @@ class RelayClient:
             if channel is None:
                 return
             channel.submit(frame_type, payload)
+
+    def _on_registered(self, payload: bytes, on_registered) -> None:
+        generation = 0
+        node = ""
+        capabilities: list[str] = []
+        if payload:
+            try:
+                body = json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                body = {}
+            if isinstance(body, dict):
+                try:
+                    generation = int(body.get("generation") or 0)
+                except (TypeError, ValueError):
+                    generation = 0
+                node = str(body.get("node") or "")
+                caps = body.get("capabilities") or []
+                if isinstance(caps, list):
+                    capabilities = [str(item) for item in caps]
+        self._registration_generation = generation
+        self._registration_node = node
+        self._host_lane_attach = protocol.CAPABILITY_HOST_LANE_ATTACH in capabilities
+        observe.event(
+            "remote_relay_registered",
+            generation=generation,
+            node=node,
+            host_lane_attach=self._host_lane_attach,
+        )
+        if on_registered is not None and self._host_lane_attach:
+            on_registered()
 
     def _open_channel(self, channel_id: bytes) -> HostChannel | None:
         existing = self._channels.get(channel_id)
@@ -183,7 +316,7 @@ class RelayClient:
             self.service,
             self.static_private,
             channel_id,
-            lambda frame_type, payload: self._write(frame_type, channel_id, payload),
+            lambda frame_type, payload, cid=channel_id: self._write(frame_type, cid, payload),
             address="relay",
         )
         # 中继上每个 DEVICE_OPEN 是一条独立通道（独立握手与计数器）。
@@ -204,9 +337,15 @@ class RelayClient:
 
     def _write(self, frame_type: int, channel_id: bytes, payload: bytes) -> None:
         """由通道工作线程调用，必须把发送动作转投回事件循环。"""
-        socket = self._socket
         loop = self._loop
-        if socket is None or loop is None:
+        if loop is None:
+            return
+        channel = self._channels.get(channel_id)
+        use_bulk = bool(channel is not None and channel.is_data_plane and self.bulk_lane_attached)
+        socket = self._bulk_socket if use_bulk else self._socket
+        if socket is None:
+            socket = self._socket
+        if socket is None:
             return
         frame = protocol.encode_frame(frame_type, channel_id, payload)
         asyncio.run_coroutine_threadsafe(_safe_send(socket, frame), loop)

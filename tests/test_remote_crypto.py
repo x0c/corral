@@ -232,6 +232,21 @@ class HostIdentityTests(unittest.TestCase):
         self.assertEqual(parts[2], "1700000000")
         self.assertEqual(len(parts), 5)
 
+    def test_host_lane_attach_assertion_shape(self):
+        key = crypto.generate_host_key_bytes()
+        nonce = b"\x02" * 16
+        header = crypto.sign_host_lane_attach(
+            key, "abc", "node-a", 9, "bulk", 1_700_000_000, nonce
+        )
+        parts = header.split(".")
+        self.assertEqual(parts[0], "v2attach")
+        self.assertEqual(parts[1], "abc")
+        self.assertEqual(parts[2], "node-a")
+        self.assertEqual(parts[3], "9")
+        self.assertEqual(parts[4], "bulk")
+        self.assertEqual(parts[5], "1700000000")
+        self.assertEqual(len(parts), 8)
+
 
 @unittest.skipUnless(_HAS_CRYPTO, _SKIP)
 class HostChannelBackpressureTests(unittest.TestCase):

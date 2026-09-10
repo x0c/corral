@@ -10,6 +10,48 @@
 
 ## 2. 调查裁定
 
+### 2.0 First-principles network proposal (2026-09-10)
+
+Status: **implementation authorized 2026-09-10** after user asked to complete the build. First-principles reasoning and section 7 defaults are the approved product contract. Older measurements below remain historical, not current production measurements.
+
+Authoritative specification: [section 7](#7-detailed-network-ux-design-proposal). Shipped behavior still follows earlier rounds until each delivery slice lands; negotiate new capabilities instead of silently reinterpreting v2 peers.
+
+#### Invariants and ownership
+
+- The development machine owns execution and canonical session history. The phone owns drafts, navigation, a bounded local view, and its last applied positions. A transport connection is replaceable; it is not the identity of a session or an operation.
+- Reading previously synchronized content should require zero network round trips. Fresh remote state cannot be guaranteed while disconnected; retain content and expose freshness instead of presenting cached state as live.
+- Separate snapshots, ordered changes, and commands. Snapshots can replace obsolete snapshots; ordered changes need gap recovery; commands require an explicit outcome and cannot be silently dropped or replayed as ordinary state.
+- A connection to the relay proves only relay reachability. Readiness requires an authenticated response from the development machine and restoration of the relevant subscriptions.
+- End-to-end encryption remains in place on every path. The relay forwards opaque payloads; cloud persistence would be a separate product decision with retention, revocation, expiry, and metadata implications.
+
+#### Source findings and their limits
+
+Source inspection of `remote/transport/relay.py:RelayClient`, `relay/internal/server/server.go:handleHostV2`, `relay/internal/hub/hub.go:FromHost` and `relay/internal/server/sink.go:Send` establishes that the phone's control/data sockets converge into one host-relay WebSocket. `FromHost` synchronously waits for a destination write before the host reader continues. Thus phone-side separation does not establish physical isolation across the relay route, and a slow destination can delay other channels. These are structural risks, not measured claims about today's dominant latency.
+
+`RegisterHost` replaces the previous host registration. Adding another ordinary host connection would evict the first; a future split requires authenticated attachment of additional lanes to one host registration, bounded resources, and legacy capability negotiation.
+
+#### Recommended design
+
+1. **Measure the complete user operation.** Separate local feedback, path establishment/authentication, host queueing, parsing, transfer, phone decoding, and visible update. Use correlated operation identifiers and monotonic local durations; do not subtract unsynchronized device clocks or log conversation bodies. Compare median and p95 under idle and concurrent-history load.
+2. **Make the local view independent of connection lifetime.** Reuse existing list snapshots and sequence recovery; verify a bounded recent conversation cache as well. Preserve drafts and scroll position. Resume only visible subscriptions first; fetch older content on demand. Do not reopen the currently disabled terminal feature.
+3. **Give commands stable identities and explicit outcomes.** Retain an operation identity across transport retries, with durable host receipts and duplicate detection. Distinguish accepted, delivered to the assistant, and outcome unknown. A crash between external input injection and receipt recording prevents a blanket exactly-once guarantee; do not automatically replay an ambiguous input. Offline text remains a draft by default; stop/delete/key operations are not an automatic offline queue.
+4. **Protect interaction across both network legs.** Keep small control/live updates separate from history and attachments through phone, relay, and host. Bound live batches and attachment chunks by bytes as well as counts. Use bounded per-destination queues with fair scheduling; a slow phone must not block the host reader. History can pause/cancel; ordered changes recover through cursors when a consumer falls behind. The relay must not decrypt content to choose priorities; use authenticated lane membership and per-lane quotas.
+5. **Replace paths without replacing application state.** Retain concurrent LAN/relay establishment. Validate identity and restore the new path before retiring a still-working old path; if the old path is already dead, resume through a new one. Deduplicate updates during overlap and send each command on one active path. React promptly to foreground/network changes; use jittered backoff during sustained failure. Require sustained quality improvement before switching a healthy path to avoid oscillation.
+6. **Choose relay placement from both endpoints.** Measure complete phone-relay-host request latency, loss, jitter, and success rate on actual Wi-Fi/cellular networks before selecting a primary and optional warm standby. Both endpoints must be registered/reachable through the selected relay; independent nearest-node selection is insufficient. Preserve pairing identity across failover and register trusted host keys consistently. Additional nodes improve availability but cannot execute work on a sleeping development machine.
+7. **Treat background notifications as hints.** Restore from a saved cursor on foreground even if notifications were missed. Apple does not guarantee background notification delivery. Heartbeats cannot make an iOS app run indefinitely in the background or wake a sleeping host by themselves.
+
+#### Decision order and acceptance
+
+First measure and close local-view/command-outcome/recovery gaps; next eliminate cross-lane and cross-device blocking; then add a second relay only if route measurements or availability requirements justify it. QUIC or public-network hole punching are later transport experiments, not prerequisites. QUIC independent streams can reduce cross-stream loss blocking but still share congestion and require deployment/fallback work.
+
+Proposed targets, not verified performance: p95 cached view <= 200 ms; local send feedback <= 100 ms; healthy-network host receipt <= 1 s; fresh tail <= 2 s; usable new network to resumed visible subscription <= 3 s. Measure assistant-output latency from data becoming readable on the host, separately from model generation time. During history/attachment load, target <= 100 ms additional control queueing. Validate on iPhone Max across LAN, relay-only, Wi-Fi/cellular switching, background return, host/relay restart, acknowledgement loss, and a slow second client. All six assistant types require content/recovery samples. Check no duplicate execution in tested fault windows and label ambiguous outcomes honestly.
+
+#### External evidence
+
+- [Tailscale connection types](https://tailscale.com/docs/reference/connection-types): reachability followed by path improvement. Reference source inspected in a shallow checkout: `wgengine/magicsock/endpoint.go`, `addrForSendLocked`, retains a trusted path and uses relay fallback/probing when trust expires. Borrow path validation and stability; do not copy packet duplication into side-effecting Corral commands or require users to install a VPN.
+- [Apple background updates](https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app): background delivery is not guaranteed.
+- [QUIC RFC 9000](https://www.rfc-editor.org/rfc/rfc9000.html): independent streams and migration are transport capabilities, not application command receipts or state recovery.
+
 ### 2.1 速度问题不是单一的“中继延迟”
 
 本机当前有 527 个会话，原始历史文件合计约 34.7 GB。冷启动扫描约 2.6 秒；最大的 Codex 历史文件约 91.6 MB，当前富消息解析约 0.9 秒。扫描完成后生成 100 条列表摘要约 3.1 毫秒，说明列表摘要本身不是主要瓶颈。
@@ -34,6 +76,8 @@
 - 手机端对单条富消息采用尽量解码，异常项会被丢弃。它可以防止一条坏工具调用拖垮整页，但也会把服务端协议/语义不一致隐藏成“助手消息不见了”。服务端必须先输出稳定的规范化消息，客户端不能承担运行时格式识别。
 
 ### 2.4 现有网络结构把不该互相影响的工作串在一起
+
+Historical pre-split findings follow. Later changes are recorded in section 4; current source-level relay limitations and the proposed next design are in section 2.0. Do not treat this historical description as the current implementation baseline.
 
 当前一条设备通道同时承载请求响应、历史首包、实时消息、终端画面和输入。开发机端每条通道只有一个顺序工作的消息处理线程；一条慢的历史读取会占住该通道。通道队列达到上限时会直接关闭连接，而不是按消息重要性做背压。
 
@@ -144,4 +188,278 @@
 - 不要为了让一次 `session.watch` 返回“有数据”而重复全量读取；共享读取游标、缓存快照和历史页必须有明确所有权。
 - 不要把“单元测试通过”“模拟器可运行”“真机能启动”写成远程会话链路已验证；必须有真实设备上的列表、历史、实时和恢复证据。
 
-<!-- 该文档整理/压缩于 2026-09-05 -->
+## 7. Detailed Network UX Design Proposal
+
+Status: **approved for implementation, 2026-09-10**. This section expands section 2.0 into the build contract. It does not replace shipped v2 contracts for peers without the new capabilities, and it does not claim production performance until measured. Wire names and limits below are the initial negotiation surface; advertise them explicitly. Existing runtime adapters remain the source of normalized content.
+
+### 7.0 First delivery slices (active)
+
+Unified order (supersedes any conflicting lettering elsewhere in this section):
+
+| Order | Slice | Scope | Exit gate | Production deploy |
+|---|---|---|---|---|
+| 0 | Baseline samples | Correlated timings on current builds (list first paint, open tail, send ack, concurrent history) | Reproducible before/after samples on this machine + relay path | n/a |
+| 1 | Command outcomes | Host durable receipts + `command.status`; phone `want_command_receipts` + stable `command_id`; honest pending/accepted/unknown | Lost-ack / duplicate / restart tests; no silent double-send | Ship with host + phone |
+| 2 | State continuity | Bounded phone conversation-tail cache; reopen without flash-empty; **extend existing `after_seq`/`generation` resume** (do not invent a parallel event cursor unless proven insufficient) | Reopen/background without empty flash or host mixing | Ship with phone |
+| 3 | Relay non-blocking queues + optional host lane attach | Async per-destination queues; authenticated second host lane when negotiated | Unit/integration proves slow destination does not block host reader; attach does not evict primary | **Code may land; public relay upgrade waits for Slice 0 isolation samples** |
+| 4 | Route write-ownership handoff | Validated overlap on Wi-Fi↔cellular; single active command writer | Real network change without duplicate ops | After 1–2 stable |
+| 5 | Optional second relay | Provisioned standby | Measured need only | Later |
+
+Attachments chunking and geographic redundancy stay after Slice 3. While Synchronizing: drafts remain editable; sends wait for Ready; stop/delete fail closed (no surprise queue). Unknown outcomes require an explicit user action (review / discard / send a **new** command id)—never auto-resend.
+
+### 7.1 Goals, derivation, and scope
+
+The phone controls work whose authoritative execution lives on another machine. Therefore:
+
+1. Previously observed data can remain available without a connection; authoritative freshness cannot.
+2. A remote operation needs communication and a host decision. Local feedback can be immediate, but cannot imply remote completion.
+3. A broken connection cannot reveal whether the last command executed. Reconnection must reconcile outcomes, not infer them from socket state.
+4. Every network hop has finite bandwidth and queues. Bulk traffic must be bounded and scheduled so it does not consume the interaction budget.
+5. Changing a route must preserve host identity, session identity, command identity, and applied history position.
+
+Scope: pairing continuity, list/recent conversation availability, live conversation updates, text/attachment submission, foreground recovery, host-relay transport, and optional relay failover. Existing disabled terminal UI stays disabled. Cloud execution, automatic host wakeup, cloud history storage, queued offline commands, VPN installation, and public NAT traversal are excluded from the first implementation.
+
+### 7.2 Responsibilities and durable state
+
+| Owner | Durable state | Transient state | Authority |
+|---|---|---|---|
+| Phone | Paired identity, per-host list/recent conversation cache, applied cursors, drafts, unresolved command identities | Route candidates, sockets, decoded update batches | Local navigation/drafts; never host execution |
+| Development machine | Pairing ACL, canonical history, command receipts, stable history generations | Bounded change buffers, subscriptions, parse workers, lane queues | Authorization, execution, canonical session state |
+| Relay | Existing registered host trust/account state | Host connections, attached lanes, device routes, bounded opaque queues | Routing only; cannot confirm command execution |
+
+All phone cache keys include host public-key identity plus canonical session identity, not display names. Preserve the existing provisional-to-canonical session mapping. Resolve and validate the canonical target before accepting a command; record that target in its receipt so retries cannot retarget a different session.
+
+Phone cache proposal: last successful list window plus recent conversation tails, 100 MiB total and up to 50 recently viewed sessions, evicted by recency. Drafts and unresolved command metadata are separate from disposable history. Fetch only a bounded tail on a cache miss. Store caches under platform file protection and exclude disposable conversation caches from device backup. Pair removal clears associated cached content and unresolved local operations; remote revocation prevents future access but cannot erase data already received by an offline phone.
+
+Do not copy the whole development-machine history to the phone. Each view observes a local store; connection events update that store instead of replacing the view model with an empty one.
+
+### 7.3 Physical topology and relay attachment
+
+```text
+Phone local store and views
+    | interaction: commands, receipts, bounded live updates
+    | bulk: history, large message bodies, attachments
+    v
+LAN: independent authenticated interaction/bulk sockets directly to host
+OR
+Relay: phone interaction socket -> interaction route -> host interaction socket
+       phone bulk socket        -> bulk route        -> host bulk socket
+                                                     |
+                                    host scheduler / readers / execution
+```
+
+Two physical lanes remain distinct across both legs of a relayed route. They still share the underlying link bandwidth; separation is not a reservation of bandwidth. Rate-limit bulk traffic against observed control delay. Within each lane, schedule devices fairly; one slow device cannot block the host receive loop.
+
+The first host socket authenticates the existing host identity and creates a live registration generation. A second socket uses a new authenticated attachment flow rather than the current register-and-replace operation. Its signed assertion binds host identity, relay instance, registration generation, lane kind, timestamp, and nonce. The relay validates against its registered host key, limits attachments, and rejects replay or attachment to a retired generation. The bulk lane cannot replace the registration or become an independent host. Bind state is ephemeral to the relay process; relay restart requires fresh authentication and attachment.
+
+The phone retains independent end-to-end handshakes for each physical lane and the existing host-issued data binding. The relay can see opaque lane/channel identifiers for scheduling, but not session names, message bodies, or operation types. A lane declaration grants a routing class, not unlimited priority: enforce rate and byte limits even on interaction lanes. Do not send unpaired bulk traffic before the host has authorized the attachment.
+
+If the bulk lane fails, keep live conversation and commands working. Reattach it lazily when needed, and pause history/attachments meanwhile. If the interaction lane fails, retain the local view and reconcile commands before resuming writes. Host registration loss invalidates its attached lanes. Route capability negotiation determines whether full isolation is available; legacy operation is explicitly degraded, not falsely reported as isolated.
+
+### 7.4 Connection state and route selection
+
+Track transport status separately from data freshness:
+
+| State | Meaning | User behavior |
+|---|---|---|
+| Disconnected | No verified route to host | Cached content and drafts remain available |
+| Connecting | Candidate transports and host authentication in progress | Existing content stays visible |
+| Synchronizing | Host authenticated; active subscriptions/outcomes being reconciled | Reads remain available; writes gated on host readiness |
+| Ready | Host can accept commands; active view has a valid recovery boundary | Normal interaction |
+| Degraded | Interaction works, bulk path unavailable or slow | Chat usable; history/attachment progress paused |
+
+Each view additionally records its last successful synchronization time and whether a gap is being repaired. Relay registration, socket ping, and host application response are distinct evidence. Only an authenticated host application response refreshes host readiness; a relay-terminated ping cannot prove that the host is alive.
+
+Establishment flow:
+
+1. Show cached content immediately and build current LAN/relay candidates.
+2. Race full host authentication, retaining existing LAN/relay timeout defaults initially. A TCP connection or relay greeting does not win the race.
+3. Adopt the first authenticated usable interaction route; request active-view recovery and unresolved operation status without waiting for the bulk lane.
+4. Establish bulk only when needed. Record actual route and setup duration for each lane.
+5. On network change or foreground return, trigger an immediate health check/reselection rather than waiting out a previous failure backoff. Coalesce repeated network events.
+
+Healthy-path improvement proposal: switch only after three successful probes over at least five seconds show both 25% and 30 ms improvement in authenticated end-to-end round-trip latency. Keep a 30-second switch cooldown. These provisional values do not delay replacement of a failed path. Probe while foreground and active; avoid a permanently connected second phone route solely for optimization.
+
+For a still-working old route, authenticate the replacement, restore subscriptions to a captured boundary, atomically transfer write ownership, then close the old route. Before ownership transfer, outstanding old-route sends are classified as resolved or requiring status reconciliation. Deduplicate read overlap by history generation/event sequence. Never broadcast commands down both routes. An already dead route cannot be preserved; resume from durable local positions.
+
+Background: persist local positions and unresolved operations, stop optional probes, and tolerate suspension. Foreground: revalidate host reachability and catch up even when no push was delivered. Continuous background sockets and guaranteed silent pushes are not assumptions.
+
+### 7.5 Snapshot, event, and subscription recovery
+
+Use separate identifiers for distinct facts:
+
+| Identifier | Purpose |
+|---|---|
+| Host identity | Stable paired authority across routes and restarts |
+| Host run identifier | Detect process restart and stale in-flight responses |
+| Session identity / history generation | Stable conversation and history replacement boundary |
+| Message identity | Update an existing streaming message without creating duplicates |
+| Event sequence | Position in an ordered stream of mutations, including updates to an existing message |
+| Subscription epoch | Reject responses belonging to an abandoned view/subscription |
+| Command identity | Reconcile one requested side effect across retries |
+
+Shipped resume already uses message `seq` plus history `generation` (`after_seq` on `session.watch`). **Default path: extend that contract.** Do not silently reinterpret `seq` as a different kind of cursor, and do not add a second parallel event cursor unless measurement shows streaming in-place edits cannot be recovered with generation + seq alone. Legacy clients keep current semantics.
+
+Atomic snapshot-to-stream handoff on the host:
+
+1. Under the subscription coordinator, capture a snapshot and its high-water event position and register subsequent delivery.
+2. Return the snapshot through that position, followed by ordered events after it. Serialize network output without holding parse/index locks.
+3. The phone applies events and advances the durable cursor in the same local transaction. Acknowledging an event before its state is stored is forbidden.
+4. Resume with host/session identity, history generation, and last contiguous applied event position. Matching retained history returns only the gap; empty replay means caught up.
+5. A missing event, expired buffer, or generation mismatch requests a bounded snapshot. Preserve visible old content until a valid replacement arrives and represent any discontinuity; do not fabricate complete history across a missing interval.
+
+Candidate replay budget: 2 MiB or 2,000 events per active session, whichever comes first, with a 64 MiB host-wide ceiling and idle eviction. It is an accelerator, not canonical history. If the buffer is lost on host restart, return a bounded resynchronization snapshot. Persist stable message/generation identity when possible; explicitly reset the event-stream epoch when continuity cannot be established.
+
+Prioritize the visible conversation, pending-operation reconciliation, and current list window. Delay other subscriptions. Leaving a page cancels its history requests and advances its subscription epoch, so late responses cannot replace the new page.
+
+### 7.6 Command acceptance and outcome reconciliation
+
+Proposed command envelope: unique command ID, canonical target, operation type, immutable payload digest, payload/attachment references, and a host-run-bound execution lease. Device identity comes from the authenticated channel. A request-response correlation ID is separate and may change during a status query.
+
+Host state progression:
+
+```text
+unseen -> accepted -> dispatching -> delivered
+             |             |
+          rejected       unknown after crash / ambiguous adapter outcome
+```
+
+- `accepted`: authorization and target validated; immutable command and initial receipt committed durably. Only then may the host acknowledge acceptance.
+- `dispatching`: persisted immediately before attempting the external side effect. Serialize conflicting commands per canonical session, while allowing independent sessions to proceed. A stop request may interrupt generation; it must not wait for model completion.
+- `delivered`: the runtime adapter confirmed delivery, not completion of the assistant's work. Later assistant messages describe progress/outcome.
+- `rejected`: no external side effect occurred; include a retryable/nonretryable reason.
+- `unknown`: the host cannot prove whether the external side effect occurred. Never convert this automatically to rejected or replay it.
+
+Persist receipts in a transactional host store with a unique key on authenticated device identity plus command ID. Same key and same digest returns the existing receipt; same key with different payload is rejected. Concurrent duplicates use the same atomic insert/claim. Status queries are read-only and can be retried.
+
+Phone send flow:
+
+1. Persist command identity and local outgoing bubble, then clear the composer. Initially show pending, not delivered.
+2. Send once through the active interaction route. A valid accepted receipt changes the status to accepted by the development machine.
+3. If a response is lost, query that command ID after reconnect. Do not generate a new ID automatically.
+4. If the host confirms unseen and the original execution lease is still valid on the same host run, resend the same immutable command. Otherwise preserve it for explicit review.
+5. After host restart, accepted-but-not-dispatched commands are rejected as interrupted; dispatching commands without a trustworthy adapter receipt become unknown. Delivered receipts remain queryable.
+
+Proposed execution lease: 30 seconds on the host monotonic clock, bound to authenticated device, target, and host run. It limits when dispatch may begin, not model execution duration. Retries cannot refresh the old command's lease. Reject expired unseen submissions; status queries remain allowed. This prevents forgotten commands from executing much later without relying on synchronized phone/host clocks.
+
+Keep resolved receipts for seven days. When capacity is exhausted, reject new commands before acceptance instead of evicting receipts that are still within their protection window. Receipt retention expiry is not proof of nonexecution; expired leases ensure old IDs cannot become executable again. Retain unknown receipts until reviewed, with admission limits so they cannot grow unbounded.
+
+End-to-end exactly-once execution cannot be promised for terminal injection: a process may crash after injection and before recording delivery. Use runtime-provided idempotency/status when available. Otherwise expose ambiguity and require user review before a new command. Text equality alone is not a command identity; two intentionally identical messages must remain two messages. Match the final transcript to a command only with reliable correlation; legacy text matching remains a limited presentation fallback.
+
+Offline text stays a draft. Stop/delete/key actions fail promptly when execution readiness is absent. This proposal does not add an automatic offline command queue.
+
+### 7.7 Scheduling, framing, and bounded resources
+
+Provisional engineering defaults, subject to measurement:
+
+| Resource | Initial budget / behavior |
+|---|---|
+| Interaction frame | 32 KiB maximum payload; large bodies referenced through bulk |
+| Live batch | Flush within 50 ms or 16 KiB; preserve event order |
+| Bulk chunk | 64 KiB, up to four unacknowledged chunks per active transfer |
+| History page | Up to 100 messages and 256 KiB encoded body; oversized message uses bounded body fetch |
+| Relay destination queue | 256 KiB interaction, 512 KiB bulk, hard byte accounting |
+| Relay host aggregate | 8 MiB queued; global limit with admission control |
+| Host phone aggregate | 2 MiB queued per phone, 32 MiB globally |
+| Transfers | One active history fetch and one attachment transfer per phone initially |
+
+Application encoding, decoded lengths, frame lengths, and in-flight chunks all count toward limits. Compression cannot bypass decompressed-byte limits. Large command text uploads as a temporary body through bulk, then a small command references its verified content hash.
+
+At the host, use bounded parse work outside the connection reader and scheduler. Prefer change-triggered processing for the active conversation with a bounded polling fallback; avoid polling every historical session at interactive frequency. Preserve one owner of each runtime read cursor and broadcast every consumed change.
+
+At the relay, frame ingestion validates and enqueues quickly; independent writers drain per-destination queues. Do not hold the host receive loop while a phone write blocks. Use fair byte scheduling between phones within a lane. Prioritize receipts/health traffic over bounded live batches before encryption; the relay only uses the declared lane and quotas. Reserve scheduling opportunities for history so interaction traffic cannot starve it indefinitely.
+
+Queue overflow must respect cryptographic ordering. Coalesce replaceable state before encryption at the host. The relay must not drop arbitrary ciphertext and continue a channel whose counters assume contiguous delivery. If a queue cannot accept reliable ciphertext, close/reset only that affected destination lane and let endpoints resume using a new handshake and cursor. Notify the host to stop producing for it; do not disconnect all phones. A reset must not use an overflowing queue to signal its own failure.
+
+When interaction queueing rises beyond the provisional 100 ms budget, reduce bulk credit/rate. Queues must stay bounded through a slow second phone, bandwidth collapse, relay disconnect, and host overload. Metrics include queue bytes, oldest age, resets, refused work, and time blocked on socket writes.
+
+### 7.8 Attachments and cancellation
+
+Upload attachments before the side-effecting send. Assign a transfer ID scoped to the paired device and host, declare total size and content hash, upload bounded chunks, and query the host's confirmed contiguous offset after reconnect. The host enforces its existing media policy plus negotiated total-size/quota limits, writes into temporary storage, verifies the final hash, then returns a completed attachment reference.
+
+Repeated completion for the same transfer is idempotent. An incomplete or mismatched attachment cannot be referenced by a command. Cancel removes only that transfer's temporary object; expiring unused uploads is safe after a proposed 30-minute idle TTL. Once a command has accepted an attachment, it is pinned until the command outcome is settled and then follows the existing product retention policy. Do not promise canceling a transfer will undo a command already delivered to an assistant.
+
+### 7.9 Optional second relay
+
+A second relay is a later availability feature, not required for the first two-lane implementation. The host maintains independently authenticated presence on primary and standby; standby bulk is lazy. Trusted host registrations must exist consistently on both nodes before failover. Do not use unauthenticated discovery or DNS change as authority to replace paired host keys.
+
+Distribute the candidate set to already paired phones through an authenticated host response and persist it. A phone that never received the standby address cannot benefit during the primary's first outage; provisioning and upgrade acceptance must cover this case. A phone selects among relays on which this host is reachable, using full authenticated host round trips. Geography or phone-to-relay ping alone cannot select a winner.
+
+Each relay is an independent forwarding route; avoid cross-relay message replication and inter-relay forwarding in this phase. Command deduplication remains on the host across both routes. Only one host route owns push emission for an event, and the phone deduplicates notification event identities. Existing pairing continues; no repeated scanning is needed.
+
+Measure domestic Wi-Fi and actual cellular carriers to the existing node and candidate nodes before choosing locations. Test normal and busy periods. Changing a hostname alone is not latency optimization. Additional relay reachability does not make a sleeping or powered-off host executable.
+
+### 7.10 User journeys and failure behavior
+
+| Scenario | Immediate result | Recovery / success evidence |
+|---|---|---|
+| Reopen known conversation | Cached tail, draft, position visible | Apply only missing updates; freshness advances |
+| First open without cache | Lightweight loading state with usable back navigation | Bounded valid tail replaces loading |
+| Wi-Fi to cellular | Content remains; brief reconnect status | Authenticated new route and cursor catch-up |
+| Send during link failure | Pending bubble remains | Query receipt; deliver, reject, or show unknown |
+| History load while sending | Composer and live messages remain responsive | Bulk slows first; accepted receipt independent |
+| Data lane failure | Conversation/control remain usable | Transfer/history resumes after independent rebind |
+| Slow second phone | First phone continues | Only slow destination is throttled/reset |
+| Host restart | Cached content remains, remote freshness unavailable | Reconcile receipts; replace invalid replay epoch |
+| Host asleep | Clear unavailable status, drafts usable | Resume only when host actually responds |
+| Missed push / long background | Previous content visible on return | Explicit catch-up without relying on notification |
+| Pair revoked | Stop remote operations | Host denies old device on all routes |
+
+Use the existing localized interface vocabulary and restrained inline status. Do not show transport internals, debugging controls, or new terminal entry points. Delivered-to-assistant and assistant-completed are distinct states.
+
+### 7.11 Measurement and acceptance contract
+
+Record a correlated timeline without conversation bodies: user action, local paint, transport ready, authenticated host ready, host queue start/end, parse completion, response received, decoded/applied, visible paint. Use monotonic durations measured on each endpoint and phone end-to-end elapsed time; do not subtract unsynchronized device clocks. Track path, cache-hit class, negotiated capabilities, payload bytes, and host/phone build identities.
+
+Targets below apply to a defined healthy reference network (<= 150 ms measured end-to-end round trip, >= 5 Mbit/s usable throughput, no injected loss) and are proposals:
+
+| Metric | Proposed p95 target | Boundary |
+|---|---|---|
+| Cached view visible | <= 200 ms | View request to usable cached paint |
+| Local send feedback | <= 100 ms | Tap to pending bubble |
+| Host acceptance | <= 1 s | Tap to durable host acceptance receipt; no attachment upload |
+| Fresh current tail | <= 2 s | Open to valid current tail, report cache state separately |
+| Active-session update | <= 500 ms | New source data observable on host to applied phone update; excludes model generation |
+| Route recovery | <= 3 s | Replacement network usable to visible subscription caught up |
+| Load isolation | <= 100 ms added control queueing | Concurrent bulk compared with idle baseline |
+
+For latency percentiles, collect at least 100 operations per reference route/scenario where repeatable, and retain raw samples. For weaker networks, report achieved times rather than pretending the reference SLO still applies; require bounded memory, usable cached navigation, no silent content loss, and honest command outcomes.
+
+Fault tests: cut before host acceptance; after acceptance before delivery; after delivery before receipt; during every attachment chunk boundary; during snapshot-to-stream handoff; during route ownership transfer. Restart host and relay separately, inject duplicate/out-of-order frames at the application test layer, expire replay buffers/leases/receipts, revoke pairing, and saturate a second phone's receive path. Assert either one evidenced delivery or an explicit unknown outcome, never blind re-execution.
+
+End-to-end acceptance runs on iPhone Max through LAN and relay, real Wi-Fi/cellular transitions, background return, and each of Claude/Codex/Cursor/Kimi/OpenCode/Pi. Include 50 MiB and 100 MiB source histories and an oversized single message. Verify visible navigation/input while loading. Record installed phone build and running host/relay binaries; source tests alone do not close acceptance.
+
+### 7.12 Compatibility, delivery slices, and rollback
+
+| Slice | Deliverable | Exit gate |
+|---|---|---|
+| Baseline | Correlated timings and fault harness; no new transport | Reproducible bottleneck/latency samples |
+| State continuity | Bounded phone cache, view/subscription epochs, explicit replay contract | Reopen/background/gap tests without flash-empty or host mixing |
+| Command outcomes | Durable receipt store, stable IDs, leases, status reconciliation | Lost-ack/crash/duplicate tests with honest ambiguity |
+| Full route isolation | Authenticated additional host lane, fair bounded queues/chunks | Slow-phone and bulk-load isolation through actual relay |
+| Route replacement | Validated overlap, command write ownership, immediate network-event recovery | Real network changes without duplicate operations |
+| Optional redundancy | Provisioned second relay and persisted candidates | Primary outage recovery without re-pairing |
+
+Negotiate command receipts, event cursors, chunked bulk, and relay host lanes independently. Keep shipped v2 behavior for peers without a capability. New phone/old host must not claim durable delivery or safe automatic resend; old phone/new host continues its established protocol. Old relay permits existing single host socket only. Proposed incompatible relay framing gets a separately negotiated version/endpoint; do not reinterpret existing frame fields silently.
+
+Upgrade order for full isolation: relay accepts old and new paths; host enables new attachment only when supported; phone enables matching capabilities last. Deploy incrementally by known host/device, retaining old registration paths and local identity. Rollback disables new negotiation, preserves receipt data and caches, and resets incompatible stream epochs explicitly. Unknown commands remain blocked for review even after rollback. A binary unable to read active command receipts cannot be used for an automatic rollback while unresolved operations exist.
+
+### 7.13 Review decisions (approved)
+
+Approved defaults: cached recent content available offline; offline text remains a draft; no automatic retry of ambiguous commands; no cloud history/command storage; existing WebSocket transport retained for the first release; first release targets one relay with complete lane isolation; second relay follows measured need. Cache and queue budgets are provisional engineering parameters, not user-facing settings.
+
+Implementation notes locked with approval: place host receipts beside existing remote durable state under the Corral data directory; negotiate capability `command_receipts` (and later `host_lane_attach`) in hello; keep legacy `input.*` responses working when the capability is absent. Adapter delivery evidence may still be incomplete for some assistants — when an adapter cannot prove delivery, the receipt must stay `unknown` or `accepted`/`dispatching` honestly rather than inventing success. Latency targets and candidate relay nodes remain unmeasured proposals until instrumented.
+
+### 7.14 Baseline samples (2026-09-10)
+
+| Sample | Result | Implication |
+|---|---|---|
+| Host `command_receipts` unit suite | 15/15 pass (project venv) | Slice 1 host side is ready for phone opt-in |
+| Relay `AttachHostLane` + queued sink tests | `go test` hub/protocol/server pass | Slice 3 code can stay in-repo; async queue removes reader-blocking structure |
+| Microbench: enqueue 20 frames while 50 ms/frame consumer | ~0.02 ms to enqueue vs ~1 s if synchronous | Confirms Slice 3 queue value independent of geography |
+| Device → public relay `wss://pickup-relay.caozc.top` | HTTP **503** on WebSocket (retry same) | Host still reports relay online — **do not upgrade public relay** until device path is healthy; treat host-online ≠ phone-reachable |
+| Live LAN hello/list probe | Handshake frames OK; full RPC timed out on this probe identity | Need paired probe + restarted host process before claiming end-to-end UX numbers |
+
+Phone hello must send `want_command_receipts: true` or receipted sends never enable. Extend `after_seq`/`generation`; do not add a second event cursor in Slice 2.
+
+<!-- 该文档整理/压缩于 2026-09-05；详细方案增补于 2026-09-10 -->

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import threading
@@ -773,6 +774,23 @@ class PairingWindowTests(unittest.TestCase):
         self.assertEqual(auth_parts[1:4], prev_parts[1:4])
         remote_config.clear_host_prev_key()
         self.assertNotIn("X-Corral-Prev-Auth", client._headers())
+
+    def test_relay_registered_payload_enables_host_lane_attach(self):
+        from corral.remote.transport.relay import RelayClient
+
+        state = remote_config.load_state()
+        client = RelayClient(None, state, b"\x00" * 32)  # type: ignore[arg-type]
+        called: list[bool] = []
+        payload = json.dumps(
+            {"generation": 3, "node": "node-a", "capabilities": ["host_lane_attach"]}
+        ).encode("utf-8")
+        client._on_registered(payload, lambda: called.append(True))
+        self.assertEqual(client._registration_generation, 3)
+        self.assertEqual(client._registration_node, "node-a")
+        self.assertTrue(client._host_lane_attach)
+        self.assertEqual(called, [True])
+        client._on_registered(b"", None)
+        self.assertFalse(client._host_lane_attach)
 
 
 if __name__ == "__main__":

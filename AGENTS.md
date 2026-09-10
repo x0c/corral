@@ -35,7 +35,7 @@
 | 会话关注状态 | cli/src/corral/attention.py · cli/src/corral/attention_signals.py · cli/src/corral/cursor_observer.py · cli/src/corral/store.py · cli/src/corral/ui/ |
 | 会话全文搜索 | cli/src/corral/search.py · cli/src/corral/ui/search_modal.py |
 | 内嵌实时终端 | cli/src/corral/embed.py · cli/src/corral/ui/embed_pane.py |
-| 会话扫描与对话内容 | cli/src/corral/scan/ · cli/src/corral/scan/pi.py · cli/src/corral/transcript.py · cli/src/corral/models.py · cli/src/corral/runtime/ |
+| 会话扫描与对话内容 | **真源在 SessKit**（`~/Codes/SessKit` / `sesskit` 包）；`cli/src/corral/scan/` 为模块别名 · cli/src/corral/transcript.py · cli/src/corral/models.py · cli/src/corral/runtime/ · cli/docs/SESSION_SCANNING_KNOWLEDGE_BASE.md |
 | 跨助手接力与启动 | cli/src/corral/runtime/ · cli/src/corral/runtime/pi.py · cli/src/corral/models.py |
 | 新助手接入 | cli/src/corral/runtime/ · cli/src/corral/scan/ · cli/src/corral/runtime/pi.py · cli/src/corral/scan/pi.py |
 | 托管会话身份 | cli/src/corral/pi_identity.py · cli/src/corral/pi_migration.py · cli/src/corral/codex_identity.py · cli/src/corral/pi_extension/ · cli/docs/design/PI_SESSION_IDENTITY_EXTENSION_DESIGN.md · cli/tests/test_pi_identity.py · cli/tests/test_pi_migration.py |
@@ -64,6 +64,8 @@
 <!-- managed:inherited-agents:end -->
 
 # corral 项目规范
+
+- [Network UX implementation review](docs/reviews/NETWORK_UX_REVIEW_2026-09-10.md): **must read** before correcting, validating, or releasing the September 10 command-receipt and relay-lane changes; the four recorded findings were corrected in source (see that doc’s Corrections applied). Skipping it can reintroduce false delivery, duplicate execution, or shared disconnections.
 
 ## 文档导航
 
@@ -226,7 +228,7 @@ command -v corral
 | 会话关注状态 | src/corral/attention.py · src/corral/attention_signals.py · src/corral/cursor_observer.py · src/corral/store.py · src/corral/ui/ |
 | 会话全文搜索 | src/corral/search.py · src/corral/ui/search_modal.py |
 | 内嵌实时终端 | src/corral/embed.py · src/corral/ui/embed_pane.py |
-| 会话扫描与对话内容 | src/corral/scan/ · src/corral/scan/pi.py · src/corral/transcript.py · src/corral/models.py · src/corral/runtime/ |
+| 会话扫描与对话内容 | **真源 SessKit**；`src/corral/scan/` 别名 · src/corral/transcript.py · src/corral/models.py · src/corral/runtime/ · docs/SESSION_SCANNING_KNOWLEDGE_BASE.md |
 | 跨助手接力与启动 | src/corral/runtime/ · src/corral/runtime/pi.py · src/corral/models.py |
 | 新助手接入 | src/corral/runtime/ · src/corral/scan/ · src/corral/runtime/pi.py · src/corral/scan/pi.py |
 | 性能、派生缓存与原生加速 | src/corral/cache.py · src/corral/cache_cli.py · src/corral/native.py · src/corral/schedprio.py · src/corral/bootstrap.py · rust/lib.rs · Cargo.toml · scripts/benchmark.py |
