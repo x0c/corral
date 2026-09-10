@@ -45,7 +45,13 @@ DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Kimi
 # 纯 Python 运行时依赖（textual 及其传递依赖）。Homebrew 安装阶段禁止联网，
 # 每个依赖都要一个 resource 块（下载地址 + sha256）。依赖升级时同步改这里
 # （可借助 `brew update-python-resources` / homebrew-pypi-poet 生成）。
-RESOURCES = """  resource "linkify-it-py" do
+# sesskit：会话解析真源（尚未上 PyPI 时从 GitHub Release 拉 sdist）。
+RESOURCES = """  resource "sesskit" do
+    url "https://github.com/x0c/sesskit/releases/download/v0.1.0/sesskit-0.1.0.tar.gz"
+    sha256 "b10346b7eb6608e9b4b58c2ac5f19ebcf2287a7e02fc0cabbe81218f9700d4e2"
+  end
+
+  resource "linkify-it-py" do
     url "https://files.pythonhosted.org/packages/2e/c9/06ea13676ef354f0af6169587ae292d3e2406e212876a413bf9eece4eb23/linkify_it_py-2.1.0.tar.gz"
     sha256 "43360231720999c10e9328dc3691160e27a718e280673d444c38d7d3aaa3b98b"
   end
@@ -308,8 +314,13 @@ def main() -> int:
             return assets.asset_url(name), assets.asset_sha(name), True
         return source_url, source_sha, False
 
+    # macOS：优先 universal2；本机发版若只出了 arm64 wheel，也直装（Intel 回退源码）。
+    macos = slot(r"macosx.*universal2\.whl$")
+    if not macos[2]:
+        macos = slot(r"macosx.*arm64\.whl$")
+
     slots = {
-        "macos": slot(r"macosx.*universal2\.whl$"),
+        "macos": macos,
         "linux_x86_64": slot(r"manylinux.*x86_64\.whl$"),
         "linux_aarch64": slot(r"manylinux.*aarch64\.whl$"),
     }
