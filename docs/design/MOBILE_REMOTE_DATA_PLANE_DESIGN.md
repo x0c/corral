@@ -229,9 +229,17 @@ Scope: pairing continuity, list/recent conversation availability, live conversat
 
 All phone cache keys include host public-key identity plus canonical session identity, not display names. Preserve the existing provisional-to-canonical session mapping. Resolve and validate the canonical target before accepting a command; record that target in its receipt so retries cannot retarget a different session.
 
-Phone cache proposal: last successful list window plus recent conversation tails, 100 MiB total and up to 50 recently viewed sessions, evicted by recency. Drafts and unresolved command metadata are separate from disposable history. Fetch only a bounded tail on a cache miss. Store caches under platform file protection and exclude disposable conversation caches from device backup. Pair removal clears associated cached content and unresolved local operations; remote revocation prevents future access but cannot erase data already received by an offline phone.
+Phone cache proposal: last successful list window plus recent conversation windows (all synchronized official messages per session, not only the last page), 100 MiB total and up to 50 recently viewed sessions, **400 official messages per session** before oldest-first trim, evicted by recency. Drafts and unresolved command metadata are separate from disposable history. Fetch only a bounded tail on a cold cache miss; Load earlier fills older pages that are then retained until trim/eviction. Store caches under platform file protection and exclude disposable conversation caches from device backup. Pair removal clears associated cached content and unresolved local operations; remote revocation prevents future access but cannot erase data already received by an offline phone.
 
 Do not copy the whole development-machine history to the phone. Each view observes a local store; connection events update that store instead of replacing the view model with an empty one.
+
+**Immutable history ≠ full phone mirror (2026-09-10 review; implemented 2026-09-10).** Host-owned transcripts are append-only / generation-replaced. Product rules:
+
+1. A page the phone has already synchronized must not be re-fetched just because the session is idle, ended, or reopened — **zero network for content still in the local store**.
+2. The phone still must not pretend to own the complete archive. Short conversations that fit one window leave `has_more=false` so Load earlier never appears. Long conversations show Load earlier only for content **outside** the local store.
+3. Phone cache retains every synchronized official message for a session (including Load earlier pages), up to **400 official messages per session** and the existing 50-session / 100 MiB LRU. Over budget: drop the **oldest** official messages, set `has_more=true`, and recompute `oldest_seq` from what remains — never keep an expanded cursor with a truncated body.
+4. On `session.watch` resume=`tail` with the **same history generation**, if local earlier pages **abut** the incoming window (`max(local earlier seq) + 1 == watch.oldest_seq`), merge and keep them. Generation change discards local official history. Non-abutting orphans are dropped to avoid timeline gaps.
+5. Offline Load earlier that still needs host content fails closed with a visible connection error; already-cached earlier pages stay on screen.
 
 ### 7.3 Physical topology and relay attachment
 
