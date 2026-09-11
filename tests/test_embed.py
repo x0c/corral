@@ -345,10 +345,15 @@ class SessionIoTests(unittest.TestCase):
         poisoned = {
             **os.environ,
             "LD_LIBRARY_PATH": "/opt/hostedtoolcache/Python/3.11.16/x64/lib",
+            "RUNNER_TRACKING_ID": "github_abc",
             "CORRAL_TMUX_ENV_PROBE": "1",
+            "LANG": "C",
         }
         env = keepalive.tmux_env(poisoned)
         self.assertNotIn("LD_LIBRARY_PATH", env)
+        self.assertNotIn("RUNNER_TRACKING_ID", env)
+        self.assertEqual(env.get("TMUX_TMPDIR"), "/tmp")
+        self.assertIn("UTF-8", (env.get("LANG") or "").upper())
         self.assertEqual(env.get("CORRAL_TMUX_ENV_PROBE"), "1")
 
     def test_ensure_manual_window_size_retries_after_failure(self):

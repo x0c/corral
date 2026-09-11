@@ -49,18 +49,29 @@ def tmux_argv(session_name: str | None = None) -> tuple[str, ...]:
 
 
 def tmux_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Environment for spawning system ``tmux`` without Python library-path poisoning.
+    """Environment for spawning system ``tmux`` without host-poisoned settings.
 
-    ``actions/setup-python`` (and some pyenv builds) export ``LD_LIBRARY_PATH`` to
-    the interpreter's lib dir so ``libpython`` resolves. System tmux may then load
-    a mismatched ``libtinfo`` / ncurses from that path and die immediately with
-    ``server exited unexpectedly``. Seen on GitHub ``ubuntu-latest`` runners while
-    the same ``host_session`` smoke passed on ``macos-latest`` (no
-    ``LD_LIBRARY_PATH``). Always use this env for tmux subprocesses and for
-    ``exec`` of a wrap_plan that starts with ``tmux``.
+    Strips / overrides:
+
+    - ``LD_LIBRARY_PATH``: ``actions/setup-python`` on Linux points this at the
+      interpreter lib dir so ``libpython`` resolves. System tmux may then load a
+      mismatched ``libtinfo`` / ncurses and die with ``server exited unexpectedly``.
+    - ``RUNNER_TRACKING_ID``: GitHub Actions tracks descendants and can reap a
+      daemonized tmux server as an "orphan" mid-job on Linux runners (macOS
+      smoke for the same commit stayed green).
+    - ``TMUX_TMPDIR``: force ``/tmp`` so a job-scoped ``TMPDIR`` under the
+      workspace cannot leave a broken socket path.
+    - ``LANG`` / ``LC_ALL``: ensure UTF-8 so config comments never trip a
+      ``C`` locale parser.
     """
     env = dict(os.environ if base is None else base)
     env.pop("LD_LIBRARY_PATH", None)
+    env.pop("RUNNER_TRACKING_ID", None)
+    env["TMUX_TMPDIR"] = "/tmp"
+    lang = (env.get("LANG") or "").lower()
+    if "utf-8" not in lang and "utf8" not in lang:
+        env["LANG"] = "C.UTF-8"
+        env["LC_ALL"] = "C.UTF-8"
     return env
 
 
@@ -103,26 +114,27 @@ def _resolve_default_terminal() -> str:
 
 def _tmux_config() -> str:
     term = _resolve_default_terminal()
+    # Comments stay ASCII: a ``C`` locale on minimal CI images has historically
+    # made non-ASCII conf text a footgun for server startup failures.
     return f"""\
-# corral 保活会话专用 tmux 配置：只在 `tmux -L corral-keepalive` 这个独立 socket 上生效，
-# 不读取、不影响用户自己的 ~/.tmux.conf。目标是让接入的会话看起来和原生终端
-# 一样，感觉不到自己在 tmux 里。
+# Corral keepalive tmux config. Only used with `tmux -L corral-keepalive`.
+# Does not read or affect the user's ~/.tmux.conf.
 
 set -g status off
 set -g mouse on
 set -g default-terminal "{term}"
 set -ga terminal-overrides ",*256col*:Tc"
-# 内嵌从不 attach 可视客户端，只 capture。控制通道 `tmux -C attach` 走管道，
-# 客户端尺寸常是默认 80x24。window-size latest 会把托管窗打回 80 列，右栏格子
-# 仍是分屏全宽，观感就是「Claude 只占约 1/3、右侧大块空白」。改成 manual：
-# 只有 embed.resize-window 改尺寸。aggressive-resize 对每会话单窗没有意义。
+# Embedded panes never attach a visual client; only capture. Control mode
+# `tmux -C attach` often reports 80x24. With window-size latest that shrinks
+# the hosted window while the split cell stays full width. Use manual so only
+# embed.resize-window changes size.
 set -g window-size manual
 setw -g aggressive-resize off
 set -sg escape-time 0
 set -g history-limit 10000
 
-# 无前缀直接脱离（保留标准 prefix+d 作为备用）：Ctrl-\\ 在 tmux 接管终端时不会
-# 触发本地 SIGQUIT，可以放心用作"离开但保持后台运行"的快捷键。
+# Detach without prefix (prefix+d still works): Ctrl-\\\\ does not deliver
+# SIGQUIT while tmux owns the terminal.
 bind-key -n C-\\\\ detach-client
 """
 

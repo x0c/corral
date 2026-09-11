@@ -97,17 +97,19 @@ jobs:
           python -m pip install "$(python scripts/sesskit_dep.py wheel-requirement)"
           python -m pip install ".[remote]"
       - name: Smoke host_session
-        # Fail fast if keepalive new-session is broken on this runner (terminfo /
-        # tmux / PATH / LD_LIBRARY_PATH poisoning) before spending minutes on the
-        # full suite. Do NOT unset LD_LIBRARY_PATH here: setup-python sets it on
-        # Linux, and product code must strip it when spawning tmux — unsetting
-        # would hide a regression until hosted UI tests time out.
+        # Fail fast if keepalive new-session is broken on this runner before the
+        # full suite. Keep setup-python's LD_LIBRARY_PATH so product sanitization
+        # stays covered. Print stepwise probes so the next failure names the
+        # layer (bare tmux / conf / host_session) instead of only EmbedError.
         env:
           TERM: xterm-256color
         run: |
           python - <<'PY'
-          import os, shutil, subprocess
-          print("LD_LIBRARY_PATH=", repr(os.environ.get("LD_LIBRARY_PATH")))
+          import os, shutil, subprocess, traceback
+          keys = ("HOME", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "RUNNER_TRACKING_ID",
+                  "TERM", "TMPDIR", "TMUX_TMPDIR", "GITHUB_ACTIONS", "RUNNER_OS")
+          for k in keys:
+              print(f"{k}={os.environ.get(k)!r}")
           tmux = shutil.which("tmux")
           print("tmux=", tmux)
           if tmux and os.name == "posix":
@@ -115,10 +117,41 @@ jobs:
                   print(subprocess.check_output(["ldd", tmux], text=True, stderr=subprocess.STDOUT)[:800])
               except (OSError, subprocess.CalledProcessError) as exc:
                   print("ldd skipped:", exc)
+
+          def run(label, argv, env=None):
+              r = subprocess.run(argv, capture_output=True, env=env)
+              print(label, "rc=", r.returncode,
+                    "stderr=", (r.stderr or b"")[:300],
+                    "stdout=", (r.stdout or b"")[:120])
+              return r
+
+          run("bare", ["tmux", "-L", "ci-bare", "-f", "/dev/null",
+                       "new-session", "-d", "-s", "bare", "--",
+                       "bash", "-c", "printf BARE; sleep 1"])
+          subprocess.run(["tmux", "-L", "ci-bare", "kill-server"], capture_output=True)
+
           from corral import embed, keepalive
           from corral.models import LaunchPlan
+          env = keepalive.tmux_env()
+          print("tmux_env LD=", env.get("LD_LIBRARY_PATH"),
+                "TRACK=", env.get("RUNNER_TRACKING_ID"),
+                "TMUX_TMPDIR=", env.get("TMUX_TMPDIR"),
+                "LANG=", env.get("LANG"))
+          conf = keepalive._ensure_config_file()
+          print("conf=", conf)
+          print(open(conf, encoding="utf-8").read())
+          run("conf", [*keepalive.tmux_argv(), "-f", conf,
+                       "new-session", "-d", "-P", "-F", "#{pane_id}",
+                       "-s", "ci-conf", "-x", "80", "-y", "24", "--",
+                       "bash", "-c", "printf CONF; sleep 1"], env=env)
+          subprocess.run([*keepalive.tmux_argv(), "kill-server"], capture_output=True, env=env)
+
           plan = LaunchPlan(("bash", "-c", "printf 'CI-HOST-SMOKE\\n'; sleep 2"), None)
-          name = embed.host_session(plan, "claude", "cihostsmoke01", 80, 24)
+          try:
+              name = embed.host_session(plan, "claude", "cihostsmoke01", 80, 24)
+          except Exception:
+              traceback.print_exc()
+              raise
           assert embed.is_alive(name), name
           text = embed.capture(name) or ""
           assert "CI-HOST-SMOKE" in text, repr(text)

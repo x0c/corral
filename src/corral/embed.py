@@ -146,11 +146,41 @@ def host_session(
         if pane_id.startswith("%"):
             _pane_ids[name] = pane_id
     except subprocess.CalledProcessError as exc:
-        if is_alive(name):
-            return name  # 同名会话已在跑：复用而不是报错
         detail = (exc.stderr or b"").decode(errors="replace").strip()
-        suffix = f"：{detail}" if detail else ""
-        raise EmbedError(f"无法创建内嵌会话 {name}{suffix}") from exc
+        # Stale socket / runner orphan reap can leave a half-dead server; one
+        # kill-server + retry covers the common CI flake without masking real
+        # config errors on the second attempt.
+        if "server exited unexpectedly" in detail.lower():
+            try:
+                subprocess.run(
+                    [*keepalive.tmux_argv(), "kill-server"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=_CALL_TIMEOUT, check=False,
+                    env=keepalive.tmux_env(),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            try:
+                proc = subprocess.run(
+                    argv, check=True, capture_output=True, timeout=_CREATE_TIMEOUT,
+                    env=keepalive.tmux_env(),
+                )
+                pane_id = (proc.stdout or b"").decode().strip()
+                if pane_id.startswith("%"):
+                    _pane_ids[name] = pane_id
+            except subprocess.CalledProcessError as retry_exc:
+                if is_alive(name):
+                    return name
+                detail = (retry_exc.stderr or b"").decode(errors="replace").strip()
+                suffix = f"：{detail}" if detail else ""
+                raise EmbedError(f"无法创建内嵌会话 {name}{suffix}") from retry_exc
+            except (OSError, subprocess.TimeoutExpired) as retry_exc:
+                raise EmbedError(f"无法创建内嵌会话 {name}：{retry_exc}") from retry_exc
+        elif is_alive(name):
+            return name  # 同名会话已在跑：复用而不是报错
+        else:
+            suffix = f"：{detail}" if detail else ""
+            raise EmbedError(f"无法创建内嵌会话 {name}{suffix}") from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise EmbedError(f"无法创建内嵌会话 {name}：{exc}") from exc
     note_alive(name)
