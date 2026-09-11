@@ -41,6 +41,7 @@ from corral.remote.sessions import (
     ActionError,
     PartialInjectionError,
     SessionHub,
+    default_title_spawn_fn,
 )
 
 _PAIRING_TTL = 10 * 60  # 配对码有效期：够扫码，又不至于长期挂着一个可用凭据
@@ -137,7 +138,10 @@ class Connection:
 
 class RemoteService:
     def __init__(self, hub: SessionHub | None = None) -> None:
-        self.hub = hub or SessionHub(on_event=self._dispatch_event)
+        self.hub = hub or SessionHub(
+            on_event=self._dispatch_event,
+            title_spawn_fn=default_title_spawn_fn,
+        )
         if hub is not None:
             hub._on_event = self._dispatch_event
         self.state = remote_config.load_state()

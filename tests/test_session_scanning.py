@@ -3046,13 +3046,14 @@ class TuiLayoutTests(unittest.TestCase):
         fresh_cache = {key: {"fp": titles._fingerprint(session), "title": "后台生成的标题"}}
         with (
             mock.patch.object(corral.SessionStore, "_cache_file_mtime", return_value=999.0),
-            mock.patch.object(corral.titles, "load_cache", return_value=fresh_cache),
+            mock.patch.object(corral.titles, "_read_cache", return_value=(fresh_cache, True)),
         ):
             store.poll_cache_updates()
 
         self.assertEqual(store.get_title(session), "后台生成的标题")
         self.assertNotIn(key, store.generating)
         self.assertTrue(store.dirty.is_set())
+        self.assertGreater(store.title_revision, 0)
 
     def test_failed_title_terminal_state_clears_spinner_and_survives_restart(self) -> None:
         session = {
@@ -3088,7 +3089,7 @@ class TuiLayoutTests(unittest.TestCase):
         }
         with (
             mock.patch.object(corral.SessionStore, "_cache_file_mtime", return_value=999.0),
-            mock.patch.object(corral.titles, "load_cache", return_value=failed_cache),
+            mock.patch.object(corral.titles, "_read_cache", return_value=(failed_cache, True)),
         ):
             store.poll_cache_updates()
 

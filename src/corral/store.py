@@ -52,6 +52,7 @@ class SessionStore:
         limit: int,
         registry: RuntimeRegistry | None = None,
         attention_store: AttentionStore | None = None,
+        title_state: titles.TitleState | None = None,
     ):
         self.limit = limit
         self.registry = registry or default_registry()
@@ -68,7 +69,8 @@ class SessionStore:
         self._attention_lock = threading.Lock()
         self.display_titles: dict[str, str] = {}  # 跨运行时会话键 -> 当前展示标题
         self.dirty = threading.Event()
-        self.cache = titles.load_cache()
+        self.title_state = title_state or titles.TitleState(mtime_fn=self._cache_file_mtime)
+        self.cache = self.title_state.cache
         self.generating: set[str] = set()  # 仍是临时兜底、等待后台进程产出的会话键（转圈圈）
         # 可注入的标题后台拉起函数；默认懒加载 cli._spawn_title_daemon，测试可替换。
         self._title_spawn_fn = None
@@ -313,6 +315,7 @@ class SessionStore:
                             session.get("cwd_display"),
                             session.get("native_title"),
                             session.get("fallback_title"),
+                            self.display_titles.get(session_key(session)),
                             session.get("first_user_msg"),
                             session.get("last_user_msg"),
                             session.get("last_agent_msg"),
@@ -1074,8 +1077,10 @@ class SessionStore:
 
     def poll_cache_updates(self) -> None:
         """缓存文件被后台生成进程更新时重读，把新标题刷到界面并停掉对应转圈圈。"""
-        mtime = self._cache_file_mtime()
-        if mtime == self._cache_mtime:
+        changed_keys = self.poll_title_updates()
+        # The cache may contain an entry for a session that is not currently in
+        # this store's window; poll_title_updates keeps the repository current.
+        if not changed_keys:
             # 缓存没变：若仍有待生成且已空等过久，再拉一次后台（上一轮可能已退出）。
             with self.lock:
                 stale = (
@@ -1086,15 +1091,34 @@ class SessionStore:
             if stale:
                 self.request_title_generation()
             return
-        self._cache_mtime = mtime
-        cache = titles.load_cache()
-        changed = False
+        self.request_title_generation()
+
+    def snapshot(self) -> dict[str, str]:
+        """取「当前展示标题」快照供界面渲染；正在生成的会话只在标题落地后经
+        poll_cache_updates 刷新，界面不再需要感知生成中状态。"""
         with self.lock:
-            self.cache = cache
+            return dict(self.display_titles)
+
+    @property
+    def title_revision(self) -> int:
+        return self.title_state.revision
+
+    def poll_title_updates(self) -> set[str]:
+        """Refresh title state without rescanning histories; returns changed keys."""
+        with self.lock:
+            sessions = [s for bucket in self.sessions.values() for s in bucket]
+        # Keep the historical store-level probe as an injection point for
+        # tests and explicit invalidation callers.
+        if self._cache_file_mtime() != self._cache_mtime:
+            self.title_state._mtime = object()
+        changed = self.title_state.poll(sessions)
+        self._cache_mtime = self.title_state._mtime
+        self.cache = self.title_state.cache
+        with self.lock:
             for bucket in self.sessions.values():
                 for session in bucket:
                     key = session_key(session)
-                    title, needs = titles.resolve_initial_title(session, cache)
+                    title, needs = titles.resolve_initial_title(session, self.cache)
                     old_title = self.display_titles.get(key)
                     was_generating = key in self.generating
                     self.display_titles[key] = title
@@ -1103,23 +1127,15 @@ class SessionStore:
                     else:
                         self.generating.discard(key)
                     if old_title != title or was_generating != needs:
-                        changed = True
+                        changed.add(key)
             if self.generating:
                 if self._generating_since is None:
                     self._generating_since = time.time()
             else:
                 self._generating_since = None
-            still_pending = bool(self.generating)
         if changed:
             self.dirty.set()
-        if still_pending:
-            self.request_title_generation()
-
-    def snapshot(self) -> dict[str, str]:
-        """取「当前展示标题」快照供界面渲染；正在生成的会话只在标题落地后经
-        poll_cache_updates 刷新，界面不再需要感知生成中状态。"""
-        with self.lock:
-            return dict(self.display_titles)
+        return changed
 
     def get_title(self, session: dict) -> str:
         with self.lock:

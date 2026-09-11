@@ -1,254 +1,200 @@
-#!/usr/bin/env python3
-"""标题生成器抽象:把「用哪个 CLI 无头生成标题」与标题业务逻辑解耦。
+"""Session title generation through the shared OpenAI-compatible LLM gateway.
 
-标题生成是独立服务,不属于任何运行时适配器(见 AGENTS.md 架构约束),
-本模块只依赖标准库,不 import runtime/。titles.py 负责批量 prompt 构建、
-结果解析和缓存;本模块的每个生成器只负责一次无头 CLI 调用并交回原始文本。
+Config file (optional): ``~/.config/corral/llm-gateway.json``
 
-覆盖范围与 corral 默认运行时注册表对齐：claude / codex / opencode / kimi / pi / cursor。
-本机装了哪个助手，标题生成就可以用哪个；每批随机起点轮转，失败时自动切换到其余可用助手。
+Keys:
+- ``base_url`` — OpenAI-compatible root (default ``http://10.10.10.2:18081/v1``)
+- ``api_key`` — gateway virtual key (required for generation; never logged)
+- ``model`` — optional gateway alias override; when omitted the live
+  ``/v1/models`` catalog is queried and ``budget-chat`` is preferred when present
 
-选择策略:
-- 环境变量 CORRAL_TITLE_GENERATOR 显式指定首选（旧名 SC_TITLE_GENERATOR 仍生效）；
-- 未指定或指定的不可用时,返回本机已安装的全部候选；实际批次由 titles.py 随机起点轮转，不设默认优先级；
-- 环境变量 CORRAL_TITLE_MODEL 显式指定标题生成使用的模型（旧名 SC_TITLE_MODEL 仍生效）；
-  未设置时继承各助手自己的全局默认。
+Environment overrides: ``CORRAL_LLM_GATEWAY_URL``, ``CORRAL_LLM_GATEWAY_KEY``,
+``CORRAL_TITLE_MODEL``, ``CORRAL_LLM_GATEWAY_CONFIG``.
 """
 
 from __future__ import annotations
 
+import json
 import os
-import shutil
-import subprocess
-import tempfile
+import time
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any
 
-from corral.legacy_names import getenv
-
-ENV_GENERATOR = "CORRAL_TITLE_GENERATOR"
+ENV_GATEWAY_URL = "CORRAL_LLM_GATEWAY_URL"
+ENV_GATEWAY_KEY = "CORRAL_LLM_GATEWAY_KEY"
 ENV_MODEL = "CORRAL_TITLE_MODEL"
+ENV_CONFIG = "CORRAL_LLM_GATEWAY_CONFIG"
+DEFAULT_GATEWAY_URL = "http://10.10.10.2:18081/v1"
+DEFAULT_CONFIG_PATH = Path("~/.config/corral/llm-gateway.json").expanduser()
+PREFERRED_MODEL_ALIAS = "budget-chat"
+_MODEL_CATALOG_TTL_SECONDS = 60.0
+
+# (fetched_at, chosen_alias); cleared by tests via clear_model_cache().
+_model_cache: tuple[float, str] | None = None
 
 
-def _env(suffix: str) -> str:
-    """按 CORRAL_ → PICKUP_ → SC_ 取第一个已设置的值。"""
-    return (getenv(suffix) or "").strip()
-
-
-def _run(
-    argv: list[str],
-    input_text: str | None,
-    timeout: int,
-    *,
-    env: dict[str, str] | None = None,
-    cwd: str | None = None,
-) -> str | None:
-    """执行一次 CLI 调用并返回 stdout;非零退出、超时或无法启动一律返回 None。"""
+def _setting(env_name: str, config_name: str, default: str = "") -> str:
+    """Read an environment setting first, then the durable user config."""
+    value = os.environ.get(env_name, "").strip()
+    if value:
+        return value
     try:
-        proc = subprocess.run(
-            argv,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            cwd=cwd,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        config = json.loads(_config_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        config = {}
+    value = config.get(config_name, "") if isinstance(config, dict) else ""
+    return str(value).strip() or default
+
+
+def _config_path() -> Path:
+    configured = os.environ.get(ENV_CONFIG, "").strip()
+    return Path(configured).expanduser() if configured else DEFAULT_CONFIG_PATH
+
+
+def gateway_url() -> str:
+    return _setting(ENV_GATEWAY_URL, "base_url", DEFAULT_GATEWAY_URL).rstrip("/")
+
+
+def gateway_key() -> str | None:
+    key = _setting(ENV_GATEWAY_KEY, "api_key")
+    return key or None
+
+
+def configured_title_model() -> str | None:
+    """Explicit model override from env or config; does not consult the catalog."""
+    # CORRAL_TITLE_MODEL is intentionally the only model override. Provider
+    # names and fallback mapping remain entirely inside the gateway.
+    return _setting(ENV_MODEL, "model") or None
+
+
+def title_model() -> str | None:
+    """Resolve the alias used for the next title request."""
+    return configured_title_model() or _live_preferred_model()
+
+
+def clear_model_cache() -> None:
+    """Drop the short-lived live-catalog preference (tests / config changes)."""
+    global _model_cache
+    _model_cache = None
+
+
+def _live_preferred_model() -> str | None:
+    """Pick a live gateway alias; prefer budget-chat; never invent names."""
+    global _model_cache
+    now = time.monotonic()
+    if _model_cache is not None and now - _model_cache[0] < _MODEL_CATALOG_TTL_SECONDS:
+        return _model_cache[1]
+    aliases = _fetch_model_aliases()
+    if not aliases:
         return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout
+    chosen = PREFERRED_MODEL_ALIAS if PREFERRED_MODEL_ALIAS in aliases else aliases[0]
+    _model_cache = (now, chosen)
+    return chosen
+
+
+def _fetch_model_aliases() -> list[str]:
+    request = urllib.request.Request(
+        f"{gateway_url()}/models",
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read(1_000_000).decode("utf-8"))
+    except (OSError, TimeoutError, ValueError, UnicodeError, urllib.error.HTTPError):
+        return []
+    if not isinstance(body, dict):
+        return []
+    data = body.get("data")
+    if not isinstance(data, list):
+        return []
+    aliases: list[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        alias = item.get("id")
+        if isinstance(alias, str) and alias.strip():
+            aliases.append(alias.strip())
+    return aliases
 
 
 class TitleGenerator(ABC):
-    """每个标题生成后端需要实现的最小能力。"""
+    """Compatibility interface consumed by the existing title pipeline."""
 
-    id: str
-    executable: str
+    id = "gateway"
+    executable = ""
 
     def is_available(self) -> bool:
-        return shutil.which(self.executable) is not None
-
-    def _model(self) -> str | None:
-        return _env("TITLE_MODEL") or None
+        # A virtual key is required to call the gateway. The model alias can be
+        # resolved from the live catalog at request time.
+        return gateway_key() is not None
 
     @abstractmethod
     def generate(self, prompt: str, timeout: int) -> str | None:
-        """无头调用一次 CLI,返回模型原始文本输出;失败返回 None。"""
+        """Return the gateway assistant text, or None on any failure."""
 
 
-class ClaudeTitleGenerator(TitleGenerator):
-    id = "claude"
-    executable = "claude"
-
-    def generate(self, prompt: str, timeout: int) -> str | None:
-        # 标题是一次性派生数据，不得写进 Claude 会话历史污染用户的真实会话列表。
-        argv = ["claude", "-p", "--no-session-persistence"]
-        model = self._model()
-        if model:
-            argv += ["--model", model]
-        return _run(argv, prompt, timeout)
-
-
-class CodexTitleGenerator(TitleGenerator):
-    id = "codex"
-    executable = "codex"
+class GatewayTitleGenerator(TitleGenerator):
+    """Submit one bounded request to the shared gateway."""
 
     def generate(self, prompt: str, timeout: int) -> str | None:
-        # stdout 混着事件日志,最终答复用 -o 落到临时文件读取;
-        # --ephemeral 不落盘会话文件,避免自产噪音污染 Codex 历史扫描。
-        fd, out_path = tempfile.mkstemp(prefix="corral-title-", suffix=".txt")
-        os.close(fd)
-        try:
-            argv = [
-                "codex", "exec",
-                "--skip-git-repo-check", "--ephemeral",
-                "-s", "read-only", "--color", "never",
-                "-o", out_path,
-            ]
-            model = self._model()
-            if model:
-                argv += ["-m", model]
-            argv.append("-")  # prompt 从 stdin 读
-            if _run(argv, prompt, timeout) is None:
-                return None
-            try:
-                with open(out_path, encoding="utf-8") as f:
-                    return f.read()
-            except OSError:
-                return None
-        finally:
-            try:
-                os.unlink(out_path)
-            except OSError:
-                pass
-
-
-def _opencode_user_data_dir() -> str:
-    """解析用户真实的 OpenCode 数据目录（登录凭证所在处），不读扫描器。"""
-    data_dir = os.environ.get("OPENCODE_DATA_DIR", "").strip()
-    if data_dir:
-        return data_dir.split(",")[0].strip()
-    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
-    base = xdg if xdg else os.path.expanduser("~/.local/share")
-    return os.path.join(base, "opencode")
-
-
-def _seed_isolated_opencode_dir(dest: str) -> None:
-    """把登录凭证拷进隔离目录，避免改数据目录后标题生成找不到账号。"""
-    src = _opencode_user_data_dir()
-    for name in ("auth.json", "mcp-auth.json"):
-        origin = os.path.join(src, name)
-        if os.path.isfile(origin):
-            try:
-                shutil.copy2(origin, os.path.join(dest, name))
-            except OSError:
-                pass
-
-
-class OpenCodeTitleGenerator(TitleGenerator):
-    id = "opencode"
-    executable = "opencode"
-
-    def generate(self, prompt: str, timeout: int) -> str | None:
-        # `opencode run` 无头执行一次；--auto 跳过权限问询。
-        # 官方没有 --ephemeral：默认会写入用户的 opencode.db，一次性任务
-        # 会变成侧边栏新卡（还常套用被总结那条的标题），滤掉后又消失，
-        # 表现为列表自己乱跳。每次调用改到临时数据目录 + `--dir`，
-        # 登录凭证从用户目录拷过来。
-        with tempfile.TemporaryDirectory(prefix="corral-title-opencode-") as tmp:
-            _seed_isolated_opencode_dir(tmp)
-            env = os.environ.copy()
-            env["OPENCODE_DATA_DIR"] = tmp
-            argv = ["opencode", "run", "--auto", "--dir", tmp]
-            model = self._model()
-            if model:
-                argv += ["-m", model]
-            argv.append(prompt)
-            return _run(argv, None, timeout, env=env, cwd=tmp)
-
-
-class KimiTitleGenerator(TitleGenerator):
-    id = "kimi"
-    executable = "kimi"
-
-    def generate(self, prompt: str, timeout: int) -> str | None:
-        # `-p` 非交互打印；`-y` 跳过权限问询。会落盘会话，扫描侧过滤 PROMPT_MARKER。
-        argv = ["kimi", "-y", "-p", prompt]
-        model = self._model()
-        if model:
-            argv = ["kimi", "-y", "--model", model, "-p", prompt]
-        return _run(argv, None, timeout)
-
-
-class PiTitleGenerator(TitleGenerator):
-    id = "pi"
-    executable = "pi"
-
-    def generate(self, prompt: str, timeout: int) -> str | None:
-        # --no-session 不落盘会话；--no-tools 保证标题请求不调用工具；
-        # --approve 遵循免权限打断的产品默认，--print 只输出一次结果。
-        return _run(
-            ["pi", "--approve", "--no-session", "--no-tools", "--print", prompt],
-            None,
-            timeout,
+        key = gateway_key()
+        model = title_model()
+        if not key or not model:
+            return None
+        payload = json.dumps(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "max_tokens": 256,
+                "stream": False,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{gateway_url()}/chat/completions",
+            data=payload,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
         )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = json.loads(response.read(1_000_000).decode("utf-8"))
+        except (OSError, TimeoutError, ValueError, UnicodeError, urllib.error.HTTPError):
+            return None
+        return _assistant_text(body)
 
 
-class CursorTitleGenerator(TitleGenerator):
-    id = "cursor"
-    executable = "agent"
-    # 与 CursorRuntime.executable_aliases 对齐：官方主名 agent，兼容名 cursor-agent。
-    _aliases = ("agent", "cursor-agent")
-    def is_available(self) -> bool:
-        return any(shutil.which(name) for name in self._aliases)
-
-    def _exe(self) -> str:
-        for name in self._aliases:
-            if shutil.which(name):
-                return name
-        return self.executable
-
-    def generate(self, prompt: str, timeout: int) -> str | None:
-        # `-p` 无头打印；`--mode ask` 只读问答，避免标题请求去改文件；
-        # `--force`/`--trust` 跳过权限与工作区信任问询（用户约定默认免打断）。
-        argv = [
-            self._exe(),
-            "-p",
-            "--mode", "ask",
-            "--output-format", "text",
-            "--trust",
-            "--force",
-        ]
-        model = self._model()
-        if model:
-            argv += ["--model", model]
-        argv.append(prompt)
-        return _run(argv, None, timeout)
+def _assistant_text(body: Any) -> str | None:
+    if not isinstance(body, dict):
+        return None
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    return content if isinstance(content, str) else None
 
 
-# 候选集合与 runtime/registry.default_registry 对齐；实际生成时由调用方公平轮转。
-_GENERATORS: tuple[TitleGenerator, ...] = (
-    ClaudeTitleGenerator(),
-    CodexTitleGenerator(),
-    OpenCodeTitleGenerator(),
-    KimiTitleGenerator(),
-    CursorTitleGenerator(),
-    PiTitleGenerator(),
-)
+_GENERATOR = GatewayTitleGenerator()
 
 
 def available_generators() -> tuple[TitleGenerator, ...]:
-    """返回全部可用生成器；显式指定时仅将其置前，其余保持同等候选资格。"""
-    configured = _env("TITLE_GENERATOR").lower()
-    available = tuple(generator for generator in _GENERATORS if generator.is_available())
-    preferred = next((generator for generator in available if generator.id == configured), None)
-    if preferred is None:
-        return available
-    return (preferred, *(generator for generator in available if generator is not preferred))
+    """Expose the gateway candidate when a virtual key is configured."""
+    return (_GENERATOR,) if _GENERATOR.is_available() else ()
 
 
 def resolve_generator() -> TitleGenerator | None:
-    """兼容旧调用：返回候选列表的首项。批量生成不使用此函数决定选路。"""
+    """Compatibility helper for callers expecting one generator."""
     generators = available_generators()
     return generators[0] if generators else None

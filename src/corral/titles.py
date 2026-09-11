@@ -3,6 +3,7 @@
 
 Claude Code 自带 aiTitle 不稳定，不能作为产品展示标题的可信来源。
 统一策略是：先用缓存里的生成标题；没有缓存时显示临时兜底，并提交后台生成。
+生成通道走共享 OpenAI 兼容 LLM 网关（见 titlegen），不经各助手 CLI。
 """
 
 from __future__ import annotations
@@ -38,9 +39,8 @@ STATUS_NONE = ""
 _EXCERPT_LEN = 300
 _TEMP_TITLE_LEN = 26
 
-# 标题生成 prompt 的固定开头：用 `claude -p` 生成标题时会在用户本机留下一条新的
-# Claude Code 会话记录（cwd 为运行 sc 时所在目录）。scan_claude.py 用这个前缀
-# 识别并过滤掉这类自产生的噪音会话，避免它们污染会话列表。
+# 标题生成 prompt 的固定开头。历史上走助手 CLI 时会落盘噪音会话；现改走网关后
+# 通常不再落盘，但扫描器仍用该前缀过滤旧噪音，避免污染会话列表。
 PROMPT_MARKER = "你将看到一批编程助手会话的摘录"
 
 
@@ -107,13 +107,65 @@ def _failed_in_current_version(cached: dict | None, *, now: float | None = None)
 
 
 def load_cache() -> dict:
+    cache, _valid = _read_cache()
+    return cache
+
+
+def _read_cache() -> tuple[dict, bool]:
     if not os.path.isfile(CACHE_FILE):
-        return {}
+        return {}, True
     try:
         with open(CACHE_FILE, encoding="utf-8") as f:
-            return json.load(f)
+            value = json.load(f)
+            return (value, True) if isinstance(value, dict) else ({}, False)
     except (OSError, json.JSONDecodeError):
-        return {}
+        return {}, False
+
+
+class TitleState:
+    """Shared, pollable title state for all host consumers.
+
+    The title file is atomically replaced by the generator.  Consumers keep the
+    last successful cache and advance a monotonic revision only after a valid
+    replacement is observed, so a transient read failure never causes fallback
+    flicker.  ``poll`` returns the affected session keys for lightweight event
+    propagation independent of history scans.
+    """
+
+    def __init__(self, cache: dict | None = None, mtime_fn=None) -> None:
+        self.cache = dict(cache if cache is not None else load_cache())
+        self._mtime_fn = mtime_fn or self._file_mtime
+        self._mtime = self._mtime_fn()
+        self.revision = 0
+
+    @staticmethod
+    def _file_mtime() -> int:
+        try:
+            return os.stat(CACHE_FILE).st_mtime_ns
+        except OSError:
+            return 0
+
+    def poll(self, sessions: list[dict]) -> set[str]:
+        mtime = self._mtime_fn()
+        if mtime == self._mtime:
+            return set()
+        candidate, valid = _read_cache()
+        # Never replace a successful in-memory cache with a corrupt/partial
+        # read. An explicitly valid empty object is a legitimate replacement.
+        if not valid:
+            return set()
+        old = self.cache
+        self.cache = candidate
+        self._mtime = mtime
+        self.revision += 1
+        changed: set[str] = set()
+        for session in sessions:
+            key = session_key(session)
+            before, _ = resolve_initial_title(session, old)
+            after, _ = resolve_initial_title(session, self.cache)
+            if before != after:
+                changed.add(key)
+        return changed
 
 
 def save_cache(cache: dict) -> None:
@@ -419,15 +471,15 @@ def refresh_titles(
 
     内部按 _BATCH_SIZE 拆批，并以最多 _MAX_PARALLEL_BATCHES 批并行生成。
     例如 25 条待生成会话会启动 5 个并行任务，每个任务处理 5 条；超过
-    25 条时，完成的任务会继续领取下一批，避免同时启动过多模型进程。
-    generator 为 None 时把已安装助手视为平等候选：每批从随机起点轮转，某个
-    助手运行失败时立即依次切到其余候选。本机没有任何可用 CLI 时返回空增量。
+    25 条时，完成的任务会继续领取下一批，避免同时启动过多模型请求。
+    generator 为 None 时使用 titlegen 暴露的网关候选；本机未配置虚拟 Key
+    （网关不可用）时返回空增量并写入失败终态，避免界面永久转圈。
     """
     if not sessions:
         return {}
     generators = (generator,) if generator is not None else titlegen.available_generators()
     if not generators:
-        # 本机没有可用 CLI 也是本轮补全的明确终态。若只返回空结果，TUI 会永远
+        # 没有可用生成通道也是本轮补全的明确终态。若只返回空结果，TUI 会永远
         # 显示生成中，并在每次启动时重复拉一个注定立即退出的后台进程。
         _persist_failed_sessions(sessions, cache)
         return {}

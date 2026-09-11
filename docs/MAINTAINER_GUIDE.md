@@ -2,27 +2,29 @@
 
 ## 标题与排序
 
+共享设计与 iOS/TUI 一致性见 [SESSION_TITLE_DESIGN.md](design/SESSION_TITLE_DESIGN.md)。
+
 - 最近会话排序优先使用历史文件更新时间。用户对“最近”的直觉是最近被续接或写入，而不是文件内部最后一条可解析消息。
 - 文件时间不是绝对可信，且污染粒度可以细到单个文件，不一定成批出现：Claude Code 在会话驻留/被重新打开时会追加没有时间戳的元数据条目（`last-prompt`、`ai-title`、`mode`、`permission-mode`），把文件 mtime 顶到“现在”而不产生任何新对话内容；Syncthing、复制、批量元数据刷新是同一类问题的批量版本。修正逻辑统一收在 `models.py` 的 `effective_session_time(file_mtime, event_time)`：当 mtime 比会话内部最后一条真实事件新出 1 小时以上的 gap，就判定 mtime 不可信，逐会话回退到 event_time；两个扫描器的 `_build_session_info` 都在返回结果前调用它写回 `mtime`/`display_time`/`time_source`。曾经按“同一分钟桶 ≥5 个会话”识别批量污染簇的启发式已废弃——它只覆盖批量场景，漏过了本节描述的单文件被驻留进程 touch 的情形（真实故障：两个会话被 touch 到不同分钟，各自没能凑够聚簇阈值，在列表里显示成"20分钟前"，实际是 9-11 天前的会话）。
 - Claude Code 自带 `aiTitle` 不稳定，只能作为临时兜底的最后来源，不能绕过生成缓存直接展示。
-- 无缓存时必须先生成本地短标题，再交给后台模型优化。首屏不能依赖后台生成器（`claude`/`codex` 无头调用）是否及时返回。
-- **生成标题的语言跟那场会话里用户提问的主语言，不跟界面语言，也不默认中文。**【裁定·2026-08-30】标题是列表里用来辨认「那次任务」的内容，不是按钮/底栏那种界面文案。判定只看用户侧提问（扫描器选出的最佳意图、首条/末条用户消息），不看助手回复（助手可能被项目说明要求用另一种语言）。中英夹杂时跟占比更高的那一侧；看不出主语言时才回退界面语言。不要做成「界面是中文就全部译成中文」，也不要做成「英文会话也可以用中文描述，但优先简洁中文」——后一句是 2026-07-18 起写在生成说明里的旧偏好，已从生成说明删除。同类产品（Claude Code）用户反复要求标题跟对话语言走，官方后来也按这个口径改。改生成说明时必须保留噪音过滤用的固定开头（`PROMPT_MARKER`），改了扫描器就认不出自产会话。成功写入缓存的标题默认不因语言规则变更而重跑；要翻旧标题必须显式抬高缓存版本，那会再花账号额度。占位「待生成标题」和斜杠命令临时标签（如文档初始化）才是界面文案，走多语言表。
-- Claude 标题生成必须使用 `--no-session-persistence`，从源头禁止一次性标题请求写入 Claude 会话历史；扫描侧仍须过滤历史版本已落盘的自产标题 prompt 和只有低价值消息的记录，避免旧噪音反过来进入列表。
-- 标题生成以 5 条会话为一批，最多 5 路并发。自动模式每次从随机助手开始，批次间依次轮转，让本机可用的 Claude、Codex、OpenCode、Kimi、Cursor、Pi 平均分担；轮到的助手失败、超时或返回无有效标题时，仅在该批依次交给其余助手接管，并且后续批次不再重复调用已失败的助手。每次后端调用仍以 90 秒为上限。每批完成立即原子写缓存，界面可陆续显示结果。生成出的有效标题一旦写入缓存即为该会话的固定标题，后续对话内容增长不能让它再次排队。会话只有“在吗”等无任务信息时保留本地标题且不调用模型。
-- **标题生成的失败是带冷却的终态，不是“永远不再试”，也不是“下次启动立刻再试”**：调用失败、超时、不可解析/低价值/机器 slug、批量结果部分缺项，以及本机没有任何可用生成器时，都给受影响会话写入当前 `TITLE_CACHE_VERSION` 的 `generation_state=failed` 与 `failed_at`，保留本地兜底并立即清掉 `generating` 状态。冷却期内（默认 6 小时）同一缓存版本不再自动提交模型，避免瞬时故障反复排队花额度；冷却过期或历史失败条目缺少 `failed_at` 时允许再入队。提升缓存版本后失败标记也会自然失效。成功、失败和部分缺项都要逐批 `save_cache`，不能只保存成功项，否则缺项会永远重新排队。
-- 标题生成后端已抽象为 `titlegen.py` 的 `TitleGenerator`，覆盖与默认运行时注册表一致的六家：claude / codex / opencode / kimi / cursor / pi。`titles.py` 只负责批量 prompt、JSON 解析和缓存，不感知具体 CLI；新增生成器只在 `titlegen.py` 加实现并注册进 `_GENERATORS`（候选集合与 `default_registry` 对齐），禁止在 `titles.py` 里写 `subprocess` 调用，也禁止 `titlegen` import `runtime/`。Pi 必须用 `pi --approve --no-session --no-tools --print <prompt>`：不落盘会话、不调用工具、只输出结果。除非用户明确设置 `CORRAL_TITLE_GENERATOR`（旧名 `SC_TITLE_GENERATOR`）指定所用助手，自动模式不得设默认优先级；未设置 `CORRAL_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）时，标题生成必须继承对应助手的全局默认模型；该变量仅用于用户明确指定标题生成的模型。缓存与生成器无关，换生成器不重算已有成功标题；冷却期内也不绕过当前缓存版本的失败终态。
-- **真实冒烟时某家 CLI 因本机账号 / 模型列表刷新 / 网络失败，不算 corral 缺陷**：验收口径是「该助手失败后，本批其余可用助手能顶上，且成功标题可解析」。例如本机 Codex 因模型管理器刷新超时失败、Claude/OpenCode/Cursor 仍能出标题，属于环境侧问题；不要为绕过某家账号限制去改变自动模式的平权轮转，除非用户明确选择固定某个助手。
-- 自产噪音会话的过滤，每个可能被生成器落盘的运行时扫描器都要有：Claude 用 `--no-session-persistence`、Codex 用 `--ephemeral` 尽量不落盘，扫描侧仍须按标题请求标记的**任意出现位置**兜底过滤；OpenCode 会把整段请求额外包一层引号，不能只判断开头。OpenCode 官方没有 ephemeral：`run --auto` 必须放到临时 `OPENCODE_DATA_DIR` 并加 `--dir`（登录凭证从用户数据目录拷进临时目录），否则会写入用户的共享库，一次性任务变成侧边栏新卡、滤掉后又消失，表现为列表自己乱跳。Kimi（`-p`）、Cursor（`agent -p`）每次调用仍会落盘，扫描侧必须过滤首条用户消息 / 回退标题 / 原生标题，漏掉会让标题生成会话刷屏列表。
-- **`titles.save_cache` 是原子写（临时文件 + `os.replace`），不是直接覆写**：后台标题生成进程逐批写、TUI 每约 1 秒轮询读同一份 `titles.json`；直接 `open(..., "w")` 覆写会被并发读到半截 JSON（`load_cache` 解析失败静默退回 `{}`，界面标题短暂回退临时兜底）。并行批次落盘时必须对共享 cache 字典加锁后再 `save_cache`。改这个函数前确认没有退回裸覆写。
+- 无缓存时必须先生成本地短标题，再交给后台模型优化。首屏不能依赖网关是否及时返回。
+- **生成标题的语言跟那场会话里用户提问的主语言，不跟界面语言，也不默认中文。**【裁定·2026-08-30】标题是列表里用来辨认「那次任务」的内容，不是按钮/底栏那种界面文案。判定只看用户侧提问（扫描器选出的最佳意图、首条/末条用户消息），不看助手回复（助手可能被项目说明要求用另一种语言）。中英夹杂时跟占比更高的那一侧；看不出主语言时才回退界面语言。不要做成「界面是中文就全部译成中文」，也不要做成「英文会话也可以用中文描述，但优先简洁中文」——后一句是 2026-07-18 起写在生成说明里的旧偏好，已从生成说明删除。同类产品（Claude Code）用户反复要求标题跟对话语言走，官方后来也按这个口径改。改生成说明时必须保留噪音过滤用的固定开头（`PROMPT_MARKER`），改了扫描器就认不出历史上自产的标题 prompt 会话。成功写入缓存的标题默认不因语言规则变更而重跑；要翻旧标题必须显式抬高缓存版本，那会再花网关额度。占位「待生成标题」和斜杠命令临时标签（如文档初始化）才是界面文案，走多语言表。
+- **生成通道是共享 OpenAI 兼容 LLM 网关，不是各助手 CLI。** `titlegen.py` 的 `GatewayTitleGenerator` 对网关发 `/v1/chat/completions`；供应商选择、别名回退与上游凭证只在网关侧。配置文件 `~/.config/corral/llm-gateway.json`（键：`base_url`、`api_key`、可选 `model`）；环境覆盖 `CORRAL_LLM_GATEWAY_URL` / `CORRAL_LLM_GATEWAY_KEY` / `CORRAL_TITLE_MODEL`（旧名 `SC_TITLE_MODEL`）/ `CORRAL_LLM_GATEWAY_CONFIG`。缺省 `base_url` 为机队网关 `http://10.10.10.2:18081/v1`。未显式指定 `model` 时向 live `/v1/models` 取别名，优先 `budget-chat`（存在才用），否则用目录里第一个别名，短时缓存；禁止臆造别名。`is_available` 只要求已配置虚拟 Key；无 Key 时生成不可用，但既有缓存标题的同步与展示仍须工作。禁止在日志/错误里打印 Key。全局接入契约见 agentsync `LLM_GATEWAY_GUIDE.md`。
+- 标题生成以 5 条会话为一批，最多 5 路并发；每次网关调用仍以 90 秒为上限。每批完成立即原子写缓存，界面可陆续显示结果。生成出的有效标题一旦写入缓存即为该会话的固定标题，后续对话内容增长不能让它再次排队。会话只有“在吗”等无任务信息时保留本地标题且不调用模型。旧的「多助手 CLI 平权轮转 / `CORRAL_TITLE_GENERATOR`」已退役，不要再加回 Claude/Codex/… 无头 CLI 当生成后端。
+- **标题生成的失败是带冷却的终态，不是“永远不再试”，也不是“下次启动立刻再试”**：调用失败、超时、不可解析/低价值/机器 slug、批量结果部分缺项，以及本机未配置网关虚拟 Key（生成通道不可用）时，都给受影响会话写入当前 `TITLE_CACHE_VERSION` 的 `generation_state=failed` 与 `failed_at`，保留本地兜底并立即清掉 `generating` 状态。冷却期内（默认 6 小时）同一缓存版本不再自动提交模型，避免瞬时故障反复排队花额度；冷却过期或历史失败条目缺少 `failed_at` 时允许再入队。提升缓存版本后失败标记也会自然失效。成功、失败和部分缺项都要逐批 `save_cache`，不能只保存成功项，否则缺项会永远重新排队。
+- `titles.py` 只负责批量 prompt、JSON 解析、缓存与 `TitleState`；`titlegen.py` 只负责网关请求。禁止在 `titles.py` 里写 `subprocess` 调用，也禁止 `titlegen` import `runtime/`。缓存与生成通道无关：换网关模型/换 Key 不重算已有成功标题；冷却期内也不绕过当前缓存版本的失败终态。
+- **历史自产噪音会话仍须过滤**：旧实现曾经助手 CLI 无头调用落盘标题 prompt；扫描侧继续按 `PROMPT_MARKER` 的**任意出现位置**兜底过滤（OpenCode 会把整段请求额外包一层引号，不能只判断开头）。现网关路径通常不再落盘助手历史，但旧噪音与其它一次性 CLI 任务仍可能存在，漏过滤会刷屏列表。
+- **`titles.save_cache` 是原子写（临时文件 + `os.replace`），不是直接覆写**：后台标题生成进程逐批写、TUI / 远程每约 1 秒轮询读同一份 `titles.json`；直接 `open(..., "w")` 覆写会被并发读到半截 JSON（解析失败时不得用空字典盖掉内存里已成功的缓存，见 `TitleState`）。并行批次落盘时必须对共享 cache 字典加锁后再 `save_cache`。改这个函数前确认没有退回裸覆写。
+- **TUI 与远程共用同一份标题状态**：`SessionStore.title_state` / `poll_title_updates` 在历史 mtime 不变时也能发现缓存文件变化，推进单调 `title_revision`。远程 `SessionHub._refresh_loop` 在仅标题变化时也要推 `sessions` 列表快照（含加性 `revision`）以及已打开详情的 `session:{key}` metadata；手机列表不能等新消息才刷新。细节与验收见 [SESSION_TITLE_DESIGN.md](design/SESSION_TITLE_DESIGN.md)。
 
 ## 标题生成进程
 
 - 标题生成必须由脱离当前终端的独立进程承载，不能放回 TUI 进程内线程。
 - `execute_launch` 会用 `os.execvp` 替换当前进程；按 `Esc` 退出也会结束 TUI 进程。TUI 内线程会在这些路径上丢失未完成标题。
-- 当前模型是：`_spawn_title_daemon` 拉起 `corral --generate-titles` 后台进程，后台进程用缓存目录下的文件锁保证全机单实例；TUI 侧只读缓存并轮询缓存文件变化。
-- **界面运行中也会按需再拉后台**：`SessionStore` 合并扫描或轮询缓存后若 `generating` 非空，经短防抖调用注入的 `_title_spawn_fn`（生产路径赋值为 `_spawn_title_daemon`）。只靠启动时 spawn 一次会漏掉运行期间新出现的会话。撞锁时新进程立即退出，不重复烧额度；`generating` 仍非空且缓存长时间无变化时也会再请求一次，兜住上一轮 daemon 已死的窗口。
+- 当前模型是：`_spawn_title_daemon` 拉起 `corral --generate-titles` 后台进程，后台进程用缓存目录下的文件锁保证全机单实例；TUI 与远程都只读同一份缓存并轮询变化。后台进程内经网关生成（`titlegen`），不经助手 CLI。
+- **界面与远程运行中都会按需再拉后台**：`SessionStore` 合并扫描或轮询缓存后若 `generating` 非空，经短防抖调用注入的 `_title_spawn_fn`（TUI 与生产远程路径赋值为 `_spawn_title_daemon` / `default_title_spawn_fn`）。只靠启动时 spawn 一次会漏掉运行期间新出现的会话。裸 `SessionHub()` 不注入 spawn，避免测试误起真实进程。撞锁时新进程立即退出，不重复烧额度；`generating` 仍非空且缓存长时间无变化时也会再请求一次，兜住上一轮 daemon 已死的窗口。
 - 后台进程在持锁期间最多 drain 若干轮（扫 pending → 生成 → 再扫），避免生成耗时期间新冒出的会话因「只扫一次就退出」被永久漏掉。
-- 后台进程内的候选生成器选择发生在 `refresh_titles`；本机一个 agent CLI 都没有时保留临时兜底标题，并把本批会话写成当前缓存版本的失败终态，不能静默返回后让会话永远留在 `generating`、下次启动再次排队。不要在 TUI 首屏路径做可用性探测。
+- 后台进程内的可用性判断在 `refresh_titles` / `titlegen.available_generators`：未配置虚拟 Key 时保留临时兜底标题，并把本批会话写成当前缓存版本的失败终态，不能静默返回后让会话永远留在 `generating`、下次启动再次排队。不要在 TUI 首屏路径做网关探测。
 
 ## 跨扫描器共享 helper（scan/common.py）
 
@@ -336,7 +338,7 @@ helper，不要先照抄再改。运行时私有的解析格式（JSONL 字段�
 ## 命令拦截（shim.py）
 
 - **形态是交互式 shell 函数，不是 PATH shim 目录**，理由与全部放行判据写在 `shim.py` 的模块 docstring 里，改之前先读那段。核心一句：拦截只该作用于"用户手敲"，脚本 / CI / 编辑器插件 / 别的 Agent 拉起的子进程一个都不该被托管。
-- **corral 自己会无头调用 `claude -p` / `codex exec` 生成标题**（`titlegen.py`）。放行判据里"非真实终端"和"参数命中无头/管理类词"两条**都不能删**，删任何一条都会让标题生成被包进 tmux 托管、静默失效并堆积进程。
+- **历史上 corral 曾无头调用助手 CLI 生成标题**；现网关路径不再走这条。放行判据里"非真实终端"和"参数命中无头/管理类词"两条**仍不能删**：其它工具/脚本的无头调用、以及用户自己敲的 `-p`/`exec` 仍须放行，删了会把无头任务包进 tmux 托管、静默失效并堆积进程。
 - **防递归三重保险**：shell 函数不被子进程继承（bash 不 `export -f`、zsh 不导出）、走 corral 那一支带 `CORRAL_SHIM_ACTIVE=1`、托管会话里已注入的 `CORRAL_RUNTIME`（及旧名 `SC_RUNTIME`）触发放行。三条互相独立，不要因为"看起来重复"删掉任何一条。**不要把用户自己的 `TMUX`/`STY` 当成放行条件**：corral 的保活用独立 socket（`tmux -L corral-keepalive`），和用户日常开的复用器不是一层；把「在 tmux 里」一律放行，等于日常在 tmux 里敲 `claude`/`agent` 永远进不了托管。回归：`test_own_tmux_still_hosts_interactive_commands`、`test_legacy_sc_runtime_guard_passes_through`。
 - **失败方向必须是"没托管"而不是"命令坏了"**：找不到 `corral`、非 TTY、脚本文件缺失（配置里的 `source` 带 `-f` 判断）全部退回 `command <cmd>`。用户的 `claude` 因为装了 corral 而不可用，是这个功能唯一不可接受的失败。
 - **首次使用必须无感自动启用**：安装脚本完成安装后立即尝试启用；交互式启动 corral 时也必须幂等补齐，避免用户装完却以为裸 `codex` 已被托管。仅真实交互终端可触发这次补齐；版本查询、Agent 只读接口、管道/脚本调用和 `corral shim ...` 管理命令绝不隐式写配置。没有可拦截运行时、未知 shell 或配置不可写时静默降级，不得阻断 corral；用户仍可用 `corral shim install` 主动修复。写入前备份原文件，配置里只放一行 `source`，函数正文在 `~/.cache/corral/shim/` 的生成脚本里——升级只需重写脚本，不必反复动用户配置。
@@ -362,7 +364,7 @@ helper，不要先照抄再改。运行时私有的解析格式（JSONL 字段�
   支持）：任何需要 `cwd`/`pid` 等非默认字段的调用方，必须显式 `--fields id,runtime,cwd,pid,...`
   指名，`--compact` 只负责 JSON 排版（不缩进），不能假设它顺带给出全部字段。
 - `title` 字段只读 `titles.load_cache()`，不得在 `agent_api.py` 里触发 `refresh_titles`；机器接口
-  不消耗 Claude 额度是硬约束，触发生成的入口只能是 `_spawn_title_daemon` 拉起的后台进程。
+  不消耗网关额度是硬约束，触发生成的入口只能是 `_spawn_title_daemon` 拉起的后台进程。
 - **续接计划仍是只读数据**：`corral plan continue <runtime:id> --instruction <文本>` 只验证目标会话、
   读取 runtime 能力并返回统一 envelope 中的会话事实、能力列表与执行计划；它不得启动进程、发送信号、
   写入历史或改变终端。真正执行计划的是调用方（例如 OpenConductor），不是 corral。

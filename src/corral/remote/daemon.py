@@ -16,7 +16,7 @@ from corral.i18n import t
 from corral.remote import config as remote_config
 from corral.remote.push import PushNotifier
 from corral.remote.service import RemoteService
-from corral.remote.sessions import SessionHub
+from corral.remote.sessions import SessionHub, default_title_spawn_fn
 from corral.remote.transport.local import LocalServer
 from corral.remote.transport.relay import RelayClient
 
@@ -27,7 +27,7 @@ class RemoteDaemon:
     def __init__(self, state: remote_config.RemoteState) -> None:
         self.state = state
         self.static_private = remote_config.load_or_create_identity()
-        self.hub = SessionHub()
+        self.hub = SessionHub(title_spawn_fn=default_title_spawn_fn)
         self.service = RemoteService(self.hub)
         self.relay = RelayClient(self.service, state, self.static_private) if state.relay_enabled else None
         self.local = LocalServer(self.service, state, self.static_private) if state.local_enabled else None

@@ -351,6 +351,13 @@ def _try_replay(
     return _continuous_after(transcript.messages, after_seq)
 
 
+def default_title_spawn_fn(limit: int) -> None:
+    """Same detached title daemon the TUI uses; imported lazily to avoid cycles."""
+    from corral import _spawn_title_daemon
+
+    _spawn_title_daemon(limit)
+
+
 class SessionHub:
     """开发机上所有会话相关能力的唯一入口。
 
@@ -358,8 +365,13 @@ class SessionHub:
     把它转投到网络侧的事件循环，不要在里面做阻塞 I/O。
     """
 
-    def __init__(self, on_event=None, *, scan_limit: int = _SCAN_LIMIT) -> None:
+    def __init__(self, on_event=None, *, scan_limit: int = _SCAN_LIMIT,
+                 title_spawn_fn=None) -> None:
         self.store = SessionStore(limit=scan_limit)
+        # The remote host participates in the same title state machine.  The
+        # caller may inject the gateway-backed launcher; leaving it unset keeps
+        # library construction side-effect free for tests and read-only users.
+        self.store._title_spawn_fn = title_spawn_fn
         self.registry = self.store.registry
         self.layout_db = default_layout_db()
         self._on_event = on_event or (lambda channel, data: None)
@@ -400,14 +412,42 @@ class SessionHub:
 
     def _refresh_loop(self) -> None:
         while not self._stop.wait(_REFRESH_INTERVAL):
+            # Title cache updates are independent of history mtimes. Poll them
+            # before/after the scan so a completed title reaches subscribers
+            # even when the session itself is otherwise unchanged.
+            title_keys = self.store.poll_title_updates()
+            changed = False
             try:
                 changed = self.store.refresh()
             except Exception:
-                continue
+                # History scan failures must not block title-only propagation.
+                pass
+            title_keys.update(self.store.poll_title_updates())
             self._follow_key_migrations()
             self._detect_attention_changes()
-            if changed and self._sessions_watchers:
+            if (changed or title_keys) and self._sessions_watchers:
                 self._on_event("sessions", self.list_snapshot())
+            if title_keys:
+                with self._lock:
+                    watches = [
+                        w for w in self._conversations.values()
+                        if w.watchers > 0
+                        and (w.canonical_key or w.key) in title_keys
+                    ]
+                for watch in watches:
+                    session = self.store.find_session(watch.canonical_key or watch.key)
+                    if session is None:
+                        continue
+                    self._on_event(
+                        f"session:{watch.key}",
+                        {
+                            "version": 1,
+                            "kind": "metadata",
+                            "session": watch.key,
+                            "revision": self.store.title_revision,
+                            "summary": self.session_payload(session, self._layout()),
+                        },
+                    )
 
     def _screen_loop(self) -> None:
         while not self._stop.wait(_SCREEN_INTERVAL):
@@ -601,6 +641,7 @@ class SessionHub:
                 "version": _list_version_blob(
                     [item.get("key") for item in payloads]
                 ),
+                "revision": self.store.title_revision,
                 "unchanged": False,
                 "has_more": has_more,
                 "total": total,
@@ -614,6 +655,7 @@ class SessionHub:
         if since_version and since_version == version:
             return {
                 "version": version,
+                "revision": self.store.title_revision,
                 "unchanged": True,
                 "has_more": has_more,
                 "total": total,
@@ -621,6 +663,7 @@ class SessionHub:
         payloads = [self.session_payload(item, layout) for item in windowed]
         return {
             "version": version,
+            "revision": self.store.title_revision,
             "unchanged": False,
             "has_more": has_more,
             "total": total,
