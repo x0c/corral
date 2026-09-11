@@ -138,15 +138,18 @@ def host_session(
     argv += identity_env
     argv += ["--", *plan.argv]
     try:
-        proc = subprocess.run(argv, check=True, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, timeout=_CREATE_TIMEOUT)
+        proc = subprocess.run(
+            argv, check=True, capture_output=True, timeout=_CREATE_TIMEOUT,
+        )
         pane_id = (proc.stdout or b"").decode().strip()
         if pane_id.startswith("%"):
             _pane_ids[name] = pane_id
     except subprocess.CalledProcessError as exc:
         if is_alive(name):
             return name  # 同名会话已在跑：复用而不是报错
-        raise EmbedError(f"无法创建内嵌会话 {name}") from exc
+        detail = (exc.stderr or b"").decode(errors="replace").strip()
+        suffix = f"：{detail}" if detail else ""
+        raise EmbedError(f"无法创建内嵌会话 {name}{suffix}") from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise EmbedError(f"无法创建内嵌会话 {name}：{exc}") from exc
     note_alive(name)

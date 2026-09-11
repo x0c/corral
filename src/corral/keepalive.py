@@ -48,16 +48,51 @@ def tmux_argv(session_name: str | None = None) -> tuple[str, ...]:
 
 # tmux -f 配置内容内联在代码里，而不是仓库里独立的 .conf 文件：安装产物只包含
 # 明确纳入包的数据，独立配置不能依赖源码目录相对路径（曾用独立配置实测过，安装后
-# 文件完全缺失，wrap_plan 在真实安装环境里会直接报 `-f` 文件不存在）。改动只改这个
-# 常量即可，_ensure_config_file() 会在下次调用时自动把新内容重新落盘覆盖旧文件。
-_TMUX_CONFIG = """\
+# 文件完全缺失，wrap_plan 在真实安装环境里会直接报 `-f` 文件不存在）。改动只改
+# `_tmux_config()` / `_resolve_default_terminal()`；_ensure_config_file() 会在下次
+# 调用时自动把新内容重新落盘覆盖旧文件。
+
+
+def _terminfo_exists(name: str) -> bool:
+    """Prefer a real terminfo probe; fall back to common well-known names."""
+    try:
+        proc = subprocess.run(
+            ["infocmp", "-x", name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return name in {"screen-256color", "screen", "xterm-256color", "xterm"}
+
+
+def _resolve_default_terminal() -> str:
+    """Pick a TERM entry that exists on this machine.
+
+    Ubuntu minimal images (incl. GitHub-hosted runners) often lack
+    ``tmux-256color`` until ``ncurses-term`` is installed. Using a missing
+    entry as ``default-terminal`` can make ``new-session -d`` fail before any
+    pane program runs — which shows up in the TUI as a stuck
+    \"Press Enter to restart\" static frame.
+    """
+    for name in ("tmux-256color", "screen-256color", "xterm-256color", "screen"):
+        if _terminfo_exists(name):
+            return name
+    return "screen"
+
+
+def _tmux_config() -> str:
+    term = _resolve_default_terminal()
+    return f"""\
 # corral 保活会话专用 tmux 配置：只在 `tmux -L corral-keepalive` 这个独立 socket 上生效，
 # 不读取、不影响用户自己的 ~/.tmux.conf。目标是让接入的会话看起来和原生终端
 # 一样，感觉不到自己在 tmux 里。
 
 set -g status off
 set -g mouse on
-set -g default-terminal "tmux-256color"
+set -g default-terminal "{term}"
 set -ga terminal-overrides ",*256col*:Tc"
 # 内嵌从不 attach 可视客户端，只 capture。控制通道 `tmux -C attach` 走管道，
 # 客户端尺寸常是默认 80x24。window-size latest 会把托管窗打回 80 列，右栏格子
@@ -74,19 +109,24 @@ bind-key -n C-\\\\ detach-client
 """
 
 
+# Kept for tests that assert config content without calling _ensure_config_file.
+_TMUX_CONFIG = _tmux_config()
+
+
 def _ensure_config_file() -> str:
     """把内联的 tmux 配置落盘到本地缓存目录（`~/.cache/corral`），返回文件路径；内容有变化才重写。"""
     os.makedirs(titles.CACHE_DIR, exist_ok=True)
     path = os.path.join(titles.CACHE_DIR, "keepalive.tmux.conf")
+    desired = _tmux_config()
     try:
         with open(path, encoding="utf-8") as f:
             current = f.read()
     except OSError:
         current = None
-    if current != _TMUX_CONFIG:
+    if current != desired:
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(_TMUX_CONFIG)
+                f.write(desired)
         except OSError:
             pass
     return path

@@ -130,15 +130,25 @@ class AvailableTests(unittest.TestCase):
 
 
 class HostSessionTests(unittest.TestCase):
+    @staticmethod
+    def _new_session_argv(run_mock) -> list:
+        """host_session 随后还会 set-option；断言必须找 new-session 那一次，不能用最后一次 call。"""
+        for call in run_mock.call_args_list:
+            argv = call.args[0]
+            if "new-session" in argv:
+                return argv
+        raise AssertionError(f"no new-session call in {run_mock.call_args_list!r}")
+
     def test_argv_detached_with_size_and_env(self):
         plan = LaunchPlan(argv=("claude", "--resume", "abc"), cwd="/tmp/work")
+        embed._manual_window_size_sockets.clear()
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok) as run, \
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
                 mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]), \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"):
             name = embed.host_session(plan, "claude", "0123456789abcdef", 120, 40)
         self.assertEqual(name, "corral-claude-01234567")
-        argv = run.call_args.args[0]
+        argv = self._new_session_argv(run)
         self.assertEqual(argv[:3], ["tmux", "-L", "corral-keepalive"])
         self.assertIn("-f", argv)
         joined = " ".join(argv)
@@ -154,13 +164,14 @@ class HostSessionTests(unittest.TestCase):
         from corral import pi_identity
 
         plan = LaunchPlan(argv=("pi", "--approve"), cwd="/tmp/work")
+        embed._manual_window_size_sockets.clear()
         with mock.patch.object(embed.subprocess, "run", side_effect=_run_completed_ok) as run, \
                 mock.patch.object(embed.keepalive, "_ensure_config_file", return_value="/tmp/k.conf"), \
                 mock.patch.object(embed.keepalive, "reap_pressure", return_value=[]), \
                 mock.patch.object(embed.shutil, "which", return_value="/usr/bin/tmux"), \
                 mock.patch.object(pi_identity, "ensure_extension_installed", return_value={"status": "ok"}):
             embed.host_session(plan, "pi", "abcd1234", 120, 40)
-        argv = run.call_args.args[0]
+        argv = self._new_session_argv(run)
         tail = argv[argv.index("--") + 1:]
         # 新架构：不再注入 --session-dir；身份由扩展 claim 提供。
         self.assertEqual(tail, ["pi", "--approve", "--session-id", "abcd1234"])
@@ -314,8 +325,18 @@ class SessionIoTests(unittest.TestCase):
     def test_tmux_config_uses_manual_window_size(self):
         from corral import keepalive
 
-        self.assertIn("set -g window-size manual", keepalive._TMUX_CONFIG)
-        self.assertNotIn("set -g window-size latest", keepalive._TMUX_CONFIG)
+        config = keepalive._tmux_config()
+        self.assertIn("set -g window-size manual", config)
+        self.assertNotIn("set -g window-size latest", config)
+        self.assertRegex(config, r'set -g default-terminal "[^"]+"')
+
+    def test_resolve_default_terminal_prefers_known_entry(self):
+        from corral import keepalive
+
+        term = keepalive._resolve_default_terminal()
+        self.assertIn(term, {
+            "tmux-256color", "screen-256color", "xterm-256color", "screen",
+        })
 
     def test_ensure_manual_window_size_retries_after_failure(self):
         embed._manual_window_size_sockets.clear()
@@ -1275,6 +1296,35 @@ class ControlChannelIntegrationTests(unittest.TestCase):
             self.assertNotIn("TIMEOUT", text, f"首次查询不应超时无应答：{text!r}")
             self.assertIn("abab/1212/5656", text,
                           f"首次查询应拿到注入的真实颜色，而不是 tmux 的默认猜测值：{text!r}")
+
+
+@unittest.skipUnless(shutil.which("tmux"), "需要真实 tmux")
+class HostSessionKeepaliveSmokeTests(unittest.TestCase):
+    """host_session against the real corral-keepalive socket (no argv patches)."""
+
+    def test_host_session_creates_alive_keepalive_session(self):
+        """Catches Linux CI gaps IntegrationTests on corral-test-ctl miss."""
+        from corral import keepalive
+
+        plan = LaunchPlan(
+            ("bash", "-c", "printf 'HOST-SESSION-IT\\n'; sleep 30"), None,
+        )
+        name = None
+        try:
+            name = embed.host_session(plan, "claude", "hostsessionit01", 80, 24)
+            self.assertTrue(name.startswith("corral-claude-"))
+            self.assertTrue(embed.is_alive(name), name)
+            deadline = time.monotonic() + 4.0
+            text = ""
+            while time.monotonic() < deadline:
+                text = embed.capture(name) or ""
+                if "HOST-SESSION-IT" in text:
+                    break
+                time.sleep(0.1)
+            self.assertIn("HOST-SESSION-IT", text, repr(text))
+        finally:
+            if name:
+                keepalive.kill(name)
 
 
 if __name__ == "__main__":

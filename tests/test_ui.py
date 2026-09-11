@@ -5925,6 +5925,8 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
     def _cleanup_hosted(self) -> None:
         for name in self._hosted_names:
+            if not name:
+                continue
             subprocess.run(["tmux", "-L", "corral-keepalive", "kill-session", "-t", name],
                             stderr=subprocess.DEVNULL)
 
@@ -6997,6 +6999,8 @@ class DirectLaunchHostingTests(unittest.IsolatedAsyncioTestCase):
 
     def _cleanup_hosted(self) -> None:
         for name in self._hosted_names:
+            if not name:
+                continue
             subprocess.run(["tmux", "-L", "corral-keepalive", "kill-session", "-t", name],
                             stderr=subprocess.DEVNULL)
 
