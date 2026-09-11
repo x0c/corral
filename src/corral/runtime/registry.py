@@ -204,6 +204,12 @@ def execute_launch(plan: LaunchPlan) -> None:
     if plan.cwd:
         os.chdir(plan.cwd)
     try:
+        # wrap_plan / attach_plan start with tmux; keep Python's LD_LIBRARY_PATH
+        # out of that exec so system tmux does not load a mismatched libtinfo.
+        if os.path.basename(executable) == "tmux":
+            from corral.keepalive import tmux_env
+
+            os.execvpe(executable, list(plan.argv), tmux_env())
         os.execvp(executable, list(plan.argv))
     except OSError as exc:
         raise LaunchError(t("launch.cannot_start", executable=executable, error=exc)) from exc

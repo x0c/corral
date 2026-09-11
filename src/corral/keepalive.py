@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from collections.abc import Mapping
 
 from corral import titles
 from corral.legacy_names import LEGACY_SESSION_PREFIX as LEGACY_SESSION_PREFIX
@@ -45,6 +46,23 @@ def tmux_argv(session_name: str | None = None) -> tuple[str, ...]:
     if session_name:
         return tmux_argv_for_session(session_name)
     return _BASE_ARGV
+
+
+def tmux_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Environment for spawning system ``tmux`` without Python library-path poisoning.
+
+    ``actions/setup-python`` (and some pyenv builds) export ``LD_LIBRARY_PATH`` to
+    the interpreter's lib dir so ``libpython`` resolves. System tmux may then load
+    a mismatched ``libtinfo`` / ncurses from that path and die immediately with
+    ``server exited unexpectedly``. Seen on GitHub ``ubuntu-latest`` runners while
+    the same ``host_session`` smoke passed on ``macos-latest`` (no
+    ``LD_LIBRARY_PATH``). Always use this env for tmux subprocesses and for
+    ``exec`` of a wrap_plan that starts with ``tmux``.
+    """
+    env = dict(os.environ if base is None else base)
+    env.pop("LD_LIBRARY_PATH", None)
+    return env
+
 
 # tmux -f 配置内容内联在代码里，而不是仓库里独立的 .conf 文件：安装产物只包含
 # 明确纳入包的数据，独立配置不能依赖源码目录相对路径（曾用独立配置实测过，安装后
@@ -270,6 +288,7 @@ def kill(name: str) -> bool:
             [*tmux_argv_for_session(name), "kill-session", "-t", name],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_SUBPROCESS_TIMEOUT, check=False,
+            env=tmux_env(),
         )
         return True
     except (OSError, subprocess.TimeoutExpired):

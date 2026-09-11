@@ -338,6 +338,19 @@ class SessionIoTests(unittest.TestCase):
             "tmux-256color", "screen-256color", "xterm-256color", "screen",
         })
 
+    def test_tmux_env_strips_ld_library_path(self):
+        """setup-python on Linux sets LD_LIBRARY_PATH; tmux must not inherit it."""
+        from corral import keepalive
+
+        poisoned = {
+            **os.environ,
+            "LD_LIBRARY_PATH": "/opt/hostedtoolcache/Python/3.11.16/x64/lib",
+            "CORRAL_TMUX_ENV_PROBE": "1",
+        }
+        env = keepalive.tmux_env(poisoned)
+        self.assertNotIn("LD_LIBRARY_PATH", env)
+        self.assertEqual(env.get("CORRAL_TMUX_ENV_PROBE"), "1")
+
     def test_ensure_manual_window_size_retries_after_failure(self):
         embed._manual_window_size_sockets.clear()
         failed = mock.Mock(returncode=1)

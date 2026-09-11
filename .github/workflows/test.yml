@@ -98,11 +98,23 @@ jobs:
           python -m pip install ".[remote]"
       - name: Smoke host_session
         # Fail fast if keepalive new-session is broken on this runner (terminfo /
-        # tmux / PATH) before spending minutes on the full suite.
+        # tmux / PATH / LD_LIBRARY_PATH poisoning) before spending minutes on the
+        # full suite. Do NOT unset LD_LIBRARY_PATH here: setup-python sets it on
+        # Linux, and product code must strip it when spawning tmux — unsetting
+        # would hide a regression until hosted UI tests time out.
         env:
           TERM: xterm-256color
         run: |
           python - <<'PY'
+          import os, shutil, subprocess
+          print("LD_LIBRARY_PATH=", repr(os.environ.get("LD_LIBRARY_PATH")))
+          tmux = shutil.which("tmux")
+          print("tmux=", tmux)
+          if tmux and os.name == "posix":
+              try:
+                  print(subprocess.check_output(["ldd", tmux], text=True, stderr=subprocess.STDOUT)[:800])
+              except (OSError, subprocess.CalledProcessError) as exc:
+                  print("ldd skipped:", exc)
           from corral import embed, keepalive
           from corral.models import LaunchPlan
           plan = LaunchPlan(("bash", "-c", "printf 'CI-HOST-SMOKE\\n'; sleep 2"), None)

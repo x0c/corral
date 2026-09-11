@@ -73,6 +73,7 @@ def is_alive(name: str, *, max_age: float | None = None) -> bool:
             [*tmux_argv_for_session(name), "has-session", "-t", name],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=True,
+            env=keepalive.tmux_env(),
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         forget_alive(name)
@@ -93,6 +94,7 @@ def _list_tmux_sessions(fields: str) -> list[list[str]]:
                 [*tmux_base_argv(socket), "list-sessions", "-F", fields],
                 stderr=subprocess.DEVNULL,
                 timeout=keepalive.SUBPROCESS_TIMEOUT,
+                env=keepalive.tmux_env(),
             ).decode()
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             continue

@@ -140,6 +140,7 @@ def host_session(
     try:
         proc = subprocess.run(
             argv, check=True, capture_output=True, timeout=_CREATE_TIMEOUT,
+            env=keepalive.tmux_env(),
         )
         pane_id = (proc.stdout or b"").decode().strip()
         if pane_id.startswith("%"):
@@ -194,7 +195,8 @@ def capture(name: str, scroll_offset: int = 0, pane_height: int = 0) -> str | No
             return "\n".join(lines)
     try:
         out = subprocess.check_output([*keepalive.tmux_argv(name), *args],
-                                      stderr=subprocess.DEVNULL, timeout=_CALL_TIMEOUT)
+                                      stderr=subprocess.DEVNULL, timeout=_CALL_TIMEOUT,
+                                      env=keepalive.tmux_env())
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
     note_alive(name)
@@ -225,6 +227,7 @@ def pane_state(name: str) -> tuple[int, int, bool, bool, bool, int, int, int] | 
             out = subprocess.check_output(
                 [*keepalive.tmux_argv(name), *args],
                 stderr=subprocess.DEVNULL, timeout=_CALL_TIMEOUT,
+                env=keepalive.tmux_env(),
             ).decode().strip()
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return None
@@ -259,6 +262,7 @@ def pane_size(name: str) -> tuple[int, int] | None:
             out = subprocess.check_output(
                 [*keepalive.tmux_argv(name), *args],
                 stderr=subprocess.DEVNULL, timeout=_CALL_TIMEOUT,
+                env=keepalive.tmux_env(),
             ).decode().strip()
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return None
@@ -320,6 +324,7 @@ def _ensure_manual_window_size(name: str) -> None:
             [*keepalive.tmux_argv(name), "set-option", "-g", "window-size", "manual"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
         )
         if proc.returncode == 0:
             _manual_window_size_sockets.add(socket)
@@ -509,6 +514,7 @@ def resize(name: str, width: int, height: int) -> None:
              "-x", str(width), "-y", str(height)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         pass
@@ -548,6 +554,7 @@ def _send(name: str, argv: list[str]) -> bool:
             [*keepalive.tmux_argv(name), *argv],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         # Dead pane: silent for desktop TUI; callers that care check the bool.
@@ -570,6 +577,7 @@ def paste(name: str, text: str) -> bool:
             [*keepalive.tmux_argv(name), "set-buffer", "-b", _PASTE_BUFFER, "--", text],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
         )
         if set_buf.returncode != 0:
             return False
@@ -577,6 +585,7 @@ def paste(name: str, text: str) -> bool:
             [*keepalive.tmux_argv(name), "paste-buffer", "-p", "-d", "-b", _PASTE_BUFFER, "-t", name],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -644,6 +653,7 @@ def _pane_cwd(name: str) -> str | None:
         out = subprocess.check_output(
             [*keepalive.tmux_argv(name), *args],
             stderr=subprocess.DEVNULL, timeout=_CALL_TIMEOUT,
+            env=keepalive.tmux_env(),
         ).decode().strip()
         return out or None
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -776,6 +786,7 @@ class ControlChannel:
         self._proc = subprocess.Popen(
             [*keepalive.tmux_argv(name), "-C", "attach", "-t", name],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=keepalive.tmux_env(),
         )
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
@@ -793,6 +804,7 @@ class ControlChannel:
                 [*keepalive.tmux_argv(self.name), "display-message", "-p", "-t", self.name,
                  "#{pane_id}"],
                 stderr=subprocess.DEVNULL, timeout=_CALL_TIMEOUT,
+                env=keepalive.tmux_env(),
             ).decode().strip() or None
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return None
@@ -1126,6 +1138,7 @@ def _modify(name: str, *args: str) -> None:
             [*keepalive.tmux_argv(name), *args],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=_CALL_TIMEOUT, check=False,
+            env=keepalive.tmux_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         pass
@@ -1207,7 +1220,8 @@ def _tmux_version() -> tuple[int, int] | None:
     try:
         out = subprocess.check_output(["tmux", "-V"],
                                       stderr=subprocess.DEVNULL,
-                                      timeout=_CALL_TIMEOUT).decode()
+                                      timeout=_CALL_TIMEOUT,
+                                      env=keepalive.tmux_env()).decode()
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
     m = re.search(r"(\d+)\.(\d+)", out)
