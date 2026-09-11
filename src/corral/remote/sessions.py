@@ -63,6 +63,19 @@ class PartialInjectionError(RuntimeError):
         self.message = message or "partial injection"
 
 
+def _phone_steer_promote(session: dict) -> bool:
+    """Phone must steer mid-turn; Cursor needs a second empty Enter to promote.
+
+    Skip only while the agent is waiting for an answer so we do not submit an
+    empty follow-up right after the user's choice.
+    """
+    source = str(session.get("source") or "").strip().lower()
+    if source != "cursor":
+        return False
+    attention = str(session.get("attention_kind") or "none").strip().lower()
+    return attention != "waiting"
+
+
 @dataclass
 class _ScreenWatch:
     key: str
@@ -1119,10 +1132,15 @@ class SessionHub:
         括号粘贴语义都是安全的，是桌面端已经验证过的写法。回车单独补一次，
         因为部分助手会把粘贴内容里的换行当成软换行而不是提交。
 
+        Phone submits always steer (never queue-until-done follow-up). For
+        Cursor, a second empty Enter promotes a mid-turn queue into the active
+        run; skip that only while the agent is waiting for an answer.
+
         Raises ActionError when injection fails with no proven side effect.
         Raises PartialInjectionError when paste succeeded but Enter failed.
         """
         name = self._keepalive_name(key)
+        session = self.store.find_session(self.resolve_session_key(key)) or {}
         pasted = False
         if text:
             if not embed.paste(name, text):
@@ -1134,6 +1152,10 @@ class SessionHub:
                 if pasted:
                     raise PartialInjectionError(t("remote.err.inject_partial"))
                 raise ActionError("unavailable", t("remote.err.inject_failed"))
+            # Cursor CLI: first Enter queues; second empty Enter steers / sends now.
+            if _phone_steer_promote(session):
+                time.sleep(0.05)
+                embed.send_key(name, "Enter")  # best-effort; first Enter already landed
         if text:
             # 立刻回显到手机传来的通道，不占规范化 seq；助手历史落地后的正式消息才带 seq。
             self._on_event(

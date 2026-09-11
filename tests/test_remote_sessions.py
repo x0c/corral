@@ -680,6 +680,62 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.hub.send_text("claude:a", "")
         self.assertEqual(events, [])
 
+    def test_send_text_cursor_promotes_with_second_enter(self) -> None:
+        """Phone Cursor submits must steer: paste + Enter + empty Enter."""
+        session = _session(source="cursor", sid="c1", attention="working")
+        session["keepalive_name"] = "pane-cursor"
+        self.hub.store.sessions = {"cursor": [session]}
+        with (
+            mock.patch.object(remote_sessions.embed, "paste") as paste,
+            mock.patch.object(remote_sessions.embed, "send_key") as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            send_key.return_value = True
+            paste.return_value = True
+            self.hub.send_text("cursor:c1", "改方向")
+            paste.assert_called_once_with("pane-cursor", "改方向")
+            self.assertEqual(
+                send_key.call_args_list,
+                [
+                    mock.call("pane-cursor", "Enter"),
+                    mock.call("pane-cursor", "Enter"),
+                ],
+            )
+
+    def test_send_text_cursor_waiting_skips_steer_promote(self) -> None:
+        session = _session(source="cursor", sid="c2", attention="waiting")
+        session["keepalive_name"] = "pane-cursor"
+        self.hub.store.sessions = {"cursor": [session]}
+        with (
+            mock.patch.object(remote_sessions.embed, "paste", return_value=True),
+            mock.patch.object(remote_sessions.embed, "send_key", return_value=True) as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub.send_text("cursor:c2", "选 A")
+            send_key.assert_called_once_with("pane-cursor", "Enter")
+
+    def test_phone_steer_promote_helper(self) -> None:
+        self.assertTrue(
+            remote_sessions._phone_steer_promote(
+                {"source": "cursor", "attention_kind": "working"}
+            )
+        )
+        self.assertTrue(
+            remote_sessions._phone_steer_promote(
+                {"source": "cursor", "attention_kind": "none"}
+            )
+        )
+        self.assertFalse(
+            remote_sessions._phone_steer_promote(
+                {"source": "cursor", "attention_kind": "waiting"}
+            )
+        )
+        self.assertFalse(
+            remote_sessions._phone_steer_promote(
+                {"source": "claude", "attention_kind": "working"}
+            )
+        )
+
     def test_attention_change_publishes_to_conversation_watch(self) -> None:
         events: list[tuple[str, dict]] = []
         self.hub._on_event = lambda channel, data: events.append((channel, data))
