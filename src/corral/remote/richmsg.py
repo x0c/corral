@@ -66,19 +66,22 @@ class ToolCall:
         return bool(self.detail) or bool(self.output)
 
     def to_summary_dict(self) -> dict:
-        """History-wire shape: identity + status, no tool bodies.
+        """History-wire shape: identity (+ question status), no tool bodies.
 
         Keep options/questions so live prompts stay actionable without a second
         round trip. Bodies (detail/output) load via session.toolDetail.
+        Status is omitted for normal tools — the phone timeline does not show
+        success/failure; questions still send status so pending prompts work.
         """
         data = {
             "id": self.call_id,
             "name": self.name,
             "kind": self.kind,
             "summary": self.summary,
-            "status": self.status,
             "has_detail": self.has_body(),
         }
+        if self.kind in QUESTION_KINDS:
+            data["status"] = self.status
         if self.options:
             data["options"] = self.options
         if self.question_groups:
@@ -94,9 +97,10 @@ class ToolCall:
             "name": self.name,
             "kind": self.kind,
             "summary": self.summary,
-            "status": self.status,
             "has_detail": self.has_body(),
         }
+        if self.kind in QUESTION_KINDS:
+            data["status"] = self.status
         if self.detail:
             data["detail"] = self.detail
         if self.output:

@@ -688,12 +688,14 @@ class RichmsgSerializationTests(unittest.TestCase):
         summary = wire["tools"][0]
         self.assertEqual(summary["id"], "t1")
         self.assertTrue(summary["has_detail"])
+        self.assertNotIn("status", summary)
         self.assertNotIn("output", summary)
         self.assertNotIn("detail", summary)
         detail_page = message.tool_detail_page(tool_id="t1")
         self.assertEqual(detail_page["total"], 1)
         self.assertIn("file1", detail_page["tools"][0]["output"])
         self.assertEqual(detail_page["tools"][0]["detail"], "ls -la /tmp")
+        self.assertNotIn("status", detail_page["tools"][0])
 
     def test_question_summary_keeps_detail_for_prompts(self) -> None:
         tool = richmsg.ToolCall(
@@ -708,6 +710,7 @@ class RichmsgSerializationTests(unittest.TestCase):
         summary = tool.to_summary_dict()
         self.assertEqual(summary["detail"], "Which path?")
         self.assertEqual(summary["options"], ["A", "B"])
+        self.assertEqual(summary["status"], "running")
         self.assertTrue(summary["has_detail"])
 
 
