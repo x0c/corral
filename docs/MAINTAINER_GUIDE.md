@@ -516,7 +516,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
    - **判定「是否全量门禁」**：只看「相对远端尚未推送」的提交（`git log … --not --remotes`）。新分支首次推送若用裸 `git log $sha`，会扫到历史上任意 `release:` 提交，误跑全量——不要改回。
 2. **`publish-release.sh` 开头**认同一枚戳：工作区未改就跳过整套；戳失效或被 `--no-verify` 绕过推送时仍会跑完整检查，挡住「把配方指到未验证版本」。`CORRAL_SKIP_CI_GATE=1` 仅应急。成功后还跑 `scripts/verify_clean_install.py`（临时 venv + 固定 SessKit Release + 本树安装），证明陌生机器不靠本机 editable SessKit 也能装上；`CORRAL_SKIP_CLEAN_INSTALL=1` 仅应急。
 3. **`test.yml` 矩阵 `fail-fast: true`**：一路挂了就取消其余作业，少收重复失败邮件、少占免费并发。排查「只在某一 OS / Python 挂」时可临时改 `false` 看全貌，修完改回。
-4. **`release.yml` 必须先看到同一提交上 `test.yml` 成功**（2026-09-11）：打包 / 写 Release / 推 Homebrew 之前跑 `require-tests`；测试失败时禁止再发正式下载。本机收尾脚本不依赖云端排队，但仍执行同等 ci-test + 干净安装门禁。
+4. **`release.yml` 必须先看到同一提交上 `test.yml` 成功**（2026-09-11）：打包 / 写 Release / 推 Homebrew 之前跑 `require-tests`；测试失败时禁止再发正式下载。本机收尾脚本不依赖云端排队，但仍执行同等 ci-test + 干净安装门禁。Linux 矩阵也必须装 `tmux`（不要只在 macOS 步 `brew install`）——缺了会整组「按回车托管」用例停在静态预览上假失败。
 
 **SessKit 尚未上 PyPI（2026-09-11）**：`pyproject.toml` 只写 `sesskit>=…`（给 Homebrew 离线解析）；真正的安装包地址与 sha256 在 `scripts/sesskit_dep.py`。CI（含 `preflight`）、`install.sh`、`homebrew_formula.py` 都必须读这份 pin——禁止只在 workflow 里临时 `pip install git+…`。升级 SessKit 时改 pin、跑 `python3 scripts/sesskit_dep.py verify`，再发依赖它的 Corral。
 
