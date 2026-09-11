@@ -47,8 +47,8 @@ DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Kimi
 # （可借助 `brew update-python-resources` / homebrew-pypi-poet 生成）。
 # sesskit：会话解析真源（尚未上 PyPI 时从 GitHub Release 拉 sdist）。
 RESOURCES = """  resource "sesskit" do
-    url "https://github.com/x0c/sesskit/releases/download/v0.1.0/sesskit-0.1.0.tar.gz"
-    sha256 "b10346b7eb6608e9b4b58c2ac5f19ebcf2287a7e02fc0cabbe81218f9700d4e2"
+    url "https://github.com/x0c/sesskit/releases/download/v0.1.1/sesskit-0.1.1.tar.gz"
+    sha256 "f1fb2bfa995efa0a6c71b6b3712275d96baec195ca3774091c82caa4bddb3e3b"
   end
 
   resource "linkify-it-py" do
