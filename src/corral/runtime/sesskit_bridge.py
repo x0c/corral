@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from sesskit.models import ConversationMessage, SessionInfo
 from sesskit.registry import ConversationLoadError, load_session_conversation
