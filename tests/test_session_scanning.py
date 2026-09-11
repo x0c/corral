@@ -3662,7 +3662,10 @@ class TuiLayoutTests(unittest.TestCase):
         runtime.scan_signature.return_value = None
         runtime.scan_sessions.side_effect = [first, second]
         registry = corral.RuntimeRegistry((runtime,))
-        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+        with (
+            mock.patch.object(corral.titles, "load_cache", return_value={}),
+            mock.patch.object(corral.liveness, "list_managed_hosts", return_value=[]),
+        ):
             store = corral.SessionStore(limit=20, registry=registry)
             store.load()
             self.assertEqual([s["id"] for s in store.all_sessions()], ["keep"])

@@ -44,12 +44,14 @@ class OpenCodeRuntime(BaseRuntime):
         return scan_opencode.scan_signature()
 
     def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
-        return scan_opencode.scan_sessions(limit=limit)
+        from corral.runtime.sesskit_bridge import call_scan
+
+        return call_scan(scan_opencode.scan_sessions, limit=limit, keep_ids=keep_ids)
 
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:
-        return scan_opencode.load_conversation(
-            str(session.get("path") or ""), str(session.get("id") or "")
-        )
+        from corral.runtime.sesskit_bridge import load_runtime_conversation
+
+        return load_runtime_conversation(session)
 
     def delete_session(self, session: SessionInfo) -> None:
         scan_opencode.delete_session(

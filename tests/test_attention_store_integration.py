@@ -60,10 +60,13 @@ class SessionStoreAttentionTests(unittest.TestCase):
             side_effect=lambda session, cache: (session["fallback_title"], False),
         )
         self.keepalive_patch = mock.patch("corral.store.liveness.annotate")
+        self.hosts_patch = mock.patch("corral.store.liveness.list_managed_hosts", return_value=[])
         self.title_patch.start()
         self.keepalive = self.keepalive_patch.start()
+        self.hosts_patch.start()
 
     def tearDown(self):
+        self.hosts_patch.stop()
         self.keepalive_patch.stop()
         self.title_patch.stop()
         self.temp.cleanup()

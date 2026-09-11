@@ -511,7 +511,8 @@ class SessionStore:
                     continue
             try:
                 display = self.registry.get(runtime_id).display_name
-            except KeyError:
+            except (AttributeError, KeyError):
+                # Test doubles and minimal registries may omit ``get``; never crash merge.
                 display = runtime_id
             self.register_hosted_session(
                 runtime_id=runtime_id,

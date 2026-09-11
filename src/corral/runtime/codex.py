@@ -23,10 +23,14 @@ class CodexRuntime(BaseRuntime):
         return scan_codex.scan_signature()
 
     def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
-        return scan_codex.scan_sessions(limit=limit)
+        from corral.runtime.sesskit_bridge import call_scan
+
+        return call_scan(scan_codex.scan_sessions, limit=limit, keep_ids=keep_ids)
 
     def load_conversation(self, session: SessionInfo) -> list[ConversationMessage]:
-        return scan_codex.load_conversation(str(session.get("path") or ""))
+        from corral.runtime.sesskit_bridge import load_runtime_conversation
+
+        return load_runtime_conversation(session)
 
     def delete_session(self, session: SessionInfo) -> None:
         scan_codex.delete_session(str(session.get("path") or ""))

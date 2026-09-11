@@ -20,6 +20,8 @@
 
 > **2026-09-10**：本机助手历史的格式解析与统一 transcript **真源在开源库 SessKit**（`sesskit` 包 / `~/Codes/SessKit`）。Corral 的 `cli/src/corral/scan/<runtime>.py` 用 `sys.modules[__name__] = sesskit.parsers.<runtime>` **模块别名**挂接——必须是同一模块对象，测试里对 `SESSIONS_DIR` 等全局的 monkeypatch 才会生效；禁止只做 `from sesskit.parsers.x import *`（函数仍绑定 SessKit 模块全局，补丁打在 Corral 包名上会失效）。**Pi live / claim 绑定测试**还须补丁别名模块上的 `scan_pi.pi_identity`（即 `sesskit.pi_claims`），不要只补丁 `corral.pi_identity`——扫描路径读的是前者。产品层（TUI、判活编排、接力、远程）仍在本仓。改解析口径先改 SessKit。
 
+> **2026-09-11**：运行时适配器经 `corral.runtime.sesskit_bridge` 调用 SessKit 的 `load_session_conversation`（与 SessKit CLI 同一入口）。Corral 对缺失历史仍软失败返回空列表；SessKit CLI 则报错。扫描默认仍过滤「项目目录已删」的会话（恢复列表）；归档检索用 SessKit 的 `--include-missing-cwd` / `include_missing_cwd=True`，Corral 不要打开该开关。
+
 corral 的会话扫描负责从本机已安装助手的私有历史中读取可恢复会话，转换成统一的**会话列表项**（`SessionInfo`），供主界面、只读查询和接力编排复用。扫描是只读的：不修改历史、不启动助手，也不把历史同步到业务数据库或远程服务。
 
 本域服务两个用户可见目标：
