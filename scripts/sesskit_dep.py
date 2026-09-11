@@ -48,8 +48,14 @@ def homebrew_resource_block() -> str:
 
 def _sha256_url(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "corral-sesskit-dep"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return hashlib.sha256(resp.read()).hexdigest()
+    last_err: Exception | None = None
+    for _ in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return hashlib.sha256(resp.read()).hexdigest()
+        except Exception as exc:  # noqa: BLE001 - retry transient CDN/TLS blips
+            last_err = exc
+    raise RuntimeError(f"download failed: {url} ({last_err})")
 
 
 def verify_published_digests() -> None:
