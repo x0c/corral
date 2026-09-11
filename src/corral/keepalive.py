@@ -116,6 +116,14 @@ def _tmux_config() -> str:
     term = _resolve_default_terminal()
     # Comments stay ASCII: a ``C`` locale on minimal CI images has historically
     # made non-ASCII conf text a footgun for server startup failures.
+    #
+    # Do NOT put ``set -g window-size manual`` in this startup file. On Ubuntu's
+    # packaged tmux 3.4 (GitHub ubuntu-latest), that line makes the server die
+    # immediately with ``server exited unexpectedly`` before any session runs
+    # (2026-09-11 CI bisect: bare ``-f /dev/null`` OK; adding only that option
+    # fails). ``latest`` / ``largest`` in-conf are fine; ``manual`` must be
+    # applied after the server is up — via the hook below and
+    # ``embed._ensure_manual_window_size``.
     return f"""\
 # Corral keepalive tmux config. Only used with `tmux -L corral-keepalive`.
 # Does not read or affect the user's ~/.tmux.conf.
@@ -126,9 +134,9 @@ set -g default-terminal "{term}"
 set -ga terminal-overrides ",*256col*:Tc"
 # Embedded panes never attach a visual client; only capture. Control mode
 # `tmux -C attach` often reports 80x24. With window-size latest that shrinks
-# the hosted window while the split cell stays full width. Use manual so only
-# embed.resize-window changes size.
-set -g window-size manual
+# the hosted window while the split cell stays full width. Apply manual after
+# the server is up (see comment above — not as a startup ``set -g``).
+set-hook -g after-new-session "set -g window-size manual"
 setw -g aggressive-resize off
 set -sg escape-time 0
 set -g history-limit 10000

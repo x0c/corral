@@ -326,7 +326,10 @@ class SessionIoTests(unittest.TestCase):
         from corral import keepalive
 
         config = keepalive._tmux_config()
-        self.assertIn("set -g window-size manual", config)
+        # Startup ``set -g window-size manual`` crashes Ubuntu tmux 3.4; use a
+        # post-create hook instead (plus embed._ensure_manual_window_size).
+        self.assertNotRegex(config, r"(?m)^set -g window-size manual$")
+        self.assertIn('set-hook -g after-new-session "set -g window-size manual"', config)
         self.assertNotIn("set -g window-size latest", config)
         self.assertRegex(config, r'set -g default-terminal "[^"]+"')
 
