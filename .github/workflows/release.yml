@@ -13,7 +13,54 @@ permissions:
   contents: write
 
 jobs:
+  # 发布不得在测试仍失败时更新正式下载与 Homebrew。核对「同一提交」上的 test
+  # 工作流已成功；本机 publish-release.sh 另有同源 ci-test 门禁。
+  require-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require successful test workflow for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "Looking for successful test run on ${sha}"
+          # Prefer an already-green run on this exact SHA (push to main before tagging).
+          # Fall back: if none yet, wait briefly — tag push can race the branch test.
+          deadline=$((SECONDS + 420))
+          while true; do
+            conclusion="$(
+              gh api "repos/${{ github.repository }}/actions/workflows/test.yml/runs?head_sha=${sha}&status=completed&per_page=20" \
+                --jq '[.workflow_runs[] | select(.conclusion=="success")] | first | .conclusion // empty'
+            )"
+            if [ "$conclusion" = "success" ]; then
+              echo "Found successful test workflow for ${sha}"
+              exit 0
+            fi
+            in_progress="$(
+              gh api "repos/${{ github.repository }}/actions/workflows/test.yml/runs?head_sha=${sha}&per_page=10" \
+                --jq '[.workflow_runs[] | select(.status!="completed")] | length'
+            )"
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::No successful test.yml run for commit ${sha}. Refuse to release."
+              gh api "repos/${{ github.repository }}/actions/workflows/test.yml/runs?head_sha=${sha}&per_page=10" \
+                --jq '.workflow_runs[] | "\(.id) \(.status) \(.conclusion) \(.html_url)"' || true
+              exit 1
+            fi
+            if [ "${in_progress:-0}" -gt 0 ]; then
+              echo "Test still running for ${sha}; waiting…"
+            else
+              echo "No successful test yet for ${sha}; waiting in case a run is queued…"
+            fi
+            sleep 20
+          done
+
   wheels:
+    needs: require-tests
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +87,7 @@ jobs:
           path: dist/*.whl
 
   source:
+    needs: require-tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

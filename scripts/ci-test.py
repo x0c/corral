@@ -105,6 +105,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="只跑 ruff check（推送前门禁）；不加则再跑全量单测",
     )
     parser.add_argument(
+        "--skip-lint",
+        action="store_true",
+        help="跳过 ruff（CI 矩阵已在独立 Lint 步跑过时用）",
+    )
+    parser.add_argument(
         "--check-stamp",
         action="store_true",
         help="只判断本工作区是否刚跑过完整检查（不跑 lint/单测）",
@@ -126,11 +131,19 @@ def main(argv: list[str] | None = None) -> int:
         print("完整检查戳缺失或产品代码已改", file=sys.stderr)
         return 1
 
-    lint_code = _run_ruff()
-    if lint_code != 0:
-        return lint_code
-    if args.lint_only:
-        return 0
+    if args.lint_only and args.skip_lint:
+        print("错误：--lint-only 与 --skip-lint 不能同时使用", file=sys.stderr)
+        return 2
+
+    if not args.skip_lint:
+        lint_code = _run_ruff()
+        if lint_code != 0:
+            return lint_code
+        if args.lint_only:
+            return 0
+    elif args.lint_only:
+        print("错误：--lint-only 与 --skip-lint 不能同时使用", file=sys.stderr)
+        return 2
 
     # Keep developer keepalive panes out of SessionStore unit fixtures.
     os.environ.setdefault("CORRAL_ISOLATE_MANAGED_HOSTS", "1")

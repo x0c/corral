@@ -40,16 +40,18 @@ import re
 import sys
 import urllib.request
 
+_SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+import sesskit_dep
+
 DESC = "Terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Kimi Code, Cursor, and Pi"
 
 # 纯 Python 运行时依赖（textual 及其传递依赖）。Homebrew 安装阶段禁止联网，
 # 每个依赖都要一个 resource 块（下载地址 + sha256）。依赖升级时同步改这里
 # （可借助 `brew update-python-resources` / homebrew-pypi-poet 生成）。
-# sesskit：会话解析真源（尚未上 PyPI 时从 GitHub Release 拉 sdist）。
-RESOURCES = """  resource "sesskit" do
-    url "https://github.com/x0c/sesskit/releases/download/v0.1.1/sesskit-0.1.1.tar.gz"
-    sha256 "f1fb2bfa995efa0a6c71b6b3712275d96baec195ca3774091c82caa4bddb3e3b"
-  end
+# sesskit：真源在 scripts/sesskit_dep.py（与 CI / install.sh 同一份 pin）。
+RESOURCES = f"""{sesskit_dep.homebrew_resource_block()}
 
   resource "linkify-it-py" do
     url "https://files.pythonhosted.org/packages/2e/c9/06ea13676ef354f0af6169587ae292d3e2406e212876a413bf9eece4eb23/linkify_it_py-2.1.0.tar.gz"

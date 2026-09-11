@@ -39,6 +39,24 @@ fi
 
 echo "正在安装 corral ${VERSION} ..."
 VERSION_NUMBER="${VERSION#v}"
+
+# SessKit 尚未上 PyPI：与 CI / Homebrew 共用 scripts/sesskit_dep.py 的固定 Release。
+# 必须先于 corral wheel 安装，否则 pip 会在 PyPI 上找不到 sesskit 而失败。
+SESSKIT_REQ=""
+if [ -n "${CORRAL_SESSKIT_REQUIREMENT:-}" ]; then
+  SESSKIT_REQ="$CORRAL_SESSKIT_REQUIREMENT"
+elif command -v python3 >/dev/null 2>&1; then
+  # 从正在安装的 tag 源码树读 pin；一键 curl|bash 时本机没有 scripts/，则走下方默认 URL。
+  if [ -f "$(dirname "$0")/scripts/sesskit_dep.py" ]; then
+    SESSKIT_REQ="$(python3 "$(dirname "$0")/scripts/sesskit_dep.py" wheel-requirement)"
+  fi
+fi
+if [ -z "$SESSKIT_REQ" ]; then
+  SESSKIT_REQ="sesskit @ https://github.com/x0c/sesskit/releases/download/v0.1.1/sesskit-0.1.1-py3-none-any.whl#sha256=2d73dfd7ed343b7b45c1ad5a9d8d691a920211cbec634522138a12aafeeed242"
+fi
+echo "正在安装依赖 sesskit ..."
+python3 -m pip install --user --upgrade "$SESSKIT_REQ"
+
 MACHINE=$(uname -m)
 case "$MACHINE" in
   x86_64|amd64) ARCH="x86_64" ;;

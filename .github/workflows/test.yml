@@ -14,7 +14,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 快速门禁：依赖可下载、版本文件可解析、格式正确。整矩阵装不上时不必占满七组 runner。
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify SessKit pin and package metadata
+        run: |
+          set -euo pipefail
+          python3 scripts/sesskit_dep.py verify
+          python3 - <<'PY'
+          import pathlib, re, tomllib
+          root = pathlib.Path(".")
+          data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+          version = data["project"]["version"]
+          assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
+          init = (root / "src/corral/__init__.py").read_text(encoding="utf-8")
+          m = re.search(r'^__version__\s*=\s*"([^"]+)"', init, re.M)
+          assert m and m.group(1) == version, (m.group(1) if m else None, version)
+          cargo = (root / "Cargo.toml").read_text(encoding="utf-8")
+          cm = re.search(r'^version\s*=\s*"([^"]+)"', cargo, re.M)
+          assert cm and cm.group(1) == version, (cm.group(1) if cm else None, version)
+          deps = data["project"]["dependencies"]
+          assert any(d.startswith("sesskit>=") for d in deps), deps
+          print(f"ok metadata {version}")
+          PY
+          python3 -m pip install -q "$(python3 scripts/sesskit_dep.py wheel-requirement)"
+          python3 -c "import sesskit; print('ok', getattr(sesskit, '__version__', '?'))"
+      - name: Lint
+        run: |
+          python3 -m pip install -q ruff==0.16.1
+          ruff check src tests
+
   python:
+    needs: preflight
     runs-on: ${{ matrix.os }}
     # 单测正常十分钟量级。没有这行时，挂死的作业会一直占着 runner 到平台 6 小时
     # 上限——macOS 免费并发少，两个僵尸作业就能把后面的排队拖到十几小时。
@@ -42,19 +79,23 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install tmux
       - name: Install project and runtime dependencies
-        # 带上 remote 附加组件：手机端接力的加密与传输层有单测，缺了会整组跳过，
-        # 那等于这条链路在 CI 上没人看着。
-        run: python -m pip install ".[remote]"
+        # SessKit 尚未上 PyPI：先按 scripts/sesskit_dep.py 的固定 Release 安装，
+        # 再装本项目；带上 remote 附加组件，手机接力单测才不会整组跳过。
+        run: |
+          set -euo pipefail
+          python -m pip install "$(python scripts/sesskit_dep.py wheel-requirement)"
+          python -m pip install ".[remote]"
       - name: Compile
         run: python -m compileall -q src/corral tests
       - name: Lint
         # 固定版本号，避免 ruff 自行升级后规则集变化在 CI 上悄悄多出新的拦截项。
+        # preflight 已跑过一遍；矩阵再跑一次挡住「只改某 Python 路径」的回归。
         run: |
           python -m pip install ruff==0.16.1
           ruff check src tests
       - name: Test
         # 走 scripts/ci-test.py 而不是裸 unittest：挂死时自动打印全部线程栈，
         # 已知 Pilot 偶发自动重跑一次再判定。说明见该脚本头部注释。
-        run: python scripts/ci-test.py
+        run: python scripts/ci-test.py --skip-lint
       - name: Verify native accelerator
         run: python -c "from corral.native import available; assert available()"

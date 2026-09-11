@@ -3540,17 +3540,28 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                     [(s, s["keepalive_name"], None) for s in sessions],
                 )
                 await _wait_until(lambda: len(area.cells()) == MAX_PANES)
-                await pilot.pause(delay=0.05)
 
-                expected = [
-                    (
-                        str(cell.spec.keepalive_name),
-                        cell.embed_pane().size.width,
-                        cell.embed_pane().size.height,
-                    )
-                    for cell in area.cells()
-                    if cell.embed_pane() is not None
-                ]
+                def _expected() -> list[tuple[str, int, int]]:
+                    return [
+                        (
+                            str(cell.spec.keepalive_name),
+                            cell.embed_pane().size.width,
+                            cell.embed_pane().size.height,
+                        )
+                        for cell in area.cells()
+                        if cell.embed_pane() is not None
+                    ]
+
+                # 等布局落定且 resize 已对齐最终格宽；固定短 pause 在 macOS CI 上
+                # 会在控件仍持旧宽时取样，误把中间态当成产品错误。
+                def _resizes_match_layout() -> bool:
+                    expected_now = _expected()
+                    if not expected_now or any(width < 40 for _, width, _ in expected_now):
+                        return False
+                    return sorted(resize_calls) == sorted(expected_now)
+
+                await _wait_until(_resizes_match_layout, tries=200)
+                expected = _expected()
                 self.assertTrue(
                     all(width >= 40 for _, width, _ in expected),
                     f"test fixture panes must be >= MIN_HOST_WIDTH: {expected}",

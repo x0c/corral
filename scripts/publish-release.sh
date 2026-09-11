@@ -64,6 +64,15 @@ else
     || die "CI 同源检查未过，禁止发版收尾"
 fi
 
+# 干净环境安装：证明不依赖本机 editable SessKit / PYTHONPATH。
+if [ "${CORRAL_SKIP_CLEAN_INSTALL:-0}" = "1" ]; then
+  echo "==> 跳过干净环境安装检查（CORRAL_SKIP_CLEAN_INSTALL=1）"
+else
+  echo "==> 干净环境安装检查"
+  python3 scripts/verify_clean_install.py --with-remote \
+    || die "干净环境装不上，禁止发版收尾"
+fi
+
 git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null \
   || die "本地没有 ${TAG} 标签，先打好标签再跑本脚本"
 git ls-remote --exit-code --tags github "refs/tags/${TAG}" >/dev/null 2>&1 \

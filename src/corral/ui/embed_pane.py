@@ -519,10 +519,23 @@ class EmbedPane(Widget):
             self._detail_stick_bottom = False
         self.invalidate_detail()
         channel = embed.open_channel(name, on_output=self._on_pane_output)
-        pane_w, pane_h = target_size or self._pane_size()
+        # 格数变化时调用方必须传入投影后的最终尺寸。若缺投影（行宽尚未量到），
+        # 禁止用控件上仍残留的旧半宽立刻 resize——否则会把 2 格时的宽烧进
+        # 4 格布局，macOS CI 上 `test_pane_count_change_resizes_once_…` 即此根因。
+        if target_size is not None:
+            pane_w, pane_h = target_size
+        elif discard_stale_screen:
+            pane_w = pane_h = 0
+        else:
+            pane_w, pane_h = self._pane_size()
         # 过窄时不 resize：布局尚未稳定或用户把终端缩得很小时，避免 agent
         # 按几列硬换行写进 scrollback（恢复宽度后往上滚仍会看到窄条历史）。
-        if resize_immediately and embed.should_resize_host(pane_w, pane_h):
+        if (
+            resize_immediately
+            and pane_w > 0
+            and pane_h > 0
+            and embed.should_resize_host(pane_w, pane_h)
+        ):
             self._resize_host(name, pane_w, pane_h)
         # 终端背景色注入：此后 pane 内 agent 的 OSC 11 查询由 tmux 按真实值应答，
         # 深/浅主题自动检测才不会瞎猜（tmux 默认不应答 pane 内的查询）。
