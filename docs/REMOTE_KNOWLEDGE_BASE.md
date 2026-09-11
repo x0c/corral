@@ -51,7 +51,7 @@
 
 常用方法前缀：
 
-- 只读：`sessions.*` / `session.messages` / `session.prompts` / `projects.list` / `runtimes.list` / `search`
+- 只读：`sessions.*` / `session.messages` / `session.toolDetail` / `session.prompts` / `projects.list` / `runtimes.list` / `search`
 - 订阅：`sessions.watch`、`session.watch`、`screen.watch`（事件通道 `sessions` / `session:<key>` / `screen:<key>`）
 - 输入：`input.text` / `input.keys` / `input.image`
 - 命令回执（可选能力）：`command.status`
@@ -69,7 +69,9 @@
 | `session.markRead` | `{"attention": "none\|unread\|working\|waiting"}` |
 | `projects.list` | `{"projects":[{"path","name","cwd","label","count","mtime"}, …]}`（`path`/`name` 给 iOS 新建页；`cwd`/`label` 与桌面项目列表同义） |
 | `runtimes.list` | `{"runtimes":[{"id","name","available"}, …]}` |
-| `hello` | 含 `paired` / `runtimes`（未配对为空）以及 **`relay_url` / `relay_enabled` / `local_enabled`**（未配对也返回；关中继时 `relay_url` 为空串）。另带稳定进程级 `host_run_id`。`capabilities` **增加** `"planes": ["control", "data"]` 与 `"command_receipts": true`（旧客户端忽略未知字段）。请求带 `"want_data_plane": true` 时额外给一次性 `"data_bind"`；带 `"want_command_receipts": true` 时本连接启用回执路径（`input.*` 须带 `command_id`，可选 `payload_digest` / `lease_sec`）。不带这些字段的旧客户端行为与今天完全一致。数据面第二条 WebSocket 独立握手后 `hello`：`{"plane":"data","bind":"<token>","name":...}`。令牌绑定设备公钥、TTL ≤ 120 秒、一次性；校验失败只关数据通道，不得踢控制面。 |
+| `hello` | 含 `paired` / `runtimes`（未配对为空）以及 **`relay_url` / `relay_enabled` / `local_enabled`**（未配对也返回；关中继时 `relay_url` 为空串）。另带稳定进程级 `host_run_id`。`capabilities` **增加** `"planes": ["control", "data"]`、`"command_receipts": true` 与 **`"tool_detail": true`**（历史线只带工具摘要，正文经 `session.toolDetail` 按需取；旧客户端忽略未知字段）。请求带 `"want_data_plane": true` 时额外给一次性 `"data_bind"`；带 `"want_command_receipts": true` 时本连接启用回执路径（`input.*` 须带 `command_id`，可选 `payload_digest` / `lease_sec`）。不带这些字段的旧客户端行为与今天完全一致。数据面第二条 WebSocket 独立握手后 `hello`：`{"plane":"data","bind":"<token>","name":...}`。令牌绑定设备公钥、TTL ≤ 120 秒、一次性；校验失败只关数据通道，不得踢控制面。 |
+| `session.messages` / `session.watch` 首包 | `{"messages":[...], "oldest_seq", "newest_seq", "has_more", "generation", …}`。每条消息里的 `tools` **只含摘要**（`id`/`name`/`kind`/`summary`/`status`/`has_detail`；提问可另带 `options`/`questions`/`detail`），**不内嵌**工具 `output` 与普通工具 `detail`。 |
+| `session.toolDetail` | `{"seq", "tools":[<含 detail/output 的完整工具>], "offset", "has_more", "total"}`；找不到消息时带诚实的 `unavailable`。参数：`key`、`seq`，可选 `tool_id` / `offset` / `limit`。 |
 | `sessions.list` / `sessions.watch` | `{"sessions":[...],"version":"<窗指纹>","unchanged":false,"has_more":bool,"total":int}`。请求可带 `since_version`；版本相同则 `unchanged=true` 且**不带** `sessions`。旧手机忽略多余字段仍读 `sessions`。**禁止**把未变回包当成空表覆盖。列表窗口与截断规则见 `docs/design/MOBILE_REMOTE_DATA_PLANE_DESIGN.md` §4.5 |
 
 画面帧字段见 `remote/screen.py` 的 `to_dict()`：`cols/rows/full/lines/cursor/history/status`。`status` 取画面最后一行有内容的文本，供手机对话页做实时状态条（历史文件可能长时间不落盘）。

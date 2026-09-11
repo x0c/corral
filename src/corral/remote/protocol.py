@@ -196,6 +196,8 @@ CAPABILITY_PLANES = [PLANE_CONTROL, PLANE_DATA]
 DATA_BIND_TTL_SEC = 120              # data_bind 最长存活秒数；一次性且绑定设备公钥
 # Durable input receipts (Slice A). Host advertises; client opts in with want_command_receipts.
 CAPABILITY_COMMAND_RECEIPTS = "command_receipts"
+# History wire omits tool bodies; client fetches via session.toolDetail when needed.
+CAPABILITY_TOOL_DETAIL = "tool_detail"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -205,6 +207,7 @@ M_SESSIONS_WATCH = "sessions.watch"
 M_SESSIONS_UNWATCH = "sessions.unwatch"
 M_SESSION_GET = "session.get"
 M_SESSION_MESSAGES = "session.messages"
+M_SESSION_TOOL_DETAIL = "session.toolDetail"
 M_SESSION_PROMPTS = "session.prompts"
 M_SESSION_WATCH = "session.watch"
 M_SESSION_UNWATCH = "session.unwatch"

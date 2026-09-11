@@ -926,6 +926,35 @@ class SessionHub:
             scoped = [item for item in transcript.messages if item.seq < before_seq]
             self._persist_transcript(transcript)
 
+    def tool_detail(
+        self,
+        key: str,
+        *,
+        seq: int,
+        tool_id: str | None = None,
+        offset: int = 0,
+        limit: int = 32,
+    ) -> dict:
+        """On-demand tool bodies for one history message (not first-paint path)."""
+        session = self.require_session(key)
+        transcript = self._ensure_transcript(session)
+        target = next((item for item in transcript.messages if item.seq == seq), None)
+        if target is None:
+            # Message may sit earlier than the current window; fill toward seq.
+            with self._transcript_io:
+                self._fill_earlier(transcript, seq + 1, max(1, limit))
+            target = next((item for item in transcript.messages if item.seq == seq), None)
+        if target is None:
+            return {
+                "seq": seq,
+                "tools": [],
+                "offset": 0,
+                "has_more": False,
+                "total": 0,
+                "unavailable": "message_not_loaded",
+            }
+        return target.tool_detail_page(tool_id=tool_id, offset=offset, limit=limit)
+
     def prompts(self, key: str) -> list[dict]:
         """当前仍待回答的提问型工具调用（含可点选项列表）。"""
         session = self.require_session(key)

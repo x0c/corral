@@ -594,6 +594,7 @@ class RemoteService:
                 "message_page_limit_max": MESSAGE_PAGE_LIMIT_MAX,
                 "planes": list(protocol.CAPABILITY_PLANES),
                 protocol.CAPABILITY_COMMAND_RECEIPTS: True,
+                protocol.CAPABILITY_TOOL_DETAIL: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -654,6 +655,17 @@ class RemoteService:
 
     def _session_prompts(self, connection: Connection, params: dict):
         return {"prompts": self.hub.prompts(_key(params))}
+
+    def _session_tool_detail(self, connection: Connection, params: dict):
+        tool_raw = params.get("tool_id")
+        tool_id = None if tool_raw is None or tool_raw == "" else str(tool_raw)
+        return self.hub.tool_detail(
+            _key(params),
+            seq=_int_param(params, "seq", 0),
+            tool_id=tool_id,
+            offset=_int_param(params, "offset", 0),
+            limit=_int_param(params, "limit", 32, max_value=32),
+        )
 
     def _session_watch(self, connection: Connection, params: dict):
         key = _key(params)
@@ -960,6 +972,7 @@ def protocol_version() -> int:
 _DATA_PAYLOAD_METHODS = frozenset(
     {
         protocol.M_SESSION_MESSAGES,
+        protocol.M_SESSION_TOOL_DETAIL,
         protocol.M_SESSION_GET,
         protocol.M_SESSION_WATCH,
         protocol.M_SCREEN_WATCH,
@@ -974,6 +987,7 @@ _HANDLERS = {
     protocol.M_SESSIONS_UNWATCH: RemoteService._sessions_unwatch,
     protocol.M_SESSION_GET: RemoteService._session_get,
     protocol.M_SESSION_MESSAGES: RemoteService._session_messages,
+    protocol.M_SESSION_TOOL_DETAIL: RemoteService._session_tool_detail,
     protocol.M_SESSION_PROMPTS: RemoteService._session_prompts,
     protocol.M_SESSION_WATCH: RemoteService._session_watch,
     protocol.M_SESSION_UNWATCH: RemoteService._session_unwatch,

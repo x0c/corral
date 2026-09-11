@@ -297,6 +297,64 @@ class SessionHubPayloadTests(unittest.TestCase):
         self.assertEqual([item["seq"] for item in earlier["messages"]], [1, 2, 3])
         self.assertFalse(earlier["has_more"])
 
+    def test_tool_detail_returns_bodies_omitted_from_wire(self) -> None:
+        path = Path(self._tmp.name) / "claude-tools.jsonl"
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "uuid": "a1",
+                            "message": {
+                                "role": "assistant",
+                                "content": [
+                                    {"type": "text", "text": "改完了"},
+                                    {
+                                        "type": "tool_use",
+                                        "id": "toolu_1",
+                                        "name": "Bash",
+                                        "input": {"command": "echo hello"},
+                                    },
+                                ],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "uuid": "u1",
+                            "message": {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": "toolu_1",
+                                        "content": "hello\n",
+                                    }
+                                ],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        session = _session(sid="tools")
+        session["path"] = str(path)
+        with mock.patch.object(self.hub, "require_session", return_value=session):
+            page = self.hub.message_page("claude:tools")
+            wire_tools = page["messages"][0].get("tools") or []
+            self.assertTrue(wire_tools)
+            self.assertNotIn("output", wire_tools[0])
+            seq = page["messages"][0]["seq"]
+            detail = self.hub.tool_detail("claude:tools", seq=seq)
+        self.assertGreaterEqual(detail["total"], 1)
+        self.assertIn("hello", detail["tools"][0].get("output", ""))
+
     def test_opening_session_parses_history_once(self) -> None:
         path = Path(self._tmp.name) / "claude.jsonl"
         path.write_text(

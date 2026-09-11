@@ -672,6 +672,45 @@ class RichmsgSerializationTests(unittest.TestCase):
         restored = richmsg.ToolCall.from_dict(data)
         self.assertEqual(restored.question_groups[1]["options"], ["Cursor", "Pi"])
 
+    def test_to_wire_dict_omits_tool_bodies(self) -> None:
+        tool = richmsg.ToolCall(
+            call_id="t1",
+            name="Bash",
+            kind="bash",
+            summary="ls",
+            detail="ls -la /tmp",
+            output="file1\nfile2\n" * 40,
+            status="ok",
+        )
+        message = richmsg.RichMessage(seq=3, role="assistant", text="done", tools=[tool])
+        wire = message.to_wire_dict()
+        self.assertEqual(wire["text"], "done")
+        summary = wire["tools"][0]
+        self.assertEqual(summary["id"], "t1")
+        self.assertTrue(summary["has_detail"])
+        self.assertNotIn("output", summary)
+        self.assertNotIn("detail", summary)
+        detail_page = message.tool_detail_page(tool_id="t1")
+        self.assertEqual(detail_page["total"], 1)
+        self.assertIn("file1", detail_page["tools"][0]["output"])
+        self.assertEqual(detail_page["tools"][0]["detail"], "ls -la /tmp")
+
+    def test_question_summary_keeps_detail_for_prompts(self) -> None:
+        tool = richmsg.ToolCall(
+            call_id="q1",
+            name="Ask",
+            kind="question",
+            summary="pick",
+            detail="Which path?",
+            options=["A", "B"],
+            status="running",
+        )
+        summary = tool.to_summary_dict()
+        self.assertEqual(summary["detail"], "Which path?")
+        self.assertEqual(summary["options"], ["A", "B"])
+        self.assertTrue(summary["has_detail"])
+
+
 class RichmsgIncrementalTests(unittest.TestCase):
     def test_codex_tool_result_is_reemitted_on_poll(self) -> None:
         """增量轮询时结果回填必须再推宿主消息，否则手机工具卡永远停在 running。"""

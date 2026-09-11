@@ -61,6 +61,33 @@ class ToolCall:
     # 一次询问里的多道题；有值时不要再读摊平后的 options。
     question_groups: list[dict] = field(default_factory=list)
 
+    def has_body(self) -> bool:
+        """Whether detail/output exist server-side (for on-demand fetch)."""
+        return bool(self.detail) or bool(self.output)
+
+    def to_summary_dict(self) -> dict:
+        """History-wire shape: identity + status, no tool bodies.
+
+        Keep options/questions so live prompts stay actionable without a second
+        round trip. Bodies (detail/output) load via session.toolDetail.
+        """
+        data = {
+            "id": self.call_id,
+            "name": self.name,
+            "kind": self.kind,
+            "summary": self.summary,
+            "status": self.status,
+            "has_detail": self.has_body(),
+        }
+        if self.options:
+            data["options"] = self.options
+        if self.question_groups:
+            data["questions"] = self.question_groups
+        # Active questions need the prompt body with the options UI.
+        if self.kind in QUESTION_KINDS and self.detail:
+            data["detail"] = self.detail[:_MAX_DETAIL]
+        return data
+
     def to_dict(self) -> dict:
         data = {
             "id": self.call_id,
@@ -68,6 +95,7 @@ class ToolCall:
             "kind": self.kind,
             "summary": self.summary,
             "status": self.status,
+            "has_detail": self.has_body(),
         }
         if self.detail:
             data["detail"] = self.detail
@@ -83,6 +111,7 @@ class ToolCall:
     def from_dict(cls, data: dict) -> ToolCall:
         options = data.get("options")
         groups = data.get("questions")
+        # has_detail is wire metadata only; bodies live in detail/output when present.
         return cls(
             call_id=str(data.get("id") or ""),
             name=str(data.get("name") or "tool"),
@@ -144,15 +173,56 @@ class RichMessage:
         )
 
     def to_wire_dict(self) -> dict:
-        """生成移动端载荷；工具细节只保留有限窗口，避免一条消息撑爆整帧。"""
-        data = self.to_dict()
-        tools = data.get("tools")
-        if not isinstance(tools, list) or len(tools) <= _MAX_WIRE_TOOLS:
+        """Mobile history payload: text + tool summaries, not tool bodies.
+
+        Tool detail/output are fetched on demand via session.toolDetail so a
+        tool-heavy turn does not inflate first paint.
+        """
+        data: dict = {"seq": self.seq, "role": self.role}
+        if self.text:
+            data["text"] = self.text[:_MAX_TEXT]
+        if self.timestamp is not None:
+            data["ts"] = self.timestamp
+        if not self.tools:
+            return data
+        summaries = [tool.to_summary_dict() for tool in self.tools]
+        if len(summaries) <= _MAX_WIRE_TOOLS:
+            data["tools"] = summaries
             return data
         head = _MAX_WIRE_TOOLS - 8
-        data["tools"] = tools[:head] + tools[-8:]
-        data["tools_truncated"] = len(tools) - len(data["tools"])
+        data["tools"] = summaries[:head] + summaries[-8:]
+        data["tools_truncated"] = len(summaries) - len(data["tools"])
         return data
+
+    def tool_detail_page(
+        self,
+        *,
+        tool_id: str | None = None,
+        offset: int = 0,
+        limit: int = _MAX_WIRE_TOOLS,
+    ) -> dict:
+        """Bounded tool bodies for one message (on-demand sheet / expand)."""
+        bounded = max(1, min(limit or _MAX_WIRE_TOOLS, _MAX_WIRE_TOOLS))
+        start = max(0, offset)
+        if tool_id:
+            matched = [tool for tool in self.tools if tool.call_id == tool_id]
+            wire = [tool.to_dict() for tool in matched]
+            return {
+                "seq": self.seq,
+                "tools": wire,
+                "offset": 0,
+                "has_more": False,
+                "total": len(matched),
+            }
+        slice_tools = self.tools[start : start + bounded]
+        wire = [tool.to_dict() for tool in slice_tools]
+        return {
+            "seq": self.seq,
+            "tools": wire,
+            "offset": start,
+            "has_more": start + len(slice_tools) < len(self.tools),
+            "total": len(self.tools),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -543,8 +613,10 @@ class RichReader:
             self._read_until = None
             self.parsed_line_count = 0
             messages = self.poll()
-            unpaired = self._unmatched_results > 0
-            if (len(messages) >= limit and not unpaired) or start == 0:
+            # Prefer enough text/messages for first paint. Do not keep doubling
+            # the read window solely to pair historical tool results — bodies
+            # load on demand and unpaired tools may stay "running" until later.
+            if len(messages) >= limit or start == 0:
                 break
             if budget >= size:
                 start = 0
@@ -573,8 +645,7 @@ class RichReader:
         while True:
             start = _jsonl_aligned_start(self.path, end, budget)
             messages = self._parse_jsonl_slice(start, end)
-            unpaired = self._unmatched_results > 0
-            if (len(messages) >= limit and not unpaired) or start == 0:
+            if len(messages) >= limit or start == 0:
                 break
             if budget >= end:
                 start = 0

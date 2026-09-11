@@ -471,3 +471,53 @@ Implementation notes locked with approval: place host receipts beside existing r
 Phone hello must send `want_command_receipts: true` or receipted sends never enable. Extend `after_seq`/`generation`; do not add a second event cursor in Slice 2.
 
 <!-- 该文档整理/压缩于 2026-09-05；详细方案增补于 2026-09-10 -->
+
+## 8. Content-first history loading (2026-09-11)
+
+### 8.1 User intent and scope
+
+Existing mobile conversations must open on conversation text first. Tool call bodies are secondary and load when the user opens the existing activity sheet (or expands a card), not on first paint. Optional prefetch remains a later measurement-driven addition.
+
+### 8.2 Implemented contract (shipped)
+
+- History wire (`to_wire_dict` / `session.messages` / `session.watch`): tool rows are summaries with `has_detail`; `detail`/`output` omitted except question `detail` needed for live prompts.
+- On-demand: `session.toolDetail` (`key`, `seq`, optional `tool_id`/`offset`/`limit`) returns bounded full tool bodies. Hello advertises `capabilities.tool_detail`.
+- Host cold JSONL reads stop expanding the tail window once enough messages exist; they no longer keep doubling solely to pair historical tool results.
+- Phone: activity sheet fetches details on open; reopen cache strips tool bodies so warm paint stays text-first; one activity card per host message seq.
+
+### 8.3 User-visible loading contract
+
+| Content | Initial conversation | Subsequent loading |
+|---|---|---|
+| Recent user/assistant text | First readable window; reuse local content immediately | Earlier text near the upper boundary or on explicit request |
+| Tool activity | One stable summary per activity group: count, state, brief label, detail availability | Open existing large sheet to fetch a bounded list of tool summaries; load selected output separately |
+| Active question or approval | Small authoritative current-state payload, high priority | Keep freshness independent of historical tool output; stale cached options are not actionable |
+| Failure | Concise visible failure state/reason | Full logs on demand |
+| Images/files/large code or diffs | Dimensions/type/size and bounded preview | Visible thumbnails first; original or full body on demand |
+| All historical user prompts | No full index fetch needed for chat paint | Load when the existing prompt sheet opens; jump directly to the target context |
+
+Proposed first text window: roughly 20–40 messages with a strict 64 KiB decoded-payload budget, adjusted after measurements. This refines the larger transport ceiling in section 7.7, not an assertion that a particular message count guarantees a fast screen. A single oversized body must expose a preview plus a retrievable continuation; never silently truncate conversation text. Preserve message order and indicate omitted earlier context. A tool-only active turn still displays activity rather than a false empty conversation.
+
+Default to on-demand tool details. Optional prefetch begins only after readable text and current state are applied, for at most the visible/nearest activity group, with one cancellable request and a strict byte budget. Suspend it on weak/constrained networks, interaction backlog, page exit, or backgrounding. Do not crawl the entire history silently. Download completion must not expand a card or move the reading position.
+
+### 8.4 Ownership and work outside the first-paint path
+
+The host owns source history, normalization, stable message/tool identity, exact activity metadata when known, and source-offset/body references. Keep text/summary records separate from tool bodies in the persistent index. Build and extend the index once as source data arrives; share it across phone requests. Cold reads have byte/time/work limits and can return a smaller valid text window rather than waiting to fill a nominal count or complete remote tool pairs. Missing historical pairing must not invent success or drop user/assistant text. Giant JSONL records require incremental extraction or prebuilt offsets; stripping fields after full JSON parsing is insufficient.
+
+The phone owns the visible text window, reading anchor, draft, small summary cache, and a separately bounded detail cache. Load only the visible working set off the UI execution path; incrementally persist changed records. Keep recent text available even if tool details are evicted. Cached historical status is not evidence that a tool is still running now. Details not cached while offline show an explicit unavailable state, while existing text stays readable.
+
+Detail references bind authenticated host identity, canonical session, history generation, tool identity, and revision. Fetch by scoped opaque reference, never a client-supplied arbitrary filesystem path. Source replacement invalidates references explicitly. A detail request returns a complete bounded page, continuation, or honest unavailable/expired result; not a misleading empty success. Updates to a running tool refresh its summary revision without retransmitting unchanged output. Detail cache refresh must never replace newer live state. Snapshot-to-stream continuity and existing message cursors remain governed by section 7.5.
+
+Prioritize current user actions/state and live text, then the requested text window, then explicitly opened details, then speculative prefetch. Reserve bounded service for requested history so it cannot starve. Keep source parsing locks, host queues, both network directions, and phone decoding bounded; separate phone sockets alone do not establish relay isolation. Leaving a page cancels obsolete work and rejects late replies. Preserve end-to-end encryption and current pairing boundaries.
+
+### 8.5 Delivery order and acceptance proposal
+
+1. Establish an installed-runtime baseline: distinguish first-ever phone open, warm reopen, host-cache miss, source replacement, and weak-network cases. Time source reads/parsing, encoding, queueing, wire transfer, phone decode/cache load, and first usable paint independently; never log conversation bodies.
+2. Deliver one complete text-first path: lightweight summaries plus working on-demand detail retrieval, strict single-body bounds, bounded host cold reads, and split phone cache. Shipping summaries while detail retrieval is absent is not complete.
+3. Optimize incremental persistence, changed-message rendering, earlier-page/context jumps, thumbnail loading, and bounded prefetch where measurements justify them. Existing Markdown limits/cache and history/replay machinery are prior work to verify, not new deliverables to claim.
+
+Proposed targets reuse the healthy network conditions in section 7.11: p95 warm cached paint <=200 ms; fresh text <=2 s. Open detail shell immediately; aim for its first bounded content <=1 s on a warm connected host. Record misses separately. Holding recent text constant while increasing old tool output must not grow initial wire bytes or phone decode cost; a host without an index must demonstrate bounded initial work and explicit partial coverage rather than claiming complete history.
+
+Acceptance on iPhone Max covers all six assistants, 50/100 MiB histories, few-text/many-tool sessions, an oversized single record, incomplete tool pairs, existing warm caches, offline reopen, host identity switches, source replacement, and page exit during a detail request. Confirm readable text, usable back/input, preserved scroll position/text selection, complete retrievable detail when source exists, honest missing-detail states, and no delayed active question/approval. Report first readable paint separately from background completion.
+
+Apple references checked for this proposal: [scrollable stack performance](https://developer.apple.com/documentation/swiftui/creating-performant-scrollable-stacks/) and [SwiftUI performance diagnosis](https://developer.apple.com/documentation/Xcode/understanding-and-improving-swiftui-performance). Use measured main-thread/view costs; lazy view creation does not imply lazy data transfer. The budgets and tool-loading policy above are Corral proposals, not Apple requirements.
