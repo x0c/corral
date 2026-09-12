@@ -111,6 +111,8 @@ class _PaneClose(Static):
 # 活跃格顶/底高亮色：主题变量 = $primary-muted 再提亮约 10%（见 app.py），
 # 比纯 muted 更好辨认，仍避免高饱和蓝条抢过内嵌内容。
 _ACTIVE_PANE_BG = "$pane-active-background"
+# 未选中顶/底条与 Your prompts：比 $surface 略亮一档的深灰，浮在助手画布上才分得清。
+_INACTIVE_PANE_BG = "$panel"
 
 
 class _PaneHeader(Horizontal):
@@ -123,7 +125,7 @@ class _PaneHeader(Horizontal):
         margin: 0;
         padding: 0;
         color: auto 90%;
-        background: $surface;
+        background: {_INACTIVE_PANE_BG};
     }}
     _PaneHeader.-active {{
         color: auto 90%;
@@ -209,7 +211,7 @@ class _PaneFooter(Static):
         margin: 0;
         padding: 0 1;
         color: auto 70%;
-        background: $surface;
+        background: {_INACTIVE_PANE_BG};
         text-overflow: ellipsis;
     }}
     _PaneFooter.-active {{

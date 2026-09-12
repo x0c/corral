@@ -9543,26 +9543,27 @@ class SessionHudRenderTests(unittest.TestCase):
             )
             self.assertNotEqual(mixed.hex, gray_mix.hex)
 
-    def test_hud_stripe_still_paints_on_surface_chrome(self) -> None:
-        """没选中时浮层底是 `$surface`；斑马纹仍叠 `$primary`，不能消失。"""
+    def test_hud_stripe_still_paints_on_panel_chrome(self) -> None:
+        """没选中时浮层底是 `$panel`；斑马纹仍叠 `$primary`，不能消失。"""
         from textual.color import Color as TextualColor
 
         from corral.ui.session_hud import _hud_stripe_color
 
-        for bg_hex, primary_hex in (("#161B22", "#3B7EB8"), ("#E6EBF0", "#2F6F9F")):
+        for bg_hex, primary_hex in (("#1C2430", "#3B7EB8"), ("#DCE3EA", "#2F6F9F")):
             background = TextualColor.parse(bg_hex)
             primary = TextualColor.parse(primary_hex)
             mixed = _hud_stripe_color(background, primary)
             self.assertNotEqual(mixed.hex, background.hex)
 
-    def test_hud_css_uses_surface_until_active(self) -> None:
-        """未选中浮层默认 `$surface`，`-active` 才切到激活蓝条。"""
+    def test_hud_css_uses_panel_until_active(self) -> None:
+        """未选中浮层默认 `$panel`（略亮深灰），`-active` 才切到激活蓝条。"""
         from corral.ui.session_hud import SessionHud
 
         css = SessionHud.DEFAULT_CSS
-        self.assertIn("background: $surface;", css)
+        self.assertIn("background: $panel;", css)
         self.assertIn("SessionHud.-active", css)
         self.assertIn("background: $pane-active-background;", css)
+        self.assertNotIn("background: $surface;", css)
 
 
 class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
@@ -9733,7 +9734,7 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(huds[1].display)
 
     async def test_hud_background_follows_pane_chrome(self) -> None:
-        """Your prompts 底色是高光的一部分：选中蓝条，没选中跟灰条同色。"""
+        """Your prompts 底色是高光的一部分：选中蓝条，没选中跟灰条同色（面板深灰）。"""
         sessions = self._live_sessions(2)
         store, app = await self._hosted_app(sessions)
         async with app.run_test(size=(160, 30)) as pilot:
