@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 
 from corral import keepalive
 from corral.legacy_names import (
@@ -32,6 +33,10 @@ from corral.legacy_names import (
 
 _CALL_TIMEOUT = 1.5
 _MAX_ANCESTOR_DEPTH = 20
+# annotate + adopt_foreign 在同一轮合并里可能各列一次 tmux；用「本轮波次」
+# 字典去重，禁止跨刷新 / 跨单测的 TTL 缓存（否则 mock 的 list-sessions 会串味）。
+_tmux_list_wave: dict[str, list[list[str]]] | None = None
+_tmux_list_lock = threading.Lock()
 
 # 会话名 → 最近一次「确认它还活着」的单调时钟读数。抓帧、状态查询、开通道
 # 成功本身就是存活证据，记下来给界面层复用：切换会话时的活跃判定不必再 fork
@@ -86,6 +91,10 @@ def _list_tmux_sessions(fields: str) -> list[list[str]]:
     """列出新旧保活 socket 上的托管会话；某个 socket 还不存在时跳过，不报错。"""
     if shutil.which("tmux") is None:
         return []
+    with _tmux_list_lock:
+        wave = _tmux_list_wave
+        if wave is not None and fields in wave:
+            return [list(row) for row in wave[fields]]
     rows: list[list[str]] = []
     seen: set[str] = set()
     for socket in ALL_SOCKET_NAMES:
@@ -104,7 +113,30 @@ def _list_tmux_sessions(fields: str) -> list[list[str]]:
                 continue
             seen.add(parts[0])
             rows.append(parts)
+    with _tmux_list_lock:
+        if _tmux_list_wave is not None:
+            _tmux_list_wave[fields] = [list(row) for row in rows]
     return rows
+
+
+@contextmanager
+def tmux_list_wave():
+    """Reuse ``list-sessions`` results within one store merge; no cross-refresh TTL."""
+    global _tmux_list_wave
+    with _tmux_list_lock:
+        _tmux_list_wave = {}
+    try:
+        yield
+    finally:
+        with _tmux_list_lock:
+            _tmux_list_wave = None
+
+
+def clear_tmux_list_cache() -> None:
+    """Tests: drop any in-flight wave cache."""
+    global _tmux_list_wave
+    with _tmux_list_lock:
+        _tmux_list_wave = None
 
 
 def _build_ppid_map() -> dict[int, int]:

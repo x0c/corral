@@ -83,6 +83,14 @@
 
 **已落地（v0.24.153）**：嵌套历史改为逐文件 `stat` + pid 快照做 `scan_signature`（含 Cursor/Kimi），签名未变的运行时跳过完整扫描（含 macOS `lsof`）；`live_processes` 在 Darwin 上一次合并查询 cwd，并按 pid 集合缓存 cwd / 命令行 / 环境。不要退回祖先目录 mtime 或逐 pid `lsof`。未变化窗口的重扫应从秒级降到几十毫秒量级；正在写 WAL 的 Cursor 仍会重扫该运行时，但 cwd/`store.db`/命令行探测不再对每个 agent 各 fork 一次。
 
+**已落地（v0.24.185 / SessKit 0.1.2，2026-09-12 本机复现）**：用户可见症状是 TUI 卡死或按键极慢，事件日志里 `scan_all` 约每 3–4 秒一条、界面 `session_count≈178`、远程≈617，单次重扫 P50 约 0.5s、尖峰可到十几秒甚至远程 60s+，进程瞬时 70%+ CPU。根因仍是「助手在写时签名永远变 → 全量重扫 + 整表合并」叠远程同盘争用，不是抓帧死循环。
+
+1. **Cursor 列表级 `scan_signature` 不再包含 `store.db-wal`**（正文缓存的 `extra_version` 仍带 WAL）。流式写入只动 WAL 时复用上一轮 `scan_sessions`；`store.db`/meta 真正 checkpoint 或进程启停仍会失效。
+2. **macOS `ps -axo` 在约 1s 内跨 agent/pi 签名复用**；同一轮 `_merge_scanned` / `_merge_live_state` 内 `tmux list-sessions` 只列一次（`liveness.tmux_list_wave`），禁止跨刷新 TTL（会串单测 mock）。
+3. **`SessionStore.refresh`：签名全命中且距上次完整合并 <12s 时走 `_merge_live_state`**（只刷新托管标注与关注圆点，不整表替换）；事件里 `reason=refresh_live`、`cache_hit=true`。完整合并仍兜住新会话与集合变化。
+
+仍未做：TUI 与 `remote on` 跨进程共用一轮扫描结果（两进程仍会各自扫；优先结束不看的托管格、少开刷屏分屏）。
+
 ### 2026-08-31 suzhou：扫描降下来之后，吃核的变成实时抓帧
 
 网页终端觉得卡、把锅甩给 corral「自己太吃 CPU」时用这次的数。现场 v0.24.157、4 核、约 8 路 Cursor agent 在跑、TUI 开着 3 格实时画面；`openconductor` 已停。不是泄漏、不是 fork 风暴、原生 `_native.abi3.so` 已加载。
@@ -101,7 +109,7 @@
 
 马上减占用：在调度界面结束不看的托管会话（结束进程不删历史）；少开几格正在刷屏的实时画面。不要为了这次去关图形版 Cursor，也不要给抓帧再加一层中间态过滤。
 
-还没做、且值得做的（不要先砍帧率）：助手还在写时用更廉价的「只有这几条 live 会话变了」路径，避免 518 条 Cursor 目录每 3 秒走一遍；TUI 与 `remote on` 常驻进程共用一轮扫描结果。
+还没做、且值得做的（不要先砍帧率）：TUI 与 `remote on` 常驻进程共用一轮扫描结果，避免两个进程重复读同一批历史。列表级 WAL 容错与签名命中后的轻量合并已在 v0.24.185 / SessKit 0.1.2 落地（见上节「已落地」）。
 
 ### 高输出时的画面降载原则（2026-08-31）
 

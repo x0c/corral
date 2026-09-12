@@ -117,6 +117,9 @@ class SessionStore:
         self.hydrated = False
         self._load_event = threading.Event()
         self.load_error: str | None = None
+        # 最近一次完整 `_merge_scanned`（非整表缓存命中后的轻量合并）的单调时钟。
+        # 助手持续写 WAL 时签名仍可能命中；周期性全量合并兜住新会话与结束态。
+        self._last_full_merge_at: float | None = None
 
     # ---- 侧边栏快照：启动秒开（stale-while-revalidate） ----
 
@@ -225,6 +228,7 @@ class SessionStore:
             session_count = sum(len(items) for items in scanned.values())
             observe.event("scan_all", duration_ms=duration_ms, session_count=session_count, reason="load")
             self._merge_scanned(scanned)
+            self._last_full_merge_at = time.monotonic()
             self._save_sidebar_snapshot()
             with self.lock:
                 self.load_error = None
@@ -255,11 +259,19 @@ class SessionStore:
         with self.lock:
             return self.load_error
 
+    # 全量合并最短间隔：其间若各运行时签名全命中，只刷新存活标注与关注圆点。
+    _FULL_MERGE_INTERVAL = 12.0
+
     def refresh(self) -> bool:
         """后台周期性重扫磁盘，把新增/结束的会话并入当前列表。
 
         与 load() 共用合并逻辑，唯一区别是返回「会话集合是否真的变了」，
         供调用方只在有变化时才 dirty.set()，避免主循环无谓重定位光标。
+
+        当上一轮完整合并仍在 ``_FULL_MERGE_INTERVAL`` 内且本轮扫描全部命中
+        签名缓存时，走轻量合并：不整表替换会话字典，只更新托管标注与关注态。
+        这样 Cursor 流式写 WAL 不会每 3 秒付一次完整列表重建代价；新会话 /
+        进程启停仍由签名未命中或周期性全量合并兜住。
         """
         from corral import observe
 
@@ -270,9 +282,30 @@ class SessionStore:
             )
             duration_ms = int((time.perf_counter() - t0) * 1000)
             session_count = sum(len(items) for items in scanned.values())
-            observe.event("scan_all", duration_ms=duration_ms, session_count=session_count, reason="refresh")
+            now = time.monotonic()
+            cache_hit = bool(getattr(self.registry, "last_scan_cache_hit_all", False))
+            use_live = (
+                cache_hit
+                and self._last_full_merge_at is not None
+                and (now - self._last_full_merge_at) < self._FULL_MERGE_INTERVAL
+                # Optimistic delete empties memory then clears the tombstone so the
+                # next refresh must re-merge from scan. Live merge ignores ``scanned``
+                # and would leave the sidebar empty forever.
+                and self._memory_keys_match_scan(scanned)
+            )
+            observe.event(
+                "scan_all",
+                duration_ms=duration_ms,
+                session_count=session_count,
+                reason="refresh_live" if use_live else "refresh",
+                cache_hit=cache_hit,
+            )
             before = self._sessions_signature()
-            self._merge_scanned(scanned)
+            if use_live:
+                self._merge_live_state()
+            else:
+                self._merge_scanned(scanned)
+                self._last_full_merge_at = now
             changed = self._sessions_signature() != before
             if changed:
                 self._save_sidebar_snapshot()
@@ -285,6 +318,42 @@ class SessionStore:
         with self.lock:
             self.load_error = None
         return changed
+
+    def _memory_keys_match_scan(self, scanned: dict[str, list[dict]]) -> bool:
+        """True when in-memory session keys match this scan result (ignoring order)."""
+        scan_keys = {
+            session_key(session)
+            for bucket in scanned.values()
+            for session in bucket
+        }
+        with self.lock:
+            memory_keys = {
+                session_key(session)
+                for bucket in self.sessions.values()
+                for session in bucket
+            }
+            memory_keys.update(self._provisional)
+        return memory_keys == scan_keys
+
+    def _merge_live_state(self) -> None:
+        """签名全命中时的轻量合并：就地刷新托管标注与关注圆点，不换会话集合。"""
+        with self.lock:
+            sessions = [session for bucket in self.sessions.values() for session in bucket]
+            for provisional in self._provisional.values():
+                sessions.append(provisional)
+        if not sessions:
+            with liveness.tmux_list_wave():
+                self._adopt_foreign_hosted([])
+            return
+        with liveness.tmux_list_wave():
+            liveness.annotate(sessions)
+            self._adopt_foreign_hosted(sessions)
+        with self.lock:
+            attention_sessions = [
+                session for bucket in self.sessions.values() for session in bucket
+            ]
+        states = self._reconcile_attention(attention_sessions)
+        self._inject_attention_states(states)
 
     def _sessions_signature(self) -> tuple:
         """判定「会话集合是否真的变了」的签名，只应纳入值变化后必须触发列表
@@ -438,11 +507,12 @@ class SessionStore:
         # 每个适配器负责按时间倒序返回，无需在界面层二次排序
         scanned = self._drop_tombstoned_sessions(scanned)
         annotated = [session for bucket in scanned.values() for session in bucket]
-        liveness.annotate(annotated)
-        # Remote (and any other process) hosts panes without sharing this store.
-        # Adopt unmatched managed panes as provisional interactive cards so the
-        # desktop sidebar does not wait for history / lag through a preview phase.
-        self._adopt_foreign_hosted(annotated)
+        with liveness.tmux_list_wave():
+            liveness.annotate(annotated)
+            # Remote (and any other process) hosts panes without sharing this store.
+            # Adopt unmatched managed panes as provisional interactive cards so the
+            # desktop sidebar does not wait for history / lag through a preview phase.
+            self._adopt_foreign_hosted(annotated)
 
         with self.lock:
             attention_migrations = self._reconcile_provisional_sessions(scanned)

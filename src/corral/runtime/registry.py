@@ -37,6 +37,9 @@ class RuntimeRegistry:
         # 调用方需要自己保证同一 registry 实例不会被多个线程同时 scan_all()。
         self._scan_cache: dict[str, tuple[int, object]] = {}
         self._scan_cache_result: dict[str, list[SessionInfo]] = {}
+        # 上一轮 scan_all 是否全部命中签名缓存（无实现签名的运行时不计）。
+        # SessionStore 用它在「助手还在写 WAL」时走轻量合并，避免每 3 秒整表替换。
+        self.last_scan_cache_hit_all = False
 
     def __iter__(self):
         return iter(self._runtimes.values())
@@ -108,7 +111,8 @@ class RuntimeRegistry:
             """缓存与调用方之间隔离可变会话字典，避免界面注入字段反向污染缓存。"""
             return [dict(session) for session in sessions]
 
-        def _scan_one(runtime: BaseRuntime) -> list[SessionInfo]:
+        def _scan_one(runtime: BaseRuntime) -> tuple[list[SessionInfo], bool | None]:
+            """返回 (sessions, cache_hit)；``None`` 表示该运行时无签名、不参与命中统计。"""
             keep_ids = keep_ids_by_runtime.get(runtime.id)
             try:
                 signature = runtime.scan_signature()
@@ -117,21 +121,24 @@ class RuntimeRegistry:
             if signature is not None:
                 cache_key = (limit, signature, tuple(sorted(keep_ids or ())))
                 if self._scan_cache.get(runtime.id) == cache_key:
-                    return _copy_sessions(self._scan_cache_result.get(runtime.id, []))
+                    return _copy_sessions(self._scan_cache_result.get(runtime.id, [])), True
             try:
                 result = runtime.scan_sessions(limit, keep_ids=keep_ids)
             except Exception:
                 # 瞬时读取失败不能把一份空结果写进新签名、覆盖最后一次成功缓存；
                 # 有旧数据时继续展示旧快照，首次扫描就失败才降级为空列表。
                 cached = self._scan_cache_result.get(runtime.id)
-                return _copy_sessions(cached[:limit]) if cached is not None else []
+                return (
+                    _copy_sessions(cached[:limit]) if cached is not None else [],
+                    False if signature is not None else None,
+                )
             if signature is not None:
                 self._scan_cache[runtime.id] = (limit, signature, tuple(sorted(keep_ids or ())))
                 # 保存一份、返回另一份：SessionStore/keepalive 会就地给调用方拿到的
                 # dict 注入 keepalive_name 等展示状态，不能让这些字段进入扫描缓存。
                 self._scan_cache_result[runtime.id] = _copy_sessions(result)
-                return _copy_sessions(self._scan_cache_result[runtime.id])
-            return result
+                return _copy_sessions(self._scan_cache_result[runtime.id]), False
+            return result, None
 
         # 本轮扫描内每个运行时的元数据只查一次库，而不是每个候选文件查一次；
         # 快照必须随本轮扫描一起结束，否则后续扫描看不到新写入的会话。
@@ -139,8 +146,13 @@ class RuntimeRegistry:
         # 派生缓存永远不能影响原始会话扫描结果。
         with scan_period():
             with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
-                scanned = pool.map(_scan_one, runtimes)
-                result = {runtime.id: sessions for runtime, sessions in zip(runtimes, scanned, strict=True)}
+                scanned = list(pool.map(_scan_one, runtimes))
+                result = {
+                    runtime.id: sessions
+                    for runtime, (sessions, _hit) in zip(runtimes, scanned, strict=True)
+                }
+        hits = [hit for _sessions, hit in scanned if hit is not None]
+        self.last_scan_cache_hit_all = bool(hits) and all(hits)
         return result
 
     def build_launch_plan(self, request: LaunchRequest) -> LaunchPlan:

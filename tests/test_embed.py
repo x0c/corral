@@ -1287,8 +1287,12 @@ class ControlChannelIntegrationTests(unittest.TestCase):
             probe_script = (
                 "import os,sys,termios,tty,select,time;"
                 "fd=sys.stdin.fileno();old=termios.tcgetattr(fd);tty.setraw(fd);"
+                # Give host_session a beat to open the control channel and inject
+                # OSC before the program's first query (slow/loaded hosts otherwise
+                # time out even when injection is correct).
+                "time.sleep(0.15);"
                 "os.write(1,b'\\x1b]11;?\\x07');"
-                "r,_,_=select.select([fd],[],[],1.5);"
+                "r,_,_=select.select([fd],[],[],3.0);"
                 "d=os.read(fd,64) if r else b'TIMEOUT';"
                 "termios.tcsetattr(fd,termios.TCSADRAIN,old);"
                 "print('RESP', repr(d));"

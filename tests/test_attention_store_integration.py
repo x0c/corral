@@ -259,6 +259,59 @@ class SessionStoreAttentionTests(unittest.TestCase):
         self.assertEqual(self.store.attention_for("codex:real").kind, "none")
         self.assertEqual(self.attention.get("codex", "real").kind, "none")
 
+    def test_refresh_uses_live_merge_when_scan_cache_hits(self) -> None:
+        """Signature cache hits within the full-merge window skip whole-table replace."""
+        session = _session("claude", "one", live=True, mtime=10)
+        with mock.patch(
+            "corral.store.inspect_session",
+            return_value=AttentionEvidence(phase="working", observed_at=1),
+        ):
+            self.store._merge_scanned({"claude": [session]})
+        self.store._last_full_merge_at = 1_000_000.0
+        held = self.store.find_session("claude:one")
+
+        class _HitRegistry:
+            ids = ("claude", "codex", "cursor")
+            last_scan_cache_hit_all = True
+
+            def scan_all(self, limit, keep_ids_by_runtime=None):
+                return {
+                    "claude": [dict(session, last_agent_msg="should-not-replace")],
+                    "codex": [],
+                    "cursor": [],
+                }
+
+        self.store.registry = _HitRegistry()
+        merges: list[str] = []
+        live_calls: list[str] = []
+        self.store._merge_scanned = lambda scanned: merges.append("full")  # type: ignore[method-assign]
+        self.store._merge_live_state = lambda: live_calls.append("live")  # type: ignore[method-assign]
+        with mock.patch("corral.store.time.monotonic", return_value=1_000_005.0):
+            changed = self.store.refresh()
+        self.assertEqual(live_calls, ["live"])
+        self.assertEqual(merges, [])
+        self.assertIs(self.store.find_session("claude:one"), held)
+        self.assertFalse(changed)
+
+        self.store.registry.last_scan_cache_hit_all = False
+        live_calls.clear()
+        with mock.patch("corral.store.time.monotonic", return_value=1_000_006.0):
+            self.store.refresh()
+        self.assertEqual(merges, ["full"])
+        self.assertEqual(live_calls, [])
+
+        # Optimistic delete empties memory while the scan cache still has the
+        # session — live merge must not win, or refresh can never restore the card.
+        merges.clear()
+        live_calls.clear()
+        self.store.registry.last_scan_cache_hit_all = True
+        self.store.sessions = {"claude": [], "codex": [], "cursor": []}
+        self.store._order = []
+        with mock.patch("corral.store.time.monotonic", return_value=1_000_007.0):
+            self.store.refresh()
+        self.assertEqual(merges, ["full"])
+        self.assertEqual(live_calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

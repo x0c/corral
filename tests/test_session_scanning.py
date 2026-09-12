@@ -4921,7 +4921,12 @@ class CursorScanTests(unittest.TestCase):
             self.assertTrue(s["path"].endswith(s["id"]) or s["path"].endswith("store.db"))
 
     def test_scan_signature_tracks_file_stat_not_parent_dir_mtime(self) -> None:
-        """祖先目录 touch 不得改变签名；meta/WAL 追加必须改变。"""
+        """祖先目录 touch 不得改变签名；meta 变更必须改变；仅 WAL 追加不得改变。
+
+        列表级 ``scan_signature`` 故意不含 ``store.db-wal``——流式写入只动 WAL
+        时要复用上一轮 ``scan_sessions``。正文缓存仍通过 per-session
+        ``extra_version`` 带上 WAL。
+        """
         from corral.scan import cursor as scan_cursor
 
         with tempfile.TemporaryDirectory() as td:
@@ -4943,11 +4948,15 @@ class CursorScanTests(unittest.TestCase):
                 first = scan_cursor.scan_signature()
                 os.utime(root / "ws1", None)
                 after_dir = scan_cursor.scan_signature()
+                wal = chat_dir / "store.db-wal"
+                wal.write_bytes(b"wal-bytes")
+                after_wal = scan_cursor.scan_signature()
                 meta = chat_dir / "meta.json"
                 meta.write_text(meta.read_text(encoding="utf-8") + "\n", encoding="utf-8")
                 after_file = scan_cursor.scan_signature()
 
         self.assertEqual(first, after_dir)
+        self.assertEqual(first, after_wal)
         self.assertNotEqual(first, after_file)
 
     def test_scan_filters_self_generated_title_sessions(self) -> None:

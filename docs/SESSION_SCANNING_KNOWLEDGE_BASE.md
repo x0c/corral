@@ -12,7 +12,7 @@
 | §4 | 外部数据入口索引 | 排查本地历史格式、路径和存储形态时读 |
 | §5 | 流程、组件与缓存入口索引 | 改并发扫描、判活、缓存时读 |
 | §6 | 核心业务规则与隐性约束 | 改代码前必扫的 AI 易错点 |
-| §7 | 验证路径 | 改完扫描或预览后执行 |
+| §7 | 验证路径 | 改完扫描、预览、SessKit 桥接或解析口径后执行（含真历史抽样与系统噪音检查） |
 | §8 | 关联文档 | 跨域改动时联读 |
 | §9 | 覆盖度与待补充项 | 了解证据范围与缺口 |
 
@@ -66,7 +66,8 @@ graph TD
     N --> H
     H --> I[SessionStore.get_conversation]
     I --> E
-    E --> J[load_conversation]
+    E --> Bridge[sesskit_bridge<br/>软失败空列表]
+    Bridge --> J[SessKit load_session_conversation]
     J --> K[ConversationMessage<br/>对话预览数据]
     K --> L[右栏完整对话预览]
 ```
@@ -144,8 +145,9 @@ sequenceDiagram
 1. 用户选中会话后，`SessionStore.get_conversation()` 以“运行时 + 会话 ID”定位预览缓存。
 2. 先检查进程内缓存，再按历史入口的设备、inode、字节数和纳秒修改时间检查本地派生缓存；签名未变化则复用已有对话预览数据。
 3. 签名变化或无缓存时，定位对应运行时适配器的 `load_conversation(session)`。
-4. 适配器委托相应 `scan.*.load_conversation` 读取完整对话；原始系统事件、思考分片、工具定义和空文本不进入完整对话。
-5. 返回的消息按时间顺序同时写入进程内缓存和有界本地派生缓存，再交给右栏。解析失败返回空列表，不得因一个损坏历史文件导致主界面崩溃。
+4. 六个适配器一律经 `runtime.sesskit_bridge.load_runtime_conversation` → SessKit `load_session_conversation`（与 SessKit CLI 同一入口；OpenCode 仍是路径 + session id，其它为路径）。禁止再把整份 session dict 直接塞进 `parsers.*.load_conversation`。
+5. 原始系统事件、思考分片、工具定义和空文本不进入完整对话。
+6. 返回的消息按时间顺序同时写入进程内缓存和有界本地派生缓存，再交给右栏。解析或缺失历史时桥接层返回空列表，不得因一个损坏历史文件导致主界面崩溃（SessKit CLI 对缺失历史则报错——两边语义刻意不同，禁止“统一成抛错”拖垮 TUI）。
 
 ### 2.4 会话时间与排序
 
@@ -195,6 +197,7 @@ flowchart TD
 | `src/corral/scan/` | 跨扫描器纯函数、按 cwd 判活 | `scan/common.py` |
 | `src/corral/` | 关注状态裁决、各运行时证据解析与 Cursor 用户级观察器 | `attention.py`、`attention_signals.py`、`cursor_observer.py` |
 | `src/corral/runtime/` | 统一适配抽象、注册表与各助手委托 | `runtime/base.py`、`runtime/registry.py`、`runtime/*.py` |
+| `src/corral/runtime/` | SessKit 会话 dict → 完整对话桥接（软失败） | `runtime/sesskit_bridge.py` |
 | `src/corral/` | 会话列表合并、异步加载、预览缓存 | `store.py`、`cli.py` |
 | `src/corral/` | 统一会话与完整对话的数据结构 | `models.py` |
 | `src/corral/` | 派生缓存读写（元数据与完整对话） | `cache.py` |
@@ -208,14 +211,15 @@ flowchart TD
 | 新增或修改统一列表字段 | 统一数据模型 | `models.py` 的 `SessionInfo` | 六个扫描器都必须填充统一语义，跨运行时唯一键是“运行时 + 会话 ID” |
 | 新增或修改预览消息规则 | 统一数据模型 | `models.py` 的 `ConversationMessage` | 只允许 `user` 与 `assistant` 两种角色；时间戳可为空 |
 | 修改 Claude 扫描或列表轻量化 | Claude 扫描器 | `scan.claude.scan_sessions()`、`_peek_head_meta()`、`_build_session_info()` | 先 mtime 排序，预探过滤噪音和失效 cwd，再头尾解析 |
-| 修改 Claude 完整预览 | Claude 扫描器 | `scan.claude.load_conversation()` | 只根据文本内容决定是否展示 assistant 消息；保留真人用户消息 |
+| 修改 Claude 完整预览 | SessKit 解析真源 + 桥接 | `sesskit.parsers.claude`（经 `scan.claude` 别名）、`runtime.sesskit_bridge.load_runtime_conversation` | 只根据文本内容决定是否展示 assistant 消息；保留真人用户消息；改解析口径先改 SessKit |
 | 修改 Codex 扫描或判活 | Codex 扫描器 | `scan.codex.scan_sessions()`、`_live_session_ids()` | 过滤子代理线程；macOS 使用批量 `lsof`，不可逐 pid 调用 |
-| 修改 Codex 完整预览 | Codex 扫描器 | `scan.codex.load_conversation()` | 同时读 `event_msg` 与 `response_item`；用户/助手都按相邻正文去重 |
+| 修改 Codex 完整预览 | SessKit 解析真源 + 桥接 | `sesskit.parsers.codex`、`runtime.sesskit_bridge` | 同时读 `event_msg` 与 `response_item`；用户/助手都按相邻正文去重 |
 | 修改 OpenCode 查询或刷新跳过 | OpenCode 扫描器 | `scan.opencode.scan_sessions()`、`_apply_live_flags()`、`scan_signature()` | 历史为 SQLite；签名需同时覆盖 DB/WAL 和 `(pid, cwd)` 全量进程快照；同 cwd 多 TUI 必须按 `-s` / 完整 `CORRAL_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`opencode run` 不算 TUI；`--prompt` 后的接力说明不当 argv，取值旗标跳一词不够 |
-| 修改 OpenCode 完整预览 | OpenCode 扫描器 | `scan.opencode.load_conversation()` | 从 `message` 与 `part` 表合并同一消息的多个 text part |
-| 修改 Kimi 事件过滤、预览或判活 | Kimi 扫描器 | `scan.kimi.scan_sessions()`、`_apply_live_flags()`、`_iter_message_entries()`、`load_conversation()` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent；同 cwd 多 TUI 必须按 `-S` / 完整 `CORRAL_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`-p`/`server`/`web` 不算 TUI |
-| 修改 Cursor 扫描或预览 | Cursor 扫描器 | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；对话缓存签名含 `store.db-wal`；同 cwd 多 `agent` 必须按打开的 store.db / 完整 CORRAL_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底。**子代理 chat 仍过滤出列表，但 live 进程绑到子代理时必须改记父会话进行中** |
-| 修改 Pi 扫描或预览 | Pi 扫描器 | `scan.pi.scan_sessions()`、`_apply_live_flags()`、`load_conversation()` | JSONL 首行必须是 session；列表身份 = header `id`；v2+ 从最新叶子沿 `parentId` 回溯，v1 无 id 则按文件顺序；`-p`/`auth`/`install` 不算 TUI；`live_processes("pi")` 需 cmdline 兜底（comm 常是 `node`）。**live 只消费 claim；改前先核 §2.2.1 与身份设计；禁止在扫描里用最新文件或隔离目录修 pane 属主。** |
+| 修改 OpenCode 完整预览 | SessKit 解析真源 + 桥接 | `sesskit.parsers.opencode`、`runtime.sesskit_bridge` | 从 `message` 与 `part` 表合并同一消息的多个 text part；桥接传 db 路径 + session id |
+| 修改 Kimi 事件过滤、预览或判活 | Kimi 扫描器 / SessKit | `scan.kimi.scan_sessions()`、`_apply_live_flags()`、桥接 `load_runtime_conversation` | 只读 `agents/main/wire.jsonl`，跳过 think、工具快照和子 agent；同 cwd 多 TUI 必须按 `-S` / 完整 `CORRAL_SESSION_ID` 精确绑定，禁止「同目录只留最新一条」；`-p`/`server`/`web` 不算 TUI |
+| 修改 Cursor 扫描或预览 | Cursor 扫描器 / SessKit | `scan.cursor.scan_sessions()`、`_apply_live_flags()`、桥接 `load_runtime_conversation` | 列表不读 `store.db`；预览才读 blob；打开 store 禁止 `immutable=1`（必须看见 WAL）；对话缓存签名含 `store.db-wal`；同 cwd 多 `agent` 必须按打开的 store.db / 完整 CORRAL_SESSION_ID / `--resume` 精确绑定（无 resume 原托管优先于二次 resume），禁止 cwd 猜测；`live_processes("agent")` 需 cmdline 兜底。**子代理 chat 仍过滤出列表，但 live 进程绑到子代理时必须改记父会话进行中** |
+| 修改 Pi 扫描或预览 | Pi 扫描器 / SessKit | `scan.pi.scan_sessions()`、`_apply_live_flags()`、桥接 `load_runtime_conversation` | JSONL 首行必须是 session；列表身份 = header `id`；v2+ **从文件最后一条记录**沿 `parentId` 回溯（勿按墙钟 max timestamp 选叶子，时钟漂移会串分支），v1 无 id 则按文件顺序；`-p`/`auth`/`install` 不算 TUI；`live_processes("pi")` 需 cmdline 兜底（comm 常是 `node`）。**live 只消费 claim；改前先核 §2.2.1 与身份设计；禁止在扫描里用最新文件或隔离目录修 pane 属主。** |
+| 修改 SessKit 加载接线 / 软失败语义 | 运行时桥接 | `runtime.sesskit_bridge.load_runtime_conversation`、`call_scan` | 与 SessKit `load_session_conversation` 对齐；扫描 kwargs 转发；Corral 不得打开 `include_missing_cwd` |
 | 修改统一 transcript / `corral share` | `transcript.py`、`agent_api.py` | `load_events()`、`_parse_*`、`export_share_to_cache()` | 不改 `load_conversation` 的纯文本契约；按各助手原始落盘抽出 thinking 与工具调用。TUI 高级操作「导出会话」走同一套 `load_events`，写到缓存目录 `share/`。Cursor `store.db` 里 tool-result 的 rowid 可以早于对应 tool-call，必须按完整 `toolCallId`（常含换行，禁止按 `\n` 拆）攒着、见到 call 再按 call→result 发出。核对以原始 JSONL/SQLite 为权威，禁止用 `show`/`export` 对照 |
 | 修改共用路径、时间、cwd 判活 | 共享 helper | `scan.common.shorten_cwd()`、`parse_timestamp()`、`live_processes()`、`live_pids_by_process_name()`、`process_command_line()`、`process_environ()`、`process_start_time()`、`is_cursor_agent_cmdline()`、`is_pi_cmdline()` | 只放无状态纯函数；需要全部同名进程时用 `live_processes`，不要先按 cwd 折叠；`agent` 必须 cmdline 兜底（comm 可能是 `MainThread`）；`pi` 同样要 cmdline 兜底（comm 常是 `node`）；OpenCode / Kimi / Pi 判活禁止再按 cwd 折叠 |
 | 修改跨运行时并发或扫描复用 | 注册表 | `runtime.registry.RuntimeRegistry.scan_all()` | 各运行时并发、异常隔离、结果副本隔离、签名命中跳过 |
@@ -223,7 +227,7 @@ flowchart TD
 | 修改会话关注状态裁决或已读基线 | 关注状态存储 | `attention.AttentionStore`、`store.SessionStore` | 单圆点优先级、首升级基线、占位键迁移和删除清理收敛在此；不得改变排序或机器接口状态 |
 | 修改各助手关注信号 | 状态证据解析 | `attention_signals.inspect_session()` | 只解析明确事件；结构化问题才产生等待回答，历史证据必须使用稳定时间 |
 | 修改 Cursor 实时状态接入 | 用户级观察器 | `cursor_observer` | 增量维护 hook 配置，备份并原子写；事件接收始终故障开放；公开命令支持状态、安装、卸载、结构化输出和写入预演 |
-| 修改运行时委托边界 | 运行时适配 | `runtime.base.BaseRuntime` 与 `runtime/*.py` | 适配器只把统一调用委托给私有扫描器，不在界面层写运行时分支 |
+| 修改运行时委托边界 | 运行时适配 | `runtime.base.BaseRuntime` 与 `runtime/*.py` | 适配器只把统一调用委托给私有扫描器 / SessKit 桥接，不在界面层写运行时分支；完整对话走 `sesskit_bridge`，不要绕回手写 path 拼接 |
 | 修改任一助手的彻底删除逻辑 | 各扫描器 | `scan.<助手>.delete_session(...)` | Claude/Codex 单文件 `os.unlink`；Kimi/Cursor 每会话一目录、`shutil.rmtree` 整个会话目录；OpenCode 所有会话共享一个库，必须按会话 ID 在可写连接里精确删 `part`/`message`/`session` 三表对应行，一次事务提交，不能删文件本身（见 §4 与 `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` 的 `x` 删除会话流程） |
 
 ## §4 本域外部数据入口索引
@@ -265,6 +269,9 @@ flowchart TD
 
 ## §6 核心业务规则与隐性约束
 
+- **AI 易错点**【禁止】在 Corral 恢复列表 / 侧栏扫描打开 SessKit 的 `include_missing_cwd` → 默认必须继续丢掉「项目 cwd 已不存在」的会话（原因：恢复入口只应列出还能进目录开跑的会话；归档检索才用 SessKit CLI `--include-missing-cwd`）。
+- **AI 易错点**【禁止】为「与 SessKit CLI 一致」把桥接改成缺失历史就抛错 → Corral 必须软失败返回空列表（原因：一个损坏文件不能拖垮主界面；CLI 硬失败是产品面差异，见 §1 2026-09-11 注）。
+- **AI 易错点**【禁止】`SessionStore` / 列表合并相关单测在有本机托管窗格时不 mock `list_managed_hosts`（或未设 `CORRAL_ISOLATE_MANAGED_HOSTS=1`）→ 真窗格会灌进空扫描夹具，表现为「夹具会话被挤掉 / 顺序断言莫名失败」（原因：`_adopt_foreign_hosted` 会认领本机保活 socket）。
 - **AI 易错点**【禁止】用 Claude 的 `stop_reason` 判断 assistant 文本是否应展示 → 必须只要存在非空 text 分片就保留（原因：thinking、文本与工具调用是独立顶层记录，却可能共享 `tool_use` 的 stop reason）。
 - **AI 易错点**【禁止】把原始 `type: "user"` 一律视为真人输入 → 必须检查 `origin.kind`；Claude 只接受缺失或 `human`，Kimi 只接受缺失或 `user`（原因：Monitor、task-notification 等系统注入会伪装在用户轮次中）。
 - **AI 易错点**【禁止】让完整对话出现 system、think、工具定义、工具结果或空文本 → 对话预览只保留真实用户消息和助手最终可读答复（原因：右栏是用户对话预览，不是原始事件调试器）。
@@ -331,9 +338,19 @@ python3 -m unittest -v
 
 涉及关注状态时还要覆盖：黄 > 绿 > 红优先级、仅结构化问题变黄、重复扫描不制造新令牌、首次历史基线不批量亮红、占位会话转正迁移、删除清理、Cursor 冷会话不打开数据库、Cursor protobuf AskQuestion 在 JSON 结果出现前为 waiting、JSON tool-result 早于 tool-call 不得误判 waiting、protobuf 提问之后若已有其它工具或 JSON 窗口已前移不得误判 waiting、`afterAgentResponse` 不得把仍活着的会话钉在 working、仍活着的未配对提问能覆盖更早的 idle 时间戳、`stop` 不得清掉未作答等待、**进程仍在但最后一轮已结束不得亮绿、进程仍在且明确在跑工具/等提问仍须亮绿、假阴性判活用例不得红**，以及 observer 安装两次不重复、`--dry-run` 零写入、卸载只移除 corral 条目、损坏配置与 hook 写入失败均不阻断调用方。
 
-### 7.2 真实抽查 5 条会话
+### 7.2 真实抽查（改解析 / 桥接时加强）
 
-涉及会话扫描或完整对话时，不能只靠小样例。任选已安装且确有历史的助手，实际抽查至少 5 条；至少检查角色、文本、时间戳和预览刷新：
+涉及会话扫描或完整对话时，不能只靠小样例或「mock 了 `load_conversation` 的 CLI 烟测」。任选已安装且确有历史的助手，实际抽查至少 5 条；至少检查角色、文本、时间戳和预览刷新。
+
+**改 SessKit 解析器、`sesskit_bridge`、或任一 runtime `load_conversation` 时额外必须：**
+
+1. 对本机**每个已安装且有历史**的运行时至少抽 1 条（不要只验 Codex）。
+2. 用户轮次不得出现强系统注入标记（如 `system reminder`、`<system`、`task-notification`、`<ide_opened_file`、`<agent_skills>`、`<mcp_file_system>`、`<function_calls>`）。
+3. 桥接路径与 SessKit `load_session_conversation` 对同一会话得到相同的 `(role, text)` 序列。
+4. 有 `load_events` / share 时：每条 plain 用户正文应出现在 events 的 `user_message` 文本中（允许 events 切得更细时做子串匹配）。
+5. 不得把「fixture 全绿」写成数据正确性已通过——有真历史却只跑 fixture 算未验。
+
+细则与 SessKit 侧清单见 `~/Codes/SessKit/docs/CONTRACT.md` Verification。
 
 ```bash
 python3 - <<'PY'

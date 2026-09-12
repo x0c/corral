@@ -82,7 +82,7 @@ flowchart TD
 
 | 组件/事件 | 何时产生 | 默认记录内容 |
 |---|---|---|
-| `scan_all` | 会话初始加载或后台重扫完成 | `duration_ms`、会话数量等低基数事实 |
+| `scan_all` | 会话初始加载或后台重扫完成 | `duration_ms`、会话数量、`reason`（`load` / `refresh` / `refresh_live`）、可选 `cache_hit` |
 | `list_rebuild` | 界面会话列表重建结束 | 耗时与重建模式 |
 | `split_group_member_missing` | 浏览既有会话组时，后台扫描暂时未发现某个成员 | 缺失数量；不记录会话名称、标题或正文 |
 | `host_session` | 内嵌会话托管成功或失败 | 耗时、运行时、`ok` |
