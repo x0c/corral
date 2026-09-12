@@ -1861,6 +1861,8 @@ class MainScreen(
         回车的两步操作。与右栏已结束格上回车的 `_restart_session_from_pane` 走同一条
         启动路径；区别只是这里要先亲手杀掉还活着的托管进程。分屏格不摘除，
         重新托管后经 `_show_session_group` 原位换回实时画面，不拆用户的分屏组合。
+
+        高级菜单里已经点过「重启会话」即算确认，不再弹二次确认（2026-09-13）。
         """
         import corral
         from corral import embed, keepalive
@@ -1875,12 +1877,6 @@ class MainScreen(
             # 弹窗置灰拦不住程序化调用；这里再守一道，不能对没托管的会话硬杀。
             self.app.bell()
             return
-        title = self.store.get_title(session)
-        confirmed = await self.app.push_screen_wait(
-            ConfirmModal(t("confirm.restart_session", title=title), confirm_key="r")
-        )
-        if not confirmed:
-            return
         key = corral.session_key(session)
         keepalive.kill(str(keepalive_name))
         embed.close_channel(str(keepalive_name))
@@ -1888,6 +1884,7 @@ class MainScreen(
         # mark 未命中时落到原 session，里面还带着旧 keepalive 名；不搞掉的话
         # `_embed_open` 会误判「已托管」而只聚焦旧格，重启实际没发生。
         current.pop("keepalive_name", None)
+        title = self.store.get_title(current)
         request = corral.LaunchRequest(
             current, str(current.get("source") or self.nav.source), title,
         )

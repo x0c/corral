@@ -3346,16 +3346,17 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     async def test_newer_independent_session_sorts_above_unpinned_group(self) -> None:
         """未置顶组不霸榜：比组成员更新的独立会话应排在组前面。"""
         now = time.time()
+        # 全部落在同一本地日历日，避免刚过午夜时 now-1h 掉进「昨天」桶插入分隔线。
         sessions = [
             {
                 "source": "claude", "id": "old-a", "short_id": "old-a",
-                "mtime": now - 3600, "size_bytes": 1, "size_kb": 1,
+                "mtime": now - 200, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "旧成员 A",
                 "cwd": "/tmp", "live": False,
             },
             {
                 "source": "claude", "id": "old-b", "short_id": "old-b",
-                "mtime": now - 3500, "size_bytes": 1, "size_kb": 1,
+                "mtime": now - 100, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": "旧成员 B",
                 "cwd": "/tmp", "live": False,
             },
@@ -3439,11 +3440,14 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
         sessions = [
             {
                 "source": "claude", "id": f"chunk-{i}", "short_id": f"chunk-{i}",
-                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                # 步进要小：刚过午夜时大跨度 mtime 会跨到昨天，多出 Today↑ 分隔线。
+                # 条数与 _make_store 默认 limit=20 对齐——后台 refresh 缓存命中会
+                # `cached[:limit]`，多于 limit 的夹具会在补齐中途被截成 20。
+                "mtime": time.time() - i, "size_bytes": 1, "size_kb": 1,
                 "native_title": None, "fallback_title": f"分片会话{i}",
                 "cwd": f"/tmp/p{i % 5}", "live": False,
             }
-            for i in range(30)
+            for i in range(20)
         ]
         store, _ = _make_store(sessions=sessions)
         app = CorralApp(store, embed_ok=False)
@@ -3453,13 +3457,13 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await list_view.clear()
                 await list_view.rebuild()
                 self.assertEqual(len(list_view._session_items()), 10)
-                self.assertEqual(len(list_view._tail_items), 20)
+                self.assertEqual(len(list_view._tail_items), 10)
                 # clear 不走 rebuild 的 seq 递增，必须自己作废尾部
                 await list_view.clear()
                 self.assertEqual(list_view._tail_items, [])
                 await list_view.rebuild()
                 await pilot.pause(delay=0.5)
-                self.assertEqual(len(list_view._session_items()), 30)
+                self.assertEqual(len(list_view._session_items()), 20)
                 self.assertEqual(list_view._tail_items, [])
                 # 补齐后条纹/选中态与目标 rows 一致
                 rows = list_view._sidebar_rows()
@@ -5990,9 +5994,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 # 默认高亮在接力项（最后一项）；上移一次落到「重启会话」
                 await pilot.press("up")
                 await pilot.press("enter")
-                await pilot.pause(delay=0.3)  # 跨过 ConfirmModal 的武装窗口
-                self.assertIsInstance(app.screen, ConfirmModal)
-                await pilot.press("r")
+                # 菜单选定即执行，不再二次确认
                 await _wait_until(lambda: kill_mock.call_count == 1)
                 await _wait_until(lambda: host_mock.call_count == 1)
                 await _wait_until(lambda: app.screen._host_pending == 0)
