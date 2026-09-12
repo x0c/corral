@@ -8,6 +8,7 @@ Claude Code 自带 aiTitle 不稳定，不能作为产品展示标题的可信�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -15,6 +16,8 @@ import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from sesskit.titles import split_handoff_text as _split_handoff_text
 
 from corral import titlegen
 from corral.i18n import get_lang, t
@@ -32,16 +35,10 @@ _FAILURE_REASON_TRANSPORT = "transport"
 FAILED_RETRY_COOLDOWN_SECONDS = 6 * 3600
 # 模型在任务还不清楚时必须回这个记号，不能编造标题。
 INSUFFICIENT_TITLE_TOKEN = "__INSUFFICIENT__"
-# 首句太短时多半是情绪、标签或「Task」，后面才有真正任务。
-_MIN_LEADING_CLAUSE_LEN = 8
 _HANDOFF_TASK_RE = re.compile(r"^(?:Task|任务)\s*[:：]\s*(.+)$")
 _HANDOFF_INTRO_MARKERS = (
     "You are picking up a session from",
     "你正在接力一个来自",
-)
-_DIGEST_MARKERS = (
-    "Below is a conversation excerpt automatically extracted",
-    "以下是从原会话自动提取的对话摘录",
 )
 _EMOTION_PREFIX_RE = re.compile(
     r"^(?:你)?(?:他妈的|他妈|卧槽|我靠|(?:fuck(?:ing)?|wtf))\s*[，,。.!！?？]*\s*",
@@ -97,8 +94,26 @@ def doc_command_labels() -> dict[str, str]:
 
 
 def _fingerprint(session: dict) -> str:
-    """用内容大小做指纹；展示时间变化不应导致标题缓存失效。"""
-    return f"v{TITLE_CACHE_VERSION}:{session.get('size_bytes', session['size_kb'])}"
+    """Fingerprint the bounded title *input*, not history file size.
+
+    Tool-log growth can change ``size_bytes`` while ``user_request`` stays the
+    same; retrying insufficient results on that would waste quota. Equal-size
+    request edits must still retrigger.
+    """
+    item = _prompt_item(session)
+    payload = json.dumps(
+        {
+            "inherited_task": item.get("inherited_task", ""),
+            "user_request": item.get("user_request", ""),
+            "later_user": item.get("later_user", ""),
+            "native_title": item.get("native_title", ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"v{TITLE_CACHE_VERSION}:in:{digest}"
 
 
 def _cached_entry(session: dict, cache: dict) -> dict | None:
@@ -277,6 +292,8 @@ def _is_low_value_title(text: str | None) -> bool:
     compact = re.sub(r"[\s,，。.!！?？:：;；'\"`~～…\[\]()（）{}<>《》]+", "", line).lower()
     if compact in _PENDING_COMPACT:
         return True
+    if not _EMOTION_PREFIX_RE.sub("", line, count=1).strip():
+        return True
     if compact in {
         "继续",
         "继续吧",
@@ -307,6 +324,13 @@ def _is_low_value_title(text: str | None) -> bool:
         "做",
         "task",
         "任务",
+        "你他妈的",
+        "他妈的",
+        "卧槽",
+        "我靠",
+        "fuck",
+        "fucking",
+        "wtf",
     }:
         return True
     if _is_bare_command_label(line):
@@ -372,38 +396,16 @@ def _unwrap_handoff_task_line(line: str) -> str:
 
 
 def _strip_emotion_prefix(line: str) -> str:
-    stripped = _EMOTION_PREFIX_RE.sub("", line, count=1).strip()
-    return stripped or line
+    return _EMOTION_PREFIX_RE.sub("", line, count=1).strip()
 
 
-def _split_handoff_text(text: str | None) -> tuple[str | None, str]:
-    """从接力包装里抽出继承标题和可用正文（优先摘录，而不是整段说明）。"""
-    raw = str(text or "").strip()
-    if not raw:
-        return None, ""
-    intro_at = -1
-    for marker in _HANDOFF_INTRO_MARKERS:
-        idx = raw.find(marker)
-        if idx >= 0 and (intro_at < 0 or idx < intro_at):
-            intro_at = idx
-    first_line = raw.splitlines()[0].strip()
-    if intro_at >= 0:
-        prefix = raw[:intro_at].strip()
-        if prefix:
-            first_line = prefix.splitlines()[0].strip()
-    match = _HANDOFF_TASK_RE.fullmatch(first_line)
-    inherited = match.group(1).strip() if match else None
-    if intro_at < 0:
-        if match and "\n" not in raw:
-            return inherited or None, ""
-        return None, raw
-    body = ""
-    for marker in _DIGEST_MARKERS:
-        idx = raw.find(marker)
-        if idx >= 0:
-            body = raw[idx:]
-            break
-    return inherited or None, body
+def _is_skippable_leading_clause(clause: str) -> bool:
+    """丢掉骂人/Task 这类首句，不要把「修复闪退」这种短需求一并删掉。"""
+    unwrapped = _unwrap_handoff_task_line(clause)
+    stripped = _strip_emotion_prefix(unwrapped)
+    if not stripped:
+        return True
+    return _is_low_value_title(stripped) or _is_secondary_title(stripped)
 
 
 def _task_source_text(text: str | None) -> str | None:
@@ -433,7 +435,7 @@ def _compact_title(text: str | None) -> str | None:
         return None
 
     parts = [part.strip() for part in re.split(r"[，。!！?？;；:：\n]", line) if part.strip()]
-    while parts and len(parts[0]) < _MIN_LEADING_CLAUSE_LEN and len(parts) > 1:
+    while parts and _is_skippable_leading_clause(parts[0]) and len(parts) > 1:
         parts = parts[1:]
     if parts and len(parts[0]) >= 4:
         line = parts[0]
@@ -600,18 +602,33 @@ def _build_batch_prompt(sessions: list[dict]) -> str:
     )
 
 
+class _BatchRaw(dict):
+    """Parsed model output plus why the batch ended (ok / invalid / transport)."""
+
+    __slots__ = ("kind",)
+
+    def __init__(self, mapping: dict[str, str] | None = None, *, kind: str) -> None:
+        super().__init__(mapping or {})
+        self.kind = kind
+
+
 def generate_titles_batch(
     sessions: list[dict],
     generator: titlegen.TitleGenerator | None,
     timeout: int = 90,
 ) -> dict[str, str]:
-    """通过标题生成器批量生成标题,返回 {id: title}。失败时返回空字典。"""
+    """通过标题生成器批量生成标题,返回 {id: title}。
+
+    空字典且 ``kind=transport`` 表示没拿到模型文本；空字典且 ``kind=invalid``
+    表示拿到了无法解析的正文。合法 JSON 里的低价值标题仍留在字典里，由落盘
+    侧记 ``failure_reason=invalid``，不要再当成传输失败。
+    """
     if not sessions or generator is None:
-        return {}
+        return _BatchRaw(kind=_FAILURE_REASON_TRANSPORT)
 
     text = generator.generate(_build_batch_prompt(sessions), timeout=timeout)
     if not text:
-        return {}
+        return _BatchRaw(kind=_FAILURE_REASON_TRANSPORT)
 
     text = text.strip()
     # 模型可能用 ```json 包裹,剥掉代码块标记
@@ -626,10 +643,20 @@ def generate_titles_batch(
     try:
         data = json.loads(text)
         if isinstance(data, dict):
-            return {str(k): str(v).strip() for k, v in data.items() if v}
+            parsed = {str(k): str(v).strip() for k, v in data.items() if v}
+            return _BatchRaw(parsed, kind="ok")
     except json.JSONDecodeError:
-        pass
-    return {}
+        return _BatchRaw(kind="invalid")
+    return _BatchRaw(kind="invalid")
+
+
+def _batch_failure_reason(raw: dict[str, str]) -> str:
+    kind = getattr(raw, "kind", None)
+    if kind == "invalid":
+        return "invalid"
+    if kind == _FAILURE_REASON_TRANSPORT or not raw:
+        return _FAILURE_REASON_TRANSPORT
+    return "invalid"
 
 
 _BATCH_SIZE = 5  # 每次模型调用处理 5 条会话，控制单条提示词体量。
@@ -736,11 +763,7 @@ def refresh_titles(
                 if key in insufficient:
                     cache[key] = _insufficient_cache_entry(session)
                     continue
-                reason = (
-                    _FAILURE_REASON_TRANSPORT
-                    if not raw
-                    else "invalid"
-                )
+                reason = _batch_failure_reason(raw)
                 cache[key] = _failed_cache_entry(session, reason=reason)
             # 成功、失败、非法结果和部分缺项都必须写入终态；否则 TUI 不知道后台
             # 已经结束，下一次启动还会把同一批会话重新提交给模型。
@@ -765,9 +788,10 @@ def refresh_titles(
             try:
                 raw = generate_titles_batch(chunk, candidate)
             except Exception:
-                raw = {}
+                raw = _BatchRaw(kind=_FAILURE_REASON_TRANSPORT)
             valid, insufficient = usable_results(chunk, raw)
-            answered = bool(valid or insufficient)
+            kind = getattr(raw, "kind", "ok" if raw else _FAILURE_REASON_TRANSPORT)
+            answered = bool(valid or insufficient) or kind == "invalid" or bool(raw)
             if is_probe:
                 with availability:
                     generator_states[candidate.id] = "可用" if answered else "不可用"
@@ -778,7 +802,7 @@ def refresh_titles(
                     availability.notify_all()
             if answered:
                 return raw
-        return {}
+        return _BatchRaw(kind=_FAILURE_REASON_TRANSPORT)
 
     with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_BATCHES, len(chunks))) as pool:
         futures = {

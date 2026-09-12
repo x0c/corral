@@ -373,10 +373,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "New {count}",
         "zh": "新结果 {count}",
     },
-    "group.attention_recent": {
-        "en": "Just now {count}",
-        "zh": "刚刚 {count}",
-    },
     "group.all_read": {
         "en": "{count} read",
         "zh": "{count} 个已读",

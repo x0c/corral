@@ -17,7 +17,7 @@ from corral.attention import AttentionState
 from corral.models import ConversationMessage
 from corral.ui.app import CorralApp
 from corral.ui.main_screen import MainScreen
-from corral.ui.session_list import SessionCard
+from corral.ui.session_list import SessionCard, SessionGroupCard
 
 # 侧边栏记忆（会话组/置顶/折叠/焦点）是机器级共享的真实状态（sqlite3），测试若
 # 不隔离会读到机主真实的组与置顶，侧边栏布局被真实数据污染导致时序断言全挂
@@ -135,8 +135,8 @@ class SessionAttentionCardTests(unittest.TestCase):
 
         self.assertNotIn("●", self._render("none").plain)
 
-    def test_recent_hosted_just_now_gets_cyan_dot(self) -> None:
-        """Active sessions 的「刚刚」档在侧栏必须有青点，不得只认三态待办。"""
+    def test_recent_hosted_just_now_gets_green_dot(self) -> None:
+        """Active sessions 的「刚刚」档在侧栏必须有绿点，不得单独画青/蓝。"""
         runtime = mock.Mock(id="claude", display_name="Claude")
         store = mock.Mock()
         store.registry.get.return_value = runtime
@@ -161,9 +161,49 @@ class SessionAttentionCardTests(unittest.TestCase):
         dot = rendered.plain.index("●")
         dot_spans = [span for span in rendered.spans if span.start <= dot < span.end]
         self.assertTrue(
+            any("green" in str(span.style).lower() for span in dot_spans),
+            dot_spans,
+        )
+        self.assertFalse(
             any("cyan" in str(span.style).lower() for span in dot_spans),
             dot_spans,
         )
+
+    def test_collapsed_group_counts_recent_as_working(self) -> None:
+        """收起组把「刚刚」档并进执行中绿点，不再单独写刚刚。"""
+        from corral.split_layout import SplitGroup
+
+        now = time.time()
+        working = {
+            "source": "claude",
+            "id": "work",
+            "fallback_title": "还在跑",
+            "cwd": "/tmp/corral",
+            "mtime": now,
+            "attention_kind": "working",
+            "keepalive_name": "corral-claude-work",
+        }
+        recent = {
+            "source": "claude",
+            "id": "fresh",
+            "fallback_title": "刚刚还在用",
+            "cwd": "/tmp/corral",
+            "mtime": now,
+            "attention_kind": "none",
+            "keepalive_name": "corral-claude-fresh",
+        }
+        group = SplitGroup(
+            group_id="g1",
+            project_cwd="/tmp/corral",
+            session_keys=["claude:work", "claude:fresh"],
+            name="Group Apple",
+            collapsed=True,
+        )
+        card = SessionGroupCard(group, (working, recent))
+        summary = card._collapsed_attention_summary(39, "   ")
+        self.assertIn("Working 2", summary.plain)
+        self.assertNotIn("Just now", summary.plain)
+        self.assertFalse(any("cyan" in str(span.style).lower() for span in summary.spans))
 
     def test_card_keeps_three_lines_fixed_width_and_runtime_right_aligned(self) -> None:
         rendered = self._render("waiting")

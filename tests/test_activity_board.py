@@ -33,7 +33,7 @@ def _cand(key: str, kind: str, updated_at: float = 0.0) -> BoardCandidate:
 class ResolveActiveMarkerTests(unittest.TestCase):
     """圆点必须跟上 Active sessions，共用 resolve_active_marker。"""
 
-    def test_recent_hosted_just_now_gets_cyan_dot(self) -> None:
+    def test_recent_hosted_just_now_gets_green_dot(self) -> None:
         now = time.time()
         self.assertEqual(
             resolve_active_marker(
@@ -41,7 +41,8 @@ class ResolveActiveMarkerTests(unittest.TestCase):
             ),
             "recent",
         )
-        self.assertEqual(active_marker_style("recent"), "bold cyan")
+        self.assertEqual(active_marker_style("recent"), "bold green")
+        self.assertEqual(active_marker_style("recent"), active_marker_style("working"))
         self.assertIsNone(
             resolve_active_marker(
                 attention_kind="none", hosted=False, mtime=now - 30, now=now

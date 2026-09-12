@@ -466,13 +466,13 @@ class SessionCard(Widget):
             session.get("attention_token"),
             session.get("attention_updated_at"),
             session.get("mtime"),
-            # 「刚刚」青点依赖本窗口托管；托管标记变化必须触发重绘。
+            # 「刚刚」绿点依赖本窗口托管；托管标记变化必须触发重绘。
             bool(session.get("keepalive_name")),
             # mtime 不变但会话「变旧」跨过档位线时，时间行要跟着压暗，所以档位
             # 本身也得进签名，否则原地更新路径不会重绘。
             self._time_tier(),
             # 相对时间文案（含「刚刚」↔「Xm ago」）随墙钟变化，必须进签名，
-            # 否则「刚刚」加粗/文案切换与青点消退不会在原地更新路径里重绘。
+            # 否则「刚刚」加粗/文案切换与绿点消退不会在原地更新路径里重绘。
             corral._format_relative_time(session.get("mtime") or 0),
             self.tree_position,
             self.pinned,
@@ -542,7 +542,7 @@ class SessionCard(Widget):
         runtime_name = runtime.display_name
         runtime_id = getattr(runtime, "id", None) or str(session.get("source") or "")
 
-        # 与 Active sessions 同源：含「刚刚」托管会话的青点，不得只认三态待办。
+        # 与 Active sessions 同源：含「刚刚」托管会话的绿点，不得只认三态待办。
         dot_style = active_marker_style(resolve_active_marker(session))
         # 有圆点才让出「圆点 + 空格」这两列；没有圆点的卡片不留占位空格，标题
         # 直接顶到最左并吃满整行宽度。
@@ -631,7 +631,7 @@ class SessionGroupCard(Widget):
         self._render_signature = self._compute_signature()
 
     def _compute_signature(self) -> tuple:
-        # 收起时汇总含「刚刚」青点，须随成员关注态 / 托管 / 新鲜度更新。
+        # 收起时汇总含「刚刚」绿点，须随成员关注态 / 托管 / 新鲜度更新。
         return (
             self.group.name,
             self.group.project_cwd,
@@ -662,13 +662,13 @@ class SessionGroupCard(Widget):
             ("waiting", "group.attention_waiting"),
             ("working", "group.attention_working"),
             ("unread", "group.attention_unread"),
-            ("recent", "group.attention_recent"),
         )
         markers = [resolve_active_marker(session) for session in self.member_sessions]
-        counts = {
-            kind: sum(marker == kind for marker in markers)
-            for kind, _ in statuses
-        }
+        counts = {kind: 0 for kind, _ in statuses}
+        for marker in markers:
+            summary_kind = "working" if marker == "recent" else marker
+            if summary_kind in counts:
+                counts[summary_kind] += 1
         out = Text(indent)
         has_status = False
         for kind, label_key in statuses:

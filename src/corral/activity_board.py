@@ -22,14 +22,14 @@ from corral.display import JUST_NOW_SECONDS
 from corral.split_layout import MAX_PANES
 
 BOARD_KINDS: frozenset[AttentionKind] = frozenset({"waiting", "working", "unread"})
-# 界面圆点 / 看板排序共用的活跃标记（含「刚刚」青点）。
+# 界面圆点 / 看板排序共用的活跃标记。「刚刚」档仍单独排序，但圆点画成绿。
 ActiveMarker = Literal["waiting", "working", "unread", "recent"]
 ACTIVE_MARKER_STYLES: dict[str, str] = {
     "waiting": "bold yellow",
     "working": "bold green",
     "unread": "bold red",
-    # 「刚刚」仍活跃、但没有待办信号：青色，排在三档待办之后。
-    "recent": "bold cyan",
+    # 「刚刚」仍活跃、但没有待办信号：并进绿点，禁止单独画青/蓝。
+    "recent": "bold green",
 }
 _KIND_RANK: dict[str, int] = {
     "waiting": 0,
@@ -74,12 +74,12 @@ def resolve_active_marker(
 ) -> ActiveMarker | None:
     """Active sessions 与侧栏圆点的共用判定。
 
-    - 等回话 / 干活 / 未读 → 对应黄 / 绿 / 红（不要求本窗口托管，外部会话也可画点）
-    - 本窗口托管且「刚刚」窗口内仍有活动、但无待办信号 → ``recent``（青点）
-    - 否则无标记
+      - 等回话 / 干活 / 未读 → 对应黄 / 绿 / 红（不要求本窗口托管，外部会话也可画点）
+      - 本窗口托管且「刚刚」窗口内仍有活动、但无待办信号 → ``recent``（绿点，与干活同色）
+      - 否则无标记
 
-    Active sessions 看板只收录本窗口托管成员；圆点用同一函数，保证凡进 Active
-    的会话侧栏都有点。禁止为对齐而去掉 ``recent`` 档。
+      Active sessions 看板只收录本窗口托管成员；圆点用同一函数，保证凡进 Active
+      的会话侧栏都有点。禁止为对齐而去掉 ``recent`` 档，也禁止再给这一档单独画青/蓝点。
     """
     if session is not None:
         if attention_kind is None:

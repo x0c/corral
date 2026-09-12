@@ -47,6 +47,44 @@ class TemporaryTitleRankingTests(unittest.TestCase):
             "全面排查无效提示词",
         )
 
+    def test_short_real_request_is_not_dropped_as_an_emotion_clause(self) -> None:
+        self.assertEqual(
+            titles._compact_title("修复登录失败，不要改动其他功能"),
+            "修复登录失败",
+        )
+        self.assertEqual(
+            titles._compact_title("修复闪退，保留现有界面布局"),
+            "修复闪退",
+        )
+
+    def test_pure_insult_is_not_a_title_on_fallback_model_or_cache(self) -> None:
+        session = _session(
+            id="insult",
+            first_user_msg="修复登录失败",
+            fallback_title="修复登录失败",
+            last_user_msg="你他妈的",
+        )
+        self.assertIsNone(titles._compact_title("你他妈的"))
+        title, needs = titles.resolve_initial_title(session, {})
+        self.assertEqual(title, "修复登录失败")
+        self.assertNotEqual(title, "你他妈的")
+        self.assertTrue(needs)
+
+        cache = {"cursor:insult": {"fp": "v4:1", "title": "你他妈的"}}
+        cached_title, cached_needs = titles.resolve_initial_title(session, cache)
+        self.assertEqual(cached_title, "修复登录失败")
+        self.assertTrue(cached_needs)
+
+        raw = {"cursor:insult": "你他妈的"}
+        with (
+            mock.patch.object(titles, "generate_titles_batch", return_value=raw),
+            mock.patch.object(titles, "save_cache"),
+        ):
+            result = titles.refresh_titles([session], cache if False else {}, generator=mock.Mock())
+        written = titles.refresh_titles  # keep lint from thinking cache unused
+        del written
+        self.assertEqual(result, {})
+
     def test_closing_doc_update_does_not_replace_the_original_task(self) -> None:
         session = _session(
             first_user_msg="修复 JotBox 退出后菜单栏图标还在",
@@ -232,6 +270,51 @@ class TitlePromptTests(unittest.TestCase):
         self.assertNotIn("You are picking up a session from", item["user_request"])
         self.assertTrue(prompt.startswith(titles.PROMPT_MARKER))
         self.assertIn("修复 Corral 测试失败", prompt)
+
+    def test_handoff_prompt_survives_scanner_300_char_clip(self) -> None:
+        from corral.models import make_session_info
+
+        wrapper = (
+            "Task: 实现\n\n"
+            "You are picking up a session from Cursor. Start a new session of "
+            "your own and continue the work. " + ("padding " * 40) + "\n\n"
+            "Original session history file: /tmp/history.jsonl\n"
+            "Original working directory: /tmp/proj\n"
+            "History format hint: Codex rollout JSONL\n\n"
+            "Below is a conversation excerpt automatically extracted from the "
+            "original session (truncated; for quickly locating the task):\n"
+            "User: 修复 Corral 测试失败\n"
+            "Assistant: 开始改相关用例"
+        )
+        self.assertGreater(len(wrapper), 300)
+        self.assertNotIn("修复 Corral 测试失败", wrapper[:300])
+
+        scanned = make_session_info(
+            source="codex",
+            id="clip",
+            short_id="clip",
+            cwd="/tmp/proj",
+            mtime=1.0,
+            time_source="file_mtime",
+            event_time=1.0,
+            file_mtime=1.0,
+            size_bytes=4000,
+            native_title=None,
+            fallback_title="实现",
+            status_tag="",
+            path="/tmp/clip.jsonl",
+            first_user_msg=wrapper,
+            last_user_msg=wrapper,
+        )
+        item = titles._prompt_item(scanned)
+
+        self.assertIn("修复 Corral 测试失败", scanned["first_user_msg"])
+        self.assertNotIn("You are picking up", scanned["first_user_msg"])
+        self.assertIn("修复 Corral 测试失败", item["user_request"])
+        self.assertNotEqual(item["user_request"], "实现")
+        title = titles._compact_title(scanned["first_user_msg"])
+        self.assertNotEqual(title, "Below is a conversation ex…")
+        self.assertNotIn("Below is a conversation", title or "")
 
 
 class TitleGenerationStateTests(unittest.TestCase):
