@@ -293,9 +293,10 @@ class PaneCell(Vertical):
         self._osc_report = osc_report
         self._title = title
         self._closable = closable
-        # 活跃格不保存预览。即使调用方误把它传进来，抓帧切换/重排时也绝不能
-        # 回退到消息预览。
-        self._detail_renderer = None if spec.keepalive_name else detail_renderer
+        # Live panes must not *display* a transcript renderer (capture gaps
+        # would flash chat). Keep it as an ended fallback so a confirmed-dead
+        # host can switch to the same preview path as a history card.
+        self._bind_renderers(detail_renderer, hosted=bool(spec.keepalive_name))
         self._input_masked = False
         self._pooled = False
 
@@ -319,7 +320,7 @@ class PaneCell(Vertical):
         if pane is not None:
             pane.clear()
         self.spec = PaneSpec(session_key="__spare__", cell_id=self.spec.cell_id)
-        self._detail_renderer = None
+        self._bind_renderers(None, hosted=False)
         self.set_title("")
         self.set_pooled(True)
 
@@ -378,7 +379,7 @@ class PaneCell(Vertical):
         """
         spec.cell_id = self.spec.cell_id
         self.spec = spec
-        self._detail_renderer = detail_renderer
+        self._bind_renderers(detail_renderer, hosted=bool(spec.keepalive_name))
         self.set_pooled(False)
         self.set_title(title)
         # 单格与多格之间切换时，格子此刻还保留旧宽。用分栏区计算出的最终尺寸立即
@@ -414,6 +415,32 @@ class PaneCell(Vertical):
         # show_detail/focus_session 会发 ModeChanged；此处再钉一次，覆盖 compose
         # 后尚未挂齐顶底条、消息早到的竞态。高光跟当前会话走，要整排一起刷。
         self._request_chrome_sync()
+
+    def _bind_renderers(
+        self,
+        renderer: Callable[[], Text | str] | None,
+        *,
+        hosted: bool,
+    ) -> None:
+        self._ended_fallback = renderer
+        self._detail_renderer = None if hosted else renderer
+
+    def _reveal_ended_preview(self) -> None:
+        """Hosted pane confirmed gone: drop hosting and show the transcript."""
+        pane = self.embed_pane()
+        if pane is None or not pane.dead:
+            return
+        if self.spec.is_shell or self.spec.session_key.startswith("__"):
+            return
+        if self.spec.keepalive_name:
+            area = self._split_area()
+            if area is not None:
+                area.store.mark_hosted(self.spec.session_key, None)
+            # Spec still said "hosted" after the store dropped it, selection
+            # follow would remount a live embed and wipe the transcript again.
+            self.spec.keepalive_name = None
+        if self._ended_fallback is not None:
+            pane.show_detail(self._ended_fallback)
 
     def embed_pane(self) -> EmbedPane | None:
         for child in self.children:
@@ -506,6 +533,7 @@ class PaneCell(Vertical):
             if pane is not None and pane.dead:
                 self._close_self()
                 return
+        self._reveal_ended_preview()
         self._sync_active_marker()
 
     def _notify_pane_focused(self) -> None:
@@ -902,9 +930,10 @@ class SplitPaneArea(Vertical):
     ) -> None:
         """entries: (session, keepalive_name, detail_renderer)。
 
-        托管会话一律丢弃 detail_renderer；其首帧只能是运行时画面或空白底色。
-        若 (session_key, keepalive_name) 有序身份与当前一致，只就地更新标题，
-        禁止整排 remount（否则会清掉 live `_grid`）。
+        托管会话的首帧只能是运行时画面或空白底色，不能把 renderer 交给
+        EmbedPane 去画（抓帧空档会闪聊天）。renderer 只作为结束后的对话
+        回退留在格子上。若 (session_key, keepalive_name) 有序身份与当前
+        一致，只就地更新标题，禁止整排 remount（否则会清掉 live `_grid`）。
 
         `focus_pane`=True 表示调用方带着明确意图（回车打开 / 新建托管成功），
         此时把键盘焦点交给 `focus_key` 那一格；单纯的选择跟随不得传 True。
@@ -915,11 +944,6 @@ class SplitPaneArea(Vertical):
         self.title_with_project = title_with_project
         self.allow_cross_project = allow_cross_project
         self.panes_closable = closable
-        # 这是最后一道边界：调用方未来即使错传预览，也不能污染活跃格。
-        entries = [
-            (session, kname, None if kname else renderer)
-            for session, kname, renderer in entries
-        ]
         target_identity = [
             (make_session_key(session), kname) for session, kname, _ in entries
         ]
@@ -964,13 +988,28 @@ class SplitPaneArea(Vertical):
         for cell, (session, kname, renderer) in zip(cells, entries, strict=False):
             cell.set_title(self._pane_title(session))
             cell.set_closable(self.panes_closable)
+            cell._bind_renderers(renderer, hosted=bool(kname))  # noqa: SLF001
             pane = cell.embed_pane()
             if pane is None:
                 continue
-            # 就地更新是之前漏掉的路径：活跃格已有画面时看似不会用预览，但抓帧
-            # 被清空或重排的一个绘制周期仍会读到残留 renderer。
-            pane._detail_renderer = None if kname else renderer  # noqa: SLF001
-            pane.invalidate_detail()
+            # Live panes must keep _detail_renderer empty so a capture gap
+            # cannot flash the transcript. Ended panes already on preview
+            # stay on preview.
+            if kname:
+                live = pane.session_name is not None and not pane.dead
+                if live:
+                    pane._detail_renderer = None  # noqa: SLF001
+                    pane.invalidate_detail()
+                elif renderer is not None:
+                    self.store.mark_hosted(make_session_key(session), None)
+                    cell.spec.keepalive_name = None
+                    pane.show_detail(renderer)
+                else:
+                    pane._detail_renderer = None  # noqa: SLF001
+                    pane.invalidate_detail()
+            else:
+                pane._detail_renderer = renderer  # noqa: SLF001
+                pane.invalidate_detail()
         if focus_key:
             self._focus_key = focus_key
         elif self._panes:
@@ -1019,12 +1058,13 @@ class SplitPaneArea(Vertical):
             cell = self._cell_for_spec(p)
             renderer_fn = None
             if cell is not None:
-                pane = cell.embed_pane()
-                if pane is not None and not p.keepalive_name:
-                    renderer_fn = pane._detail_renderer  # noqa: SLF001
+                renderer_fn = cell._ended_fallback  # noqa: SLF001
+                if renderer_fn is None and not p.keepalive_name:
+                    pane = cell.embed_pane()
+                    if pane is not None:
+                        renderer_fn = pane._detail_renderer  # noqa: SLF001
             rebuild.append((p, sess, renderer_fn))
-        # add_hosted_pane 是另一条创建活跃格的入口，同样不准携带消息预览。
-        rebuild.append((spec, session, None))
+        rebuild.append((spec, session, renderer))
         self._panes = [s for s, _, _ in rebuild]
         focus_key = key if focus else self._focus_key
         self._schedule_mount(rebuild, focus_key=focus_key, focus_pane=focus_pane)

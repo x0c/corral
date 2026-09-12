@@ -726,11 +726,12 @@ class DedupeKeepaliveNameTests(unittest.TestCase):
         entries = host._build_hosted_entries(["pi:aaa", "pi:bbb"])
         self.assertEqual(entries[0][0]["id"], "aaa")
         self.assertEqual(entries[0][1], "corral-pi-aaa")
-        self.assertIsNone(entries[0][2])
+        # Live unique host keeps a transcript renderer as an ended fallback.
+        self.assertIsNotNone(entries[0][2])
         self.assertEqual(entries[1][0]["id"], "bbb")
         self.assertIsNone(entries[1][1])
         self.assertIsNotNone(entries[1][2])
-        self.assertEqual(host.warmed, ["bbb"])
+        self.assertEqual(host.warmed, ["aaa", "bbb"])
 
 
 if __name__ == "__main__":

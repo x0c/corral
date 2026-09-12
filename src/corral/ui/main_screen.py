@@ -1261,10 +1261,16 @@ class MainScreen(
             # 进程，既避免历史竞争，也不以确认弹窗打断用户（2026-08-08 裁定）。
             self._focus_list()
             return
-        if dead:
+        if (
+            dead
+            or session.get("keepalive_name")
+            or self.store.hosted.get(session_key)
+        ):
             # 这一格里的会话刚跑完退出，但 store 里的托管标记要等下一轮重扫才撤。
+            # 画面确认没了之后会先切回对话预览（dead 已清），标记却可能还在；
             # 不先撤掉的话 `_embed_open` 会认定它"已托管"，转身把那格死画面又摆一遍。
             session = self.store.mark_hosted(session_key, None) or session
+            session.pop("keepalive_name", None)
         request = corral.LaunchRequest(
             session, str(session.get("source") or self.nav.source), self.store.get_title(session)
         )

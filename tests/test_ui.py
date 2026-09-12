@@ -122,14 +122,17 @@ async def _wait_for_embed_pane(screen) -> EmbedPane:
 async def _wait_for_embed_session(
     screen, session_name: str, *, tries: int = 500, interval: float = 0.01,
 ) -> EmbedPane:
-    """右栏异步替换格子时反复取当前 Widget，直到它已绑定目标托管会话。"""
+    """右栏异步替换格子时反复取当前 Widget，直到某一格已绑定目标托管会话。"""
     for _ in range(tries):
         try:
-            pane = _primary_embed_pane(screen)
-        except AssertionError:
-            pane = None
-        if pane is not None and pane.session_name == session_name:
-            return pane
+            area = screen.query_one(SplitPaneArea)
+        except Exception:
+            area = None
+        if area is not None:
+            for cell in area._cells():  # noqa: SLF001
+                pane = cell.embed_pane()
+                if pane is not None and pane.session_name == session_name:
+                    return pane
         await asyncio.sleep(interval)
     raise AssertionError(
         f"等待 {tries * interval:.2f}s 后仍未挂载托管会话：{session_name}"
@@ -7541,6 +7544,22 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
     入口——组内成员那条路当时更是彻底走不通（只会把会话组再摆一遍）。
     """
 
+    def setUp(self) -> None:
+        # Each case gets its own sidebar sqlite. Sharing the module tempfile
+        # lets a late persist from the previous app rewrite groups after the
+        # next case already unlinked the file, so click-to-open then waits
+        # forever on the wrong pane.
+        self._sidebar_dir = tempfile.mkdtemp(prefix="corral-test-restart-ended-")
+        os.environ["CORRAL_CACHE_DIR"] = self._sidebar_dir
+        _split_layout.reset_default_layout_db()
+        self.addCleanup(self._restore_sidebar_dir)
+
+    def _restore_sidebar_dir(self) -> None:
+        _split_layout.reset_default_layout_db()
+        os.environ["CORRAL_CACHE_DIR"] = _SIDEBAR_STATE_DIR
+        _split_layout.reset_default_layout_db()
+        shutil.rmtree(self._sidebar_dir, ignore_errors=True)
+
     async def test_enter_on_preview_pane_restarts_session(self) -> None:
         """焦点在右栏静态预览格上按回车 = 重启这条会话。"""
         store, registry = _make_store()
@@ -7581,22 +7600,86 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
-                key = corral.session_key(store.all_sessions()[0])
+                session = store.all_sessions()[0]
+                key = corral.session_key(session)
+                area = app.screen.query_one(SplitPaneArea)
+                area.show_single_preview(
+                    session, app.screen._detail_renderer_for(session),
+                )
+                await _wait_until(
+                    lambda: area.cells()
+                    and area.cells()[0].spec.session_key == key
+                )
                 store.mark_hosted(key, "corral-claude-old")
-                pane = _primary_embed_pane(app.screen)
+                pane = area.cells()[0].embed_pane()
+                self.assertIsNotNone(pane)
                 pane.session_name = "corral-claude-old"
-                pane.dead = True
+                pane._apply_dead(pane._capture_generation, "corral-claude-old")  # noqa: SLF001
                 app.screen.set_focus(pane)
-                await pilot.pause()
-                self.assertIn(i18n.t("detail.session_ended"), pane.render().plain)
+                await _wait_until(lambda: pane._is_restart_target())  # noqa: SLF001
 
                 await pilot.press("enter")
                 await _wait_until(lambda: host.called)
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
                 await _wait_for_embed_session(app.screen, "corral-claude-again")
                 self.assertEqual(
-                    store.find_session(key).get("keepalive_name"), "corral-claude-again",
+                    store.hosted_name_for(key), "corral-claude-again",
                 )
+
+    async def test_dead_hosted_pane_shows_conversation_not_blank(self) -> None:
+        """Hosted pane whose tmux session died must fall back to the transcript.
+
+        Restarting Corral used to be the only way to see messages: that
+        clears this-window hosting, so selection follow takes the history
+        preview path. While hosting was still registered, capture failure
+        painted "Session ended" and never loaded the conversation.
+        """
+        cwd = tempfile.mkdtemp(prefix="corral-test-ended-hosted-")
+        sessions = [{
+            "source": "claude", "id": "ended-hosted", "short_id": "ended-hosted",
+            "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+            "native_title": None, "fallback_title": "Ended Hosted",
+            "cwd": cwd, "live": True, "keepalive_name": "corral-claude-ended",
+        }]
+        store, _ = _make_store(sessions=sessions)
+        key = corral.session_key(sessions[0])
+        store.mark_hosted(key, "corral-claude-ended")
+        store.get_conversation(sessions[0])
+        app = CorralApp(store, embed_ok=True)
+        with (
+            mock.patch("corral.embed.open_channel", return_value=None),
+            mock.patch("corral.embed.should_resize_host", return_value=False),
+            mock.patch("corral.liveness.is_alive", return_value=False),
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                area = app.screen.query_one(SplitPaneArea)
+                area.show_hosted_group(
+                    cwd,
+                    [(
+                        sessions[0],
+                        "corral-claude-ended",
+                        app.screen._detail_renderer_for(sessions[0]),
+                    )],
+                    focus_key=key,
+                )
+                await _wait_until(
+                    lambda: area.cells()
+                    and area.cells()[0].embed_pane() is not None
+                    and area.cells()[0].embed_pane().session_name
+                    == "corral-claude-ended"
+                )
+                pane = area.cells()[0].embed_pane()
+                self.assertIsNotNone(pane)
+                self.assertIsNone(pane._detail_renderer)  # noqa: SLF001
+                pane._apply_dead(pane._capture_generation, pane.session_name)  # noqa: SLF001
+                await pilot.pause()
+                await _wait_until(lambda: "测试问题" in pane.render().plain)
+                text = pane.render().plain
+                self.assertIn("测试回复", text)
+                self.assertNotEqual(text.strip(), i18n.t("detail.session_ended"))
+                self.assertIsNone(store.hosted_name_for(key))
+                self.assertIsNone(area.cells()[0].spec.keepalive_name)
 
     async def test_enter_restarts_ended_member_of_session_group(self) -> None:
         """会话组里的已结束成员：回车必须重启它，而不是把会话组再摆一遍。
@@ -7742,6 +7825,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "corral.embed.host_session", return_value="corral-claude-s1",
             ) as host,
+            mock.patch("corral.embed.open_channel", return_value=None),
             mock.patch("corral.liveness.is_alive", return_value=False),
         ):
             async with app.run_test(size=(120, 30)) as pilot:
@@ -7770,12 +7854,20 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
         for session in store.all_sessions():
             session["keepalive_name"] = f"corral-{session['id']}"
         app = CorralApp(store, embed_ok=True)
-        with mock.patch("corral.liveness.is_alive", return_value=True):
+        with (
+            mock.patch("corral.embed.open_channel", return_value=None),
+            mock.patch("corral.liveness.is_alive", return_value=True),
+        ):
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.3)
                 cards = list(app.screen.query(SessionCard))
                 await pilot.click(cards[1])
-                await pilot.pause(delay=0.3)
+                await _wait_until(
+                    lambda: corral.session_key(
+                        app.screen.query_one(SessionListView).selected_session()
+                        or {},
+                    ) == corral.session_key(cards[1].session)
+                )
                 pane = await _wait_for_embed_session(app.screen, "corral-s1")
                 await _wait_until(lambda: pane.has_focus)
 

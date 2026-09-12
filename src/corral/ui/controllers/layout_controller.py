@@ -372,9 +372,12 @@ class LayoutControllerMixin:
                         self._warm_conversation(session, self._preview_gen)
                     continue
                 seen_names.add(name)
-                # 托管会话的首帧只能是实时画面或空白运行时底色。预览渲染器一旦
-                # 跟着这条数据流进入右栏，就可能在抓帧重排的空档闪现。
-                entries.append((session, name, None))
+                # Keep the transcript renderer as an ended fallback only. The
+                # live pane still mounts without it so capture gaps cannot
+                # flash chat; once the host is confirmed gone the pane
+                # switches to this preview instead of a blank "session ended".
+                entries.append((session, name, self._detail_renderer_for(session)))
+                self._warm_conversation(session, self._preview_gen)
                 continue
             entries.append((session, None, self._detail_renderer_for(session)))
             if session.get("live"):

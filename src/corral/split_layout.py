@@ -504,6 +504,14 @@ class SidebarLayoutDB:
             self._report_degraded(error)
             return None
 
+    def close(self) -> None:
+        """Release the cached connection so tests can unlink the sqlite file."""
+        with self._lock:
+            conn = self._conn
+            self._conn = None
+        if conn is not None:
+            self._discard_conn(conn)
+
     def _discard_conn(self, conn: sqlite3.Connection) -> None:
         """连接出错时丢弃缓存，下次调用自动重开（自愈，不中断界面）。"""
         if self._conn is conn:
@@ -970,7 +978,10 @@ def reset_default_layout_db() -> None:
     """丢弃进程内共用句柄，供测试切换缓存目录后重新解析路径。"""
     global _DEFAULT_DB
     with _DEFAULT_DB_LOCK:
+        db = _DEFAULT_DB
         _DEFAULT_DB = None
+    if db is not None:
+        db.close()
 
 
 def resolve_active_group(
