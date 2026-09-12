@@ -12,6 +12,10 @@ Keep English and Simplified Chinese READMEs aligned. Lead with the purpose, a re
 
 Use current, sanitized product captures. The README hero demonstration is `docs/screenshots/demo.gif`, generated from the real terminal UI by `docs/screenshots/capture.py` with isolated sample conversations. A historical animated capture such as `demo-list.gif` must not return; it showed command output and local paths. Static `list.png` remains the still; fold `search.png`. Phone README shots are the session list and conversation, not the machine picker. Check both rendered languages, images and links after changes.
 
+Capture with Homebrew Python plus cairo, and put both `cli/src` and SessKit `src` on `PYTHONPATH`. pipx Python often lacks the screenshot libraries; do not commit unused SVG rasterizers or embed the 1024 master in an SVG. After search, opening a split with Space then Enter is flaky in the harness — `capture.py` opens the split in code. Drop an unstable beat rather than fake UI.
+
+Do not claim title generation launches installed assistant CLIs. The public privacy text must match the configured language-model gateway.
+
 ## Structural references
 
 - [Sesh](https://github.com/joshmedeski/sesh): concise identity and task-oriented feature summaries; adopt these patterns, not its configuration-heavy page length.

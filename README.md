@@ -120,7 +120,7 @@ Pair on the same local network. Away from home, you need a relay you host yourse
 ## Privacy
 
 - Session browsing and search read local assistant history.
-- Optional title generation uses installed assistants and can consume account quota.
+- Optional title generation may send short excerpts to a configured language-model gateway and can consume quota there.
 - Update checks contact GitHub.
 - Pairing a phone authorizes it to access and act on your sessions; remote traffic is end-to-end encrypted.
 

@@ -91,9 +91,7 @@ bottom-right corner; clicking it runs the same install command your install chan
 (`brew upgrade x0c/tap/corral` or `pip install --upgrade`), then offers to restart `corral`. You can also
 trigger this manually any time with `corral update`, or dismiss the notice for the day.
 
-Optional title generation distributes batches among locally installed Claude, Codex, OpenCode, Kimi, and Cursor CLIs (or honors an explicit `CORRAL_TITLE_GENERATOR`, with legacy `SC_TITLE_GENERATOR` still accepted). That command sends short session excerpts to the corresponding model provider under your own account and credentials. If one assistant fails, another available assistant takes over that batch; if all fail, the tool keeps using local fallback titles.
-
-Title generation uses non-persistent one-shot modes for Claude and Codex, so those derived requests are not saved as their sessions. OpenCode, Kimi, and Cursor may retain their own derived request, but corral marks it and excludes it from the user session list.
+Optional title generation does **not** launch Claude, Codex, OpenCode, Kimi, or Cursor. When a language-model gateway is configured (`~/.config/corral/llm-gateway.json`, or the matching `CORRAL_LLM_GATEWAY_*` / `CORRAL_TITLE_MODEL` environment overrides), Corral sends short session excerpts to that OpenAI-compatible endpoint and may consume quota there. Without a configured key, it keeps local fallback titles and makes no title-generation network request. Failed, invalid, or incomplete results stay on the local title cache so later launches do not automatically resubmit the same session.
 
 Failed, timed-out, invalid, or incomplete title results are recorded locally for the current cache
 version. Later launches do not automatically submit those sessions again, preventing repeated quota
