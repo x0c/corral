@@ -744,9 +744,10 @@ class SessionGroupCard(Widget):
         if emoji and emoji in title:
             before, _, after = title.partition(emoji)
             out.append(before, style="bold")
-            # emoji 本身天然是彩色图形，不需要再加粗；单独成 span 也方便截图
-            # 工具按字形单独换字体族（参考关注圆点的处理，见 capture.py）。
+            # emoji 本身天然是彩色图形，不需要再加粗；单独成 span 方便
+            # capture.py 把水果字形换成 Twemoji PNG（Cairo 画不出 Color Emoji）。
             out.append(emoji)
+
             out.append(after, style="bold")
         else:
             out.append(title, style="bold")

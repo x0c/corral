@@ -922,18 +922,23 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(area.can_add_pane())
 
     async def test_footer_binds_ctrl_n_not_bare_n_for_new_session(self) -> None:
-        """新建走全局 Ctrl+N；单字母 n 仍不绑。Ctrl+A 是全局高级操作。"""
+        """新建走全局 Ctrl+N；单字母 n/a/x/q 不绑。Ctrl+A/X 是全局高级操作/删除。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             keys = {b.key for b in app.screen.BINDINGS}
             self.assertNotIn("n", keys)
+            self.assertNotIn("a", keys)
+            self.assertNotIn("x", keys)
+            self.assertNotIn("q", keys)
             self.assertIn("ctrl+n", keys)
+            self.assertIn("ctrl+a", keys)
+            self.assertIn("ctrl+x", keys)
             actions = {b.action for b in app.screen.BINDINGS}
             self.assertIn("new_session", actions)
-            self.assertIn("ctrl+a", keys)
             self.assertIn("advanced", actions)
+            self.assertIn("delete_session", actions)
             await pilot.press("ctrl+n")
             await _wait_until(lambda: isinstance(app.screen, NewSessionModal))
             await pilot.press("escape")
@@ -3471,6 +3476,61 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(visible), 1)
             self.assertEqual(visible[0]["id"], "b")
 
+    async def test_project_search_clear_button_clears_filter(self) -> None:
+        """有关键字时筛选框右侧露出两行高 ×；点按清空且不抢输入焦点。"""
+        from corral.ui.main_screen import _FilterClear
+
+        sessions = [
+            {
+                "source": "claude", "id": "a", "short_id": "a",
+                "mtime": time.time(), "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "节点选择",
+                "cwd": "/Users/x/ProxyAgent", "live": False,
+            },
+            {
+                "source": "claude", "id": "b", "short_id": "b",
+                "mtime": time.time() - 10, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": "界面打磨",
+                "cwd": "/Users/x/corral", "live": False,
+            },
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            search = app.screen.query_one("#project-search", Input)
+            clear_btn = app.screen.query_one("#project-search-clear", _FilterClear)
+            search_row = app.screen.query_one("#project-search-row")
+
+            self.assertFalse(clear_btn.display)
+            self.assertFalse(search_row.has_class("-active"))
+
+            search.focus()
+            await pilot.pause()
+            search.value = "proxy"
+            await pilot.pause()
+            self.assertEqual(list_view.nav.project_query, "proxy")
+            self.assertTrue(clear_btn.display)
+            self.assertTrue(search_row.has_class("-active"))
+            self.assertEqual(clear_btn.styles.height.value, 2)
+            self.assertTrue(search.has_focus)
+            visible = list_view.visible_sessions()
+            self.assertTrue(visible)
+            self.assertTrue(all("ProxyAgent" in (s.get("cwd") or "") for s in visible))
+
+            await pilot.click(clear_btn)
+            await pilot.pause()
+            self.assertEqual(search.value, "")
+            self.assertEqual(list_view.nav.project_query, "")
+            self.assertFalse(clear_btn.display)
+            self.assertFalse(search_row.has_class("-active"))
+            # 清空后至少恢复到含非 ProxyAgent 的会话（不钉死条数，防后台重扫抖动）
+            cwds = [s.get("cwd") or "" for s in list_view.visible_sessions()]
+            self.assertTrue(any("corral" in cwd for cwd in cwds))
+            # 点 × 不得抢走输入焦点，方便继续打字
+            self.assertTrue(search.has_focus)
+
     async def test_switching_session_rebinds_pane_instead_of_remounting(self) -> None:
         """切到另一个会话必须就地改绑同一个格子，不能整排销毁重建。
 
@@ -5028,7 +5088,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(list_view.has_focus)
                 self.assertFalse(pane.input_masked, "持有输入的格不该压暗")
 
-                await pilot.press("ctrl+backslash")
+                app.screen._focus_list()  # noqa: SLF001 — no keybinding; call directly for mask tests
                 await pilot.pause()
                 self.assertTrue(list_view.has_focus)
                 await _wait_until(lambda: pane.input_masked)
@@ -5049,7 +5109,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
 
-                await pilot.press("ctrl+backslash")
+                app.screen._focus_list()  # noqa: SLF001 — no keybinding; call directly for mask tests
                 await _wait_until(lambda: pane.input_masked)
                 key = app.screen.query_one(SplitPaneArea).pane_specs()[0].session_key
 
@@ -5074,7 +5134,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
 
-                await pilot.press("ctrl+backslash")
+                app.screen._focus_list()  # noqa: SLF001 — no keybinding; call directly for mask tests
                 await _wait_until(lambda: pane.input_masked)
                 area = app.screen.query_one(SplitPaneArea)
                 key = area.pane_specs()[0].session_key
@@ -5121,21 +5181,25 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await _wait_until(lambda: len(area.cells()) == 1)
                 pane = area.cells()[0].embed_pane()
-                app.screen._focus_list()  # noqa: SLF001
                 list_view = app.screen.query_one(SessionListView)
                 # 挂载 EmbedPane 后 Textual 可能先把焦点落到右栏；等侧栏真正持焦，
-                # 再同步蒙版，避免 pilot.pause 一帧里焦点还在路上就断言失败。
-                # 全量套件负载高时，托管声明 / session_name 可能比焦点晚一拍，
-                # 单次 sync 会看到「右栏仍持有输入」或「还不算 live」而不压暗。
+                # 再同步蒙版。全量套件负载高时：异步改绑尚未写上 session_name、
+                # 或焦点仍在路上——反复回列表并同步，避免单次 sync 误判。
                 def _list_focused_and_masked() -> bool:
-                    if not list_view.has_focus or pane.has_focus:
+                    if pane is None:
+                        return False
+                    if not pane.session_name:
+                        return False
+                    if pane.has_focus or not list_view.has_focus:
+                        app.screen._focus_list()  # noqa: SLF001
                         return False
                     if area._input_claim_key is not None:  # noqa: SLF001
                         return False
                     area.sync_input_mask()
                     return pane.input_masked
 
-                await _wait_until(_list_focused_and_masked)
+                app.screen._focus_list()  # noqa: SLF001
+                await _wait_until(_list_focused_and_masked, tries=800)
                 self.assertTrue(pane.input_masked)
 
                 area.show_hosted_group(
@@ -5163,7 +5227,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: app.screen._host_pending == 0)
                 pane = await _wait_for_embed_session(app.screen, "corral-claude-s0")
                 await _wait_until(lambda: pane.has_focus)
-                await pilot.press("ctrl+backslash")
+                app.screen._focus_list()  # noqa: SLF001 — no keybinding; call directly for mask tests
                 await pilot.pause()
                 self.assertTrue(list_view.has_focus)
 
@@ -5201,7 +5265,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 await _wait_until(lambda: pane.has_focus)
                 hosted_key = corral.session_key(list_view.selected_session())
 
-                await pilot.press("ctrl+backslash")
+                app.screen._focus_list()  # noqa: SLF001 — no keybinding; call directly for mask tests
                 await pilot.pause()
                 self.assertTrue(list_view.has_focus)
 
@@ -5552,7 +5616,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(source)
                 source_key = corral.session_key(source)
 
-                await pilot.press("a")
+                await pilot.press("ctrl+a")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 await pilot.press("down")  # claude 原生恢复 → cursor
@@ -5630,7 +5694,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 source_key = corral.session_key(source)
                 main = app.screen
                 with mock.patch.object(main, "notify") as notify:
-                    await pilot.press("a")
+                    await pilot.press("ctrl+a")
                     await pilot.pause()
                     self.assertIsInstance(app.screen, RuntimePickerModal)
                     await pilot.press("down")
@@ -5702,7 +5766,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(source)
                 source_key = corral.session_key(source)
 
-                await pilot.press("a")
+                await pilot.press("ctrl+a")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 # 本用例只有 claude，默认即源助手；回车 = 同助手读历史后新建
@@ -5762,7 +5826,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(source)
                 source_key = corral.session_key(source)
 
-                await pilot.press("a")
+                await pilot.press("ctrl+a")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 # 默认高亮在接力项；上移两次落到「复制会话」（上面依次是重启、导出）
@@ -5802,7 +5866,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("a")
+            await pilot.press("ctrl+a")
             await pilot.pause()
             self.assertIsInstance(app.screen, RuntimePickerModal)
             self.assertEqual(app.screen._choices[0].id, EXPORT_SESSION_CHOICE)
@@ -5851,7 +5915,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 store.mark_hosted(source_key, "corral-claude-s0")
                 await pilot.pause()
 
-                await pilot.press("a")
+                await pilot.press("ctrl+a")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 choices = app.screen._choices
@@ -5885,7 +5949,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("corral.embed.host_session") as host_mock:
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                await pilot.press("a")
+                await pilot.press("ctrl+a")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 choices = app.screen._choices
@@ -5946,24 +6010,24 @@ class FooterActionGatingTests(unittest.TestCase):
     def test_list_actions_step_aside_when_live_pane_focused(self) -> None:
         screen = self._screen(live=True)
         for action in (
-            "handoff", "kill_keepalive", "delete_session", "close_pane",
-            "quit_app", "preview_home", "preview_page_up", "preview_page_down",
+            "close_pane",
+            "preview_home", "preview_page_up", "preview_page_down",
         ):
             with self.subTest(action=action):
                 self.assertIs(screen.check_action(action, ()), False)
+        # 无回列表快捷键；方法仍在，焦点已在右栏时 check 为 True 但无 binding
         self.assertTrue(screen.check_action("focus_list", ()))
-        # 壳层显隐侧栏：与 Ctrl+\ 同级，右栏持焦时仍可用
         self.assertTrue(screen.check_action("toggle_sidebar", ()))
-        # Ctrl+P 全局置顶 / Ctrl+N 全局新建 / Ctrl+A 全局高级操作：与 Ctrl+F 同级，右栏持焦时仍可用
+        # Ctrl+F/P/N/A/X 全局：右栏持焦时仍可用
         self.assertTrue(screen.check_action("toggle_pin", ()))
         self.assertTrue(screen.check_action("search_content", ()))
         self.assertTrue(screen.check_action("new_session", ()))
         self.assertTrue(screen.check_action("advanced", ()))
-        self.assertIs(screen.check_action("handoff", ()), False)
+        self.assertTrue(screen.check_action("delete_session", ()))
 
     def test_list_actions_available_when_sidebar_focused(self) -> None:
         screen = self._screen(live=False)
-        for action in ("handoff", "kill_keepalive", "quit_app", "preview_page_up"):
+        for action in ("preview_page_up", "close_pane"):
             with self.subTest(action=action):
                 self.assertTrue(screen.check_action(action, ()))
         # 焦点已经在列表时不必展示"回列表"
@@ -5971,6 +6035,7 @@ class FooterActionGatingTests(unittest.TestCase):
         self.assertTrue(screen.check_action("toggle_sidebar", ()))
         self.assertTrue(screen.check_action("toggle_pin", ()))
         self.assertTrue(screen.check_action("new_session", ()))
+        self.assertTrue(screen.check_action("delete_session", ()))
         # 没进看板、或只有一页时翻页键必须藏起来。
         self.assertFalse(screen.check_action("board_prev", ()))
         self.assertFalse(screen.check_action("board_next", ()))
@@ -6026,7 +6091,7 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(app.screen.focused, focused_before)
 
     async def test_footer_hides_back_to_list_and_toggle_sidebar(self) -> None:
-        """回列表仍绑着但不上底栏；侧栏显隐不再绑键。"""
+        """回列表与侧栏显隐都不再绑键；底栏也不展示。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)):
@@ -6038,8 +6103,7 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(("ctrl+backslash", "focus_list"), shown)
             self.assertNotIn(("ctrl+shift+b", "toggle_sidebar"), shown)
             keys = {binding.key: binding for binding in app.screen.BINDINGS}
-            self.assertIn("ctrl+backslash", keys)
-            self.assertFalse(keys["ctrl+backslash"].show)
+            self.assertNotIn("ctrl+backslash", keys)
             self.assertNotIn("ctrl+shift+b", keys)
             footer = app.screen.query_one(Footer)
             await _wait_until(lambda: bool(footer.query("#footer-version")))
@@ -6279,11 +6343,12 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(header.has_class("-active"))
             self.assertTrue(footer.has_class("-active"))
             self.assertFalse(title.render().plain.startswith("● "))
-            await pilot.press("ctrl+backslash")
+            app.screen._focus_list()  # noqa: SLF001 — no keybinding; call directly for mask tests
             await pilot.pause()
-            self.assertFalse(header.has_class("-active"))
-            self.assertFalse(footer.has_class("-active"))
-            await pilot.press("c")
+            # 焦点回列表后，这条会话仍是当前选中：顶底高光跟着会话走，不跟着键盘。
+            self.assertTrue(header.has_class("-active"))
+            self.assertTrue(footer.has_class("-active"))
+            app.screen.action_close_pane()
             await pilot.pause()
             area = app.screen.query_one(SplitPaneArea)
             self.assertEqual(area.pane_count(), 0)
@@ -6446,7 +6511,7 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: pane._real_cursor_shown)
             self.assertTrue(pane._real_cursor_shown, "聚焦活会话时应显示外层真实光标")
 
-            await pilot.press("ctrl+backslash")  # 焦点回列表
+            app.screen._focus_list()  # noqa: SLF001 — no keybinding; call directly for mask tests  # 焦点回列表
             await pilot.pause()
             self.assertTrue(list_view.has_focus)
             self.assertFalse(pane._real_cursor_shown, "失焦后应收起外层真实光标")
@@ -7680,6 +7745,12 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                     header.query_one(".restart-hint").render().plain.strip(),
                     short,
                 )
+                # 列表仍持焦、预览已结束会话：顶底条和 Your prompts 仍走激活高光。
+                self.assertTrue(header.has_class("-active"))
+                self.assertTrue(footer.has_class("-active"))
+                hud = cell.session_hud()
+                if hud is not None and hud.display:
+                    self.assertTrue(hud.has_class("-active"))
 
                 # 焦点进预览格：底栏仍只写 Enter 重启，不得再写 Ctrl+\ 回列表。
                 pane = _primary_embed_pane(app.screen)
@@ -7732,7 +7803,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(app.screen, app.screen)
             self.assertEqual(type(app.screen).__name__, "MainScreen")
 
-    async def test_a_key_opens_handoff_modal_from_main_list(self) -> None:
+    async def test_ctrl_a_opens_handoff_modal_from_main_list(self) -> None:
         codex = mock.Mock()
         codex.id = "codex"
         codex.display_name = "Codex"
@@ -7743,10 +7814,6 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
-            await pilot.press("a")
-            await _wait_until(lambda: isinstance(app.screen, RuntimePickerModal))
-            await pilot.press("escape")
-            await _wait_until(lambda: not isinstance(app.screen, RuntimePickerModal))
             await pilot.press("ctrl+a")
             await _wait_until(lambda: isinstance(app.screen, RuntimePickerModal))
             await pilot.press("down")  # claude(原生恢复) -> codex
@@ -8172,7 +8239,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
-            await pilot.press("a")
+            await pilot.press("ctrl+a")
             await pilot.pause()
             self.assertIsInstance(app.screen, RuntimePickerModal)
             await pilot.press("down")  # 移到未安装的 kimi
@@ -8349,7 +8416,7 @@ class ModalOutsideClickTests(unittest.IsolatedAsyncioTestCase):
 
 
 class KillKeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_q_key_confirm_kills_and_clears_keepalive_name(self) -> None:
+    async def test_kill_confirm_clears_keepalive_name(self) -> None:
         sessions = [{
             "source": "claude", "id": "s0", "short_id": "s0", "mtime": time.time(),
             "size_bytes": 1, "size_kb": 1, "native_title": None, "fallback_title": "会话0",
@@ -8367,7 +8434,7 @@ class KillKeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(
                     any("#3F9A6A" in str(span.style) for span in card.render().spans),
                 )
-                await pilot.press("q")
+                app.screen.action_kill_keepalive()
                 await pilot.pause(delay=0.3)  # worker 推弹窗 + ConfirmModal 武装
                 self.assertIsInstance(app.screen, ConfirmModal)
                 await pilot.press("q")
@@ -8398,7 +8465,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
-            await pilot.press("x")
+            await pilot.press("ctrl+x")
             await pilot.pause(delay=0.3)  # worker 推弹窗 + ConfirmModal 武装
             self.assertIsInstance(app.screen, ConfirmModal)
             await pilot.press("x")
@@ -8421,7 +8488,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
-            await pilot.press("x")
+            await pilot.press("ctrl+x")
             await pilot.pause(delay=0.3)
             await pilot.press("n")  # 非确认键，取消
             await pilot.pause(delay=0.2)
@@ -8442,7 +8509,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("down")
-                await pilot.press("x")
+                await pilot.press("ctrl+x")
                 await pilot.pause(delay=0.3)
                 self.assertIsInstance(app.screen, ConfirmModal)
                 await pilot.press("x")
@@ -8474,7 +8541,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(100, 30)) as pilot:
                 await pilot.pause(delay=0.2)
                 await pilot.press("down")
-                await pilot.press("x")
+                await pilot.press("ctrl+x")
                 await pilot.pause(delay=0.3)
                 await pilot.press("x")
                 list_view = app.screen.query_one(SessionListView)
@@ -8500,7 +8567,7 @@ class DeleteSessionFlowTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
-            await pilot.press("x")
+            await pilot.press("ctrl+x")
             await pilot.pause(delay=0.3)
             await pilot.press("x")
             await pilot.pause(delay=0.2)
@@ -8539,7 +8606,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             list_view, keys = await self._grouped(app, pilot)
             self.assertIsNotNone(list_view.selected_group())
-            await pilot.press("x")
+            await pilot.press("ctrl+x")
             await pilot.pause(delay=0.3)  # worker 推弹窗 + ConfirmModal 武装
             self.assertIsInstance(app.screen, ConfirmModal)
             await pilot.press("x")
@@ -8572,7 +8639,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("corral.keepalive.kill") as kill_mock:
             async with app.run_test(size=(100, 30)) as pilot:
                 _, keys = await self._grouped(app, pilot)
-                await pilot.press("x")
+                await pilot.press("ctrl+x")
                 await pilot.pause(delay=0.3)
                 self.assertIsInstance(app.screen, ConfirmModal)
                 await pilot.press("x")
@@ -8592,7 +8659,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             _, keys = await self._grouped(app, pilot)
-            await pilot.press("x")
+            await pilot.press("ctrl+x")
             await pilot.pause(delay=0.3)
             await pilot.press("n")  # 非确认键，取消
             await pilot.pause(delay=0.2)
@@ -8612,7 +8679,7 @@ class DeleteSessionGroupFlowTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await self._grouped(app, pilot)
-            await pilot.press("x")
+            await pilot.press("ctrl+x")
             await pilot.pause(delay=0.3)
             await pilot.press("x")
             await _wait_until(lambda: store.find_session("claude:s0") is None)
@@ -9476,6 +9543,27 @@ class SessionHudRenderTests(unittest.TestCase):
             )
             self.assertNotEqual(mixed.hex, gray_mix.hex)
 
+    def test_hud_stripe_still_paints_on_surface_chrome(self) -> None:
+        """没选中时浮层底是 `$surface`；斑马纹仍叠 `$primary`，不能消失。"""
+        from textual.color import Color as TextualColor
+
+        from corral.ui.session_hud import _hud_stripe_color
+
+        for bg_hex, primary_hex in (("#161B22", "#3B7EB8"), ("#E6EBF0", "#2F6F9F")):
+            background = TextualColor.parse(bg_hex)
+            primary = TextualColor.parse(primary_hex)
+            mixed = _hud_stripe_color(background, primary)
+            self.assertNotEqual(mixed.hex, background.hex)
+
+    def test_hud_css_uses_surface_until_active(self) -> None:
+        """未选中浮层默认 `$surface`，`-active` 才切到激活蓝条。"""
+        from corral.ui.session_hud import SessionHud
+
+        css = SessionHud.DEFAULT_CSS
+        self.assertIn("background: $surface;", css)
+        self.assertIn("SessionHud.-active", css)
+        self.assertIn("background: $pane-active-background;", css)
+
 
 class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
     """小窗贴在实时格右上角：只盖一行、不压标题栏，且命中区只有胶囊自己。
@@ -9643,6 +9731,41 @@ class SessionHudPlacementTests(unittest.IsolatedAsyncioTestCase):
             await _wait_until(lambda: all(h.display for h in huds))
             self.assertTrue(huds[0].display)
             self.assertTrue(huds[1].display)
+
+    async def test_hud_background_follows_pane_chrome(self) -> None:
+        """Your prompts 底色是高光的一部分：选中蓝条，没选中跟灰条同色。"""
+        sessions = self._live_sessions(2)
+        store, app = await self._hosted_app(sessions)
+        async with app.run_test(size=(160, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            area = app.screen.query_one(SplitPaneArea)
+            key0 = corral.session_key(sessions[0])
+            key1 = corral.session_key(sessions[1])
+            app.screen._apply_layout_change(  # noqa: SLF001
+                lambda s: s.set_group("/tmp", [key0, key1], focus_key=key0)
+            )
+            area.show_hosted_group(
+                "/tmp",
+                [(s, s["keepalive_name"], lambda: "") for s in sessions],
+                focus_key=key0,
+            )
+            await _wait_until(lambda: len(area._cells()) == 2)  # noqa: SLF001
+            app.screen._sync_hud()  # noqa: SLF001
+            cells = area._cells()  # noqa: SLF001
+            huds = [cell.session_hud() for cell in cells]
+            await _wait_until(lambda: all(h is not None and h.display for h in huds))
+            area.sync_chrome()
+            self.assertTrue(cells[0].query_one(".header").has_class("-active"))
+            self.assertTrue(huds[0].has_class("-active"))
+            self.assertFalse(cells[1].query_one(".header").has_class("-active"))
+            self.assertFalse(huds[1].has_class("-active"))
+
+            cells[1].embed_pane().focus()
+            await pilot.pause()
+            await _wait_until(lambda: huds[1].has_class("-active"))
+            self.assertTrue(cells[1].query_one(".header").has_class("-active"))
+            self.assertFalse(cells[0].query_one(".header").has_class("-active"))
+            self.assertFalse(huds[0].has_class("-active"))
 
     async def test_static_preview_pane_also_draws_hud(self) -> None:
         """历史消息预览也要画 Your prompts：长对话里靠小窗扫提问脉络。"""

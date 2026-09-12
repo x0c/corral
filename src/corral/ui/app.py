@@ -133,10 +133,19 @@ class CorralApp(App):
     # 后访问 .region 崩溃）——子卡片、外层 NoSelectListItem、SessionListView
     # 和弹窗列表项都要关 ALLOW_SELECT；只留 EmbedPane 开着用于划词复制。
     CSS = """
+    #project-search-row {
+        height: 2;
+        width: 1fr;
+        margin: 0;
+        padding: 0;
+        background: $panel;
+    }
+
     #project-search {
         /* 侧边栏项约定：总高度含末行间隔（正文 1 + 间隔 1），间隔算进本项命中区。
            禁止用 ListItem/兄弟节点的 margin 做分隔——点在空隙上不会落到本项。 */
         height: 2;
+        width: 1fr;
         margin: 0;
         border: none;
         padding: 0 1 1 1;
@@ -151,11 +160,26 @@ class CorralApp(App):
     }
 
     /* 有关键字时失焦也高亮：否则列表变少时用户常怪会话丢了，其实只是没注意到筛着。
-       警告色留给「别漏看」态；底仍用 muted，不铺高饱和大色块。 */
+       警告色留给「别漏看」态；底仍用 muted，不铺高饱和大色块。
+       行容器同步 -active，右侧清空矩形才跟输入框同一套高亮。 */
+    #project-search-row.-active,
+    #project-search-row.-active #project-search,
+    #project-search-row.-active #project-search:focus,
     #project-search.-active,
     #project-search.-active:focus {
         color: $warning;
         background: $primary-muted;
+    }
+
+    /* 清空钮高亮必须写在 App CSS：组件 DEFAULT_CSS 选不到父级 #project-search-row。 */
+    #project-search-row.-active #project-search-clear {
+        color: $warning;
+        background: $primary-darken-2;
+    }
+
+    #project-search-row.-active #project-search-clear:hover {
+        color: $error;
+        background: $error-darken-3;
     }
     """
 

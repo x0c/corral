@@ -22,8 +22,6 @@
   <img src="docs/screenshots/list.png" alt="Claude Code 等编程助手会话列表与对话预览" width="100%">
 </p>
 
-找不到昨天的 Claude Code 对话？Corral 把 **Claude Code、Codex、OpenCode、Kimi Code、Cursor 和 Pi** 的编程助手会话收成一张列表。搜索会话历史，接着上次的工作，也能把任务交给另一个助手。
-
 ## 安装
 
 **macOS 或已安装 Homebrew 的 Linux**：

@@ -359,9 +359,12 @@ class AttentionReadFlowTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(delay=0.05)
                 app.screen.query_one("#session-list").select_session_key("claude:s0")
                 await pilot.pause(delay=0.12)
+                # 取消选中时排队的已读观察，避免整套跑时迟到的成功读与本用例抢跑。
+                app.screen._cancel_attention_read()
                 store.conversations.clear()
                 store.get_conversation = mock.Mock(side_effect=OSError("模拟预览加载失败"))
                 _set_attention(store, "claude:s0", "unread")
+                store.mark_session_read.reset_mock()
                 app.screen._begin_attention_read("claude:s0")
                 await asyncio.sleep(0.12)
                 store.mark_session_read.assert_not_called()

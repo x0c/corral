@@ -26,7 +26,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
-from textual.widgets import Input
+from textual.widgets import Input, Static
 from textual.worker import get_current_worker
 
 from corral import i18n, ui_prefs
@@ -76,6 +76,49 @@ CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重
 # 变了才重新读快照，且只有「看得见的部分」真的变了才重建列表（全量重建是秒级重活）。
 LAYOUT_POLL_INTERVAL = 1.0
 LIST_PANE_WIDTH = 39  # 分栏时左栏固定宽度，对应旧版 EMBED_LEFT_BAND
+
+
+class _FilterClear(Static):
+    """筛选框右侧清空钮：有关键字时露出，占满两行高度的矩形命中区。
+
+    点按不得抢焦点（否则会把正在打字的输入框焦掉）；清空走 Input.value=""，
+    复用既有 `on_input_changed` 重建列表。
+    """
+
+    ALLOW_SELECT = False
+
+    DEFAULT_CSS = """
+    _FilterClear {
+        width: 3;
+        height: 2;
+        margin: 0;
+        padding: 0;
+        content-align: center middle;
+        color: $text-muted;
+        background: $surface;
+        pointer: pointer;
+    }
+    _FilterClear:hover {
+        color: $error;
+        background: $error-darken-3;
+    }
+    """
+
+    def __init__(self, on_clear: Callable[[], None], **kwargs) -> None:
+        super().__init__(t("filter.clear"), **kwargs)
+        self._on_clear = on_clear
+        self.display = False
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        event.stop()
+        event.prevent_default()
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        event.prevent_default()
+        self._on_clear()
+
+
 # 活跃判定可接受的存活证据陈旧上限（秒）。右栏在显示的会话每轮抓帧都会刷新证据，
 # 所以这条路几乎永远命中缓存；只有久未露面的会话才真去 fork 一次 has-session。
 # 判定「会话是否已结束」不走这条缓存，见 liveness.is_alive 的 max_age 说明。
@@ -167,11 +210,7 @@ _LIST_ONLY_ACTIONS = frozenset(
         # 用的，不值得为它从助手手里抢一个组合键；那种场景下点一下小窗本身即可
         # （点浮层不改焦点，见 `SessionHud`）。
         "toggle_hud",
-        "handoff",
-        "kill_keepalive",
-        "delete_session",
         "close_pane",
-        "quit_app",
         "preview_home",
         "preview_end",
         "preview_page_up",
@@ -185,21 +224,15 @@ _LIST_ONLY_ACTIONS = frozenset(
 def _main_bindings() -> list[Binding]:
     """按当前语言生成底部快捷键说明。"""
     return [
-        # Ctrl+F / Ctrl+P / Ctrl+N / Ctrl+A 是壳层全局键。priority 让它们先于当前聚焦控件处理，
-        # 运行中助手不能再截走；临时弹窗不继承主屏绑定，仍保持自己的输入语义。
-        # 单字母 n 仍不绑：右栏持焦时会变成打给助手的字符。
-        # 单字母 a 仍只在列表侧：打给助手的 a 不能变成高级操作；全局入口是 Ctrl+A。
+        # Ctrl+F / Ctrl+P / Ctrl+N / Ctrl+A / Ctrl+X 是壳层全局键。priority 让它们
+        # 先于当前聚焦控件处理，运行中助手不能再截走；临时弹窗不继承主屏绑定。
+        # 不绑单字母 a/x/q/c：右栏持焦时会变成打给助手的字符。结束托管走高级操作。
+        # Esc 只关弹窗，不退出应用。侧栏显隐只点顶栏 ◀/▶（无回列表快捷键）。
         Binding("ctrl+f", "search_content", t("action.search"), priority=True),
         Binding("ctrl+p", "toggle_pin", t("action.toggle_pin"), priority=True),
         Binding("ctrl+n", "new_session", t("action.new"), priority=True),
         Binding("ctrl+a", "advanced", t("action.advanced"), priority=True),
-        Binding("a", "handoff", t("action.advanced")),
-        Binding("q", "kill_keepalive", t("action.kill_session")),
-        Binding("x", "delete_session", t("action.delete_session")),
-        Binding("c", "close_pane", t("action.close_pane"), show=False),
-        # 回列表：键仍生效，底栏不再画出来。侧栏显隐没有快捷键，只点顶栏 ◀/▶
-        # （2026-09-12：组合键实测无效且用不上；禁止绑回 Ctrl+Shift+B / Ctrl+B）。
-        Binding("ctrl+backslash", "focus_list", t("action.focus_list"), show=False),
+        Binding("ctrl+x", "delete_session", t("action.delete_session"), priority=True),
         # 会话小窗展开/收起。Footer 已经很挤，这个键不展示；小窗自身可点。
         Binding("ctrl+g", "toggle_hud", t("action.toggle_hud"), show=False),
         Binding("f12", "save_screenshot", t("action.screenshot"), show=False),
@@ -210,11 +243,11 @@ def _main_bindings() -> list[Binding]:
         Binding("pagedown", "preview_page_down", t("action.preview_page_down"), show=False, priority=True),
         Binding("left_square_bracket", "board_prev", t("action.board_prev")),
         Binding("right_square_bracket", "board_next", t("action.board_next")),
-        Binding("escape", "quit_app", t("action.quit")),
+        # Esc：筛选框清空查询 / 列表清空多选；不退出应用（弹窗自带取消）。
+        Binding("escape", "quit_app", t("action.quit"), show=False),
         # 不再单独绑 ctrl+c 退出：Textual 的 Screen 基类自带 ctrl+c -> copy_text。
         # 划词抬起已由 on_text_selected 自动复制；Ctrl+C 仍作手动再复制/无选区时
         # EmbedPane 转发给托管会话中断。子类 BINDINGS 重复 ctrl+c 会盖掉基类复制绑定。
-        # Esc 是文档化的主退出键。
     ]
 
 
@@ -306,7 +339,11 @@ class MainScreen(
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="list-pane"):
-                yield Input(placeholder=t("filter.placeholder"), id="project-search")
+                with Horizontal(id="project-search-row"):
+                    yield Input(
+                        placeholder=t("filter.placeholder"), id="project-search"
+                    )
+                    yield _FilterClear(self._clear_project_search, id="project-search-clear")
                 yield SessionListView(
                     self.store,
                     self.nav,
@@ -760,15 +797,26 @@ class MainScreen(
                 # 用户正看着这些格，画面就绪即清，不能等下一次交互。
                 self.call_next(self._begin_attention_read)
 
+    def _clear_project_search(self) -> None:
+        """点筛选框右侧 ×：清空关键字并触发列表重建（与 Esc 有内容时同效）。"""
+        search = self.query_one("#project-search", Input)
+        if search.value:
+            search.value = ""
+
     def _update_header(self) -> None:
         """刷新搜索框占位文案与「有筛选」高亮：空查询时展示命中数；出错/无会话时给出原因。"""
         session_list = self.query_one(SessionListView)
         search = self.query_one("#project-search", Input)
+        search_row = self.query_one("#project-search-row")
+        clear_btn = self.query_one("#project-search-clear", _FilterClear)
         count = len(session_list.visible_sessions())
         load_error = self.store.get_load_error()
         active = bool(self.nav.project_query.strip())
         # 关键字非空就贴 -active：失焦也不退回灰底，用户才看得出列表为什么变少。
+        # 行容器与输入框一起贴，右侧清空钮才能共享高亮矩形底。
         search.set_class(active, "-active")
+        search_row.set_class(active, "-active")
+        clear_btn.display = active
         # 首屏扫描已经跑完（store.loaded）且全部运行时都没扫到任何会话时，给出
         # 友好提示，而不是让用户面对一个永远空白、原因不明的列表——旧版是在 main()
         # 里同步扫完就直接打印错误退出，扫描挪到后台 worker 后这个判断只能挪到这里，
@@ -946,6 +994,7 @@ class MainScreen(
             self._preview_gen += 1
             self._warm_conversation(session, self._preview_gen)
             area.invalidate_all_details()
+            area.mark_selected(key)
             self._begin_attention_read(key)
             return
         self._preview_gen += 1
@@ -1434,8 +1483,8 @@ class MainScreen(
             # 活跃会话看板只被动展示，不提供关格（✕ / 快捷键都藏掉）。
             if getattr(self, "_activity_board_active", False):
                 return False
-        if action == "advanced":
-            # Ctrl+A：列表持焦，或右栏正对着某个会话。筛选框里让路给输入。
+        if action in ("advanced", "delete_session"):
+            # Ctrl+A / Ctrl+X：列表持焦，或右栏正对着某个会话。筛选框里让路给输入。
             if isinstance(self.focused, Input):
                 return False
             if self._any_embed_focused():
@@ -1672,7 +1721,12 @@ class MainScreen(
             nid = getattr(node, "id", None)
             if nid == "sidebar-scroll":
                 return False
-            if nid in ("project-search", "sidebar-sticky"):
+            if nid in (
+                "project-search",
+                "project-search-row",
+                "project-search-clear",
+                "sidebar-sticky",
+            ):
                 try:
                     self.query_one(SessionListView).scroll_unpinned(delta)
                 except Exception:
@@ -2071,7 +2125,7 @@ class MainScreen(
 
 
     def action_quit_app(self) -> None:
-        # 搜索框聚焦时 Esc 先清空查询，再交回列表；列表上 Esc 才真正退出
+        # Esc 不再退出：筛选框有内容先清空；空筛选交回列表；列表多选先清多选。
         search = self.query_one("#project-search", Input)
         list_view = self.query_one(SessionListView)
         if search.has_focus:
@@ -2083,4 +2137,3 @@ class MainScreen(
         if list_view.has_focus and list_view.multi_count() > 0:
             list_view.clear_multi()
             return
-        self.app.exit(result=None)

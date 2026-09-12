@@ -410,8 +410,8 @@ class PaneCell(Vertical):
             # 显式切回静态视图；新挂载的格子本来就是这个状态，重复调用无副作用。
             pane.show_detail(self._detail_renderer)
         # show_detail/focus_session 会发 ModeChanged；此处再钉一次，覆盖 compose
-        # 后尚未挂齐顶底条、消息早到的竞态。
-        self._sync_active_marker()
+        # 后尚未挂齐顶底条、消息早到的竞态。高光跟当前会话走，要整排一起刷。
+        self._request_chrome_sync()
 
     def embed_pane(self) -> EmbedPane | None:
         for child in self.children:
@@ -473,12 +473,28 @@ class PaneCell(Vertical):
         self._input_masked = masked
         self._sync_active_marker()
 
+    def _split_area(self) -> SplitPaneArea | None:
+        node = self.parent
+        while node is not None:
+            if isinstance(node, SplitPaneArea):
+                return node
+            node = getattr(node, "parent", None)
+        return None
+
+    def _request_chrome_sync(self) -> None:
+        """顶底条和 Your prompts 是整排一套高光，不能只刷本格。"""
+        area = self._split_area()
+        if area is not None:
+            area.sync_chrome()
+        else:
+            self._sync_active_marker()
+
     def _on_descendant_focus(self, event: events.DescendantFocus) -> None:
-        self.call_after_refresh(self._sync_active_marker)
+        self.call_after_refresh(self._request_chrome_sync)
         self.call_after_refresh(self._notify_pane_focused)
 
     def _on_descendant_blur(self, event: events.DescendantBlur) -> None:
-        self.call_after_refresh(self._sync_active_marker)
+        self.call_after_refresh(self._request_chrome_sync)
 
     def on_mode_changed(self, event: ModeChanged) -> None:
         """静态预览 ↔ 托管 ↔ 已结束：顶底 Enter 重启提示要跟着变。"""
@@ -505,11 +521,31 @@ class PaneCell(Vertical):
         pane = self.embed_pane()
         return pane is not None and pane._is_restart_target()  # noqa: SLF001
 
+    def _chrome_active(self) -> bool:
+        """顶底条和 Your prompts 跟当前会话走，不是只跟键盘焦点。
+
+        这一格正在打字 → 高光。列表选中这一格对应的会话、且没有别的实时格
+        在打字 → 同样高光（已结束预览也算）。占位格 / 闲置格不高光。
+        """
+        if self._pooled:
+            return False
+        key = self.spec.session_key
+        if not key or key.startswith("__"):
+            return False
+        if self.has_focus_within:
+            return True
+        area = self._split_area()
+        if area is None:
+            return False
+        if area.any_embed_focused():
+            return False
+        return key == area.focus_key
+
     def _sync_active_marker(self) -> None:
         # 双击顶栏助手、快速增删分栏时，焦点回调可能落在「标题栏/底条尚未 compose
         # / 旧格已卸下」的中间态；真机复现：NoMatches: '_PaneHeader'。缺件时
         # 静默跳过即可，下一轮焦点事件会再同步。
-        active = self.has_focus_within
+        active = self._chrome_active()
         restart_target = self._is_restart_chrome_target()
         header = self._pane_header()
         if header is not None:
@@ -524,6 +560,9 @@ class PaneCell(Vertical):
                 self._input_masked and not active,
                 restart_target=restart_target,
             )
+        hud = self.session_hud()
+        if hud is not None:
+            hud.set_active(active)
 
 
 class SplitPaneArea(Vertical):
@@ -618,6 +657,16 @@ class SplitPaneArea(Vertical):
 
     def pane_specs(self) -> list[PaneSpec]:
         return list(self._panes)
+
+    def sync_chrome(self) -> None:
+        """按当前选中会话 / 持焦格重刷每一格的顶底条和 Your prompts 底色。"""
+        for cell in self._pool_cells():
+            cell._sync_active_marker()  # noqa: SLF001
+
+    def mark_selected(self, session_key: str | None) -> None:
+        """登记当前会话（列表高亮），不抢键盘；高光仍跟这条走。"""
+        self._focus_key = session_key
+        self.sync_chrome()
 
     def cells(self) -> list[PaneCell]:
         return self._cells()
@@ -927,6 +976,8 @@ class SplitPaneArea(Vertical):
         if focus_pane and self._focus_key:
             # 身份未变不会 remount，焦点不会自己跑过来，必须显式交过去。
             self._request_pane_focus(self._focus_key)
+        else:
+            self.sync_chrome()
 
     def add_hosted_pane(
         self,
@@ -1007,6 +1058,7 @@ class SplitPaneArea(Vertical):
         # 在这里之前的任何蒙版同步都必须继续认为右栏可输入。
         self._input_claim_key = None
         self.sync_input_mask()
+        self.sync_chrome()
         if self._on_pane_focused is not None:
             self._on_pane_focused(session_key)
 
@@ -1230,6 +1282,8 @@ class SplitPaneArea(Vertical):
         focus_key: str | None = None,
         focus_pane: bool = False,
     ) -> None:
+        if focus_key:
+            self._focus_key = focus_key
         if focus_pane:
             if focus_key:
                 self._claim_pane_input(focus_key)
@@ -1298,6 +1352,7 @@ class SplitPaneArea(Vertical):
                 lambda: self.focus_session_key(focus_key, only_live=False)
             )
         self.call_after_refresh(self.sync_input_mask)
+        self.call_after_refresh(self.sync_chrome)
 
     async def _mount_panes_async(
         self,
@@ -1364,3 +1419,4 @@ class SplitPaneArea(Vertical):
             )
         # 首帧要么已经压暗、要么已经交出焦点，不能等下一次焦点事件才同步。
         self.call_after_refresh(self.sync_input_mask)
+        self.call_after_refresh(self.sync_chrome)

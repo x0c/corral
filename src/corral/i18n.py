@@ -147,6 +147,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Filter groups / projects / titles… — no {names} sessions found",
         "zh": "筛选分组 / 项目 / 标题… — 未找到任何 {names} 会话记录",
     },
+    "filter.clear": {
+        "en": "×",
+        "zh": "×",
+    },
     "action.search": {
         "en": "Search",
         "zh": "全文搜索",

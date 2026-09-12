@@ -4,4 +4,4 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| Fix storefront review gaps | 进行中 | install.sh sesskit pin; README.md; README.zh-CN.md; docs/screenshots; footer Advanced; iOS README shots | 18:00 | 2026-09-12 18:00 | Repair curl installer, recapture demo, cut duplicate copy, prove phone shots |
+| Fix storefront review gaps | 发布中 | install.sh; capture.py; emoji/; main_screen; test_ui; README*; docs | 18:00 | 2026-09-12 19:20 | Holding release lock for v0.24.199 |

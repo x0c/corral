@@ -23,9 +23,16 @@ timeout，于是整整占着 runner 6 小时直到被平台按上限杀掉。免
 不会被这层重试掩盖；而单次偶发（实测 `test_focusing_split_pane_highlights_
 matching_sidebar_session` 约十次一遇）不再污染 CI 结论。
 
+**三、按模块并行，但不拆界面/终端集成、也不跳用例。**
+完整套件的墙钟时间几乎都在 `test_ui`（Textual Pilot + 真实 tmux）。其它模块
+可以和这条串行车道重叠跑：多进程按**模块**并行，碰共享保活 socket / Pilot
+的模块仍进同一条串行车道，避免互相抢 `tmux -L corral-keepalive`。禁止用「只跑
+改过的文件」或跳过界面集成来假装发版门禁变快。``CORRAL_TEST_JOBS=1`` 可退回
+旧的单进程全量顺序。
+
 用法与 CI 的 Lint+Test 两步等价，退出码同语义。
 
-``--lint-only``：只跑 ruff（推送前门禁用，几秒级）；完整入口留给发版推送与
+``--lint-only``：只跑 ruff（推送前门禁，几秒级）；完整入口留给发版推送与
 ``publish-release.sh``。
 
 ``--check-stamp``：本工作区产品代码是否刚跑过完整检查（给推送门禁和收尾脚本
@@ -34,17 +41,21 @@ matching_sidebar_session` 约十次一遇）不再污染 CI 结论。
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import faulthandler
+import json
 import os
 import subprocess
 import sys
+import time
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
-import ci_stamp
+import ci_stamp  # noqa: E402
 
 ROOT = _SCRIPTS_DIR.parent
 _SRC = str(ROOT / "src")
@@ -60,6 +71,34 @@ if _SRC not in _existing.split(os.pathsep):
 HANG_DUMP_SECONDS = int(os.environ.get("CORRAL_TEST_HANG_SECONDS", "1500"))
 # 与 `.github/workflows/test.yml` 的 Lint 步保持同一版本，避免规则集漂移。
 RUFF_VERSION = "0.16.1"
+
+# 子进程回报行前缀（stdout 最后一行）。
+_RESULT_PREFIX = "CORRAL_CI_TEST_RESULT:"
+
+# 共享真实 tmux 保活 socket，或驱动 Textual Pilot 的模块：彼此串行，
+# 但可以与其它纯单测模块并行。
+_SERIAL_MODULES = frozenset(
+    {
+        "test_ui",
+        "test_embed",
+        "test_attention_ui",
+        "test_dragon_easter_egg",
+        "test_dragon_splash",
+        "test_update_toast",
+        "test_main_screen_update",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _ShardResult:
+    modules: tuple[str, ...]
+    ok: bool
+    failed_ids: tuple[str, ...]
+    tests_run: int
+    seconds: float
+    output: str
+    returncode: int
 
 
 def _collect_ids(result: unittest.TestResult) -> list[str]:
@@ -97,6 +136,26 @@ def _run_ruff() -> int:
     return 1
 
 
+def _discover_modules() -> list[str]:
+    return sorted(path.stem for path in (ROOT / "tests").glob("test_*.py"))
+
+
+def _default_jobs() -> int:
+    raw = os.environ.get("CORRAL_TEST_JOBS")
+    if raw is not None and raw.strip() != "":
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            print(
+                f"错误：CORRAL_TEST_JOBS 必须是整数，收到 {raw!r}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from None
+    cpu = os.cpu_count() or 2
+    # 至少 2：一条串行车道 + 至少一条并行；上限避免本机 16GB 机器被测爆。
+    return max(2, min(cpu, 6))
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="与 CI 同源的 lint + 单测入口")
     parser.add_argument(
@@ -114,6 +173,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="只判断本工作区是否刚跑过完整检查（不跑 lint/单测）",
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help="并行进程数（默认 CORRAL_TEST_JOBS 或 min(CPU,6) 且≥2；1=旧单进程）",
+    )
+    parser.add_argument(
+        "--run-modules",
+        default=None,
+        help=argparse.SUPPRESS,  # 内部：子进程跑逗号分隔的模块名
+    )
     return parser.parse_args(argv)
 
 
@@ -122,8 +193,233 @@ def _record_success() -> None:
     print("=== 已记下完整检查戳（后续推送/收尾若产品代码未改则跳过重复）===")
 
 
+def _ensure_tests_on_path() -> None:
+    """与 ``discover(start_dir="tests")`` 一致：模块名是 ``test_foo``，不是 ``tests.test_foo``。"""
+    tests_dir = str(ROOT / "tests")
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+
+
+def _run_modules_in_process(module_names: list[str]) -> _ShardResult:
+    """在当前进程跑若干 test_* 模块，供 --run-modules 子进程使用。"""
+    import io
+
+    faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
+    _ensure_tests_on_path()
+    loader = unittest.TestLoader()
+    suite = unittest.TestSuite()
+    for name in module_names:
+        suite.addTests(loader.loadTestsFromName(name))
+    # 子进程输出由父进程转发；verbosity=2 与旧入口一致。
+    buf = io.StringIO()
+    runner = unittest.TextTestRunner(stream=buf, verbosity=2)
+    started = time.perf_counter()
+    result = runner.run(suite)
+    seconds = time.perf_counter() - started
+    failed = tuple(_collect_ids(result))
+    return _ShardResult(
+        modules=tuple(module_names),
+        ok=result.wasSuccessful(),
+        failed_ids=failed,
+        tests_run=result.testsRun,
+        seconds=seconds,
+        output=buf.getvalue(),
+        returncode=0 if result.wasSuccessful() else 1,
+    )
+
+
+def _worker_main(module_csv: str) -> int:
+    modules = [part.strip() for part in module_csv.split(",") if part.strip()]
+    if not modules:
+        print(
+            f"{_RESULT_PREFIX}"
+            f"{json.dumps({'ok': True, 'failed_ids': [], 'tests_run': 0, 'seconds': 0.0, 'modules': []})}"
+        )
+        return 0
+    try:
+        shard = _run_modules_in_process(modules)
+    except Exception as exc:  # noqa: BLE001 — worker must always emit the result line
+        import traceback
+
+        sys.stdout.write(traceback.format_exc())
+        err_payload = {
+            "ok": False,
+            "failed_ids": [],
+            "tests_run": 0,
+            "seconds": 0.0,
+            "modules": modules,
+            "error": str(exc),
+        }
+        print(f"{_RESULT_PREFIX}{json.dumps(err_payload, ensure_ascii=False)}")
+        return 1
+    sys.stdout.write(shard.output)
+    if not shard.output.endswith("\n"):
+        sys.stdout.write("\n")
+    payload = {
+        "ok": shard.ok,
+        "failed_ids": list(shard.failed_ids),
+        "tests_run": shard.tests_run,
+        "seconds": round(shard.seconds, 3),
+        "modules": list(shard.modules),
+    }
+    print(f"{_RESULT_PREFIX}{json.dumps(payload, ensure_ascii=False)}")
+    return shard.returncode
+
+
+def _parse_worker_output(blob: str, modules: list[str], returncode: int) -> _ShardResult:
+    lines = blob.splitlines()
+    payload = None
+    keep: list[str] = []
+    for line in lines:
+        if line.startswith(_RESULT_PREFIX):
+            try:
+                payload = json.loads(line[len(_RESULT_PREFIX) :])
+            except json.JSONDecodeError:
+                keep.append(line)
+            continue
+        keep.append(line)
+    output = "\n".join(keep)
+    if output and not output.endswith("\n"):
+        output += "\n"
+    if not isinstance(payload, dict):
+        return _ShardResult(
+            modules=tuple(modules),
+            ok=False,
+            failed_ids=(),
+            tests_run=0,
+            seconds=0.0,
+            output=output or blob,
+            returncode=returncode or 1,
+        )
+    failed = tuple(str(x) for x in payload.get("failed_ids") or ())
+    return _ShardResult(
+        modules=tuple(payload.get("modules") or modules),
+        ok=bool(payload.get("ok")) and returncode == 0 and not failed,
+        failed_ids=failed,
+        tests_run=int(payload.get("tests_run") or 0),
+        seconds=float(payload.get("seconds") or 0.0),
+        output=output,
+        returncode=returncode,
+    )
+
+
+def _spawn_shard(modules: list[str]) -> _ShardResult:
+    if not modules:
+        return _ShardResult((), True, (), 0, 0.0, "", 0)
+    label = ",".join(modules)
+    print(f"=== shard start ({len(modules)} module{'s' if len(modules) != 1 else ''}): {label} ===")
+    started = time.perf_counter()
+    proc = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), "--run-modules", label],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    blob = (proc.stdout or "") + (proc.stderr or "")
+    shard = _parse_worker_output(blob, modules, proc.returncode)
+    # 用父进程墙钟覆盖（含子进程启动开销），便于对照。
+    shard = _ShardResult(
+        modules=shard.modules,
+        ok=shard.ok,
+        failed_ids=shard.failed_ids,
+        tests_run=shard.tests_run,
+        seconds=time.perf_counter() - started,
+        output=shard.output,
+        returncode=shard.returncode,
+    )
+    sys.stdout.write(shard.output)
+    status = "ok" if shard.ok else "FAIL"
+    print(
+        f"=== shard {status} in {shard.seconds:.1f}s "
+        f"({shard.tests_run} tests): {label} ==="
+    )
+    return shard
+
+
+def _run_suite_serial() -> tuple[bool, list[str]]:
+    """旧路径：单进程 discover 全量。"""
+    faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
+    os.chdir(ROOT)
+    loader = unittest.TestLoader()
+    suite = loader.discover(start_dir="tests")
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
+    if result.wasSuccessful():
+        return True, []
+    return False, _collect_ids(result)
+
+
+def _run_suite_parallel(jobs: int) -> tuple[bool, list[str]]:
+    modules = _discover_modules()
+    serial = [name for name in modules if name in _SERIAL_MODULES]
+    parallel = [name for name in modules if name not in _SERIAL_MODULES]
+    print(
+        f"=== parallel unittest: jobs={jobs} "
+        f"serial_lane={len(serial)} parallel_modules={len(parallel)} ==="
+    )
+    shards: list[_ShardResult] = []
+    # 串行车道独占 1 个槽；其余给按模块拆开的纯单测。
+    parallel_workers = max(1, jobs - 1)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as serial_pool:
+        serial_future = serial_pool.submit(_spawn_shard, serial) if serial else None
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=parallel_workers
+        ) as parallel_pool:
+            parallel_futures = [
+                parallel_pool.submit(_spawn_shard, [name]) for name in parallel
+            ]
+            for future in concurrent.futures.as_completed(parallel_futures):
+                shards.append(future.result())
+        if serial_future is not None:
+            shards.append(serial_future.result())
+
+    # 稳定打印汇总：串行车道最后已打印；这里给总数。
+    failed_ids: list[str] = []
+    tests_run = 0
+    any_hard_fail = False
+    for shard in shards:
+        tests_run += shard.tests_run
+        if shard.failed_ids:
+            failed_ids.extend(shard.failed_ids)
+        elif not shard.ok:
+            # 加载期失败等拿不到 id：整轮判失败，不走偶发重跑。
+            any_hard_fail = True
+    print(
+        f"=== parallel first pass: {tests_run} tests, "
+        f"{len(failed_ids)} failed ids, hard_fail={any_hard_fail} ==="
+    )
+    if any_hard_fail and not failed_ids:
+        return False, []
+    if not failed_ids and not any_hard_fail:
+        return True, []
+    return False, failed_ids
+
+
+def _retry_failed(failed_ids: list[str]) -> bool:
+    if not failed_ids:
+        return False
+    print(f"\n=== 首轮 {len(failed_ids)} 个用例失败，按既定判定路径单独重跑一次 ===")
+    for test_id in failed_ids:
+        print(f"  - {test_id}")
+    faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
+    _ensure_tests_on_path()
+    loader = unittest.TestLoader()
+    runner = unittest.TextTestRunner(verbosity=2)
+    retry = runner.run(loader.loadTestsFromNames(failed_ids))
+    if retry.wasSuccessful():
+        print("\n=== 重跑全部通过，判定为已知偶发（非回归） ===")
+        return True
+    print("\n=== 重跑仍失败，判定为真回归 ===")
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.run_modules is not None:
+        os.environ.setdefault("CORRAL_ISOLATE_MANAGED_HOSTS", "1")
+        return _worker_main(args.run_modules)
+
     if args.check_stamp:
         if ci_stamp.stamp_matches(ROOT):
             print("完整检查戳有效")
@@ -148,29 +444,29 @@ def main(argv: list[str] | None = None) -> int:
     # Keep developer keepalive panes out of SessionStore unit fixtures.
     os.environ.setdefault("CORRAL_ISOLATE_MANAGED_HOSTS", "1")
 
-    faulthandler.dump_traceback_later(HANG_DUMP_SECONDS, exit=True)
+    jobs = args.jobs if args.jobs is not None else _default_jobs()
+    if jobs < 1:
+        print("错误：--jobs 必须 ≥ 1", file=sys.stderr)
+        return 2
 
-    loader = unittest.TestLoader()
-    suite = loader.discover(start_dir="tests")
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-    if result.wasSuccessful():
+    wall0 = time.perf_counter()
+    if jobs == 1:
+        print("=== unittest: serial (jobs=1) ===")
+        ok, failed_ids = _run_suite_serial()
+    else:
+        ok, failed_ids = _run_suite_parallel(jobs)
+    print(f"=== first pass wall {time.perf_counter() - wall0:.1f}s ===")
+
+    if ok:
         _record_success()
         return 0
 
-    flaky = _collect_ids(result)
-    if not flaky:
+    if not failed_ids:
         return 1
 
-    print(f"\n=== 首轮 {len(flaky)} 个用例失败，按既定判定路径单独重跑一次 ===")
-    for test_id in flaky:
-        print(f"  - {test_id}")
-    retry = runner.run(loader.loadTestsFromNames(flaky))
-    if retry.wasSuccessful():
-        print("\n=== 重跑全部通过，判定为已知偶发（非回归） ===")
+    if _retry_failed(failed_ids):
         _record_success()
         return 0
-    print("\n=== 重跑仍失败，判定为真回归 ===")
     return 1
 
 

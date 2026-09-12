@@ -12,6 +12,8 @@
   整窗高度靠滚动封顶。条纹按提问块交替，半透明叠在浮层底上，不跟 hover 抢底。
 - **实时托管格与静态对话预览格都画，且每个分屏格各自一份**。长对话里完整预览仍
   要翻很久，小窗用来扫提问脉络；多分屏时每一格画自己的提问摘要。
+- **底色是格子高光的一部分（2026-09-12）**：选中 / 持焦格用 `$pane-active-background`
+  （跟蓝条一样），没选中用 `$surface`（跟没有高光的顶底条一样）。斑马纹仍叠在当前底上。
 - 用 `dock: right` + `width/height: auto` 把浮层贴到右上角：这样浮层的命中区域**只有
   胶囊本身**。不要改成「整行宽的容器里右对齐」（`UpdateToast` 那种写法）——那会让
   整条横带都吃掉鼠标事件，托管画面顶部一整行都滚不动。
@@ -53,9 +55,10 @@ _MAX_EXPANDED_HEIGHT = 20
 _SCROLL_STEP = 3
 # 展开态每条提问最多占几行；再长末行加省略号。收起态本来就是一行截断。
 _MAX_PROMPT_LINES = 2
-# 条纹必须跟小窗蓝底同色系：叠 `$primary`，不要叠 `$foreground`（那是灰，
-# 会把激活条的蓝洗成泥灰）。40% 才能在 `$pane-active-background` 上看出
-# 一块更亮/更饱和的蓝；hover 切到 `$primary-muted` 时仍是蓝。
+# 条纹叠在**当前**浮层底上：选中格是 `$pane-active-background`，没选中是
+# `$surface`（跟未高光顶底条同色）。叠 `$primary`，不要叠 `$foreground`
+# （那是灰，会把激活条的蓝洗成泥灰）。40% 才能在蓝底上看得出一块更亮的
+# 条；灰底上同样看得出斑马纹。hover 切到 `$primary-muted` 时跟着走。
 _STRIPE_BLEND = 0.40
 
 # Codex 把粘贴图片收成一对空标签，后面才是用户打的字；小窗只关心那句人话。
@@ -180,9 +183,10 @@ def _one_line(text: str) -> str:
 
 
 def _hud_stripe_color(background: TextualColor, accent: TextualColor) -> TextualColor:
-    """把 `$primary` 叠进当前浮层底，得到同色系蓝条纹。
+    """把 `$primary` 叠进当前浮层底，得到斑马纹。
 
-    调用方禁止传入 `$foreground`：那是灰，会把 `$pane-active-background` 洗脏。
+    选中底是 `$pane-active-background`（蓝），没选中是 `$surface`（跟灰条同色）。
+    调用方禁止传入 `$foreground`：那是灰，会把激活条的蓝洗脏。
     """
     return background.blend(accent, _STRIPE_BLEND)
 
@@ -251,12 +255,15 @@ class SessionHud(Widget):
         height: auto;
         margin: 1 1 0 0;
         padding: 0 1;
-        background: $pane-active-background;
+        background: $surface;
         color: auto 90%;
         display: none;
     }
     SessionHud.-visible {
         display: block;
+    }
+    SessionHud.-active {
+        background: $pane-active-background;
     }
     SessionHud:hover {
         background: $primary-muted;
@@ -300,6 +307,13 @@ class SessionHud(Widget):
         self.set_class(False, "-expanded")
         self.refresh(layout=True)
 
+    def set_active(self, active: bool) -> None:
+        """浮层底色跟格子顶底高光走：选中蓝条，没选中跟灰条同色。"""
+        if self.has_class("-active") == active:
+            return
+        self.set_class(active, "-active")
+        self.refresh()
+
     @property
     def expanded(self) -> bool:
         return self._expanded
@@ -319,10 +333,11 @@ class SessionHud(Widget):
         return max(_MIN_EXPANDED_HEIGHT, min(_MAX_EXPANDED_HEIGHT, available - 3))
 
     def _stripe_on(self) -> str:
-        """当前浮层底上叠 `$primary`，得到一块同色系的蓝条纹。
+        """当前浮层底上叠 `$primary`，得到斑马纹。
 
-        禁止叠 `$foreground`：那是灰，会把 `$pane-active-background` 的蓝洗脏。
-        必须从 `styles.background` 混合：hover 切到 `$primary-muted` 时条纹仍是蓝。
+        禁止叠 `$foreground`：那是灰，会把激活条的蓝洗脏。必须从
+        `styles.background` 混合：选中是蓝底、没选中是灰条同色、hover 切
+        `$primary-muted` 时条纹都跟着走。
         """
         try:
             app = self.app

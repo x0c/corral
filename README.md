@@ -22,8 +22,6 @@
   <img src="docs/screenshots/list.png" alt="One list of Claude Code and other coding-agent sessions with conversation preview" width="100%">
 </p>
 
-Find lost Claude Code conversations and yesterday's chat. Corral lists coding-agent sessions for **Claude Code, Codex, OpenCode, Kimi Code, Cursor, and Pi** in one place. Search session history, resume work, and hand a task to another assistant.
-
 ## Install
 
 On **macOS or Linux with Homebrew**:

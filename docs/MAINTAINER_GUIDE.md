@@ -154,7 +154,7 @@ helper，不要先照抄再改。运行时私有的解析格式（JSONL 字段�
 - 列表虚拟索引 0 是顶部固定「＋ 新建会话」；默认选中最近会话。该项回车走 `new_session_flow`；全局 `Ctrl+N` 走同一条流程（右栏持焦时也可用）。单字母 `n` 仍不绑，避免变成打给助手的字符。
 - **踩坑：空白新建闪退**——托管成功回调必须区分 `LaunchRequest` / `NewSessionRequest`，空白新建禁止读 `.session`。回归：`test_new_session_request_hosts_without_reading_session`。
 - 会话卡固定三行正文：首行「圆点 项目 标题」（空格分隔、无冒号，无圆点时不留占位空格、标题顶到最左）/ 运行时靠右 / 时间靠右；圆点优先级为等待回答黄 > 执行中绿 > 未读新结果红 > 无，标题不再因运行中整行变绿；首行整体 bold 但项目名叠 `dim` 比标题淡一档（标题不 dim）；标题生成中不画 spinner。
-- **项目搜索**：`#project-search` + `nav.project_query`；`/` 聚焦搜索；Down/Enter 回列表；Esc 先清空再回列表。
+- **项目搜索**：`#project-search-row`（`#project-search` + 有内容时右侧两行高 `#project-search-clear` ×）+ `nav.project_query`；`/` 聚焦搜索；Down/Enter 回列表；Esc / 点 × 先清空再回列表。
 - 右栏随选择变化：托管显示现场；未托管/已结束显示完整对话预览（选中即加载，默认钉在最新）。面板聚焦时列表→右栏跟随暂停；**右栏→列表**仍要同步高亮（`_on_pane_focused`）。长对话用 Home/End/PgUp/PgDn 或滚轮（`detail_offset` / `_detail_stick_bottom`）。
 - 点击会话卡等价 Enter（真的会拉起 / 接管会话，并把输入交给右栏那一格）；再点当前持有输入的那张卡则把焦点撤回侧边栏，与 `Ctrl-\` 等价，点开 / 收回对称。
 
@@ -524,7 +524,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 3. **`test.yml` 矩阵 `fail-fast: true`**：一路挂了就取消其余作业，少收重复失败邮件、少占免费并发。排查「只在某一 OS / Python 挂」时可临时改 `false` 看全貌，修完改回。
 4. **`release.yml` 必须先看到同一提交上 `test.yml` 成功**（2026-09-11）：打包 / 写 Release / 推 Homebrew 之前跑 `require-tests`；测试失败时禁止再发正式下载。本机收尾脚本不依赖云端排队，但仍执行同等 ci-test + 干净安装门禁。Linux 矩阵必须装 `tmux` **和** `ncurses-term`（不要只在 macOS 步 `brew install`）——缺 tmux 会整组「按回车托管」用例停在静态预览上假失败；缺 `tmux-256color` terminfo 时硬写的 `default-terminal` 也会让 `host_session` 建窗失败。矩阵在全量单测前还有一步 `host_session` 冒烟（`TERM=xterm-256color`，**保留** setup-python 的 `LD_LIBRARY_PATH`，靠 `keepalive.tmux_env()` 消毒）。
 
-**SessKit 尚未上 PyPI（2026-09-11）**：`pyproject.toml` 只写 `sesskit>=…`（给 Homebrew 离线解析）；真正的安装包地址与 sha256 在 `scripts/sesskit_dep.py`。CI（含 `preflight`）、`install.sh`、`homebrew_formula.py` 都必须读这份 pin——禁止只在 workflow 里临时 `pip install git+…`。升级 SessKit 时改 pin、跑 `python3 scripts/sesskit_dep.py verify`，再发依赖它的 Corral。
+**SessKit 尚未上 PyPI（2026-09-11）**：`pyproject.toml` 只写 `sesskit>=…`（给 Homebrew 离线解析）；真正的安装包地址与 sha256 在 `scripts/sesskit_dep.py`。CI（含 `preflight`）、`install.sh`、`homebrew_formula.py` 都必须读这份 pin——禁止只在 workflow 里临时 `pip install git+…`。升级 SessKit 时改 pin、跑 `python3 scripts/sesskit_dep.py verify`，再发依赖它的 Corral。**`install.sh` 在 curl|bash（本机没有 `scripts/sesskit_dep.py`）时的硬编码 fallback URL+sha256 必须与 pin 同步**；只改 pin 不改 fallback 会让陌生人装上旧 SessKit。
 
 **排查「GitHub 持续发单测失败邮件 / 装不上依赖 / 发布却成功」（2026-09-11）**：9 月 3 日起 test 工作流曾整段无成功——根因是（1）`sesskit>=…` 在干净 runner 上 PyPI 找不到；（2）macOS 分屏格数变化用例在缺投影尺寸时误用旧半宽 resize；（3）`release.yml` 不看测试结果。修法见上三条 + `test.yml` 的 `preflight` 先核 pin/版本文件/ruff。
 
@@ -544,7 +544,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - **Kitty 键盘协议回归用例在 5 个 Python 版本上全挂（确定性，非偶发）。** `TEXTUAL_DISABLE_KITTY_KEY` 原先只在 `cli.py` 顶部 `setdefault`，而 `textual.constants` 是**导入时一次性读环境变量定死**的：任何先 `import textual` 再碰 `corral.cli` 的路径（测试套件、只 `import corral` 的脚本、第三方嵌入）都会让这道保护整个失效。本机之所以一直看不出来，是因为开发环境的 shell 里已经导出了 `TEXTUAL_DISABLE_KITTY_KEY=1`，把问题掩盖掉了——**复现必须 `env -u TEXTUAL_DISABLE_KITTY_KEY` 清掉再跑**。已修：开关上移到 `corral/__init__.py`（包顶层是唯一「任何用法必经」的位置），`cli.py` 不再重复设置。
 - **macOS 作业挂死并空烧 6 小时，进而拖垮整个队列。** 作业没有配 `timeout-minutes`，单测跑到 `test_ui` 后半段卡住后一直占着 runner 直到平台 6 小时上限才被杀。免费额度的 macOS 并发本就少，两个这样的僵尸作业把后续排队拖到 **14 小时以上**（实测：11:48 推送的作业次日 02:22 才开始跑），连带一大片 `cancelled`。已加 `timeout-minutes: 40`，并让 `scripts/ci-test.py` 用 `faulthandler.dump_traceback_later` 在 1500 秒时打印**全部线程栈**再退出——下次再挂，日志里直接能看到卡在哪个用例，而不是只剩一句 `The operation was canceled`。**挂死点已于当天定位并修复**——见下面「macOS 专有挂死」一条，这套打栈机制第一次上线就把它抓了出来（26 分钟自曝，而不是空烧 6 小时）。
 - **已知 Pilot 偶发污染结论。** 见「界面」节的分屏聚焦竞态那条。CI 现在走 `scripts/ci-test.py`，首轮失败的用例自动单独重跑一次，两次都失败才算真回归。
-- **排查「ci-test 跑很久 / 每次都要等很久 / 发版检查跑三遍 / 不要每次都跑这么重 / 是不是卡住了」（2026-08-30）**：单次完整套件大约十分钟，不是故障。时间几乎都在界面自动化和真实终端集成；日常推送只跑几秒的格式检查。还在刷新的通过行、或夹杂「任务执行超过 0.1 秒」= 仍在跑。连续许多分钟零输出、或约 25 分钟打出全部线程栈才是挂死（见上条 macOS 空烧，已修）。发版若连等三轮，是门禁在重复跑同一套（已改为认戳跳过）。禁止把「发版门禁太慢」修成跳过界面/终端集成。
+- **排查「ci-test 跑很久 / 每次都要等很久 / 发版检查跑三遍 / 不要每次都跑这么重 / 是不是卡住了」（2026-08-30；2026-09-12 起默认模块并行）**：单次完整套件仍要数分钟（多核常见约五六分钟），不是故障。墙钟几乎都在界面自动化和真实终端集成；`ci-test.py` 把其它模块与这条串行车道重叠跑（`--jobs` / `CORRAL_TEST_JOBS`，`1` 退回单进程）。日常推送只跑几秒的格式检查。还在刷新的通过行 / shard 完成行、或夹杂「任务执行超过 0.1 秒」= 仍在跑。连续许多分钟零输出、或约 25 分钟打出全部线程栈才是挂死（见上条 macOS 空烧，已修）。发版若连等三轮，是门禁在重复跑同一套（已改为认戳跳过）。禁止把「发版门禁太慢」修成跳过界面/终端集成，或把 Pilot/tmux 模块拆进并行（共享保活 socket 会互抢）。
 
 另外两处工作流层面的浪费也一并修了：`on: push` 不带过滤时，tag 推送会和同一提交在 `main` 上的推送产生**完全重复的一轮矩阵**（每次发版凭空多 7 个作业），已收窄为 `branches: ["**"]`；并加了 `concurrency` + `cancel-in-progress`，同分支后推的提交自动作废前一轮排队。
 

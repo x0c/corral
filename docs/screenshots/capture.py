@@ -269,11 +269,121 @@ def _strip_window_chrome(svg_text: str) -> str:
     return svg_text
 
 
+# Bold Menlo under cairo lacks box-drawing glyphs → tofu for │├└.
+# Prefer a mono face that still draws those when font-weight is bold.
+_SCREENSHOT_FONT_CANDIDATES = (
+    "Hack Nerd Font Mono",
+    "Hack Nerd Font",
+    "Hack",
+    "DejaVu Sans Mono",
+    "Menlo",
+)
+
+# Fruit group emoji → Twemoji 14 stem (vendored under emoji/).
+# Cairo cannot paint Apple Color Emoji; embed PNGs instead. session_list
+# already puts each fruit glyph in its own Rich span for this swap.
+_FRUIT_EMOJI_TWEMOJI = {
+    0x1F34E: "1f34e",  # 🍎
+    0x1F951: "1f951",  # 🥑
+    0x1F34C: "1f34c",  # 🍌
+    0x1FAD0: "1fad0",  # 🫐
+    0x1F352: "1f352",  # 🍒
+    0x1F965: "1f965",  # 🥥
+    0x1F347: "1f347",  # 🍇
+    0x1F95D: "1f95d",  # 🥝
+    0x1F34B: "1f34b",  # 🍋
+    0x1F96D: "1f96d",  # 🥭
+    0x1F348: "1f348",  # 🍈
+    0x1F34A: "1f34a",  # 🍊
+    0x1F351: "1f351",  # 🍑
+    0x1F350: "1f350",  # 🍐
+    0x1F34D: "1f34d",  # 🍍
+    0x1F353: "1f353",  # 🍓
+    0x1F349: "1f349",  # 🍉
+}
+
+
+def _screenshot_font() -> str:
+    """Pick an installed mono font that still draws │├└ when bold."""
+    try:
+        out = subprocess.run(
+            ["fc-list", ":family", "family"],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except OSError:
+        out = ""
+    families = {line.strip() for line in out.splitlines() if line.strip()}
+    for name in _SCREENSHOT_FONT_CANDIDATES:
+        if name in families:
+            return name
+    return _SCREENSHOT_FONT_CANDIDATES[-1]
+
+
+def _embed_fruit_emoji(svg_text: str) -> str:
+    """Replace lone fruit-emoji <text> nodes with vendored Twemoji PNGs."""
+    import base64
+    import html as html_module
+
+    emoji_dir = OUT_DIR / "emoji"
+    cache: dict[str, str] = {}
+
+    def data_uri(stem: str) -> str:
+        if stem in cache:
+            return cache[stem]
+        path = emoji_dir / f"{stem}.png"
+        if not path.is_file():
+            raise RuntimeError(
+                f"missing Twemoji asset {path}; restore docs/screenshots/emoji/"
+            )
+        uri = "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
+        cache[stem] = uri
+        return uri
+
+    def repl(match: re.Match[str]) -> str:
+        attrs, inner = match.group(1), match.group(2)
+        plain = html_module.unescape(inner)
+        if len(plain) != 1:
+            return match.group(0)
+        stem = _FRUIT_EMOJI_TWEMOJI.get(ord(plain))
+        if stem is None:
+            return match.group(0)
+        uri = data_uri(stem)
+        xm = re.search(r'\bx="([^"]+)"', attrs)
+        ym = re.search(r'\by="([^"]+)"', attrs)
+        x = float(xm.group(1)) if xm else 0.0
+        y = float(ym.group(1)) if ym else 0.0
+        size = 18.0
+        return (
+            f'<image x="{x}" y="{y - size + 2:.1f}" width="{size}" height="{size}" '
+            f'href="{uri}"/>'
+        )
+
+    return re.sub(r"<text([^>]*)>([^<]*)</text>", repl, svg_text)
+
+
+def _assert_no_fruit_text_nodes(svg_text: str) -> None:
+    """Fail capture if a fruit glyph is still a <text> node (would render as tofu)."""
+    import html as html_module
+
+    for match in re.finditer(r"<text[^>]*>([^<]*)</text>", svg_text):
+        plain = html_module.unescape(match.group(1))
+        if len(plain) == 1 and ord(plain) in _FRUIT_EMOJI_TWEMOJI:
+            raise RuntimeError(
+                f"fruit emoji U+{ord(plain):04X} still in <text>; Twemoji embed failed"
+            )
+
+
 def _prepare_svg(svg_text: str) -> str:
-    """Keep terminal cell geometry and clipping while using an installed font."""
+    """Strip fake window chrome, use a bold-safe mono font, embed fruit emoji."""
     svg_text = _strip_window_chrome(svg_text)
     svg_text = re.sub(r"@font-face\s*\{.*?\}", "", svg_text, flags=re.S)
-    return svg_text.replace("Fira Code", "Menlo")
+    font = _screenshot_font()
+    svg_text = svg_text.replace("Fira Code", font)
+    svg_text = _embed_fruit_emoji(svg_text)
+    _assert_no_fruit_text_nodes(svg_text)
+    return svg_text
 
 
 def _svg_to_png(svg_path: Path, png_path: Path) -> None:
@@ -312,7 +422,7 @@ def _write_gif(frame_paths: list[Path], dest: Path, durations_ms: list[int]) -> 
             for frame in opened
         ]
     quantized = [
-        frame.convert("P", palette=Image.ADAPTIVE, colors=128) for frame in opened
+        frame.convert("P", palette=Image.ADAPTIVE, colors=256) for frame in opened
     ]
     quantized[0].save(
         dest,

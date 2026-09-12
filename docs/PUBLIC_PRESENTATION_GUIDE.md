@@ -27,11 +27,14 @@ The conversion page order that other flagships should copy lives in the global s
 
 ## Review follow-up (2026-09-12)
 
-The published bilingual rewrite uses the approved rounded unicorn and its local README targets resolve. Remaining acceptance gaps:
+Closed in-tree after the bilingual rewrite:
 
-- Validate the actual `curl | bash` installation path in a clean environment. The published v0.24.194 package requires `sesskit>=0.1.2`, but the downloaded installer defaults to the v0.1.1 wheel when no local helper exists. Repository-local execution can hide this mismatch. Do not call installation verified from matching Python/tmux prerequisites alone.
-- Replace the terminal captures after fixing the capture defects: the GIF's final split frame contains missing-glyph boxes in group decorations; both the still and GIF show duplicate Advanced footer entries. Inspect every frame at README display size, including the final split view.
-- Remove redundant introductory copy: the headline, subtitle, and paragraph before Install repeat the lost-chat pitch and supported-assistant list. Keep each block only if it adds a distinct visitor decision.
-- Establish provenance for `ios-sessions.png` and `ios-chat.png` before treating them as current application evidence. This review inspected the assets but did not verify them against the running phone app.
+- `install.sh` curl fallback SessKit pin matches `scripts/sesskit_dep.py` (bump both together).
+- `demo.gif` / `list.png`: Twemoji fruit embed + bold-safe mono font; footer shows Ctrl-only Advanced/Delete once. Re-inspect the GIF final split frame after every recapture.
+- Redundant pre-Install pitch paragraph removed from both READMEs.
 
-Review scope: GitHub contents/API, local bilingual text, local link targets, and image/frame inspection. Browser access was unavailable; full rendered-page, narrow-screen, and live-device acceptance remain unverified. These findings are not a claim of increased stars or a completed installer repair.
+Still open:
+
+- Prove `ios-sessions.png` / `ios-chat.png` against the live iPhone app (or replace them) before treating them as current evidence.
+
+Capture pitfalls: do not rely on Color Emoji font swaps under Cairo; do not empty `group_emoji` to hide tofu; missing `docs/screenshots/emoji/*.png` must fail the capture.
