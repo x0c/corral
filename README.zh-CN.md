@@ -4,8 +4,8 @@
   <img src="docs/screenshots/corral-unicorn.png" alt="Corral" width="112" height="112">
 </p>
 <h1 align="center">Corral</h1>
-<p align="center"><strong>把你的编程助手放在一起。</strong></p>
-<p align="center">找回历史对话，接着上次的工作，同时推进多个任务。</p>
+<p align="center"><strong>找不到昨天的对话？把编程助手会话收成一张列表。</strong></p>
+<p align="center">搜索 Claude Code、Codex、Cursor、OpenCode、Kimi Code 和 Pi 的对话历史，用同一个会话管理工具接着做。</p>
 
 <p align="center">
   <a href="https://github.com/x0c/corral/releases/latest"><img src="https://img.shields.io/github/v/release/x0c/corral" alt="最新版本"></a>
@@ -13,13 +13,16 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT 许可证"></a>
 </p>
 
-Corral 是一个终端会话管理工具，支持 **Claude Code、Codex、OpenCode、Kimi Code、Cursor 和 Pi**。统一浏览会话、搜索对话历史，也能把工作交给另一个助手继续。
+<p align="center">
+  <img src="docs/screenshots/demo.gif" alt="在 Corral 里找回丢失的 Claude Code 对话，并把编程助手会话收成一张列表" width="100%">
+</p>
+<p align="center"><em>演示来自真实终端界面，使用的是虚构会话，不是你电脑上的实际记录。</em></p>
 
-![Corral 切换会话、搜索历史并分屏查看](docs/screenshots/demo.gif)
+<p align="center">
+  <img src="docs/screenshots/list.png" alt="Claude Code 等编程助手会话列表与对话预览" width="100%">
+</p>
 
-这段演示来自真实终端界面，使用的是虚构会话，不是你电脑上的实际记录。
-
-![会话列表与对话预览](docs/screenshots/list.png)
+找不到昨天的 Claude Code 对话？Corral 把 **Claude Code、Codex、OpenCode、Kimi Code、Cursor 和 Pi** 的编程助手会话收成一张列表。搜索会话历史，接着上次的工作，也能把任务交给另一个助手。
 
 ## 安装
 

@@ -4,8 +4,8 @@
   <img src="docs/screenshots/corral-unicorn.png" alt="Corral" width="112" height="112">
 </p>
 <h1 align="center">Corral</h1>
-<p align="center"><strong>Your coding agents, together.</strong></p>
-<p align="center">Find past conversations, resume work, and run multiple agents side by side.</p>
+<p align="center"><strong>Find yesterday's lost chat. One list of coding-agent sessions.</strong></p>
+<p align="center">Search Claude Code, Codex, Cursor, OpenCode, Kimi Code, and Pi conversation history — then resume work in one session manager.</p>
 
 <p align="center">
   <a href="https://github.com/x0c/corral/releases/latest"><img src="https://img.shields.io/github/v/release/x0c/corral" alt="Latest release"></a>
@@ -13,13 +13,16 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
-Corral is a terminal session manager for **Claude Code, Codex, OpenCode, Kimi Code, Cursor, and Pi**. Browse their sessions in one place, search conversation history, and hand work from one assistant to another.
+<p align="center">
+  <img src="docs/screenshots/demo.gif" alt="Finding a lost Claude Code chat and listing coding-agent sessions in Corral" width="100%">
+</p>
+<p align="center"><em>Captured from the real terminal UI with sample conversations — not a recording of your machine.</em></p>
 
-![Corral switching sessions, searching history, and splitting the view](docs/screenshots/demo.gif)
+<p align="center">
+  <img src="docs/screenshots/list.png" alt="One list of Claude Code and other coding-agent sessions with conversation preview" width="100%">
+</p>
 
-The clip is captured from the real terminal UI with sample conversations. It is not a live recording of your machine.
-
-![Session list and conversation preview](docs/screenshots/list.png)
+Find lost Claude Code conversations and yesterday's chat. Corral lists coding-agent sessions for **Claude Code, Codex, OpenCode, Kimi Code, Cursor, and Pi** in one place. Search session history, resume work, and hand a task to another assistant.
 
 ## Install
 
