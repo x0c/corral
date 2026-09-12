@@ -2235,6 +2235,72 @@ class SidebarSplitHighlightTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(session_rows[keys[0]].has_class("-group-selected"))
                 self.assertFalse(session_rows[keys[1]].has_class("-group-selected"))
 
+    async def test_standalone_and_group_member_selection_share_cursor_color(self) -> None:
+        """独立会话与组内成员选中底色必须同档（对齐组内选中色）。
+
+        分屏铺底时组内成员走 `$sidebar-split-cursor-background`，独立项走
+        ListView 的 `$block-cursor-background`；两色必须相等，否则侧栏选中会
+        「组内深、组外淡」。
+        """
+        sessions = [
+            {
+                "source": "claude", "id": f"s{i}", "short_id": f"s{i}",
+                "mtime": time.time() - i * 100, "size_bytes": 1, "size_kb": 1,
+                "native_title": None, "fallback_title": f"会话{i}",
+                "cwd": "/tmp/proj" if i < 2 else "/tmp/other",
+                "live": False,
+            }
+            for i in range(3)
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            keys = [corral.session_key(s) for s in sessions]
+            list_view.on_layout_change(
+                lambda s: s.set_group("/tmp/proj", keys[:2], focus_key=keys[0])
+            )
+            await list_view.rebuild()
+            list_view.set_split_marks(keys[:2], keys[0])
+            list_view.focus()
+
+            # 选非激活组成员：应是 split-cursor 档，不能叠成 active-cursor。
+            list_view.select_session_key(keys[1])
+            await pilot.pause()
+            member = next(
+                item
+                for item, card in list_view._session_items()
+                if corral.session_key(card.session) == keys[1]
+            )
+            self.assertTrue(member.has_class("-in-split"))
+            self.assertFalse(member.has_class("-split-active"))
+            member_bg = member.styles.background
+
+            list_view.select_session_key(keys[2])
+            await pilot.pause()
+            solo = next(
+                item
+                for item, card in list_view._session_items()
+                if corral.session_key(card.session) == keys[2]
+            )
+            self.assertFalse(solo.has_class("-in-split"))
+            solo_bg = solo.styles.background
+            self.assertEqual(
+                solo_bg,
+                member_bg,
+                f"独立选中 {solo_bg} 必须等于组内选中 {member_bg}",
+            )
+
+            from corral.ui.app import _CORRAL_DARK, _CORRAL_LIGHT
+
+            for theme in (_CORRAL_DARK, _CORRAL_LIGHT):
+                self.assertEqual(
+                    theme.variables["block-cursor-background"],
+                    theme.variables["sidebar-split-cursor-background"],
+                    f"{theme.name}: block-cursor 必须与组内选中档同色",
+                )
+
     @staticmethod
     def _weight(color, app) -> float:
         """底色的「显著程度」：深色主题下越亮越重，浅色主题下越深越重。"""

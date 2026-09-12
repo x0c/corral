@@ -49,9 +49,10 @@ _CORRAL_DARK = Theme(
     success="#3F9A6A",
     dark=True,
     variables={
-        # 选中抬一层冷灰蓝，不用高饱和 primary 铺满
-        "block-cursor-background": "#243447",
-        "block-cursor-blurred-background": "#243447CC",
+        # 选中底色与组内选中会话同档（= sidebar-split-cursor），不用更淡的冷灰蓝，
+        # 也不用高饱和 primary——否则独立项选中会比组内成员淡一截。
+        "block-cursor-background": "#35506E",
+        "block-cursor-blurred-background": "#35506ECC",
         # 分栏激活顶/底条：$primary-muted 再提亮约 10%
         "pane-active-background": "#31475E",
         # 侧边栏投影分屏组合的四级底色（见 _SIDEBAR_SPLIT_LADDER 的说明）
@@ -75,8 +76,9 @@ _CORRAL_LIGHT = Theme(
     success="#1A7F4B",
     dark=False,
     variables={
-        "block-cursor-background": "#C5D6E8",
-        "block-cursor-blurred-background": "#C5D6E8CC",
+        # 与深色同理：选中 = 组内选中档（sidebar-split-cursor），勿再淡一档。
+        "block-cursor-background": "#A8C9E9",
+        "block-cursor-blurred-background": "#A8C9E9CC",
         # 分栏激活顶/底条：$primary-muted 再提亮约 10%
         "pane-active-background": "#D1E7F7",
         # 浅色下"更显著"是更深更饱和，梯度方向与深色相反，见 _SIDEBAR_SPLIT_LADDER
@@ -108,10 +110,12 @@ _THEME_VARIABLE_DEFAULTS = {
 # 侧边栏投影右栏分屏组合时的四级底色阶梯，从弱到强：
 #   组合内 → 组合内且键盘光标停在它上面 → 当前激活格 → 激活格且光标停在它上面
 # 光标停在组卡上时，整组（组卡+成员）走第二档（`-group-selected`），激活成员走第四档。
+# 第二档必须与主题 `block-cursor-background` 同色：独立会话选中走 ListView 的
+# `.-highlight`（block-cursor），组内成员选中走 `-in-split.-highlight` /
+# `-group-selected`（split-cursor）；两色不一致时侧栏选中会「组内深、组外淡」。
 # 必须整体单调（深色越来越亮、浅色越来越深），否则会出现「光标移到激活行上，
-# 整行反而变暗」的倒挂——列表自身的选中底色（`block-cursor-background`）比激活
-# 格底色弱，光标一旦落到组合行上就会把它压回去，看着像状态丢了。四级都用主题
-# 变量而不是写死 hex，深浅主题各给一套。
+# 整行反而变暗」的倒挂——列表自身的选中底色比激活格底色弱，光标一旦落到组合
+# 行上就会把它压回去，看着像状态丢了。四级都用主题变量而不是写死 hex。
 _SIDEBAR_SPLIT_LADDER = (
     "sidebar-split-background",
     "sidebar-split-cursor-background",
