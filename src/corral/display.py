@@ -22,7 +22,8 @@ from corral.textutil import fit_cell, text_width
 # 组件样式按主题解析，这里只定义分档语义与边界。
 JUST_NOW_SECONDS = 180  # 「刚刚」文案上界：3 分钟内（侧边栏对该文案再加粗）
 RECENT_HIGHLIGHT_SECONDS = 1800  # 首档上界：半小时内算「刚刚还在动」
-# 「今天」与侧边栏 Today 分隔线共用这条滚动 24 小时界，不是日历午夜。
+# 「一天」只给时间行亮度档用：滚动 24 小时，不是日历午夜。侧边栏日期分隔线
+# 按本地日历日切桶，不再共用这条界。
 TODAY_SECONDS = 86400
 TIME_BRIGHTNESS_TIERS: tuple[tuple[float | None, str], ...] = (
     (RECENT_HIGHLIGHT_SECONDS, "fresh"),  # 半小时内：与标题同色

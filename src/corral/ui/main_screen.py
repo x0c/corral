@@ -1,13 +1,13 @@
 """主屏：左栏会话列表 + 右栏预览/内嵌终端（corral 唯一界面）。
 
-按键语义（/ 聚焦项目搜索 / a 高级操作 /
+按键语义（/ 聚焦项目搜索 / a 或 Ctrl+A 高级操作 /
 q 结束会话 / x 删除会话 / c 关闭面板 / Ctrl+Shift+B 显隐侧栏 / Esc 退出）；选中非进行中会话时右栏直接
 展示完整对话预览。键盘焦点跟随明确意图：回车 / 单击会话卡打开、新建或直启托管成功后
 输入交给右栏那一格（仅限活着的实时会话），上下浏览不抢焦点；再点当前持有输入的那张
 会话卡则把焦点撤回侧边栏，与 `Ctrl+\\` 等价。右栏滚轮/预览翻页与焦点无关，鼠标在右栏
 上即可滚动。焦点契约与两条易踩的时序坑见 docs/TERMINAL_UI_KNOWLEDGE_BASE.md §6。
-多分屏时聚焦某一格会把侧边栏高亮切到对应会话。新建会话走侧边栏「＋ 新建」或
-右栏顶栏加格，不再提供底栏 `n` 快捷键。
+多分屏时聚焦某一格会把侧边栏高亮切到对应会话。新建会话走侧边栏「＋ 新建」、全局
+`Ctrl+N` 或右栏顶栏加格；单字母 `n` 仍不绑。
 侧边栏顶部为搜索框，大小写无关模糊匹配组名、项目名与会话标题。
 `Ctrl+Shift+B` 与右栏顶栏左侧开关可显隐侧栏（无右栏时不可用）；该偏好与会话组、置顶一起
 存在侧边栏记忆库里（见 `split_layout`）。禁止再加第二套全屏预览或纯列表旧界面。
@@ -52,7 +52,7 @@ from corral.ui.modals import (
 from corral.ui.nav import NavState
 from corral.ui.runtime_top_bar import RuntimeTopBar
 from corral.ui.session_list import STICKY_IDS, SessionListView
-from corral.ui.split_pane_area import SplitPaneArea
+from corral.ui.split_pane_area import SplitPaneArea, _session_list_has_focus
 from corral.ui.update_toast import UpdateToast
 
 try:
@@ -139,7 +139,9 @@ def _drop_layout_sessions(store, keys: list[str]) -> None:
 _ACTION_I18N = {
     "search_content": "action.search",
     "toggle_pin": "action.toggle_pin",
+    "new_session": "action.new",
     "handoff": "action.advanced",
+    "advanced": "action.advanced",
     "kill_keepalive": "action.kill_session",
     "delete_session": "action.delete_session",
     "close_pane": "action.close_pane",
@@ -183,22 +185,25 @@ _LIST_ONLY_ACTIONS = frozenset(
 def _main_bindings() -> list[Binding]:
     """按当前语言生成底部快捷键说明。"""
     return [
-        # Ctrl+F / Ctrl+P 是壳层全局键。priority 让它们先于当前聚焦控件处理，
+        # Ctrl+F / Ctrl+P / Ctrl+N / Ctrl+A 是壳层全局键。priority 让它们先于当前聚焦控件处理，
         # 运行中助手不能再截走；临时弹窗不继承主屏绑定，仍保持自己的输入语义。
+        # 单字母 n 仍不绑：右栏持焦时会变成打给助手的字符。
+        # 单字母 a 仍只在列表侧：打给助手的 a 不能变成高级操作；全局入口是 Ctrl+A。
         Binding("ctrl+f", "search_content", t("action.search"), priority=True),
         Binding("ctrl+p", "toggle_pin", t("action.toggle_pin"), priority=True),
+        Binding("ctrl+n", "new_session", t("action.new"), priority=True),
+        Binding("ctrl+a", "advanced", t("action.advanced"), priority=True),
         Binding("a", "handoff", t("action.advanced")),
         Binding("q", "kill_keepalive", t("action.kill_session")),
         Binding("x", "delete_session", t("action.delete_session")),
         Binding("c", "close_pane", t("action.close_pane"), show=False),
-        # 内嵌终端持有输入时的唯一出口。EmbedPane 自己会先吃掉这个键（实时会话
-        # 路径），这里的绑定负责两件事：静态预览格聚焦时也能回列表，以及让
-        # Footer 在右栏持有输入时把出口显示出来（见 check_action）。
-        Binding("ctrl+backslash", "focus_list", t("action.focus_list")),
+        # 回列表 / 显隐侧栏：键仍生效，底栏不再画出来（2026-09-12：点侧栏、
+        # 点顶栏 ◀/▶、点格子都已能完成同一件事，Footer 提示是重复噪音）。
+        Binding("ctrl+backslash", "focus_list", t("action.focus_list"), show=False),
         # 与 Ctrl+\ 同级的壳层键：右栏持焦时仍可用，不得进 _LIST_ONLY_ACTIONS。
         # EmbedPane 实时路径会先拦截 ctrl+shift+b，避免键被转发给托管会话。
         # 不用 Ctrl+B：机主在 Claude Code 里用它「把任务转后台」（2026-08-04 冲突实报）。
-        Binding("ctrl+shift+b", "toggle_sidebar", t("action.toggle_sidebar")),
+        Binding("ctrl+shift+b", "toggle_sidebar", t("action.toggle_sidebar"), show=False),
         # 会话小窗展开/收起。Footer 已经很挤，这个键不展示；小窗自身可点。
         Binding("ctrl+g", "toggle_hud", t("action.toggle_hud"), show=False),
         Binding("f12", "save_screenshot", t("action.screenshot"), show=False),
@@ -1429,6 +1434,16 @@ class MainScreen(
             if snap is None or snap.page_count <= 1:
                 return False
             # 循环翻页：多页时两侧都可用，不要到头把键藏起来。
+        if action == "advanced":
+            # Ctrl+A：列表持焦，或右栏正对着某个会话。筛选框里让路给输入。
+            if isinstance(self.focused, Input):
+                return False
+            if self._any_embed_focused():
+                return True
+            focused = self.focused
+            if focused is None:
+                return True
+            return _session_list_has_focus(focused)
         if action in _LIST_ONLY_ACTIONS and self._live_embed_focused():
             return False
         return True
@@ -1565,6 +1580,12 @@ class MainScreen(
         if key:
             await self._reveal_session(key)
 
+    @work
+    async def action_new_session(self) -> None:
+        """Ctrl+N 全局新建：与侧栏「＋ 新建」同一条双栏选择流程。"""
+        self._leave_activity_board()
+        await self._start_new_session_flow()
+
     def action_toggle_pin(self) -> None:
         """Ctrl+P 全局置顶：右栏持焦时钉当前这一格（或其会话组），否则钉侧栏选中项。"""
         list_view = self.query_one(SessionListView)
@@ -1678,10 +1699,49 @@ class MainScreen(
             event.stop()
             search.focus()
 
+    def _handoff_target_session(self) -> dict | None:
+        """高级操作要作用的会话：右栏持焦用那一格，否则用侧栏高亮。
+
+        组卡高亮时落到该组的焦点成员（或第一个成员）。＋新建 / 活跃会话看板没有
+        关联会话。
+        """
+        if self._any_embed_focused():
+            try:
+                key = self._split_area().focus_key
+            except Exception:
+                key = None
+            if key and not str(key).startswith("__"):
+                session = self.store.find_session(key)
+                if session is not None:
+                    return session
+        try:
+            session_list = self.query_one(SessionListView)
+        except Exception:
+            return None
+        session = session_list.selected_session()
+        if session is not None:
+            return session
+        group = session_list.selected_group()
+        if group is None or not group.session_keys:
+            return None
+        key = (
+            group.focus_key
+            if group.focus_key in group.session_keys
+            else group.session_keys[0]
+        )
+        return self.store.find_session(key)
+
+    @work
+    async def action_advanced(self) -> None:
+        """Ctrl+A 全局高级操作：列表或右栏关联会话时打开，与 `a` 同一条流程。"""
+        await self._run_handoff()
+
     @work
     async def action_handoff(self) -> None:
-        session_list = self.query_one(SessionListView)
-        session = session_list.selected_session()
+        await self._run_handoff()
+
+    async def _run_handoff(self) -> None:
+        session = self._handoff_target_session()
         if session is None:
             self.app.bell()
             return

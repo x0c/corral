@@ -229,6 +229,38 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Today",
         "zh": "今天",
     },
+    "list.sep_yesterday": {
+        "en": "Yesterday",
+        "zh": "昨天",
+    },
+    "list.sep_monday": {
+        "en": "Monday",
+        "zh": "周一",
+    },
+    "list.sep_tuesday": {
+        "en": "Tuesday",
+        "zh": "周二",
+    },
+    "list.sep_wednesday": {
+        "en": "Wednesday",
+        "zh": "周三",
+    },
+    "list.sep_thursday": {
+        "en": "Thursday",
+        "zh": "周四",
+    },
+    "list.sep_friday": {
+        "en": "Friday",
+        "zh": "周五",
+    },
+    "list.sep_saturday": {
+        "en": "Saturday",
+        "zh": "周六",
+    },
+    "list.sep_sunday": {
+        "en": "Sunday",
+        "zh": "周日",
+    },
     "status.running": {
         "en": "Running",
         "zh": "运行中",
@@ -615,7 +647,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
     # 会话占位标题（TUI 侧栏）
     "session.title.new": {
         "en": "New {name} session",
-        "zh": "新{name}会话",
+        "zh": "新 {name} 会话",
     },
     "session.title.copy": {
         "en": "Copy of {name}",
@@ -904,8 +936,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "on 的别名（开关语义；不再占住终端）",
     },
     "remote.help.relay_url": {
-        "en": "Self-hosted relay URL (default is the public relay; must be wss://)",
-        "zh": "自建中继地址（默认用公共中继，必须 wss://）",
+        "en": "Your relay WebSocket URL (must be wss://); no shared default — self-host or use LAN",
+        "zh": "你自己的中继 WebSocket 地址（必须 wss://）；开源无共享默认，需自建或只走局域网",
     },
     "remote.help.insecure_relay": {
         "en": "Allow a plaintext ws:// relay (sends the registration credential in the clear; debug only)",

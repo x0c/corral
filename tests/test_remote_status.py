@@ -37,7 +37,7 @@ class RemoteConfigEmptyDirTests(unittest.TestCase):
 class RemoteStatusRelayOnlineTests(unittest.TestCase):
     def test_login_on_single_tenant_relay_does_not_request_device_code(self) -> None:
         with mock.patch.object(remote_account, "_request") as request:
-            ok, message = remote_account.login("wss://pickup-relay.caozc.top")
+            ok, message = remote_account.login("wss://relay.example.com")
 
         self.assertTrue(ok)
         self.assertEqual(message, t("remote.login.not_needed"))
@@ -254,7 +254,7 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
         state = remote_config.RemoteState(
             host_id="h1",
             host_name="suzhou",
-            relay_url="wss://corral-relay.caozc.top",
+            relay_url="wss://relay.example.com",
             relay_enabled=True,
             local_enabled=True,
             local_port=8737,
@@ -288,18 +288,18 @@ class RemoteStatusRelayOnlineTests(unittest.TestCase):
         self.assertIn(
             t(
                 "remote.status.relay_online",
-                label="wss://corral-relay.caozc.top",
+                label="wss://relay.example.com",
                 since=since,
             ),
             text,
         )
-        self.assertIn("corral-relay.caozc.top", text)
+        self.assertIn("relay.example.com", text)
 
     def test_status_json_includes_relay_online_fields(self) -> None:
         state = remote_config.RemoteState(
             host_id="h1",
             host_name="suzhou",
-            relay_url="wss://corral-relay.caozc.top",
+            relay_url="wss://relay.example.com",
             relay_enabled=True,
             local_enabled=True,
             local_port=8737,

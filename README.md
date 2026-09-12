@@ -1,36 +1,69 @@
 # corral
 
+<p align="center">
+  <img src="docs/screenshots/app-icon.png" alt="Corral icon" width="96" height="96">
+</p>
+
 **Languages:** English | [简体中文](README.zh-CN.md)
 
 [![test](https://github.com/x0c/corral/actions/workflows/test.yml/badge.svg)](https://github.com/x0c/corral/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Corral is a terminal session handoff tool for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi.
+Your coding agents leave sessions everywhere — Claude Code, Codex, OpenCode, Kimi, Cursor, Pi.
+Corral puts them in **one terminal list**, keeps live sessions alive in the background, and lets you
+**steer them from your iPhone** on the same Wi‑Fi (or through a relay you host yourself).
 
-`corral` scans your local Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi history, shows recent coding sessions in a terminal UI (built with [Textual](https://github.com/Textualize/textual)), and lets you resume the selected session in its native runtime. It can also hand off a session from one runtime to another (e.g. Claude to Codex, or Pi to Claude) by starting a new target session with a structured pointer to the original history.
+If Corral saves you a hunt or a context switch, please [star the repo](https://github.com/x0c/corral)
+so others can find it.
 
-If Corral helps you find or hand off a session, please [star the repo](https://github.com/x0c/corral) so others can discover it.
+```bash
+brew install x0c/tap/corral   # or: curl -fsSL https://raw.githubusercontent.com/x0c/corral/main/install.sh | bash
+corral
+```
 
-Keywords: Claude Code session manager, Codex CLI resume, OpenCode session manager, Kimi Code CLI session manager, terminal TUI, AI coding agent workflow, JSONL chat history, cross-runtime handoff.
+Keywords: Claude Code session manager, Codex CLI resume, OpenCode session manager, Kimi Code CLI session manager, Cursor Agent, Pi, terminal TUI, iOS remote, AI coding agent workflow, JSONL chat history, cross-runtime handoff.
 
-![Animated session list sample from `corral --json`](docs/screenshots/demo-list.gif)
+<p align="center">
+  <img src="docs/screenshots/list.png" alt="Terminal session list with live preview" width="720">
+</p>
 
-![Session list with right-pane conversation preview](docs/screenshots/list.png)
+<p align="center">
+  <img src="docs/screenshots/ios-machines.png" alt="iPhone: pick a development machine" width="220">
+  &nbsp;
+  <img src="docs/screenshots/ios-sessions.png" alt="iPhone: session list" width="220">
+  &nbsp;
+  <img src="docs/screenshots/ios-chat.png" alt="iPhone: chat and steer" width="220">
+</p>
 
-Press `Ctrl+F` to search the conversation bodies of every session and jump straight to the matching line:
+![Animated session list sample](docs/screenshots/demo-list.gif)
 
-![Full-text search across session conversations, with matching lines highlighted](docs/screenshots/search.png)
+Press `Ctrl+F` to search conversation bodies across every session:
+
+![Full-text search across session conversations](docs/screenshots/search.png)
 
 ## Why Use It
 
-- Browse recent Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi sessions from one terminal screen.
-- Resume with the original runtime using native commands such as `claude --resume`, `codex resume`, `opencode -s <id>`, and `kimi -S <id>`, and `agent --resume`.
-- Select a finished session to preview the full conversation in the right pane (live/hosted sessions show embedded terminals instead), or keep up to three active sessions side by side.
-- See which session needs attention without opening it: yellow means the agent is waiting for an answer, green means it is working, and red means a new result is unread. The same state is written in the detail header, so color is not the only cue.
-- Full-text search everything you ever said: `Ctrl+F` searches conversation bodies across every runtime and shows the matching lines, so you can find a session by what was discussed instead of remembering which project it was in.
-- Hand off unfinished work between runtimes without rewriting or faking session files.
-- Reuse a bounded local cache and native hot-path accelerator so repeat launches, previews, and live panes stay fast.
-- Use JSON output for scripts and launchers.
+- One screen for Claude Code, Codex CLI, OpenCode, Kimi Code CLI, Cursor Agent CLI, and Pi.
+- Resume with native commands (`claude --resume`, `codex resume`, `opencode -s`, `kimi -S`, `agent --resume`, Pi resume).
+- Live panes stay hosted in tmux — disconnect SSH, reopen Corral, keep typing.
+- Attention dots: yellow waiting, green working, red unread — plus the same state in plain text.
+- Full-text search (`Ctrl+F`) finds sessions by what you said, not by which project folder you remember.
+- Hand off unfinished work between runtimes without rewriting history files.
+- **iPhone companion** (usable, still polishing): browse machines and sessions, read chat, answer questions, steer mid-turn — end-to-end encrypted; the optional relay never sees plaintext.
+- Local-first: history stays on your machine; phone path defaults to **LAN only**. There is **no** shared public relay bundled with Corral — off-LAN means **you** deploy a zero-knowledge relay and point both sides at it.
+
+## Phone handoff (LAN first)
+
+On the Mac/Linux machine:
+
+```bash
+corral remote on          # background service; remembered across reboot
+corral remote pair        # QR / code for the iOS app (same Wi‑Fi)
+```
+
+Same network is enough. For cellular or another Wi‑Fi, run your own relay and pass its `wss://` URL when you enable remote (pairing payload can carry `r=`). Fresh installs leave relay **off** and the URL empty on purpose.
+
+The iOS client is not on the App Store yet; build from the companion iOS tree when published, or ask the maintainer for a TestFlight/build. Expect rough edges while it is polished.
 
 ## Privacy Model
 
@@ -385,6 +418,8 @@ agent workflows.
 | `/` | Focus the sidebar filter box (case-insensitive fuzzy match on group name, project name, path and session title) |
 | `Ctrl+F` | Full-text search across session conversations; results show the matching lines, newest session first. `Enter` opens the selected session in the sidebar |
 | `Ctrl+P` | Pin / unpin the current window or its split group (works even while a live pane has input; Textual's command palette is disabled) |
+| `Ctrl+N` | Open the new-session picker (same flow as the sidebar `+ New session` row; works even while a live pane has input). Bare `n` is left free so it still reaches the agent |
+| `Ctrl+A` | Open advanced handoff actions (works in the session list, or while a live/preview pane is focused on a session; left free while typing in the filter box). Bare `a` still works only in the list |
 | `Enter` | Resume selected session with the native runtime (reattach if it's already running in the background); on the pinned `+ New session` row, start the new-session flow; on **Active sessions**, open the live board. For a session whose process is gone this is the **only** way to restart it — clicking its card only shows the transcript. Also works with focus in the right-hand pane whenever that pane holds a conversation preview or a `Session ended` screen |
 | `a` | Open advanced handoff actions |
 | `q` | End a backgrounded / in-progress (keep-alive) session; press `q` again in the confirm dialog |

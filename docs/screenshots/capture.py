@@ -9,6 +9,15 @@
 
     python3 docs/screenshots/capture.py
 
+macOS Homebrew 已装 cairo 时，cairocffi 仍可能报 ``no library called "cairo-2"``
+（它找的名字对不上 ``libcairo.2.dylib``）。先把 brew 的 lib 放进
+``DYLD_FALLBACK_LIBRARY_PATH``，再补一个 ``cairo-2`` 软链：
+
+    mkdir -p /tmp/cairo-libs
+    ln -sf "$(brew --prefix cairo)/lib/libcairo.2.dylib" /tmp/cairo-libs/libcairo-2.dylib
+    export DYLD_FALLBACK_LIBRARY_PATH="/tmp/cairo-libs:$(brew --prefix cairo)/lib"
+    python3 docs/screenshots/capture.py
+
 产物写入本目录：list.png（左栏列表 + 右栏完整对话预览；无 Rich 假窗口边框）。
 
 **NO_COLOR：** 许多 CI / Agent 环境默认 `NO_COLOR=1`。Textual 会启用 Monochrome
@@ -40,6 +49,17 @@ os.environ.setdefault("CORRAL_LANG", "en")
 # 这个目录里找，正好顺带隔离。
 _CAPTURE_CACHE_DIR = tempfile.mkdtemp(prefix="corral-capture-cache-")
 os.environ["CORRAL_CACHE_DIR"] = _CAPTURE_CACHE_DIR
+# 截图夹具不得认领本机保活 socket 里的真窗格，否则会把真实会话灌进 README。
+os.environ["CORRAL_ISOLATE_MANAGED_HOSTS"] = "1"
+# Homebrew cairo is outside uv's Python rpath; without this cairosvg raises OSError.
+_homebrew_lib = Path("/opt/homebrew/lib")
+if (_homebrew_lib / "libcairo.2.dylib").is_file():
+    for _key in ("DYLD_FALLBACK_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        _cur = os.environ.get(_key, "")
+        if str(_homebrew_lib) not in _cur.split(":"):
+            os.environ[_key] = (
+                str(_homebrew_lib) if not _cur else f"{_homebrew_lib}:{_cur}"
+            )
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -384,7 +404,9 @@ def _svg_to_png(svg_path: Path, png_path: Path) -> None:
     try:
         from cairosvg import svg2png  # noqa: F401
         converters.append([sys.executable, "-c", _CAIRO_SNIPPET, str(prepared_path), str(png_path)])
-    except ImportError:
+    except (ImportError, OSError):
+        # OSError: cairosvg imports but libcairo isn't on the loader path
+        # (Homebrew cairo lives in /opt/homebrew/lib; uv's Python won't see it).
         pass
     for candidate in ("python3.11", "python3.12", "python3"):
         converters.append([candidate, "-c", _CAIRO_SNIPPET, str(prepared_path), str(png_path)])

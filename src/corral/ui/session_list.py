@@ -6,13 +6,14 @@
 第二行上一页·下一页 / 第三行留白）、会话卡高 3（标题 / 运行时 /
 时间；首行最左是关注状态圆点、随后是「项目 标题」，运行时与时间各自靠右，
 无末行空行）。筛选框在列表外固定；`＋ 新建` 和活跃会话看板在 `#sidebar-sticky` 里也不随
-列表滚。置顶块、Pinned 分隔线与未置顶（Today / 更早）都在 `#sidebar-scroll`
+列表滚。置顶块、Pinned 分隔线与未置顶日期段都在 `#sidebar-scroll`
 里一起滚——置顶只改变排序，不冻在视口里。鼠标在固定头（含筛选框）上滚轮
 仍带动会话列表，顶部位置不变。
 置顶块与未置顶块都非空时，中间插一行居中 `Pinned`/`置顶` 的
-`$primary` 蓝横线；未置顶再按滚动 24 小时切 today / older 两桶（桶内不重排），
-两侧都有时再插 `Today`/`今天` 线。分隔高 1、disabled、键盘跳过；禁止 Older/其他
-标签。斑马纹按**块**交替，不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
+`$primary` 蓝横线；未置顶按本地日历日切桶（今天 / 昨天 / 近 7 日内其余各日用星期几
+/ 更早合成一桶），桶内不重排。命名桶后面还有内容时才在该桶末尾插线（标签标明上面
+这一段）。分隔高 1、disabled、键盘跳过；禁止 Older/其他标签。斑马纹按**块**交替，
+不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
 `＋ 新建`、活跃会话看板与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
 起头）。条纹画在 `SessionCard` / `SessionGroupCard` 上，用 `$foreground` 的半透明
 底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类 DEFAULT_CSS 会压过
@@ -30,6 +31,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from rich.style import Style
@@ -51,7 +53,6 @@ from corral.activity_board import (
     active_marker_style,
     resolve_active_marker,
 )
-from corral.display import TODAY_SECONDS
 from corral.i18n import t
 
 NEW_SESSION_ID = "__new_session__"
@@ -60,15 +61,62 @@ STICKY_IDS = (NEW_SESSION_ID, ACTIVITY_BOARD_ID)
 _STICKY_ID_SET = frozenset(STICKY_IDS)
 PIN_SEP_ID = "__pin_sep__"
 TODAY_SEP_ID = "__today_sep__"
+YESTERDAY_SEP_ID = "__yesterday_sep__"
+DATE_SEP_PREFIX = "__date_sep_"
 GROUP_ID_PREFIX = "__group__-"
-_SEPARATOR_IDS = frozenset({PIN_SEP_ID, TODAY_SEP_ID})
-_SEP_LABEL_KEYS = {
-    PIN_SEP_ID: "list.sep_pinned",
-    TODAY_SEP_ID: "list.sep_today",
-}
+# Named calendar buckets: 0=today, 1=yesterday, 2–6=weekday; 7+ is unlabeled.
+_OLDER_BUCKET = 7
+_WEEKDAY_LABEL_KEYS = (
+    "list.sep_monday",
+    "list.sep_tuesday",
+    "list.sep_wednesday",
+    "list.sep_thursday",
+    "list.sep_friday",
+    "list.sep_saturday",
+    "list.sep_sunday",
+)
 
-# 时间行档位在「控件还没挂载」时的兜底样式：单测会直接构造 SessionCard 调
-# render()，此时主题变量尚未解析，退回旧的二值 dim 表现，不让渲染整体失败。
+
+def _is_separator_id(ident: str | None) -> bool:
+    """Pinned divider or a named date-bucket trailing line."""
+    if not ident:
+        return False
+    return ident in {PIN_SEP_ID, TODAY_SEP_ID, YESTERDAY_SEP_ID} or ident.startswith(
+        DATE_SEP_PREFIX
+    )
+
+
+def _named_date_sep_id(days_ago: int, now: float) -> str:
+    """Stable widget id for the trailing label of a named calendar bucket."""
+    if days_ago <= 0:
+        return TODAY_SEP_ID
+    if days_ago == 1:
+        return YESTERDAY_SEP_ID
+    day = datetime.fromtimestamp(now).date() - timedelta(days=days_ago)
+    return f"{DATE_SEP_PREFIX}{day.weekday()}__"
+
+
+def _sep_label_key(identity: str) -> str:
+    if identity == PIN_SEP_ID:
+        return "list.sep_pinned"
+    if identity == TODAY_SEP_ID:
+        return "list.sep_today"
+    if identity == YESTERDAY_SEP_ID:
+        return "list.sep_yesterday"
+    if identity.startswith(DATE_SEP_PREFIX) and identity.endswith("__"):
+        body = identity[len(DATE_SEP_PREFIX) : -2]
+        try:
+            weekday = int(body)
+        except ValueError:
+            return "list.sep_today"
+        if 0 <= weekday < len(_WEEKDAY_LABEL_KEYS):
+            return _WEEKDAY_LABEL_KEYS[weekday]
+    return "list.sep_pinned"
+
+
+# Fallback time-row styles when the widget is not mounted yet (unit tests call
+# SessionCard.render() without a theme). Dim all but the freshest tier rather
+# than failing the whole render.
 _TIME_FALLBACK_STYLES = {
     "fresh": Style(),
     "recent": Style(dim=True),
@@ -244,28 +292,41 @@ def _assign_block_stripes(rows: list[_SidebarRow]) -> list[_SidebarRow]:
     return striped
 
 
-def _session_in_today_window(session: dict | None, now: float) -> bool:
-    """独立会话是否落在滚动 24 小时（或正在跑）。未来 mtime 算今天。"""
+def _session_days_ago(session: dict | None, now: float) -> int:
+    """Local calendar days between session activity and `now`.
+
+    0 = today (also live or future mtime). Missing/invalid timestamps fall into
+    the unlabeled older bucket so they never steal a named date line.
+    """
     if not session:
-        return False
+        return _OLDER_BUCKET
     if session.get("live"):
-        return True
+        return 0
     try:
         mtime = float(session.get("mtime") or 0)
     except (TypeError, ValueError):
-        return False
-    return (now - mtime) < TODAY_SECONDS
+        return _OLDER_BUCKET
+    if mtime <= 0:
+        return _OLDER_BUCKET
+    now_date = datetime.fromtimestamp(now).date()
+    then_date = datetime.fromtimestamp(mtime).date()
+    delta = (now_date - then_date).days
+    return 0 if delta < 0 else delta
 
 
-def _block_is_today(block: list[_SidebarRow], now: float) -> bool:
-    """会话组不可拆：任一成员 live 或 mtime 落在 24h 内，整组进 today。"""
+def _session_in_today_window(session: dict | None, now: float) -> bool:
+    """Independent session on the local calendar day (or currently running)."""
+    return _session_days_ago(session, now) == 0
+
+
+def _block_days_ago(block: list[_SidebarRow], now: float) -> int:
+    """Groups stay intact: the newest member (live counts as today) wins."""
+    newest = _OLDER_BUCKET
     for row in block:
-        if _session_in_today_window(row.session, now):
-            return True
+        newest = min(newest, _session_days_ago(row.session, now))
         for member in row.member_sessions:
-            if _session_in_today_window(member, now):
-                return True
-    return False
+            newest = min(newest, _session_days_ago(member, now))
+    return newest
 
 
 class SessionCard(Widget):
@@ -899,10 +960,11 @@ class ActivityBoardCard(Widget):
 
 
 class PinSeparatorCard(Widget):
-    """区尾分隔：两侧 `─`、居中标签，整行 `$primary` 冷蓝。
+    """Trailing divider: `─` on both sides, centered label, whole row `$primary`.
 
-    标签标明**上面**这一段（Pinned / Today），不写 Older/其他——避免把下方
-    会话说成次要。窄栏用显示宽度截标签，不用 `len()`。
+    Labels the section above (Pinned / Today / Yesterday / weekday). Never
+    Older/Other — that would mark sessions below as second-class. Narrow
+    columns clip by display width, not `len()`.
     """
 
     ALLOW_SELECT = False
@@ -1023,8 +1085,8 @@ class _SidebarList(ListView):
             new_index is not None
             and 0 <= new_index < len(self._nodes)
             and (
-                self._nodes[new_index].disabled
-                or getattr(self._nodes[new_index], "id", None) in _SEPARATOR_IDS
+                        self._nodes[new_index].disabled
+                        or _is_separator_id(getattr(self._nodes[new_index], "id", None))
             )
         ):
             direction = 1
@@ -1428,7 +1490,7 @@ class SessionListView(Vertical):
             if item.id in _STICKY_ID_SET or not item.children:
                 continue
             card = item.children[0]
-            if isinstance(card, PinSeparatorCard) or item.id in _SEPARATOR_IDS:
+            if isinstance(card, PinSeparatorCard) or _is_separator_id(item.id):
                 if item.id:
                     identities.append(item.id)
             elif isinstance(card, SessionGroupCard):
@@ -1496,10 +1558,11 @@ class SessionListView(Vertical):
     def _sidebar_rows(self) -> list[_SidebarRow]:
         """把持久会话组投影成「组卡 + 缩进子会话」，其余会话保持扁平。
 
-        未置顶区先按 `SessionStore.all_sessions()` 的稳定顺序走一遍，再只切
-        today / older 两桶（桶内相对顺序不变）：进入 corral 后已有项位置固定，
-        后台重扫只因 mtime/标题更新而整列重排的「飘」不再发生；新会话仍由 store
-        插到最前（或冷会话追加末尾）。置顶块仍按置顶时间单独排在最上。
+        未置顶区先按 `SessionStore.all_sessions()` 的稳定顺序走一遍，再按本地
+        日历日切桶（今天 / 昨天 / 近 7 日内其余各日 / 更早；桶内相对顺序不变）：
+        进入 corral 后已有项位置固定，后台重扫只因 mtime/标题更新而整列重排的「飘」
+        不再发生；新会话仍由 store 插到最前（或冷会话追加末尾）。置顶块仍按置顶
+        时间单独排在最上。
         """
         import corral
 
@@ -1609,16 +1672,14 @@ class SessionListView(Vertical):
 
         # 未置顶区：按 store 稳定顺序走一遍，组卡落在其「最先出现的成员」位置。
         # 禁止再按当前 mtime 整列重排——否则运行中会话一写盘整组就会在侧边栏里上下飘。
-        # 只做 today / older 两桶：桶内相对顺序不变，live 或 24h 内的块整块进 today。
-        today_rows: list[_SidebarRow] = []
-        older_rows: list[_SidebarRow] = []
+        # 只按本地日历日分桶：桶内相对顺序不变；live 或当天的块整块进今天。
+        buckets: list[list[_SidebarRow]] = [[] for _ in range(_OLDER_BUCKET + 1)]
         now = time.time()
 
         def _emit_unpinned(block: list[_SidebarRow]) -> None:
-            if _block_is_today(block, now):
-                today_rows.extend(block)
-            else:
-                older_rows.extend(block)
+            days = _block_days_ago(block, now)
+            index = days if days < _OLDER_BUCKET else _OLDER_BUCKET
+            buckets[index].extend(block)
 
         emitted: set[str] = set()
         for session in filtered:
@@ -1653,14 +1714,22 @@ class SessionListView(Vertical):
                 emitted.add(block_id)
 
         rows: list[_SidebarRow] = list(pinned_rows)
-        unpinned_visible = today_rows or older_rows
+        unpinned_visible = any(buckets)
         # 两侧都有可见项时才画分隔，避免「只剩置顶」或「没有置顶」时多出一条空线。
         if pinned_rows and unpinned_visible:
             rows.append(_SidebarRow(kind="separator", identity=PIN_SEP_ID))
-        rows.extend(today_rows)
-        if today_rows and older_rows:
-            rows.append(_SidebarRow(kind="separator", identity=TODAY_SEP_ID))
-        rows.extend(older_rows)
+        for index, bucket_rows in enumerate(buckets):
+            if not bucket_rows:
+                continue
+            rows.extend(bucket_rows)
+            has_later = any(buckets[later] for later in range(index + 1, len(buckets)))
+            if has_later and index < _OLDER_BUCKET:
+                rows.append(
+                    _SidebarRow(
+                        kind="separator",
+                        identity=_named_date_sep_id(index, now),
+                    )
+                )
         return _assign_block_stripes(rows)
 
     def selected_session(self) -> dict | None:
@@ -2005,9 +2074,7 @@ class SessionListView(Vertical):
 
         if row.kind == "separator":
             return NoSelectListItem(
-                PinSeparatorCard(
-                    _SEP_LABEL_KEYS.get(row.identity, "list.sep_pinned")
-                ),
+                PinSeparatorCard(_sep_label_key(row.identity)),
                 id=row.identity,
                 disabled=True,
             )

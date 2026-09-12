@@ -22,6 +22,7 @@ import subprocess
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta
 from unittest import mock
 
 from corral import i18n
@@ -76,12 +77,16 @@ from corral.ui.session_list import (
     PIN_SEP_ID,
     STICKY_IDS,
     TODAY_SEP_ID,
+    YESTERDAY_SEP_ID,
     ActivityBoardCard,
     NewSessionCard,
     PinSeparatorCard,
     SessionCard,
     SessionGroupCard,
     SessionListView,
+    _named_date_sep_id,
+    _sep_label_key,
+    _session_days_ago,
     _session_in_today_window,
 )
 from corral.ui.split_pane_area import SplitPaneArea
@@ -258,6 +263,15 @@ def _claude_session(
         "cwd": "/tmp",
         "live": live,
     }
+
+
+def _local_day_mtime(
+    days_ago: int, *, hour: int = 15, now: float | None = None
+) -> float:
+    """Local-calendar timestamp `days_ago` days before `now` (default: now)."""
+    now_dt = datetime.fromtimestamp(now if now is not None else time.time())
+    day = now_dt.date() - timedelta(days=days_ago)
+    return datetime(day.year, day.month, day.day, hour, 0, 0).timestamp()
 
 
 class KittyKeyboardProtocolTests(unittest.TestCase):
@@ -907,16 +921,26 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(max(widths) - min(widths), 1, widths)
             self.assertFalse(area.can_add_pane())
 
-    async def test_footer_does_not_bind_n_for_new_session(self) -> None:
-        """底栏不再暴露 n 新建快捷键；新建只走侧边栏项 / 顶栏加格。"""
+    async def test_footer_binds_ctrl_n_not_bare_n_for_new_session(self) -> None:
+        """新建走全局 Ctrl+N；单字母 n 仍不绑。Ctrl+A 是全局高级操作。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             keys = {b.key for b in app.screen.BINDINGS}
             self.assertNotIn("n", keys)
+            self.assertIn("ctrl+n", keys)
             actions = {b.action for b in app.screen.BINDINGS}
-            self.assertNotIn("new_session", actions)
+            self.assertIn("new_session", actions)
+            self.assertIn("ctrl+a", keys)
+            self.assertIn("advanced", actions)
+            await pilot.press("ctrl+n")
+            await _wait_until(lambda: isinstance(app.screen, NewSessionModal))
+            await pilot.press("escape")
+            await _wait_until(lambda: not isinstance(app.screen, NewSessionModal))
+            await pilot.press("slash")
+            await _wait_until(lambda: isinstance(app.screen.focused, Input))
+            self.assertFalse(app.screen.check_action("advanced", ()))
 
     async def test_focusing_split_pane_highlights_matching_sidebar_session(self) -> None:
         """多分屏时聚焦某一格，侧边栏高亮必须切到该格对应会话。"""
@@ -2950,9 +2974,10 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             )
 
     def test_live_or_recent_mtime_counts_as_today(self) -> None:
-        """滚动 24 小时界：live 优先，与时间行 today 档共用 TODAY_SECONDS。"""
-        now = time.time()
-        old = now - 10 * corral.TODAY_SECONDS
+        """Calendar-day Today: live wins; yesterday is not today even if < 24h."""
+        now = _local_day_mtime(0, hour=10)
+        old = _local_day_mtime(10, hour=12, now=now)
+        yesterday = _local_day_mtime(1, hour=12, now=now)
         self.assertTrue(
             _session_in_today_window({"live": True, "mtime": old}, now)
         )
@@ -2960,10 +2985,18 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             _session_in_today_window({"live": False, "mtime": old}, now)
         )
         self.assertTrue(
-            _session_in_today_window({"live": False, "mtime": now - 60}, now)
+            _session_in_today_window({"live": False, "mtime": now}, now)
         )
         self.assertTrue(
-            _session_in_today_window({"live": False, "mtime": now + 30}, now)
+            _session_in_today_window(
+                {"live": False, "mtime": now + 30}, now
+            )
+        )
+        self.assertFalse(
+            _session_in_today_window({"live": False, "mtime": yesterday}, now)
+        )
+        self.assertEqual(
+            _session_days_ago({"live": False, "mtime": yesterday}, now), 1
         )
         self.assertFalse(_session_in_today_window(None, now))
         self.assertFalse(_session_in_today_window({}, now))
@@ -3012,6 +3045,47 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 list_view._current_row_identities(),
                 identities,
             )
+
+    async def test_yesterday_and_weekday_separators(self) -> None:
+        """Today / Yesterday / weekday lines appear; unlabeled tail has no Older."""
+        now = time.time()
+        sessions = [
+            _claude_session("today-a", _local_day_mtime(0, now=now), "今天"),
+            _claude_session("yest-b", _local_day_mtime(1, now=now), "昨天"),
+            _claude_session("mid-c", _local_day_mtime(3, now=now), "三天前"),
+            _claude_session("old-d", _local_day_mtime(10, now=now), "更早"),
+        ]
+        store, _ = _make_store(sessions=sessions)
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            await list_view.rebuild()
+            identities = [row.identity for row in list_view._sidebar_rows()]
+            weekday_sep = _named_date_sep_id(3, now)
+            self.assertEqual(
+                identities,
+                [
+                    "claude:today-a",
+                    TODAY_SEP_ID,
+                    "claude:yest-b",
+                    YESTERDAY_SEP_ID,
+                    "claude:mid-c",
+                    weekday_sep,
+                    "claude:old-d",
+                ],
+            )
+            plains = [
+                card.render().plain for card in list_view.query(PinSeparatorCard)
+            ]
+            joined = "\n".join(plains)
+            self.assertIn("Today", joined)
+            self.assertIn("Yesterday", joined)
+            self.assertIn(t(_sep_label_key(weekday_sep)), joined)
+            self.assertNotIn("Other", joined)
+            self.assertNotIn("Older", joined)
+            self.assertNotIn("其他", joined)
+            self.assertEqual(list_view._current_row_identities(), identities)
 
     async def test_today_separator_absent_when_all_recent(self) -> None:
         store, app = await self._grouped_app()
@@ -3156,14 +3230,12 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     async def test_separator_labels_follow_language(self) -> None:
         now = time.time()
         sessions = [
-            _claude_session("pin-me", now - 60, "置顶会话"),
-            _claude_session("today-b", now - 120, "今天会话"),
-            _claude_session("old-c", now - 180, "更早会话"),
+            _claude_session("pin-me", _local_day_mtime(0, now=now), "置顶会话"),
+            _claude_session("today-b", _local_day_mtime(0, hour=14, now=now), "今天会话"),
+            _claude_session("yest-c", _local_day_mtime(1, now=now), "昨天会话"),
+            _claude_session("old-d", _local_day_mtime(10, now=now), "更早会话"),
         ]
         store, _ = _make_store(sessions=sessions)
-        store.find_session("claude:old-c")["mtime"] = (
-            now - 3 * corral.TODAY_SECONDS
-        )
         i18n.set_lang("zh")
         try:
             app = CorralApp(store, embed_ok=False)
@@ -3180,8 +3252,10 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 joined = "\n".join(plains)
                 self.assertIn("置顶", joined)
                 self.assertIn("今天", joined)
+                self.assertIn("昨天", joined)
                 self.assertNotIn("Pinned", joined)
                 self.assertNotIn("Today", joined)
+                self.assertNotIn("Yesterday", joined)
                 self.assertNotIn("其他", joined)
                 self.assertNotIn("Other", joined)
         finally:
@@ -5821,9 +5895,12 @@ class FooterActionGatingTests(unittest.TestCase):
         self.assertTrue(screen.check_action("focus_list", ()))
         # 壳层显隐侧栏：与 Ctrl+\ 同级，右栏持焦时仍可用
         self.assertTrue(screen.check_action("toggle_sidebar", ()))
-        # Ctrl+P 全局置顶：与 Ctrl+F 同级，右栏持焦时仍可用
+        # Ctrl+P 全局置顶 / Ctrl+N 全局新建 / Ctrl+A 全局高级操作：与 Ctrl+F 同级，右栏持焦时仍可用
         self.assertTrue(screen.check_action("toggle_pin", ()))
         self.assertTrue(screen.check_action("search_content", ()))
+        self.assertTrue(screen.check_action("new_session", ()))
+        self.assertTrue(screen.check_action("advanced", ()))
+        self.assertIs(screen.check_action("handoff", ()), False)
 
     def test_list_actions_available_when_sidebar_focused(self) -> None:
         screen = self._screen(live=False)
@@ -5834,6 +5911,7 @@ class FooterActionGatingTests(unittest.TestCase):
         self.assertFalse(screen.check_action("focus_list", ()))
         self.assertTrue(screen.check_action("toggle_sidebar", ()))
         self.assertTrue(screen.check_action("toggle_pin", ()))
+        self.assertTrue(screen.check_action("new_session", ()))
         # 没进看板、或只有一页时翻页键必须藏起来。
         self.assertFalse(screen.check_action("board_prev", ()))
         self.assertFalse(screen.check_action("board_next", ()))
@@ -5867,6 +5945,42 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(
                 any("-command-palette" in child.classes for child in footer.query("*"))
             )
+
+    async def test_footer_hides_back_to_list_and_toggle_sidebar(self) -> None:
+        """回列表 / 显隐侧栏仍绑着，底栏不再画出来（点按界面已有同一条路）。"""
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(100, 30)):
+            shown = {
+                (binding.key, binding.action)
+                for binding in app.screen.BINDINGS
+                if binding.show
+            }
+            self.assertNotIn(("ctrl+backslash", "focus_list"), shown)
+            self.assertNotIn(("ctrl+shift+b", "toggle_sidebar"), shown)
+            keys = {binding.key: binding for binding in app.screen.BINDINGS}
+            self.assertIn("ctrl+backslash", keys)
+            self.assertIn("ctrl+shift+b", keys)
+            self.assertFalse(keys["ctrl+backslash"].show)
+            self.assertFalse(keys["ctrl+shift+b"].show)
+            footer = app.screen.query_one(Footer)
+            await _wait_until(lambda: bool(footer.query("#footer-version")))
+            shown_text = " ".join(
+                getattr(child, "description", "")
+                or (child.render().plain if hasattr(child.render(), "plain") else "")
+                for child in footer.query("*")
+            )
+            shown_keys = {
+                getattr(child, "key", "")
+                for child in footer.query("*")
+                if getattr(child, "key", None)
+            }
+            self.assertNotIn("ctrl+backslash", shown_keys)
+            self.assertNotIn("ctrl+shift+b", shown_keys)
+            self.assertNotIn("Back to list", shown_text)
+            self.assertNotIn("Toggle sidebar", shown_text)
+            self.assertNotIn("返回列表", shown_text)
+            self.assertNotIn("显隐侧栏", shown_text)
 
 
 class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
@@ -7302,7 +7416,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_live_pane_forwards_enter_but_ctrl_f_opens_search(self) -> None:
-        """回车照常发给助手，但 Ctrl+F 必须由 corral 打开全文搜索。"""
+        """回车照常发给助手，但 Ctrl+F 必须由 corral 打开全文搜索，Ctrl+N 打开新建。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
         app = CorralApp(store, embed_ok=True)
@@ -7326,6 +7440,18 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 with mock.patch("corral.embed.send_key") as send_key:
                     await pilot.press("ctrl+f")
                     await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))
+                    self.assertFalse(send_key.called)
+                    await pilot.press("escape")
+
+                with mock.patch("corral.embed.send_key") as send_key:
+                    await pilot.press("ctrl+n")
+                    await _wait_until(lambda: isinstance(app.screen, NewSessionModal))
+                    self.assertFalse(send_key.called)
+                    await pilot.press("escape")
+
+                with mock.patch("corral.embed.send_key") as send_key:
+                    await pilot.press("ctrl+a")
+                    await _wait_until(lambda: isinstance(app.screen, RuntimePickerModal))
                     self.assertFalse(send_key.called)
                     await pilot.press("escape")
 
@@ -7532,8 +7658,11 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(delay=0.2)
             await pilot.press("down")
             await pilot.press("a")
-            await pilot.pause()
-            self.assertIsInstance(app.screen, RuntimePickerModal)
+            await _wait_until(lambda: isinstance(app.screen, RuntimePickerModal))
+            await pilot.press("escape")
+            await _wait_until(lambda: not isinstance(app.screen, RuntimePickerModal))
+            await pilot.press("ctrl+a")
+            await _wait_until(lambda: isinstance(app.screen, RuntimePickerModal))
             await pilot.press("down")  # claude(原生恢复) -> codex
             await pilot.press("enter")
             await pilot.pause()
@@ -8848,11 +8977,18 @@ class FullTextSearchModalTests(unittest.IsolatedAsyncioTestCase):
             screen = app.screen
             self.assertTrue(screen.check_action("search_content", ()))
             with mock.patch.object(type(screen), "_live_embed_focused", return_value=True):
-                self.assertTrue(screen.check_action("search_content", ()))
-                self.assertTrue(screen.check_action("toggle_pin", ()))
+                with mock.patch.object(type(screen), "_any_embed_focused", return_value=True):
+                    self.assertTrue(screen.check_action("search_content", ()))
+                    self.assertTrue(screen.check_action("toggle_pin", ()))
+                    self.assertTrue(screen.check_action("new_session", ()))
+                    self.assertTrue(screen.check_action("advanced", ()))
 
             await pilot.press("ctrl+f")
             await _wait_until(lambda: isinstance(app.screen, FullTextSearchModal))
+            await pilot.press("escape")
+
+            await pilot.press("ctrl+n")
+            await _wait_until(lambda: isinstance(app.screen, NewSessionModal))
             await pilot.press("escape")
 
 

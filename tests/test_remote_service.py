@@ -177,9 +177,10 @@ class RemoteServiceTests(unittest.TestCase):
         self.assertTrue(reply["ok"])
         self.assertFalse(reply["d"]["paired"])
         self.assertEqual(reply["d"]["runtimes"], [], "没配对不该看到装了哪些助手")
-        # 未配对也要带中继信息，方便手机补全 Host 记录。
+        # 未配对也要带中继开关现状，方便手机补全 Host 记录。开源默认关中继。
         self.assertEqual(reply["d"]["relay_url"], self.service.state.relay_url)
-        self.assertTrue(reply["d"]["relay_enabled"])
+        self.assertEqual(reply["d"]["relay_enabled"], self.service.state.relay_enabled)
+        self.assertFalse(reply["d"]["relay_enabled"])
         self.assertTrue(reply["d"]["local_enabled"])
 
     def test_hello_omits_relay_url_when_relay_disabled(self):

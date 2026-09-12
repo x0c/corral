@@ -1,36 +1,68 @@
 # corral
 
+<p align="center">
+  <img src="docs/screenshots/app-icon.png" alt="Corral 图标" width="96" height="96">
+</p>
+
 **语言：** [English](README.md) | 简体中文
 
 [![test](https://github.com/x0c/corral/actions/workflows/test.yml/badge.svg)](https://github.com/x0c/corral/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Corral 是面向 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Agent CLI 和 Pi 的终端会话接力工具。
+编码助手的会话散落各处——Claude Code、Codex、OpenCode、Kimi、Cursor、Pi。
+Corral 把它们收进**一块终端列表**，让活跃会话在后台继续跑，并支持在同一 Wi‑Fi 上用
+**iPhone 查看、回答、中途转向**（换网则需你自己部署零知识中继）。
 
-`corral` 扫描你本机的 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Agent CLI 和 Pi 历史，在终端界面（基于 [Textual](https://github.com/Textualize/textual)）里列出最近的编码会话，并让你用它原本的助手恢复选中的会话。它还能把会话从一个助手接力到另一个（例如 Claude 转 Codex、Pi 转 Claude）：在目标助手里新建会话，并把指向原始历史的结构化线索交给它。
+如果它帮你少翻了一通历史或少切了一次上下文，请给仓库[点个 star](https://github.com/x0c/corral)，方便更多人发现。
 
-如果它帮你找到或接力了会话，请给仓库[点个 star](https://github.com/x0c/corral)，方便更多人发现。
+```bash
+brew install x0c/tap/corral   # 或：curl -fsSL https://raw.githubusercontent.com/x0c/corral/main/install.sh | bash
+corral
+```
 
-关键词：Claude Code 会话管理、Codex CLI 恢复会话、OpenCode 会话管理、Kimi Code CLI 会话管理、终端 TUI、AI 编码助手工作流、JSONL 聊天历史、跨助手接力。
+关键词：Claude Code 会话管理、Codex CLI 恢复会话、OpenCode、Kimi Code、Cursor Agent、Pi、终端 TUI、iOS 远程、AI 编码助手工作流、跨助手接力。
 
-![`corral --json` 会话列表动画示例](docs/screenshots/demo-list.gif)
+<p align="center">
+  <img src="docs/screenshots/list.png" alt="终端会话列表与实时预览" width="720">
+</p>
 
-![会话列表与右栏完整对话预览](docs/screenshots/list.png)
+<p align="center">
+  <img src="docs/screenshots/ios-machines.png" alt="iPhone：选择开发机" width="220">
+  &nbsp;
+  <img src="docs/screenshots/ios-sessions.png" alt="iPhone：会话列表" width="220">
+  &nbsp;
+  <img src="docs/screenshots/ios-chat.png" alt="iPhone：对话与转向" width="220">
+</p>
 
-按 `Ctrl+F` 可以在所有会话的对话正文里搜索，并直接跳到命中的那一行：
+![会话列表动画示例](docs/screenshots/demo-list.gif)
 
-![跨会话对话内容全文搜索，命中行高亮显示](docs/screenshots/search.png)
+按 `Ctrl+F` 可在所有会话正文里搜索：
+
+![跨会话全文搜索](docs/screenshots/search.png)
 
 ## 为什么用它
 
-- 在一块终端屏幕上浏览最近的 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Agent CLI 和 Pi 会话。
-- 用原助手的原生命令恢复，例如 `claude --resume`、`codex resume`、`opencode -s <id>`、`kimi -S <id>` 和 `agent --resume`。
-- 选中已结束的会话即可在右栏预览完整对话（运行中／已托管的会话则显示内嵌终端），也可以让最多三个活跃会话并排。
-- 不打开会话也能看出谁需要关注：黄点表示助手在等你回答，绿点表示正在工作，红点表示有未读新结果；详情头会同时写出状态，不只靠颜色传达。
-- 全文搜索你说过的一切：`Ctrl+F` 跨全部助手搜索对话正文并展示命中的那一行，让你凭「聊过什么」找回会话，而不必先想起它在哪个项目里。
-- 在助手之间接力未完成的工作，不改写、不伪造任何会话文件。
-- 复用有容量上限的本地缓存和原生热路径加速，让反复启动、预览和实时画面保持流畅。
-- 提供 JSON 输出，方便脚本和启动器调用。
+- 一块屏幕覆盖 Claude Code、Codex CLI、OpenCode、Kimi Code CLI、Cursor Agent CLI 和 Pi。
+- 用各助手原生命令恢复（`claude --resume`、`codex resume`、`opencode -s`、`kimi -S`、`agent --resume`、Pi）。
+- 活跃会话由 tmux 托管——SSH 断了、重开 Corral，还能接着打字。
+- 关注点：黄等待、绿进行中、红未读，详情头也会写出状态。
+- `Ctrl+F` 按「说过什么」找会话，不必先想起项目目录。
+- 跨助手接力未完成的工作，不改写、不伪造历史文件。
+- **iPhone 配套**（已能用，仍在打磨）：选机器、看会话、读对话、答题、中途转向——端到端加密；可选中继看不到明文。
+- 本地优先：历史留在你的电脑上；手机路径**默认只走局域网**。开源发行**不捆绑**任何共享公共中继——要换网就**自己**部署零知识中继，并两边填上你的 `wss://`。
+
+## 手机接力（先局域网）
+
+在 Mac / Linux 开发机上：
+
+```bash
+corral remote on          # 后台服务；重启后仍会记住
+corral remote pair        # 给 iOS App 扫的二维码／配对码（同一 Wi‑Fi）
+```
+
+同网即可。蜂窝或其它 Wi‑Fi：自建中继，打开远程时带上你的 `wss://`（配对载荷可带 `r=`）。全新安装默认**关闭**中继、地址为空，这是刻意的。
+
+iOS 客户端尚未上架 App Store；可从配套 iOS 工程源码构建（或向维护者要试装包）。打磨期间界面与行为仍可能有毛边。
 
 ## 隐私模型
 
@@ -253,6 +285,8 @@ corral describe [command]                   # 机器可读的命令／参数／�
 | `/` | 聚焦侧边栏筛选框（对组名、项目名、路径和会话标题做大小写无关的模糊匹配） |
 | `Ctrl+F` | 在所有会话的对话正文里全文搜索；结果展示命中的那一行，按会话时间由新到旧排。`Enter` 在侧边栏中打开选中的会话 |
 | `Ctrl+P` | 置顶／取消置顶当前窗口或它所在的分屏组（右栏实时格持有输入时也可用；已关闭框架自带的命令面板） |
+| `Ctrl+N` | 打开新建会话选择器（与侧栏「＋ 新建会话」同一条流程；右栏实时格持有输入时也可用）。单字母 `n` 留给助手 |
+| `Ctrl+A` | 打开高级操作（会话列表里，或右栏正对着某个会话时可用；筛选框里打字时不抢）。单字母 `a` 仍只在列表侧 |
 | `Enter` | 用原生助手恢复选中的会话（若已在后台运行则重新接上）；在固定的「＋ 新建会话」上进入新建流程；在「活跃会话」上打开动态看板 |
 | `a` | 打开高级接力操作 |
 | `q` | 结束后台运行中／进行中（保活）的会话；在确认框里再按一次 `q` |

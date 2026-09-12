@@ -15,8 +15,6 @@ from corral.i18n import t
 from corral.remote import config as remote_config
 from corral.remote import crypto
 
-_DEFAULT_HTTP = "https://corral-relay.caozc.top"
-
 
 def http_base(relay_url: str) -> str:
     cleaned = str(relay_url or "").strip().rstrip("/")
@@ -26,7 +24,7 @@ def http_base(relay_url: str) -> str:
         return "http://" + cleaned[len("ws://") :]
     if cleaned.startswith("https://") or cleaned.startswith("http://"):
         return cleaned
-    return _DEFAULT_HTTP
+    raise ValueError(t("remote.err.relay_url_empty"))
 
 
 def _request(url: str, payload: dict | None = None, token: str = "") -> tuple[int, dict]:

@@ -25,7 +25,9 @@ from corral.i18n import t
 from corral.legacy_names import env_is_set, getenv, state_dir
 from corral.split_layout import layout_cache_dir
 
-_DEFAULT_RELAY_URL = "wss://corral-relay.caozc.top"
+# Open-source default: no shared relay. Fresh installs are LAN-only until the
+# operator sets their own wss:// URL. Never ship a maintainer hostname here.
+_DEFAULT_RELAY_URL = ""
 _STATE_FILENAME = "remote.json"
 _KEY_FILENAME = "identity.key"
 _HOST_KEY_FILENAME = "host.key"
@@ -224,7 +226,7 @@ class RemoteState:
     host_id: str = ""
     host_name: str = ""
     relay_url: str = _DEFAULT_RELAY_URL
-    relay_enabled: bool = True
+    relay_enabled: bool = False
     local_enabled: bool = True
     local_port: int = 0
     # Remembered switch: True means login/reboot must bring the service back.
@@ -248,7 +250,11 @@ class RemoteState:
                 str(raw.get("host_name") or ""), max_len=80, fallback="dev"
             ),
             relay_url=str(raw.get("relay_url") or _DEFAULT_RELAY_URL),
-            relay_enabled=bool(raw.get("relay_enabled", True)),
+            # Missing key → LAN-only open-source default. Existing installs keep
+            # whatever they already persisted (including maintainer private relays).
+            relay_enabled=bool(raw["relay_enabled"])
+            if "relay_enabled" in raw
+            else False,
             local_enabled=bool(raw.get("local_enabled", True)),
             local_port=int(raw.get("local_port") or 0),
             wanted=bool(raw.get("wanted", False)),
@@ -506,12 +512,24 @@ def rotate_host_key(state: RemoteState) -> RemoteState:
 
 
 def is_public_relay(url: str) -> bool:
+    """Whether this relay requires multi-tenant account login.
+
+    Open-source default allowlist is empty so no maintainer hostname is baked
+    into the repo. Operators who run their own multi-tenant relay can set
+    ``CORRAL_PUBLIC_RELAY_URLS`` to a comma-separated list of wss/https bases.
+    """
     cleaned = str(url or "").strip().rstrip("/").lower()
-    return cleaned in {
-        "wss://corral-relay.caozc.top",
-        "https://corral-relay.caozc.top",
-        "http://corral-relay.caozc.top",
+    if not cleaned:
+        return False
+    allow = str(getenv("PUBLIC_RELAY_URLS") or "").strip()
+    if not allow:
+        return False
+    allowed = {
+        item.strip().rstrip("/").lower()
+        for item in allow.split(",")
+        if item.strip()
     }
+    return cleaned in allowed
 
 
 def load_account() -> dict:
