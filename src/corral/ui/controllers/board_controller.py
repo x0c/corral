@@ -31,6 +31,7 @@ class BoardControllerMixin:
             return
         area.title_with_project = False
         area.allow_cross_project = False
+        area.panes_closable = True
 
     def _board_skips_split_cap(self) -> bool:
         """看板超额进队列翻页，不走水果组「分屏已满」。"""
@@ -76,7 +77,8 @@ class BoardControllerMixin:
         typing = _focused_board_session_key(getattr(self.app, "focused", None))
         self._activity_board.set_typing_key(typing)
         # 观看期间不撤格：仍被托管的成员即使已跑完 / 已读也钉在当前页，
-        # 撤格只发生在离开看板、关格、会话结束（不再托管）或显式翻页时。
+        # 撤格只发生在离开看板、会话结束（不再托管）或显式翻页时。
+        # 看板右栏被动展示：不提供关格 ✕，也不走关格快捷键。
         snapshot = self._activity_board.sync(
             collect_candidates(self.store),
             hosted_keys=collect_hosted_keys(self.store),
@@ -106,6 +108,7 @@ class BoardControllerMixin:
             focus_pane=focus_pane and self._can_autofocus(),
             title_with_project=True,
             allow_cross_project=True,
+            closable=False,
         )
         self._sync_split_marks()
         if focus_key:

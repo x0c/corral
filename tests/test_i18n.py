@@ -104,8 +104,7 @@ class I18nCatalogTests(unittest.TestCase):
         self.assertEqual(t("modal.handoff_title"), "Advanced: choose handoff assistant")
         self.assertEqual(t("detail.new_session_hint"), "New session: pick a project and assistant")
         self.assertEqual(t("detail.preview_end"), "──── END ────")
-        self.assertEqual(t("pane.focus_hint"), "Ctrl+\\ back to list")
-        self.assertEqual(t("pane.restart_focus_hint"), "Enter restart · Ctrl+\\ back to list")
+        self.assertEqual(t("pane.restart_hint"), "Enter restart")
         i18n.set_lang("zh")
         self.assertEqual(t("modal.column_runtime"), "助手")
         self.assertEqual(t("modal.handoff_title"), "高级操作：选择接力助手")
@@ -114,8 +113,7 @@ class I18nCatalogTests(unittest.TestCase):
         self.assertEqual(t("status.running_external"), "运行中（其他窗口）")
         self.assertEqual(t("detail.preview_end"), "──── 结束 ────")
         self.assertEqual(t("action.focus_list"), "返回列表")
-        self.assertEqual(t("pane.focus_hint"), "Ctrl+\\ 返回列表")
-        self.assertEqual(t("pane.restart_focus_hint"), "Enter 重启 · Ctrl+\\ 返回列表")
+        self.assertEqual(t("pane.restart_hint"), "Enter 重启")
 
     def test_new_catalog_entries(self) -> None:
         i18n.set_lang("en")

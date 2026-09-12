@@ -4206,6 +4206,45 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(area.allow_cross_project)
                 self.assertEqual(app.screen._split_store.groups, {})
 
+    async def test_activity_board_does_not_expose_pane_close(self) -> None:
+        """活跃会话看板被动展示：标题栏无 ✕，关格动作不可用。"""
+        from corral.activity_board import BoardCandidate
+        from corral.ui.split_pane_area import _PaneClose
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        candidates = [
+            BoardCandidate(key="claude:s0", kind="waiting", updated_at=2),
+            BoardCandidate(key="claude:s1", kind="working", updated_at=1),
+        ]
+        with mock.patch(
+            "corral.ui.controllers.board_controller.collect_candidates",
+            return_value=candidates,
+        ):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.3)
+                list_view = app.screen.query_one(SessionListView)
+                list_view.index = 1
+                await pilot.pause()
+                area = app.screen.query_one(SplitPaneArea)
+                await _wait_until(
+                    lambda: area.ordered_session_keys() == ["claude:s0", "claude:s1"]
+                )
+                self.assertFalse(area.panes_closable)
+                for cell in area.cells():
+                    self.assertFalse(cell.query_one(_PaneClose).display)
+                self.assertFalse(app.screen.check_action("close_pane", ()))
+                before = list(area.ordered_session_keys())
+                app.screen.action_close_pane()
+                await pilot.pause()
+                self.assertEqual(area.ordered_session_keys(), before)
+                # 离开看板后普通会话格应恢复可关。
+                list_view.index = len(STICKY_IDS)
+                await pilot.pause()
+                await _wait_until(lambda: area.ordered_session_keys() == ["claude:s0"])
+                self.assertTrue(area.panes_closable)
+                self.assertTrue(area.cells()[0].query_one(_PaneClose).display)
+
     async def test_activity_board_shows_pager_and_bracket_turns_page(self) -> None:
         """多于一页时第二行画出上一页/下一页、底栏两侧都露，按 ] 切页并循环。"""
         from corral.activity_board import BoardCandidate
@@ -5987,7 +6026,7 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(app.screen.focused, focused_before)
 
     async def test_footer_hides_back_to_list_and_toggle_sidebar(self) -> None:
-        """回列表 / 显隐侧栏仍绑着，底栏不再画出来（点按界面已有同一条路）。"""
+        """回列表仍绑着但不上底栏；侧栏显隐不再绑键。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)):
@@ -6000,9 +6039,8 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(("ctrl+shift+b", "toggle_sidebar"), shown)
             keys = {binding.key: binding for binding in app.screen.BINDINGS}
             self.assertIn("ctrl+backslash", keys)
-            self.assertIn("ctrl+shift+b", keys)
             self.assertFalse(keys["ctrl+backslash"].show)
-            self.assertFalse(keys["ctrl+shift+b"].show)
+            self.assertNotIn("ctrl+shift+b", keys)
             footer = app.screen.query_one(Footer)
             await _wait_until(lambda: bool(footer.query("#footer-version")))
             shown_text = " ".join(
@@ -6021,16 +6059,14 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Toggle sidebar", shown_text)
             self.assertNotIn("返回列表", shown_text)
             self.assertNotIn("显隐侧栏", shown_text)
+            self.assertNotIn("Ctrl+\\", shown_text)
+            self.assertNotIn("back to list", shown_text.lower())
 
 
 class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
-    """Ctrl+Shift+B / 顶栏开关显隐侧栏；偏好落盘；藏起后仍能点回来。
+    """顶栏 ◀/▶ 显隐侧栏；无键盘快捷键；偏好落盘；藏起后仍能点回来。"""
 
-    不用 Ctrl+B：机主在 Claude Code 里按 Ctrl+B 是「把任务转后台」，会与 corral
-    抢键（2026-08-04 冲突实报后改键）。
-    """
-
-    async def test_ctrl_shift_b_toggles_list_pane_display(self) -> None:
+    async def test_top_bar_chip_toggles_list_pane_display(self) -> None:
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
@@ -6039,26 +6075,41 @@ class SidebarToggleTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(list_pane.display)
             self.assertEqual(chip.render().plain, "◀")
 
-            await pilot.press("ctrl+shift+b")
+            await pilot.click("#sidebar-toggle")
             self.assertFalse(app.screen.sidebar_visible)
             self.assertFalse(list_pane.display)
             self.assertEqual(chip.render().plain, "▶")
             self.assertFalse(_ui_prefs.load_sidebar_visible(default=True))
 
-            await pilot.press("ctrl+shift+b")
+            await pilot.click("#sidebar-toggle")
             self.assertTrue(app.screen.sidebar_visible)
             self.assertTrue(list_pane.display)
             self.assertEqual(chip.render().plain, "◀")
+
+    async def test_ctrl_shift_b_does_not_toggle_sidebar(self) -> None:
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=True)
+        async with app.run_test(size=(100, 30)) as pilot:
+            list_pane = app.screen.query_one("#list-pane")
+            self.assertTrue(list_pane.display)
+            await pilot.press("ctrl+shift+b")
+            self.assertTrue(app.screen.sidebar_visible)
+            self.assertTrue(list_pane.display)
 
     async def test_top_bar_chip_click_restores_sidebar(self) -> None:
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(100, 30)) as pilot:
             list_pane = app.screen.query_one("#list-pane")
-            await pilot.press("ctrl+shift+b")
+            chip = app.screen.query_one("#sidebar-toggle", _SidebarToggleChip)
+            app.screen.action_toggle_sidebar()
             self.assertFalse(list_pane.display)
+            # 程序化藏栏后布局要下一帧才把顶栏芯片挪到左缘；立刻点会打到旧坐标。
+            await pilot.pause()
+            self.assertEqual(chip.render().plain, "▶")
 
-            await pilot.click("#sidebar-toggle")
+            await pilot.click(chip)
+            await _wait_until(lambda: app.screen.sidebar_visible and list_pane.display)
             self.assertTrue(app.screen.sidebar_visible)
             self.assertTrue(list_pane.display)
 
@@ -6240,13 +6291,8 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
         from corral import embed
         self.assertTrue(embed.is_alive(self._hosted_names[0]))
 
-    async def test_ctrl_shift_b_toggles_sidebar_while_pane_has_input(self) -> None:
-        """实时终端持有输入时 Ctrl+Shift+B 仍可显隐侧栏，旧键 Ctrl+B 不再截胡。
-
-        改键背景（2026-08-04 机主实报）：Claude Code 里 Ctrl+B 是「把任务转后台」，
-        corral 截走会把侧栏藏起来。新键与 Ctrl+\\ 同级属壳层键，EmbedPane 先拦截
-        不进托管会话；旧键则原样转发给助手。
-        """
+    async def test_sidebar_toggle_uses_top_bar_while_pane_has_input(self) -> None:
+        """实时终端持有输入时，顶栏开关仍可显隐侧栏；组合键不得把侧栏藏起来。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(
             ("bash", "-c", "printf 'HELLO-UI-TEST\\n'; cat"), None
@@ -6264,13 +6310,13 @@ class MainScreenEmbedFlowTests(unittest.IsolatedAsyncioTestCase):
 
             list_pane = app.screen.query_one("#list-pane")
             self.assertTrue(list_pane.display)
-            # 壳层键穿透：pane 持焦时仍能显隐侧栏。
-            await pilot.press("ctrl+shift+b")
-            self.assertFalse(list_pane.display)
             await pilot.press("ctrl+shift+b")
             self.assertTrue(list_pane.display)
-            # 旧键不再截胡：pane 持焦时按 Ctrl+B 转发给托管会话，侧栏不动。
             await pilot.press("ctrl+b")
+            self.assertTrue(list_pane.display)
+            await pilot.click("#sidebar-toggle")
+            self.assertFalse(list_pane.display)
+            await pilot.click("#sidebar-toggle")
             self.assertTrue(list_pane.display)
 
     async def test_reselecting_static_session_keeps_live_frame(self) -> None:
@@ -7627,7 +7673,6 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 header = cell.query_one(".header")
                 footer = cell.query_one(".footer")
                 short = i18n.t("pane.restart_hint")
-                focused = i18n.t("pane.restart_focus_hint")
 
                 await _wait_until(lambda: short in footer.render().plain)
                 self.assertTrue(header.query_one(".restart-hint").display)
@@ -7636,11 +7681,15 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                     short,
                 )
 
-                # 焦点进预览格：底栏换成「重启 + 回列表」
+                # 焦点进预览格：底栏仍只写 Enter 重启，不得再写 Ctrl+\ 回列表。
                 pane = _primary_embed_pane(app.screen)
                 pane.focus()
                 await pilot.pause()
-                await _wait_until(lambda: focused in footer.render().plain)
+                await _wait_until(lambda: short in footer.render().plain)
+                footer_text = footer.render().plain
+                self.assertNotIn("Ctrl+\\", footer_text)
+                self.assertNotIn("Back to list", footer_text)
+                self.assertNotIn("返回列表", footer_text)
 
                 # 托管起来后顶底提示都要消失（Enter 此时转发给助手）
                 list_view = app.screen.query_one(SessionListView)
@@ -7648,10 +7697,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await _wait_until(lambda: app.screen._host_pending == 0)  # noqa: SLF001
                 await _wait_for_embed_session(app.screen, "corral-claude-s0")
-                await _wait_until(
-                    lambda: short not in footer.render().plain
-                    and focused not in footer.render().plain
-                )
+                await _wait_until(lambda: short not in footer.render().plain)
                 self.assertFalse(header.query_one(".restart-hint").display)
 
 

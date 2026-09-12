@@ -1447,16 +1447,6 @@ class EmbedPane(Widget):
             if self._on_focus_list is not None:
                 self._on_focus_list()
             return
-        if event.key == "ctrl+shift+b":
-            # 壳层「显隐侧栏」：与 Ctrl+\ 同级，必须在转发助手前吃掉，否则会进会话。
-            # 不用 Ctrl+B：机主在 Claude Code 里按 Ctrl+B 是「把当前任务转后台」，
-            # corral 截走会把侧栏藏起来；换 Ctrl+Shift+B 后互不干扰（2026-08-04）。
-            event.stop()
-            event.prevent_default()
-            action = getattr(self.screen, "action_toggle_sidebar", None)
-            if callable(action):
-                action()
-            return
         if event.key == "ctrl+c":
             # 真机排查记录：Textual 的按键派发是"事件先转发到当前聚焦 widget
             # 的 on_key，widget 自己处理并 stop() 掉之后，BINDINGS（包括本类

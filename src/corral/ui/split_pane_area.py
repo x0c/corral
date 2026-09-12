@@ -155,6 +155,8 @@ class _PaneHeader(Horizontal):
         self,
         title: str,
         on_close: Callable[[], None],
+        *,
+        closable: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -163,12 +165,14 @@ class _PaneHeader(Horizontal):
         # 默认藏起：空 hint 若仍占 padding，会在标题和 ✕ 之间留出空隙。
         self._hint_widget = Static("", classes="restart-hint")
         self._hint_widget.display = False
-        self._on_close = on_close
+        self._close_widget = _PaneClose(on_close)
+        self._closable = closable
+        self._close_widget.display = closable
 
     def compose(self):
         yield self._title_widget
         yield self._hint_widget
-        yield _PaneClose(self._on_close)
+        yield self._close_widget
 
     def set_title(self, title: str) -> None:
         self._title = title
@@ -179,16 +183,21 @@ class _PaneHeader(Horizontal):
         self._hint_widget.update(text)
         self._hint_widget.display = bool(text)
 
+    def set_closable(self, closable: bool) -> None:
+        """水果组分屏可关格；活跃会话看板只被动展示，不露 ✕。"""
+        self._closable = closable
+        self._close_widget.display = closable
+
     def set_active(self, active: bool) -> None:
         self.set_class(active, "-active")
 
 
 class _PaneFooter(Static):
-    """分栏底条：与标题栏同步高亮当前激活格；持有输入时提示怎么回列表。
+    """分栏底条：与标题栏同步高亮当前激活格。
 
-    自动聚焦上线后，用户可能在没点过右栏的情况下就发现按键都进了内嵌会话；出口
-    （`Ctrl+\\`）必须常驻可见，否则只能靠猜。预览/已结束格另写 Enter 重启——
-    详情头里的同款提示会随钉底滚动滚出视野，底条不滚。非激活且非预览时保持无文字。
+    预览/已结束格常驻 Enter 重启——详情头里的同款提示会随钉底滚动滚出视野，底条不滚。
+    实时格持有输入时底条留空：**禁止**再写 `Ctrl+\\` / Back to list / 返回列表
+    （2026-09-12：这类描述不得出现在界面上）。非激活的实时格仍提示输入未接管。
     """
 
     ALLOW_SELECT = False
@@ -217,12 +226,7 @@ class _PaneFooter(Static):
         """active=本格持有输入；masked=本格是实时会话但输入在别处。"""
         self.set_class(active, "-active")
         if restart_target:
-            if active:
-                self.update(t("pane.restart_focus_hint"))
-            else:
-                self.update(t("pane.restart_hint"))
-        elif active:
-            self.update(t("pane.focus_hint"))
+            self.update(t("pane.restart_hint"))
         elif masked:
             self.update(t("pane.masked_hint"))
         else:
@@ -273,6 +277,7 @@ class PaneCell(Vertical):
         on_restart: Callable[[str, bool], None] | None = None,
         on_sync_mask: Callable[[], None] | None = None,
         on_hud_toggle: Callable[[], None] | None = None,
+        closable: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -285,6 +290,7 @@ class PaneCell(Vertical):
         self._on_hud_toggle = on_hud_toggle
         self._osc_report = osc_report
         self._title = title
+        self._closable = closable
         # 活跃格不保存预览。即使调用方误把它传进来，抓帧切换/重排时也绝不能
         # 回退到消息预览。
         self._detail_renderer = None if spec.keepalive_name else detail_renderer
@@ -323,8 +329,18 @@ class PaneCell(Vertical):
         if self._on_restart is not None:
             self._on_restart(self.spec.session_key, dead)
 
+    def set_closable(self, closable: bool) -> None:
+        """同步标题栏是否露出关格 ✕（看板被动展示时关掉）。"""
+        self._closable = closable
+        try:
+            self.query_one(_PaneHeader).set_closable(closable)
+        except Exception:
+            pass
+
     def compose(self):
-        yield _PaneHeader(self._title, self._close_self, classes="header")
+        yield _PaneHeader(
+            self._title, self._close_self, closable=self._closable, classes="header",
+        )
         yield EmbedPane(
             on_focus_list=self._on_focus_list,
             on_restart=self._restart_self,
@@ -564,6 +580,8 @@ class SplitPaneArea(Vertical):
         self.current_project: str = ""
         self.title_with_project = False
         self.allow_cross_project = False
+        # 水果组 / 手动分屏可关格；活跃会话看板只被动展示，不露 ✕、不响应关格。
+        self.panes_closable = True
         self._panes: list[PaneSpec] = []
         self._focus_key: str | None = None
         # 「把输入交给某一格」的待兑现意图，以及尚未执行完的整排挂载数量。
@@ -748,6 +766,8 @@ class SplitPaneArea(Vertical):
                 pane.scroll_detail_page(delta)
 
     def close_focused_pane(self) -> None:
+        if not self.panes_closable:
+            return
         for cell in self._cells():
             pane = cell.embed_pane()
             if pane is not None and pane.has_focus:
@@ -764,6 +784,7 @@ class SplitPaneArea(Vertical):
     def show_new_session_hint(self) -> None:
         self.title_with_project = False
         self.allow_cross_project = False
+        self.panes_closable = True
         spec = PaneSpec(session_key="__hint__", cell_id=self._new_cell_id())
         self._panes = []
         self._schedule_mount(
@@ -779,6 +800,7 @@ class SplitPaneArea(Vertical):
     def show_activity_board_empty(self) -> None:
         self.title_with_project = True
         self.allow_cross_project = True
+        self.panes_closable = False
         spec = PaneSpec(session_key="__board_empty__", cell_id=self._new_cell_id())
         self._panes = []
         self._schedule_mount(
@@ -825,6 +847,7 @@ class SplitPaneArea(Vertical):
         focus_pane: bool = False,
         title_with_project: bool = False,
         allow_cross_project: bool = False,
+        closable: bool = True,
     ) -> None:
         """entries: (session, keepalive_name, detail_renderer)。
 
@@ -834,10 +857,13 @@ class SplitPaneArea(Vertical):
 
         `focus_pane`=True 表示调用方带着明确意图（回车打开 / 新建托管成功），
         此时把键盘焦点交给 `focus_key` 那一格；单纯的选择跟随不得传 True。
+
+        `closable`=False 用于活跃会话看板：右栏只被动展示，不露关格 ✕。
         """
         self.current_project = project
         self.title_with_project = title_with_project
         self.allow_cross_project = allow_cross_project
+        self.panes_closable = closable
         # 这是最后一道边界：调用方未来即使错传预览，也不能污染活跃格。
         entries = [
             (session, kname, None if kname else renderer)
@@ -886,6 +912,7 @@ class SplitPaneArea(Vertical):
         cells = self._cells()
         for cell, (session, kname, renderer) in zip(cells, entries, strict=False):
             cell.set_title(self._pane_title(session))
+            cell.set_closable(self.panes_closable)
             pane = cell.embed_pane()
             if pane is None:
                 continue
@@ -1055,6 +1082,7 @@ class SplitPaneArea(Vertical):
             on_hud_toggle=self._on_hud_toggle,
             osc_report=self._osc_report,
             detail_renderer=renderer,
+            closable=self.panes_closable,
         )
 
     def _remaining_focus_key(self, closed: PaneSpec) -> str | None:
@@ -1254,6 +1282,7 @@ class SplitPaneArea(Vertical):
                 target_size=target_sizes[index] if target_sizes is not None else None,
                 discard_stale_screen=composition_changed,
             )
+            pool[index].set_closable(self.panes_closable)
         for spare in pool[len(entries):]:
             if not spare._pooled:  # noqa: SLF001
                 spare.park()
@@ -1319,6 +1348,7 @@ class SplitPaneArea(Vertical):
         for index, (spec, session, renderer) in enumerate(entries):
             title = self._pane_title(session)
             pool[index].rebind(spec, title=title, detail_renderer=renderer)
+            pool[index].set_closable(self.panes_closable)
         for spare in pool[len(entries):]:
             spare.park()
         self._sync_leading_cells()

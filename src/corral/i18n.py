@@ -49,10 +49,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Toggle sidebar",
         "zh": "显隐侧栏",
     },
-    "pane.focus_hint": {
-        "en": "Ctrl+\\ back to list",
-        "zh": "Ctrl+\\ 返回列表",
-    },
     "pane.masked_hint": {
         "en": "Not receiving input — press Enter or click here",
         "zh": "当前输入不会进入这里 · 回车或点击接管",
@@ -60,10 +56,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "pane.restart_hint": {
         "en": "Enter restart",
         "zh": "Enter 重启",
-    },
-    "pane.restart_focus_hint": {
-        "en": "Enter restart · Ctrl+\\ back to list",
-        "zh": "Enter 重启 · Ctrl+\\ 返回列表",
     },
     "action.toggle_hud": {
         "en": "Session card",

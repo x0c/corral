@@ -197,13 +197,9 @@ def _main_bindings() -> list[Binding]:
         Binding("q", "kill_keepalive", t("action.kill_session")),
         Binding("x", "delete_session", t("action.delete_session")),
         Binding("c", "close_pane", t("action.close_pane"), show=False),
-        # 回列表 / 显隐侧栏：键仍生效，底栏不再画出来（2026-09-12：点侧栏、
-        # 点顶栏 ◀/▶、点格子都已能完成同一件事，Footer 提示是重复噪音）。
+        # 回列表：键仍生效，底栏不再画出来。侧栏显隐没有快捷键，只点顶栏 ◀/▶
+        # （2026-09-12：组合键实测无效且用不上；禁止绑回 Ctrl+Shift+B / Ctrl+B）。
         Binding("ctrl+backslash", "focus_list", t("action.focus_list"), show=False),
-        # 与 Ctrl+\ 同级的壳层键：右栏持焦时仍可用，不得进 _LIST_ONLY_ACTIONS。
-        # EmbedPane 实时路径会先拦截 ctrl+shift+b，避免键被转发给托管会话。
-        # 不用 Ctrl+B：机主在 Claude Code 里用它「把任务转后台」（2026-08-04 冲突实报）。
-        Binding("ctrl+shift+b", "toggle_sidebar", t("action.toggle_sidebar"), show=False),
         # 会话小窗展开/收起。Footer 已经很挤，这个键不展示；小窗自身可点。
         Binding("ctrl+g", "toggle_hud", t("action.toggle_hud"), show=False),
         Binding("f12", "save_screenshot", t("action.screenshot"), show=False),
@@ -1434,6 +1430,10 @@ class MainScreen(
             if snap is None or snap.page_count <= 1:
                 return False
             # 循环翻页：多页时两侧都可用，不要到头把键藏起来。
+        if action == "close_pane":
+            # 活跃会话看板只被动展示，不提供关格（✕ / 快捷键都藏掉）。
+            if getattr(self, "_activity_board_active", False):
+                return False
         if action == "advanced":
             # Ctrl+A：列表持焦，或右栏正对着某个会话。筛选框里让路给输入。
             if isinstance(self.focused, Input):
@@ -2029,6 +2029,8 @@ class MainScreen(
 
     def action_close_pane(self) -> None:
         if not self.embed_ok:
+            return
+        if getattr(self, "_activity_board_active", False):
             return
         self._split_area().close_focused_pane()
         self._persist_split_composition()
