@@ -35,13 +35,13 @@ corral 的价值是让用户从一个终端界面中继续或接力不同 Coding
 | 会话小窗 | 右栏格右上角的悬浮摘要：默认展开列出提问，收起后给"最初 + 最近"两头 | `ui/session_hud.py` 的 `SessionHud`；实时托管格与静态预览格各自一份；不是弹窗、不抢焦点 |
 | 新建会话 | 以选定项目和运行时创建空白会话 | 侧边栏“＋ 新建会话”完整选择流程，或任意焦点按 `Ctrl+N`（与 `Ctrl+F` / `Ctrl+P` 同级的全局键），或右栏顶栏点助手加格；打开弹窗时光标必须在项目筛选框，立刻可打字；单字母 `n` 不绑 |
 | 活跃会话看板 | 侧栏固定入口，对外文案是 Active sessions / 活跃会话；有成员时写成「名称 · N 个会话」。入口固定三行（高 3）：首行名称与可选黄点；第二行多于一页时画出可点的「上一页 / 下一页」（中间 `1/2` 只提示位置），循环翻页；第三行留白。只有一页时第二行也留空（禁止 1/1）。底栏在列表持焦时展示 `[` 上一页 / `]` 下一页（循环故两侧都露）。**Active sessions 的成员定义是权威口径**（2026-09-06 纠正）：本窗口托管且（等回话 / 干活 / 未读，或「刚刚」3 分钟内仍有真实活动的无信号会话）。侧栏关注圆点必须覆盖同一集合，共用 `activity_board.resolve_active_marker`——**禁止**为了对齐去砍掉看板的「刚刚」档。格子里可直接打字；观看期间成员不主动撤，只要仍被托管就钉在原格 | `activity_board.py` + 侧栏冻项；跨项目；不写水果组；超额用第二行「上一页 / 下一页」和 `[` / `]` 翻页，**禁止**依赖 Page Up / Page Down（Mac 笔记本没有这两个键，终端里 Fn+方向键常被终端滚动吃掉，且已用于右栏对话预览）；页外等待用黄点；点具体会话即离开；别的窗口自开会话不进格。**排查「Active sessions 人数和带圆点会话对不上 / 活跃会话比圆点多 / 圆点有遗漏」「蓝色圆点是啥 / 青色圆点 / 不要蓝点 / 刚还在用却是蓝点」也读本节与 §6——缺圆点时补圆点，禁止反过来缩减 Active；「刚刚」档画绿点，禁止单独画青/蓝」**。**排查「活跃会话看不到翻页 / 没有分页按钮 / Mac 没有 PageUp PageDown / 不知道怎么翻页」也读本节与 §6**。**排查「两格分屏但每格画面只占一半 / 像被压成 1/4 / 分屏里 Claude 只占约 1/3、右侧大块空白」**：较窄观看方（含本看板、控制通道默认 80 列）不得压窄共享画面，见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md) §6 多开窗口条 |
-| 高级操作 | 导出会话 / 复制会话 / 重启会话（结束卡住的托管进程后原地恢复）/ 对当前会话读历史后新建（含同助手另起）；原生恢复走回车 | `a`（列表）或 `Ctrl+A`（全局）→ `choose_target_runtime()` |
-| 删除会话 | 彻底抹掉选中会话的本地历史，不可恢复；运行中/托管会话先结束再删 | `x` → `ConfirmModal(confirm_key="x")` → `action_delete_session()`；光标停在会话组卡上时删的是**整组全部成员** |
+| 高级操作 | 导出会话 / 复制会话 / 重启会话（结束卡住的托管进程后原地恢复）/ 对当前会话读历史后新建（含同助手另起）；原生恢复走回车 | `Ctrl+A`（全局，与 `Ctrl+F` / `Ctrl+P` / `Ctrl+N` / `Ctrl+X` 同级）→ `choose_target_runtime()` |
+| 删除会话 | 彻底抹掉当前会话窗口对应会话的本地历史，不可恢复；运行中/托管会话先结束再删 | `Ctrl+X`（全局）→ `ConfirmModal(confirm_key="x")` → `action_delete_session()`；无右栏时侧栏高亮在组卡上则删整组 |
 | 对话预览 | 右栏展示非进行中会话的完整对话 | 不是旧的“最近提问 / 最近回复”摘要，也不是 Space 全屏页 |
 | 会话关注状态 | 左栏首行最左用单个圆点提示下一步是否需要用户关注 | 等待回答黄 > 执行中绿 > 未读新结果红 > 无；本窗口托管且「刚刚」仍有活动、无待办信号的会话也画绿点（2026-09-12：禁止第四种青/蓝点）。详情头同步写出状态，不只靠颜色；不等于标题模块或机器接口的业务状态标签。**圆点必须跟上 Active sessions**（2026-09-06 纠正；此前误砍看板「刚刚」档已废止）：凡计入 Active 的托管会话都要有圆点，共用 `resolve_active_marker`；缺的是圆点，不是 Active 多算了 |
 | 内嵌实时终端 | 右栏展示**已托管**会话的实时画面 | 本域只负责挂接 `EmbedPane`；tmux 抓帧与控制通道属于“内嵌实时终端”域 |
 | 运行中(其他窗口) | 在本机跑着、但不在保活 socket 里的会话（用户自己开窗口起的） | 右栏只能给静态对话预览 + 详情头明示原因；拿不到实时画面，**不得弹确认框或另起恢复进程**（2026-08-08 裁定），等待原窗口结束后才可正常恢复，见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md) §1 |
-| Footer 操作 | 页面底部可发现的快捷操作提示 | Textual `Footer`（`CorralFooter`）从 `MainScreen.BINDINGS` 读取文案；右端常驻仓库名 `x0c/corral`（可点，打开 GitHub）再跟 `vX.Y.Z`。`Ctrl+\` 回列表、`Ctrl+Shift+B` 显隐侧栏仍绑着但 **Footer 永不展示**（点按界面已有同一条路，2026-09-12）。框架自带的命令面板已关闭，`Ctrl+P` 改作全局置顶，`Ctrl+N` 改作全局新建，`Ctrl+A` 改作全局高级操作 |
+| Footer 操作 | 页面底部可发现的快捷操作提示 | Textual `Footer`（`CorralFooter`）从 `MainScreen.BINDINGS` 读取文案；右端常驻仓库名 `x0c/corral`（可点，打开 GitHub）再跟 `vX.Y.Z`。`Ctrl+Shift+B` 显隐侧栏仍绑着但 **Footer 永不展示**（点顶栏 ◀▶ 即可，2026-09-12）。框架自带的命令面板已关闭。全局键：`Ctrl+F` 搜索、`Ctrl+P` 置顶、`Ctrl+N` 新建、`Ctrl+A` 高级操作、`Ctrl+X` 删除。不绑单字母 `a`/`x`/`q`，不绑 `Esc` 退出，不绑 `Ctrl+\` 回列表（2026-09-12：键盘焦点只在会话窗口） |
 
 终端界面默认英文，中文系统语言自动切换中文；`CORRAL_LANG` 可覆盖语言选择。机器可读的 `corral list` 等接口不进入本域翻译体系，不能因改界面文案而改变其英文数据契约。
 
@@ -132,7 +132,7 @@ printf '\033]22;\007'          # 复位到终端默认
    - 有托管名称的会话进入内嵌实时终端；
    - 其他会话先显示详情头，再后台暖加载完整对话，完成后无缝刷新；
    - 选中“＋ 新建会话”时显示新建提示。
-5. 用户回车恢复、侧边栏/顶栏新建或 `a` 高级操作。能内嵌时，启动托管工作放到后台 worker，避免 tmux 阻塞冻结界面；无法内嵌时，应用退出并由外层执行启动计划。**高级操作（`a`）一律读历史后新建**（含同助手另起），默认从被接力会话旁加一格分屏，不整屏换成新会话；侧边栏回车才是同助手原生恢复。托管成功后键盘焦点自动交给右栏对应格（回车 / 单击会话卡 / 新建 / 直启都算明确意图；见 §6 焦点归属），鼠标点右栏是等价入口，再点当前持有输入的那张会话卡则把焦点撤回侧边栏；多分屏下聚焦某一格时，`PaneCell` → `SplitPaneArea._handle_pane_focused` → `MainScreen._on_pane_focused` 会把侧边栏高亮切到对应会话（`SessionListView.select_session_key`），不 remount 右栏。
+5. 用户回车恢复、侧边栏/顶栏新建或 `Ctrl+A` 高级操作。能内嵌时，启动托管工作放到后台 worker，避免 tmux 阻塞冻结界面；无法内嵌时，应用退出并由外层执行启动计划。**高级操作一律读历史后新建**（含同助手另起），默认从被接力会话旁加一格分屏，不整屏换成新会话；预览格上回车才是同助手原生恢复。有右栏时键盘焦点只在某个会话窗口（见 §6 焦点归属）：单击会话卡打开并把输入交给那一格，**再点同一张卡也不得把焦点撤回列表**。多分屏下聚焦某一格时，`PaneCell` → `SplitPaneArea._handle_pane_focused` → `MainScreen._on_pane_focused` 会把侧边栏高亮切到对应会话（`SessionListView.select_session_key`），不 remount 右栏。
 6. 会话刷新发生变化时，界面原地更新内容；集合或顺序变化时才重建列表。标题缓存变化单独触发轻量刷新。
 
 ### 右栏展示状态
@@ -199,29 +199,21 @@ stateDiagram-v2
 
 | 用户动作 | 前置条件 | 流程 | 结果 |
 |---|---|---|---|
-| 回车或单击会话卡 | 侧边栏选中**仍活着**的会话（托管中 / 在别的窗口跑） | 构建恢复或接力计划；优先打开已有托管会话 | 右栏内嵌展示；输入直接交给该格（仅限活着的实时会话） |
-| 单击会话卡 | 该会话的进程早已不存在 | **只把历史消息摆到右栏，不启动任何进程**，焦点留在侧边栏 | 与方向键浏览同效；恢复必须显式回车 |
-| 回车 | 侧边栏选中已结束的会话（含已结束的会话组成员） | 构建原生恢复计划并托管；**已结束的组成员也走这一支**，不再只把会话组摆一遍 | 组成员重启后整组保持原样，只换它那一格 |
-| 回车 | 焦点在右栏静态预览格或「会话已结束」格 | `EmbedPane._is_restart_target()` → `MainScreen._restart_session_from_pane()`，与侧边栏回车同一条启动路径；**在别的窗口跑的外部会话不在此列**（2026-08-08 裁定：侧边栏选中它直接回列表、不弹框不起进程） | 就地重启该会话；原属会话组的成员整组摆回、只换它那一格 |
-| 单击或回车会话组卡 | 侧边栏选中会话组 | 右栏跟随展示该组合；焦点留在侧边栏 | 进成员会话卡才把输入交给右栏 |
+| 回车或单击会话卡 | 侧边栏选中**仍活着**的会话（托管中 / 在别的窗口跑） | 构建恢复或接力计划；优先打开已有托管会话 | 右栏内嵌展示；输入直接交给该格 |
+| 单击会话卡 | 该会话的进程早已不存在 | **只把历史消息摆到右栏，不启动任何进程**，焦点交给该预览格 | 恢复必须在预览格上显式回车 |
+| 回车 | 焦点在右栏静态预览格或「会话已结束」格 | `EmbedPane._is_restart_target()` → `MainScreen._restart_session_from_pane()`；**在别的窗口跑的外部会话不在此列**（2026-08-08 裁定：只保留静态预览、不弹框不起进程） | 就地重启该会话；原属会话组的成员整组摆回、只换它那一格 |
+| 单击会话组卡 | 侧边栏点到会话组 | 右栏跟随展示该组合，输入交给该组当前那一格 | 不再把焦点留在侧边栏 |
 | “＋ 新建会话”或 `Ctrl+N` | 用户需选择项目或运行时 | 先选项目，再选运行时 | 创建空白会话 |
 | 右栏顶栏点助手 | 当前项目目录已知且未满四格 | `_on_runtime_pick` 在当前项目下加一格托管 | 新格进入分屏组合 |
 | 右栏顶栏点「终端」 | 当前项目目录已知且未满四格 | `_on_shell_pick` → `_embed_open_shell` 加一格交互式 shell | 不进侧栏列表；关格或 shell 退出即结束 tmux 会话 |
-| 分屏格 ✕ 或 `c` 关格 | 右栏至少有一格 | `_PaneClose` / `action_close_pane` → `SplitPaneArea._close_spec` | 该格退出当前分屏（托管会话继续在后台跑，可再打开）；右栏留在剩余格，不得切到刚被关掉的那条会话 |
-| `a` 高级操作 | 侧边栏选中已有会话 | 弹窗第一项「导出会话」（写 `corral.share/v1` 到缓存目录并把绝对路径复制到剪贴板，不启动）；第二项「复制会话」（同助手完整克隆历史，旁挂分屏）；第三项「重启会话」（结束卡住的托管进程后按原会话原地恢复，上下文保留；仅正托管且非占位可用，其余置灰）；其后为各运行时「读历史后新建」（`force_new`，同助手另起用于原会话卡住） | 导出不启动会话；复制/接力**默认在被接力/被复制会话旁加一格分屏**（源会话留在右栏，目标新会话并排；满格时提示）；重启不摘分屏格，重新托管后原位换回实时画面；原生恢复留给侧边栏回车 |
-| `Ctrl+A` | 列表持焦，或右栏正对着某个会话 | 与 `a` 同一条高级操作流程 | 与 `Ctrl+F` / `Ctrl+P` / `Ctrl+N` 同级的全局键；筛选框持焦时让路给输入；单字母 `a` 仍只在列表侧，避免打进助手 |
-| `q` 结束会话 | 当前会话是运行中(托管) | 确认弹窗确认后结束托管并立即标记为已结束 | 不等待下次扫描才更新状态 |
-| `x` 删除会话 | 侧边栏选中任意会话 | 确认弹窗（确认键为 `x`）确认的瞬间摘卡；结束托管进程与 `delete_session()` 抹磁盘全部在后台线程完成（先结束进程再抹历史） | 卡片在确认那一帧就消失，不等磁盘；失败（如磁盘/数据库异常）则提示失败原因并把卡片恢复回列表 |
-| `x` 删除整个会话组 | 侧边栏选中会话组卡 | 同上，但确认文案写组名 + 成员数（含运行中成员时换成"先结束再删"那版），确认后把全部成员一起摘卡并逐条抹磁盘 | 整组消失、组自动解散；个别成员删除失败时只把那一条捞回列表并提示，其余照删 |
-| Ctrl/Cmd+点击或 Space | 侧边栏会话卡（非「＋ 新建」） | toggle 多选集（`▸` 标记；最多 4 项）；右栏暂不跟随 | 多选 ≥2 时 Enter 开分屏；Esc 先清多选；↑↓/普通点击清空 |
-| Space | 侧边栏会话组卡 | 切换展开 / 收起 | 只改变树形展示，不改变右栏布局 |
-| `p` | 独立会话卡或会话组卡 | 切换持久置顶 | 组内成员改为整组置顶 |
-| `Ctrl+P` | 任意主界面焦点（含右栏实时格） | 置顶当前窗口或其所在会话组 | 与 `Ctrl+F` / `Ctrl+N` 同级的全局键；框架命令面板已关闭，不再占用此键 |
-| `Ctrl+N` | 任意主界面焦点（含右栏实时格） | 打开新建会话双栏弹窗 | 与 `Ctrl+F` / `Ctrl+P` 同级的全局键；与侧栏「＋ 新建」同一条流程；单字母 `n` 仍不绑 |
-| 再次点击当前持有输入的会话卡 | 右栏那一格正持有输入 | 焦点撤回侧边栏，不重新打开会话 | 与 `Ctrl+\` 等价；再点一次又进去，鼠标开关对称 |
-| 点击右栏 | 右栏已有预览或托管画面 | 键盘焦点转移到右栏 | 此后按键进入内嵌会话；`Ctrl+\` 回列表 |
-| 点弹窗外的空白 | 任意弹窗打开中 | 与 Esc 等价的取消：确认框算「不确认」，选择类弹窗算「没选」 | 弹窗关闭，主界面选中态、筛选词一概不动 |
-| `Ctrl+\` 回列表 | 右栏某格持有输入 | 焦点交回会话列表，托管会话继续在后台跑 | 该格恢复压暗并提示输入未接管；底部快捷键栏切回列表侧动作（仍不画「回列表 / 显隐侧栏」） |
+| 分屏格 ✕ 关格 | 右栏至少有一格 | `_PaneClose` → `SplitPaneArea._close_spec` | 该格退出当前分屏（托管会话继续在后台跑，可再打开）；右栏留在剩余格，不得切到刚被关掉的那条会话；不绑单字母 `c` |
+| `Ctrl+A` | 右栏正对着某个会话（筛选框持焦时让路） | 弹窗：导出会话 / 复制会话 / 重启卡住的托管 / 对各运行时读历史后新建 | 与 `Ctrl+F` / `Ctrl+P` / `Ctrl+N` / `Ctrl+X` 同级的全局键；不绑单字母 `a` |
+| `Ctrl+X` | 右栏正对着某个会话（筛选框持焦时让路） | 确认弹窗（确认键为 `x`）确认的瞬间摘卡；结束托管进程与抹磁盘在后台完成 | 与 `Ctrl+A` 同级的全局键；不绑单字母 `x`。无右栏且侧栏高亮在组卡上时删整组 |
+| `Ctrl+P` | 任意主界面焦点（含右栏实时格） | 置顶当前窗口或其所在会话组 | 框架命令面板已关闭，不再占用此键 |
+| `Ctrl+N` | 任意主界面焦点（含右栏实时格） | 打开新建会话双栏弹窗 | 与侧栏「＋ 新建」同一条流程；单字母 `n` 仍不绑 |
+| 再次点击当前持有输入的会话卡 | 右栏那一格正持有输入 | **焦点留在该会话窗口**，不撤回侧边栏 | 2026-09-12：列表不再持焦，点击不是开关 |
+| 点击右栏 | 右栏已有预览或托管画面 | 键盘焦点转移到右栏 | 此后按键进入内嵌会话 |
+| 点弹窗外的空白 | 任意弹窗打开中 | 与 Esc 等价的取消：确认框算「不确认」，选择类弹窗算「没选」 | 弹窗关闭，主界面选中态、筛选词一概不动。`Esc` 只关弹窗，**不再退出整个界面**；不绑 `q` 结束会话 |
 
 ## §2.5 物理路径速查
 
@@ -298,14 +290,14 @@ stateDiagram-v2
 | Textual 定时器 | 红点已读确认 | 主屏就绪轮询（约 0.1 秒） | 右侧内容一就绪即清；分屏下所有可见格一起观察；选择变化、预览失败或应用失焦时取消 |
 | Textual 后台 worker | Cursor 观察器自检 | 主屏挂载后的后台安装 | 幂等补齐用户级观察条目；任何失败都不得延迟首屏或阻断 Cursor/TUI |
 | Textual 定时器 | 终端背景复查 | `CorralApp._query_runtime_theme()`，2 秒 | iTerm2 等无主动通知的终端运行中换色时，无阻塞查询 OSC 11；支持 DEC 2031 的终端也可主动通知 |
-| 按键绑定 | 主操作 | `MainScreen.BINDINGS`、`_main_bindings()` | `a` 高级操作、`q` 结束、`x` 删除、`Esc` 退出、`Ctrl+\` 回列表、`Ctrl+Shift+B` 显隐侧栏、`Ctrl+G` 展开/收起会话小窗、F12 截图；后四项**不上 Footer**（点按界面已有同一条路，2026-09-12）；`Ctrl+N` 全局新建（不上单字母 `n`）；`Ctrl+A` 全局高级操作（单字母 `a` 仍只在列表侧） |
-| 快捷键随焦点裁剪 | Footer 与按键派发 | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 实时格持有输入时列表侧动作既不显示也不派发，翻页键透传给助手；`toggle_sidebar` / `focus_list` 属壳层键（键仍可用，**Footer 永远不画**，点侧栏 / 顶栏 ◀▶ 即可），`Ctrl+F` / `Ctrl+P` / `Ctrl+N` / `Ctrl+A` 是高优先级全局键，右栏持焦时仍可用；`Ctrl+A` 在筛选框持焦时让路 |
-| 侧栏显隐 | 壳层 | `MainScreen.action_toggle_sidebar()`、`ui_prefs.py`、`RuntimeTopBar` 左侧 `#sidebar-toggle` | `Ctrl+Shift+B` 与顶栏 ◀/▶；`embed_ok=False` 时禁用；偏好 `~/.cache/corral/ui-prefs.json`；藏起时若焦点在左栏须先挪走 |
-| 自动聚焦与输入蒙版 | 右栏 | `MainScreen._can_autofocus()`、`SplitPaneArea._request_pane_focus()` / `_settle_focus_intent()` / `focus_session_key(only_live=True)`、`sync_input_mask()` | 明确意图（回车 / 单击会话卡 / 托管成功）才交焦点，且意图跨异步 remount 存活；焦点在侧边栏时活着的实时格压暗 |
-| 点击会话卡的开关语义 | 侧边栏 → 右栏 | `SessionListView.focus_on_click()` / `take_focus_before_click()`、`MainScreen._click_returns_focus_to_list()` | 点当前持有输入的那张卡=撤回焦点；判定只能用按下前焦点 |
+| 按键绑定 | 主操作 | `MainScreen.BINDINGS`、`_main_bindings()` | 全局：`Ctrl+F` 搜索、`Ctrl+P` 置顶、`Ctrl+N` 新建、`Ctrl+A` 高级操作、`Ctrl+X` 删除（均 `priority=True`）；`Ctrl+Shift+B` 显隐侧栏、`Ctrl+G` 小窗、F12 截图不上 Footer。不绑单字母 `a`/`x`/`q`/`c`/`p`/`n`，不绑 `Esc` 退出，不绑 `Ctrl+\` 回列表（2026-09-12） |
+| 快捷键随焦点裁剪 | Footer 与按键派发 | `MainScreen.check_action()`、`_LIST_ONLY_ACTIONS` | 有右栏时列表不再持焦，列表侧单键不再是产品路径。`Ctrl+F` / `Ctrl+P` / `Ctrl+N` / `Ctrl+A` / `Ctrl+X` 是高优先级全局键；筛选框持焦时 `Ctrl+A` / `Ctrl+X` 让路。翻页键在实时格持焦时透传给助手 |
+| 侧栏显隐 | 壳层 | `MainScreen.action_toggle_sidebar()`、`ui_prefs.py`、`RuntimeTopBar` 左侧 `#sidebar-toggle` | `Ctrl+Shift+B` 与顶栏 ◀/▶；`embed_ok=False` 时禁用；偏好 `~/.cache/corral/ui-prefs.json`；藏起时若焦点在筛选框须先挪到会话窗口 |
+| 自动聚焦与输入蒙版 | 右栏 | `MainScreen._can_autofocus()`、`SplitPaneArea._request_pane_focus()` / `_settle_focus_intent()` / `focus_session_key(only_live=True)`、`sync_input_mask()` | 有右栏时焦点默认在会话窗口；单击会话卡 / 托管成功把输入交给对应格。筛选框或弹窗持焦时不抢。**禁止**再把焦点交回列表 |
+| 点击会话卡 | 侧边栏 → 右栏 | `SessionListView.focus_on_click()` 有右栏时必须返回 False | 点任何会话卡都只改选中并打开，**不得**把焦点切到列表；再点当前卡也不是撤回焦点的开关 |
 | 分屏焦点同步 | 右栏 → 侧边栏 | `PaneCell._notify_pane_focused`、`MainScreen._on_pane_focused`、`SessionListView.select_session_key` | 聚焦某一分屏时侧边栏高亮切到对应会话；不得因此 remount 右栏 |
-| 关格后的剩余焦点 | 右栏 ✕ / `c` | `SplitPaneArea._close_spec` / `_remaining_focus_key`、`LayoutControllerMixin._on_pane_close`、`_rebuild_sidebar_projection` | 关格后钉死剩余焦点键；侧栏重建必须选剩余会话；过期 `DescendantFocus` 与已排队的选择跟随都不得把右栏切到被关会话 |
-| 按键路由 | 搜索、置顶、新建、高级操作与焦点 | `MainScreen.on_key()`、`on_input_submitted()`、`action_toggle_pin()`、`action_new_session()`、`action_advanced()` | `/` 聚焦筛选项目；`Ctrl+F` 打开全文搜索弹窗、`Ctrl+P` 置顶当前窗口或会话组、`Ctrl+N` 打开新建会话弹窗、`Ctrl+A` 打开高级操作（右栏实时格持焦时仍归 corral，不得让给助手；筛选框持焦时 `Ctrl+A` 让路）；Down/Enter 回列表；Esc 先清空查询再退出 |
+| 关格后的剩余焦点 | 右栏 ✕ | `SplitPaneArea._close_spec` / `_remaining_focus_key`、`LayoutControllerMixin._on_pane_close`、`_rebuild_sidebar_projection` | 关格后钉死剩余焦点键并聚焦剩余会话窗口；过期 `DescendantFocus` 与已排队的选择跟随都不得把右栏切到被关会话 |
+| 按键路由 | 搜索、置顶、新建、高级操作、删除与焦点 | `MainScreen.on_key()`、`on_input_submitted()`、`action_toggle_pin()`、`action_new_session()`、`action_advanced()`、`action_delete_session()` | 点筛选框打字收窄列表；`Ctrl+F` / `Ctrl+P` / `Ctrl+N` / `Ctrl+A` / `Ctrl+X` 右栏实时格持焦时仍归 corral；筛选框持焦时 `Ctrl+A` / `Ctrl+X` 让路。筛选框 Down/Enter 把输入交回当前会话窗口，不聚焦列表。`Esc` 只关弹窗（筛选框上先清空查询），不退出应用 |
 | 选择事件 | 会话操作 | `MainScreen.on_list_view_selected()` | 回车针对新建项 / 会话组 / 当前会话分流；组成员只在还活着时走「展示组合」，已结束的照常重启 |
 | 已结束会话重启 | 右栏 → 启动 | `EmbedPane._is_restart_target()`、`PaneCell._restart_self()`、`MainScreen._restart_session_from_pane()` | 静态预览格与「会话已结束」格上的回车 = 重启；与侧边栏回车共用 `_open_or_exit()`；**顶栏/底栏 chrome 常驻 Enter 重启提示**（详情头同款文案会随钉底滚动滚出视野，`_PaneHeader`/`_PaneFooter` 不滚；占位格与托管中不显示） |
 | 模态流程 | 高级操作 / 新建 / 确认 | `ui/modals.py` | 接力运行时选择（`RuntimePickerModal`）、新建会话双栏选择（`NewSessionModal`）和结束确认；未安装运行时不可确认 |
@@ -335,7 +327,7 @@ stateDiagram-v2
 - **AI 易错点**【禁止】两个分屏格画面一模一样 → 同一 `keepalive_name` 不得开两格内嵌终端。同名歧义时迁键保护挡不住重复抓帧；第二格必须改走该会话自己的静态预览。细则与回归见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md) / [会话扫描知识库](SESSION_SCANNING_KNOWLEDGE_BASE.md)。
 - **AI 易错点**【分屏焦点与侧边栏】多分屏时用户点到某一格，侧边栏必须切到该格会话高亮（`select_session_key`）；只更新标题栏 `-active` 不够。同步高亮时 `_follow_current_selection` 因 `any_embed_focused()` 早退，避免 remount 抢焦点。
 - **AI 易错点**【多语言与绑定】所有新增用户可见**界面**文案都进入 `i18n.py` 的 `_MESSAGES`，且同时提供 en / zh；英文是默认回退。范围不限于 TUI：`corral --help`、`corral remote` 人读输出、`corral shim` 人读输出、启动失败/缺 tmux、项目名解析提示、新建/复制/接力占位标题、复制后缀、LaunchError、接力提示词 `Handoff.render_prompt`、开发机报给手机的 ActionError 一律走 `t()`。禁止只写中文 `print`/`raise` 再指望「反正机主看中文」。**不要把后台生成的会话标题当界面文案去跟 locale 走或「优先中文」**：那是内容，语言跟该会话用户提问的主语言（2026-08-30 裁定，见维护指南「标题与排序」）；生成完成前的临时标题本就会摘用户原话，生成后不得改写成另一种语言。机器 JSON 字段名、Agent 只读接口、内部标记（如 `titles.PROMPT_MARKER`）保持英文/稳定原文，不翻译。接力提示词滤进 Your prompts 小窗时，中英特征都要认（`session_hud.is_injected_user_prompt` 已含 `You are picking up a session from`）。复制会话标题后缀同时识别 `（副本）` 和 ` (copy)`，追加用 `session.title.copy_suffix`。Textual 的按键绑定在类创建时已合并；本地化只能更新 description，不能整体替换绑定表，否则会丢失列表继承的方向键和确认键。**2026-09-12 中英对照【裁定】**：右栏顶栏彩蛋按钮 `Dragon`、会话小窗纯图片提问 `[image]`、侧栏组名 `Group Apple`（落盘身份，emoji 查找依赖此前缀）、底栏仓库名 `x0c/corral`**保持英文，不要翻译**。新建/复制/接力占位标题仍是界面文案：中文模板里拉丁助手名两侧必须空格（`session.title.new` 为「新 {name} 会话」，禁止「新Claude会话」）。故意不译还有：助手品牌名、会话标题、快捷键名 Enter/Esc/Ctrl、小窗缺时间的 `N/A`（与 `HH:MM` 同宽）、超过一天的 `MM-DD` 日期。词表里还有未接线的键（如 `pin.group_member_hint`、`modal.native_resume`、`action.new`/`action.select`、`confirm.hint_q`、`status.running`），补功能时复用，不要再造同义键。`zh_TW` 等繁体 locale 仍落到简体；界面内无语言开关，只认 `CORRAL_LANG` / 系统 locale。
-- **AI 易错点**【删除会话的 tombstone 不能随删除成功解除，且删除动作里不许有同步的慢活】按 `x` 确认后 `SessionStore.mark_deleted()` 会立刻摘卡并留下永久 tombstone，`_merge_scanned()` 据此挡住回灌；只有 `abort_delete()`（磁盘删除失败）才解除。**不要"删完就把 tombstone 清掉"**：后台重扫是「先读磁盘、后合并」两段式，删除很容易落在中间那个窗口里，tombstone 一提前解除，那轮携带删除前快照的合并就会把卡片重新灌回侧边栏，用户看到的就是「删掉的会话又冒出来、过几秒才真的消失」（用户实报，OpenCode 会话最易复现）。会话键全局唯一且历史已抹，永远不该再出现，永久保留是安全的。同理，`keepalive.kill()`（子进程 + 超时）和 `runtime.delete_session()`（OpenCode 要写全局共享 SQLite、可能等锁；Cursor 要 `rmtree` 整个目录）必须一起放进 `asyncio.to_thread`，且排在摘卡之后——任何一个放到摘卡前面，侧边栏就会干等到它返回为止。回归：`SessionStoreRemoveSessionTests.test_deleted_tombstone_survives_later_stale_merges`、`DeleteSessionFlowTests.test_card_hides_before_slow_disk_delete_finishes`。**删整个会话组（`_delete_session_group`）必须逐条执行「摘卡 → tombstone → 后台抹磁盘」，并逐条容错**：某一条 `delete_session()` 抛异常只对那条调 `abort_delete()` + `refresh()` 捞回，同组其余会话照常删；全部成员删完后组由 `SplitLayoutStore.remove_session` 自动解散。**keepalive 名必须在动手前就抄进成员元组**——`mark_hosted(key, None)` 会把该字段从会话字典里摘掉，等到后台线程再读就是空，托管进程会被漏杀（回归测试实测抓到的坑）。回归：`DeleteSessionGroupFlowTests`。
+- **AI 易错点**【删除会话的 tombstone 不能随删除成功解除，且删除动作里不许有同步的慢活】**Ctrl+X** 打开确认框、框里再按 `x` 之后 `SessionStore.mark_deleted()` 会立刻摘卡并留下永久 tombstone，`_merge_scanned()` 据此挡住回灌；只有 `abort_delete()`（磁盘删除失败）才解除。**不要"删完就把 tombstone 清掉"**：后台重扫是「先读磁盘、后合并」两段式，删除很容易落在中间那个窗口里，tombstone 一提前解除，那轮携带删除前快照的合并就会把卡片重新灌回侧边栏，用户看到的就是「删掉的会话又冒出来、过几秒才真的消失」（用户实报，OpenCode 会话最易复现）。会话键全局唯一且历史已抹，永远不该再出现，永久保留是安全的。同理，`keepalive.kill()`（子进程 + 超时）和 `runtime.delete_session()`（OpenCode 要写全局共享 SQLite、可能等锁；Cursor 要 `rmtree` 整个目录）必须一起放进 `asyncio.to_thread`，且排在摘卡之后——任何一个放到摘卡前面，侧边栏就会干等到它返回为止。回归：`SessionStoreRemoveSessionTests.test_deleted_tombstone_survives_later_stale_merges`、`DeleteSessionFlowTests.test_card_hides_before_slow_disk_delete_finishes`。**删整个会话组（`_delete_session_group`）必须逐条执行「摘卡 → tombstone → 后台抹磁盘」，并逐条容错**：某一条 `delete_session()` 抛异常只对那条调 `abort_delete()` + `refresh()` 捞回，同组其余会话照常删；全部成员删完后组由 `SplitLayoutStore.remove_session` 自动解散。**keepalive 名必须在动手前就抄进成员元组**——`mark_hosted(key, None)` 会把该字段从会话字典里摘掉，等到后台线程再读就是空，托管进程会被漏杀（回归测试实测抓到的坑）。回归：`DeleteSessionGroupFlowTests`。
 - **AI 易错点**【确认弹窗的确认键已参数化】`ConfirmModal(message, confirm_key="q")` 的确认键不再写死为 `q`：结束会话仍用默认 `q`，删除会话显式传 `confirm_key="x"`。新增任何需要二次确认的危险动作时，必须选一个与触发键一致的 `confirm_key`（而不是复用默认 `q`），否则用户会按错键、或误把另一个动作的确认键当成本动作的确认键。`t("modal.confirm_hint", confirm_key=...)` 的提示行文案同步跟着变。
 - **AI 易错点**【弹窗一律「点框外空白＝取消」，且判定必须现查落点】所有 `ModalScreen`（运行时选择、新建会话、确认框、全文搜索）都要继承 `ui/modals.py` 的 `OutsideClickDismiss`（写在 `ModalScreen` 之前），新增弹窗照办——只留 Esc 一条出口，鼠标用户会觉得界面卡住。取消时回给调用方的值由子类的 `outside_click_result` 声明（默认 `None`；`ConfirmModal` 必须是 `False`，否则点背景会被当成确认，那是结束会话 / 删除会话这类危险动作）。**判定只能用 `get_widget_at(event.screen_x, event.screen_y) is self` 现查落点控件**：Click 会从列表项、输入框一路冒泡到弹窗，光看「收到了事件」会让弹窗点哪都关。`ConfirmModal` 的鼠标路径还要跟按键一样过 `_armed` 武装窗口。回归：`ModalOutsideClickTests`（背景关 + 内容不关成对）、`FullTextSearchModalTests.test_backdrop_click_closes_without_touching_the_sidebar`。
 - **AI 易错点**【宽度不是字符数】侧边栏列宽、标题截断、运行时名右对齐和预览折行一律使用 `textutil` 里那套 Rich 终端显示宽度工具（`text_width()` / `fit_cell()` / `fit_cell_right()` / `wrap_preview_text()`，底层 `rich.cells.cell_len` / `chop_cells`）；禁止用 `len()`、`ljust()` 或自写 East Asian Width 表。中文、emoji、组合字符会使字符数与终端格宽不一致。包顶层仍导出旧私有名（`corral._text_width` 等），新代码从 `corral.textutil` 取公共名。
@@ -349,7 +341,7 @@ stateDiagram-v2
 - **AI 易错点**【"回车打开谁"必须取自高亮控件本身】`_selected_key()` 从 `ListView.highlighted_child` 里那个 `SearchResultRow` 拿会话键，**不要**改成「用 `ListView.index` 去索引 `self._matches`」。后者是两份可能不同步的数据：`ListView.clear()` 是投递 Prune 消息异步移除的，重建期间 DOM 里可能还留着上一批结果而 `_matches` 已经换新，同一个下标就指向两个不同会话，用户看到高亮在 A、回车却打开 B。结果列表重建同样要 `await clear()` / `await extend()` 并用 `_results_lock` + 序号让位串行（原因同 `SessionListView.rebuild()`：请求来自 Screen 泵的防抖定时器和 App 泵的建索引完成回调两条路）。回归：`test_highlighted_row_always_matches_what_enter_would_open`、`test_concurrent_rebuilds_do_not_stack_duplicate_rows`。
 - **AI 易错点**【命中行只对要展示的那几条提取】`ConversationIndex.search()` 先用 blob 判定命中并排序，再只对前 `top` 条调 `_collect_lines`。对全部命中会话都提取命中行会把界面线程卡住（461 个会话搜单字母 305 ms → 只算前 60 条后 35 ms）。`SearchOutcome.total` 保留命中总数，状态行必须如实说明还有多少条没显示。
 - **AI 易错点**【全文搜索查询框是两行 TextArea，不是 Input】`#search-query` 用 `height: 2` 的软换行 `TextArea`（`compact`、无行号），长查询能看见第二行。Enter / ↑↓ / PageUp / PageDown / Esc 必须挂 `priority=True` 的 Binding：否则 TextArea 会先吃掉 Enter（插入换行）和方向键（在框内移光标），破坏「输入框持焦、方向键挪结果、回车打开」的约定。边框仍要 `TextArea` 与 `TextArea:focus` 两处都清掉。回归：`FullTextSearchModalTests`。
-- **AI 易错点**【Ctrl+F / Ctrl+P / Ctrl+N / Ctrl+A 是主界面全局键】Ctrl+F 打开全文搜索、Ctrl+P 置顶当前窗口或其所在会话组、Ctrl+N 打开新建会话双栏弹窗、Ctrl+A 打开高级操作，都必须以高优先级在主界面生效。前三个在任何焦点都可用；Ctrl+A 在列表持焦或右栏正对着某个会话时可用，筛选框持焦时必须让路给输入。运行中的助手不得截走这四个键。单字母 `a` 仍只在列表侧，避免打进助手。Textual 默认的命令面板占用 Ctrl+P 且会在底栏画出 `^p palette`，必须在应用上关掉（`ENABLE_COMMAND_PALETTE = False`），不要只藏 Footer 指示。临时弹窗不继承主界面绑定，继续保留各自输入和确认语义。单字母 `n` 仍不绑——右栏持焦时会变成打给助手的字符。右栏持焦时其余按键的转发规则是**黑名单**（只拦壳层键，其余放行），不要为覆盖助手输入而改成「只转发 Ctrl+字母」白名单，也不要动 `Ctrl+C`、方向键、翻页等其余转发；`Ctrl+/`≡`Ctrl+_` 这类漏网键见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md)。回归：`test_ctrl_f_opens_search_when_a_live_pane_has_focus`、`test_live_pane_forwards_enter_but_ctrl_p_pins`、`test_footer_binds_ctrl_n_not_bare_n_for_new_session`、`test_a_key_opens_handoff_modal_from_main_list`、`TranslateTextualKeyTests`。
+- **AI 易错点**【Ctrl+F / Ctrl+P / Ctrl+N / Ctrl+A / Ctrl+X 是主界面全局键】**2026-09-12 裁定**：有右栏时键盘焦点只在某个会话窗口，列表不得持焦。原先必须列表持焦才生效的单字母（`a` 高级操作、`x` 删除等）全部改为全局 Ctrl 组合；`q` 结束会话和 `Esc` 退出界面不再保留快捷键（弹窗里 Esc 仍是取消）。Ctrl+F 打开全文搜索、Ctrl+P 置顶、Ctrl+N 新建、Ctrl+A 高级操作、Ctrl+X 删除当前会话窗口对应的会话，都必须以高优先级在主界面生效。筛选框持焦时 Ctrl+A / Ctrl+X 必须让路给输入。运行中的助手不得截走这五个键。不绑单字母 `a`/`x`/`q`/`n`/`c`。Textual 默认的命令面板占用 Ctrl+P 且会在底栏画出 `^p palette`，必须在应用上关掉（`ENABLE_COMMAND_PALETTE = False`）。临时弹窗不继承主界面绑定。右栏持焦时其余按键的转发规则是**黑名单**（只拦壳层键，其余放行），不要改成「只转发 Ctrl+字母」白名单，也不要动 `Ctrl+C`、方向键、翻页等其余转发；`Ctrl+/`≡`Ctrl+_` 这类漏网键见 [内嵌实时终端知识库](EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md)。回归：`test_ctrl_f_opens_search_when_a_live_pane_has_focus`、`test_live_pane_forwards_enter_but_ctrl_p_pins`、`test_footer_binds_ctrl_n_not_bare_n_for_new_session`、`test_ctrl_x_deletes_from_live_pane`、`TranslateTextualKeyTests`。
 - **AI 易错点**【强停必须吞 KeyboardInterrupt 并同步关掉鼠标跟踪】**禁止**把 `app.run()` 的 `KeyboardInterrupt` 漏到外壳：Warp 等终端会把 Ctrl+C 打成 SIGINT（绕过界面自己的按键处理），`asyncio.run` 收尾还要等默认线程池（Python 3.14 最长 300 秒），第二次 Ctrl+C 就会打出堆栈，并且 Textual 写线程已经停了、关不掉鼠标跟踪，点击变成 `^[[<0;21;2M`。`run_app()` 必须 catch 后调用 `restore_terminal()`（直接 `os.write` 关闭序列，**禁止**再走 Textual 写线程）。**不要把 Ctrl+R 绑成全文搜索**：那是 Warp / zsh 的命令搜索，绑了会从托管助手的 readline 反搜里抢走该键；正文搜索仍是 Ctrl+F。回归：`InterruptTerminalRestoreTests`。
 - **AI 易错点**【右栏刷新线程边界】Textual 后台 worker 不得直接读写 Widget/DOM；扫描、读取对话和托管启动等阻塞工作在后台进行，结果通过 `call_from_thread()` 回到主线程。退出时 worker 必须可取消，不能用不可打断的无限等待或长 `sleep`。
 - **AI 易错点**【列表刷新策略】会话键的成员与顺序不变时，`SessionListView.rebuild()` 必须原地替换卡片数据，只刷新有变化的卡片；仅新增、删除或重排才清空重建。后台重扫、标题轮询和交互动作可能在同一帧要求重建，并发执行 `clear()` / `extend()` 会重复挂载固定 ID 的「新建会话」条目，Textual 直接抛 `DuplicateIds` 打崩整个 TUI。**串行闸门必须在 `SessionListView.rebuild()` 内部（`_rebuild_lock`），不能只放在主屏**：调用方分布在两条互不相让的消息泵上——后台重扫经 `app.call_from_thread(_rebuild_list)` 跑在 App 泵，搜索框输入经 `on_input_changed` 直接调 `rebuild()` 跑在 Screen 泵，`MainScreen._rebuild_lock` 只挡得住同泵重入。真机崩溃（2026-07-26）：连续退格清空搜索词，命中数 50→57→71 连做全量重建（单次已到 2s 量级），与后台重扫交错必崩。同一把锁顺带做请求合并——排队期间来了更新的请求且本次不带 `select_key` 时直接让位，避免每个中间筛选态都全量重建一遍。标题生成中不在侧边栏画任何加载动画，标题只在缓存轮询命中变化时原地刷新。回归：`test_list_rebuild_serialized_across_message_pumps`、`test_screen_serializes_concurrent_list_rebuilds`。

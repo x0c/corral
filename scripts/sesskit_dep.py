@@ -17,16 +17,16 @@ import sys
 import urllib.request
 
 # --- single source of truth -------------------------------------------------
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 TAG = f"v{VERSION}"
 REPO = "x0c/sesskit"
 WHEEL_NAME = f"sesskit-{VERSION}-py3-none-any.whl"
 SDIST_NAME = f"sesskit-{VERSION}.tar.gz"
 WHEEL_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{WHEEL_NAME}"
 SDIST_URL = f"https://github.com/{REPO}/releases/download/{TAG}/{SDIST_NAME}"
-# sha256 of the published assets (verified 2026-09-11 against the GitHub Release).
-WHEEL_SHA256 = "32920f09ed905a46938b166c657bbab3aa766a0c8b29422164fb02d9a7e615fd"
-SDIST_SHA256 = "3a2a0f8782365b41060664b59d42f397d7fec08e0b3e8b03c3538f6b507aa1ff"
+# sha256 of the published assets (verified 2026-09-12 against the GitHub Release).
+WHEEL_SHA256 = "b12ebffa6a750e5aeee79c24d688ead92197a70fb49d199a909de094e934422c"
+SDIST_SHA256 = "18ab5d73f9c680338919137d175128d5dbdadddb31cdb01f447e789acddfbbcb"
 # Minimum version declared in Corral's pyproject.toml dependencies.
 REQUIRES = f"sesskit>={VERSION}"
 

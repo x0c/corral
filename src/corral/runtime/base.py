@@ -25,8 +25,11 @@ _DIGEST_RECENT_COUNT = 8  # 摘录保留的最近消息条数
 
 
 def _clip(text: str | None, limit: int) -> str:
-    """压平换行成单行并截断；摘录逐行列消息，多行原文会破坏行结构。"""
-    flat = " ".join(str(text or "").split())
+    """抽出接力任务后再压平换行并截断；摘录逐行列消息，多行原文会破坏行结构。"""
+    from sesskit.titles import clip_user_excerpt
+
+    peeled = clip_user_excerpt(text, limit=max(limit * 4, 1200))
+    flat = " ".join(peeled.split())
     if len(flat) <= limit:
         return flat
     return flat[:limit] + "…"

@@ -57,6 +57,16 @@ class TemporaryTitleRankingTests(unittest.TestCase):
             "修复闪退",
         )
 
+    def test_generic_new_session_fallback_does_not_beat_inner_handoff_task(self) -> None:
+        session = _session(
+            source="codex",
+            fallback_title="Task: New Codex session",
+            first_user_msg="Task: 键盘未顶起输入框\n\n[Recent conversation]\nAssistant: 已复现",
+        )
+        title, needs = titles.resolve_initial_title(session, {})
+        self.assertEqual(title, "键盘未顶起输入框")
+        self.assertTrue(needs)
+
     def test_pure_insult_is_not_a_title_on_fallback_model_or_cache(self) -> None:
         session = _session(
             id="insult",
@@ -75,15 +85,16 @@ class TemporaryTitleRankingTests(unittest.TestCase):
         self.assertEqual(cached_title, "修复登录失败")
         self.assertTrue(cached_needs)
 
+        written: dict = {}
         raw = {"cursor:insult": "你他妈的"}
         with (
             mock.patch.object(titles, "generate_titles_batch", return_value=raw),
             mock.patch.object(titles, "save_cache"),
         ):
-            result = titles.refresh_titles([session], cache if False else {}, generator=mock.Mock())
-        written = titles.refresh_titles  # keep lint from thinking cache unused
-        del written
+            result = titles.refresh_titles([session], written, generator=mock.Mock())
         self.assertEqual(result, {})
+        self.assertNotEqual(written["cursor:insult"].get("title"), "你他妈的")
+        self.assertEqual(written["cursor:insult"]["generation_state"], "failed")
 
     def test_closing_doc_update_does_not_replace_the_original_task(self) -> None:
         session = _session(
@@ -313,8 +324,49 @@ class TitlePromptTests(unittest.TestCase):
         self.assertIn("修复 Corral 测试失败", item["user_request"])
         self.assertNotEqual(item["user_request"], "实现")
         title = titles._compact_title(scanned["first_user_msg"])
+        self.assertIn("修复", title or "")
+        self.assertNotEqual(title, "User")
         self.assertNotEqual(title, "Below is a conversation ex…")
         self.assertNotIn("Below is a conversation", title or "")
+
+    def test_nested_handoff_prompt_uses_inner_task(self) -> None:
+        from corral.models import make_session_info
+
+        nested = (
+            "Task: 实现\n\n"
+            "You are picking up a session from Cursor. Start a new session of "
+            "your own and continue the work. " + ("padding " * 20) + "\n\n"
+            "Below is a conversation excerpt automatically extracted from the "
+            "original session (truncated; for quickly locating the task):\n"
+            "[Original request]Task: 排查并根治 Corral CI 错误 You are picking up a "
+            "session from Codex. Start a new session of your own and continue "
+            "the work; Original session history file: /tmp/inner.jsonl\n"
+            "[Recent conversation]\n"
+            "Assistant: 开始改相关用例"
+        )
+        scanned = make_session_info(
+            source="claude",
+            id="nested",
+            short_id="nested",
+            cwd="/tmp/proj",
+            mtime=1.0,
+            time_source="file_mtime",
+            event_time=1.0,
+            file_mtime=1.0,
+            size_bytes=4000,
+            native_title=None,
+            fallback_title="实现",
+            status_tag="",
+            path="/tmp/nested.jsonl",
+            first_user_msg=nested,
+        )
+        item = titles._prompt_item(scanned)
+        self.assertEqual(item["inherited_task"], "排查并根治 Corral CI 错误")
+        self.assertNotIn("You are picking up", scanned["first_user_msg"])
+        self.assertIn("排查并根治 Corral CI 错误", scanned["first_user_msg"])
+        title = titles._compact_title(scanned["first_user_msg"])
+        self.assertIn("排查", title or "")
+        self.assertNotEqual(title, "实现")
 
 
 class TitleGenerationStateTests(unittest.TestCase):
@@ -344,6 +396,60 @@ class TitleGenerationStateTests(unittest.TestCase):
         grown_title, grown_needs = titles.resolve_initial_title(grown, cache)
         self.assertEqual(grown_title, "修复登录页空白")
         self.assertTrue(grown_needs)
+
+    def test_insufficient_retry_tracks_task_input_not_file_size(self) -> None:
+        session = _session(
+            id="thin",
+            size_bytes=100,
+            fallback_title="在吗",
+            first_user_msg="继续",
+            last_agent_msg="ok",
+        )
+        cache: dict = {}
+        raw = {"cursor:thin": titles.INSUFFICIENT_TITLE_TOKEN}
+        with (
+            mock.patch.object(titles, "generate_titles_batch", return_value=raw),
+            mock.patch.object(titles, "save_cache"),
+        ):
+            titles.refresh_titles([session], cache, generator=mock.Mock())
+        self.assertEqual(cache["cursor:thin"]["generation_state"], "insufficient")
+
+        same_prompt = dict(session, size_bytes=200, last_agent_msg="tool log " * 40)
+        self.assertFalse(titles.resolve_initial_title(same_prompt, cache)[1])
+
+        edited = dict(session, first_user_msg="修复登录页空白", fallback_title="修复登录页空白")
+        self.assertTrue(titles.resolve_initial_title(edited, cache)[1])
+
+    def test_invalid_model_titles_are_not_recorded_as_transport(self) -> None:
+        session = _session(
+            id="task",
+            first_user_msg="修复登录失败",
+            fallback_title="修复登录失败",
+        )
+        cache: dict = {}
+        raw = titles._BatchRaw({"cursor:task": "Task"}, kind="ok")
+        with (
+            mock.patch.object(titles, "generate_titles_batch", return_value=raw),
+            mock.patch.object(titles, "save_cache"),
+        ):
+            titles.refresh_titles([session], cache, generator=mock.Mock())
+        self.assertEqual(cache["cursor:task"]["failure_reason"], "invalid")
+        self.assertNotEqual(cache["cursor:task"]["failure_reason"], "transport")
+
+    def test_malformed_json_is_invalid_not_transport(self) -> None:
+        session = _session(
+            id="badjson",
+            first_user_msg="修复登录失败",
+            fallback_title="修复登录失败",
+        )
+        cache: dict = {}
+        generator = mock.Mock()
+        generator.id = "gateway"
+        generator.generate.return_value = "definitely not json {"
+        with mock.patch.object(titles, "save_cache"):
+            titles.refresh_titles([session], cache, generator=generator)
+        self.assertEqual(cache["cursor:badjson"]["failure_reason"], "invalid")
+        self.assertNotEqual(cache["cursor:badjson"]["failure_reason"], "transport")
 
     def test_missing_config_retries_after_key_appears(self) -> None:
         session = _session(

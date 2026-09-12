@@ -44,6 +44,10 @@ _EMOTION_PREFIX_RE = re.compile(
     r"^(?:你)?(?:他妈的|他妈|卧槽|我靠|(?:fuck(?:ing)?|wtf))\s*[，,。.!！?？]*\s*",
     flags=re.IGNORECASE,
 )
+_ROLE_PREFIX_RE = re.compile(
+    r"^(?:User|Assistant|用户|助手)\s*[:：]\s*",
+    flags=re.IGNORECASE,
+)
 
 # 状态列统一枚举：Claude / Codex 两个来源共用同一套标签和判定优先级。
 # 优先级（高到低）：已中断 > 待回复 > 已完成 > 空（无法判断末轮角色时不展示状态）。
@@ -317,6 +321,9 @@ def _is_low_value_title(text: str | None) -> bool:
         "codex空会话",
         "newsession",
         "emptysession",
+        "newcodexsession",
+        "newclaudesession",
+        "newcursorsession",
         "空白会话",
         "新建会话",
         "实现",
@@ -399,18 +406,29 @@ def _strip_emotion_prefix(line: str) -> str:
     return _EMOTION_PREFIX_RE.sub("", line, count=1).strip()
 
 
+def _strip_role_prefix(line: str) -> str:
+    return _ROLE_PREFIX_RE.sub("", line, count=1).strip()
+
+
 def _is_skippable_leading_clause(clause: str) -> bool:
-    """丢掉骂人/Task 这类首句，不要把「修复闪退」这种短需求一并删掉。"""
+    """丢掉骂人/Task/角色标签这类首句，不要把「修复闪退」这种短需求一并删掉。"""
     unwrapped = _unwrap_handoff_task_line(clause)
-    stripped = _strip_emotion_prefix(unwrapped)
+    stripped = _strip_role_prefix(_strip_emotion_prefix(unwrapped))
     if not stripped:
+        return True
+    compact = re.sub(r"[\s,，。.!！?？:：;；'\"`~～…\[\]()（）{}<>《》]+", "", stripped).lower()
+    if compact in {"user", "assistant", "用户", "助手"}:
         return True
     return _is_low_value_title(stripped) or _is_secondary_title(stripped)
 
 
 def _task_source_text(text: str | None) -> str | None:
     inherited, body = _split_handoff_text(text)
-    if body.strip():
+    stripped = body.strip()
+    recent = stripped.startswith(("[Recent conversation]", "【最近对话】"))
+    if inherited and not _is_low_value_title(inherited) and (not stripped or recent):
+        return inherited
+    if stripped:
         return body
     if inherited:
         return inherited
@@ -424,6 +442,7 @@ def _compact_title(text: str | None) -> str | None:
         return None
     line = _unwrap_handoff_task_line(line)
     line = _strip_emotion_prefix(line)
+    line = _strip_role_prefix(line)
     if not line or _is_low_value_title(line) or _is_machine_slug(line):
         return None
     line = re.sub(r"https?://\S+", "", line)

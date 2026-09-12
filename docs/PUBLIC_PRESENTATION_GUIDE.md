@@ -24,3 +24,14 @@ Do not claim title generation launches installed assistant CLIs. The public priv
 README quality improves the explanation offered to visitors; it does not demonstrate increased discovery or stars. Measure those separately.
 
 The conversion page order that other flagships should copy lives in the global star-growth guide §3.5.1; this file keeps Corral-only identity, capture, and retired-asset rules.
+
+## Review follow-up (2026-09-12)
+
+The published bilingual rewrite uses the approved rounded unicorn and its local README targets resolve. Remaining acceptance gaps:
+
+- Validate the actual `curl | bash` installation path in a clean environment. The published v0.24.194 package requires `sesskit>=0.1.2`, but the downloaded installer defaults to the v0.1.1 wheel when no local helper exists. Repository-local execution can hide this mismatch. Do not call installation verified from matching Python/tmux prerequisites alone.
+- Replace the terminal captures after fixing the capture defects: the GIF's final split frame contains missing-glyph boxes in group decorations; both the still and GIF show duplicate Advanced footer entries. Inspect every frame at README display size, including the final split view.
+- Remove redundant introductory copy: the headline, subtitle, and paragraph before Install repeat the lost-chat pitch and supported-assistant list. Keep each block only if it adds a distinct visitor decision.
+- Establish provenance for `ios-sessions.png` and `ios-chat.png` before treating them as current application evidence. This review inspected the assets but did not verify them against the running phone app.
+
+Review scope: GitHub contents/API, local bilingual text, local link targets, and image/frame inspection. Browser access was unavailable; full rendered-page, narrow-screen, and live-device acceptance remain unverified. These findings are not a claim of increased stars or a completed installer repair.
