@@ -552,8 +552,8 @@ class CursorAttentionSignalTests(unittest.TestCase):
             self.assertEqual(evidence.phase, "idle")
             self.assertNotEqual(evidence.phase, "working")
 
-    def test_live_open_tool_call_does_not_infer_working_from_history(self) -> None:
-        """历史里最新是未完成工具调用时仍不从数据库推导 working，交给观察器。"""
+    def test_live_open_tool_call_infers_working_from_history(self) -> None:
+        """进程仍在且历史里最新是未完成工具调用时必须亮绿（Globbing / Shell 等）。"""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "store.db"
             self._database(
@@ -567,7 +567,46 @@ class CursorAttentionSignalTests(unittest.TestCase):
                     }
                 ],
             )
-            self.assertEqual(inspect_session(_session("cursor", path)).phase, "unknown")
+            self.assertEqual(inspect_session(_session("cursor", path)).phase, "working")
+            self.assertEqual(
+                inspect_session(_session("cursor", path, live=False, signal_probe=True)).phase,
+                "unknown",
+            )
+
+    def test_live_tool_activity_after_assistant_text_restores_working(self) -> None:
+        """中间正文之后若仍有工具活动，必须亮绿，不能停在 idle/unknown。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.db"
+            self._database(
+                path,
+                [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "先搜一下相关文件"}],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool-call",
+                                "toolName": "Glob",
+                                "toolCallId": "call-glob-1",
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "content": [
+                            {
+                                "type": "tool-result",
+                                "toolName": "Glob",
+                                "toolCallId": "call-glob-1",
+                            }
+                        ],
+                    },
+                ],
+            )
+            self.assertEqual(inspect_session(_session("cursor", path)).phase, "working")
 
     def test_structured_terminal_marker_generates_activity_without_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -705,7 +744,7 @@ class CursorAttentionSignalTests(unittest.TestCase):
                     },
                 ],
             )
-            self.assertEqual(inspect_session(_session("cursor", path)).phase, "unknown")
+            self.assertEqual(inspect_session(_session("cursor", path)).phase, "working")
 
     def test_protobuf_ask_question_clears_after_later_protobuf_tool(self) -> None:
         call_id = "call-stale\nfc_child_0"
@@ -718,7 +757,7 @@ class CursorAttentionSignalTests(unittest.TestCase):
                     _cursor_field2_blob(8, b"grep-hits", "call-grep\nfc_child_1"),
                 ],
             )
-            self.assertEqual(inspect_session(_session("cursor", path)).phase, "unknown")
+            self.assertEqual(inspect_session(_session("cursor", path)).phase, "working")
 
     def test_stale_protobuf_question_outside_json_window_is_not_waiting(self) -> None:
         call_id = "call-old\nfc_child_0"

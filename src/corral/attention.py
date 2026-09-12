@@ -336,6 +336,25 @@ class AttentionStore:
             # stop / afterAgentResponse 表示本轮生成结束，不等于用户已经作答。
             return current
 
+        if (
+            current is not None
+            and current.phase == "working"
+            and current.source == "observer"
+            and cls._observer_event(
+                AttentionEvidence(
+                    phase="working",
+                    activity_token=current.activity_token,
+                    source="observer",
+                )
+            )
+            == "beforeSubmitPrompt"
+            and evidence.source == "history"
+            and evidence.phase == "idle"
+        ):
+            # 本轮已由用户提交打开：中间助手正文不得提前熄灭绿点。真正收束仍靠
+            # afterAgentResponse / stop / sessionEnd，或进程不活时的强制 idle。
+            return current
+
         if current is not None and not cls._is_newer(
             replace(evidence, observed_at=observed_at), current,
         ):

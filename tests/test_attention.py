@@ -220,6 +220,31 @@ class AttentionStoreTests(unittest.TestCase):
         self.assertNotEqual(states["cursor:one"].kind, "working")
         self.assertNotEqual(states["cursor:one"].kind, "waiting")
 
+    def test_history_idle_does_not_clear_open_before_submit_turn(self) -> None:
+        """用户提交后的中间助手正文不得熄灭本轮绿点；收束仍靠观察器结束事件。"""
+        self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
+        self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="working",
+                activity_token="gen-1:beforeSubmitPrompt",
+                observed_at=1,
+                source="observer",
+            ),
+        )
+        state = self.store.record_event(
+            "cursor",
+            "one",
+            AttentionEvidence(
+                phase="idle",
+                activity_token="assistant-text",
+                observed_at=5,
+                source="history",
+            ),
+        )
+        self.assertEqual(state.kind, "working")
+
     def test_after_agent_response_clears_working_even_while_live(self):
         self.store.reconcile([{"source": "test", "id": "baseline", "live": False}], {})
         self.store.record_event(

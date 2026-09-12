@@ -713,12 +713,14 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
         connection.close()
 
     answered: set[str] = set()
+    tool_calls: set[str] = set()
     questions: dict[str, str] = {}
     question_rowids: dict[str, int] = {}
     activity_token = None
     continuation_max = 0
     last_output_rowid = 0
     last_tool_activity_rowid = 0
+    last_work_tool_rowid = 0
     min_json_rowid = min((row["rowid"] for row in json_rows), default=0)
 
     def _note_question(call_id: str, rowid: int) -> None:
@@ -745,12 +747,16 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
                 last_tool_activity_rowid = max(last_tool_activity_rowid, rowid)
                 if tool_name != "AskQuestion":
                     continuation_max = max(continuation_max, rowid)
+                    last_work_tool_rowid = max(last_work_tool_rowid, rowid)
             elif part_type == "tool-call" and tool_name == "AskQuestion" and call_id:
                 has_ask_question = True
                 _note_question(call_id, rowid)
             elif part_type == "tool-call" and call_id:
+                tool_calls.add(call_id)
                 last_tool_activity_rowid = max(last_tool_activity_rowid, rowid)
+                last_work_tool_rowid = max(last_work_tool_rowid, rowid)
                 continuation_max = max(continuation_max, rowid)
+                activity_token = _token("cursor", "tool", rowid) or activity_token
             elif part_type == "text" and str(part.get("text") or "").strip():
                 has_text = True
         if has_text and not has_ask_question:
@@ -783,6 +789,8 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
             # 其它工具的 field-2 记录：助手已经在提问之后继续干活。
             continuation_max = max(continuation_max, rowid)
             last_tool_activity_rowid = max(last_tool_activity_rowid, rowid)
+            last_work_tool_rowid = max(last_work_tool_rowid, rowid)
+            activity_token = _token("cursor", "tool", rowid) or activity_token
 
     pending: list[str] = []
     for call_id, token in questions.items():
@@ -803,8 +811,18 @@ def _inspect_cursor(session: dict) -> AttentionEvidence:
             question_token=pending[-1],
             observed_at=observed_at,
         )
-    # 历史库仍不推导 working：绿点只来自观察器。最新动作已是可见答复或
-    # 结束标记时，必须给出 idle，否则常驻进程会把旧的执行中钉死。
+    # 最新动作已是可见答复或结束标记时给出 idle，否则常驻进程会把旧执行中钉死。
+    # 但「正在跑工具」（Globbing / Shell 等）必须亮绿：中间助手正文曾把观察器
+    # working 冲成 idle 后，若这里只回 unknown，绿点会整轮回不来。
+    # AskQuestion 的问答来回不算干活，避免答完选择题被误判成执行中。
+    open_tools = tool_calls - answered
+    tools_newest = last_work_tool_rowid > 0 and last_work_tool_rowid >= last_output_rowid
+    if live and (open_tools or tools_newest):
+        return _evidence(
+            "working",
+            activity_token=activity_token or _token("cursor", "tool", last_work_tool_rowid),
+            observed_at=observed_at,
+        )
     if last_output_rowid > last_tool_activity_rowid:
         return _evidence("idle", activity_token=activity_token, observed_at=observed_at)
     return _evidence("unknown", activity_token=activity_token, observed_at=observed_at)
