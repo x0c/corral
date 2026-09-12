@@ -390,8 +390,8 @@ class ReapPressureTests(unittest.TestCase):
 
     def test_under_cap_does_nothing(self) -> None:
         now = 100_000.0
-        # 13 以下：即使都很闲也不压
-        items = [(f"corral-claude-{i:08x}", now - 3600) for i in range(12)]
+        # 上限及以下：即使都很闲也不压
+        items = [(f"corral-claude-{i:08x}", now - 3600) for i in range(8)]
         with mock.patch.dict("os.environ", {}, clear=True), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
              mock.patch(
@@ -409,7 +409,7 @@ class ReapPressureTests(unittest.TestCase):
         now = 100_000.0
         idle = now - 11 * 60  # >10 分钟
         fresh = now - 60
-        items = [(f"corral-claude-{i:08x}", idle - i) for i in range(14)]
+        items = [(f"corral-claude-{i:08x}", idle - i) for i in range(10)]
         items[0] = ("corral-claude-00000000", fresh)  # 刚活动过，不收
         # 00000001 标记为执行中，不收
         with mock.patch.dict("os.environ", {}, clear=True), \
@@ -425,12 +425,12 @@ class ReapPressureTests(unittest.TestCase):
              ):
             reaped = keepalive.reap_pressure(now=now)
 
-        # 14 个 → 需关到 12，即关 2 个；跳过 fresh 与 working，从最闲开始
+        # 10 个 → 需关到 8，即关 2 个；跳过 fresh 与 working，从最闲开始
         self.assertEqual(len(reaped), 2)
         self.assertEqual(mocked_kill.call_count, 2)
-        # activity 最小的是 index 13（idle-13），然后 12
-        self.assertEqual(reaped[0], "corral-claude-0000000d")
-        self.assertEqual(reaped[1], "corral-claude-0000000c")
+        # activity 最小的是 index 9（idle-9），然后 8
+        self.assertEqual(reaped[0], "corral-claude-00000009")
+        self.assertEqual(reaped[1], "corral-claude-00000008")
         self.assertNotIn("corral-claude-00000000", reaped)
         self.assertNotIn("corral-claude-00000001", reaped)
 
@@ -445,7 +445,7 @@ class ReapPressureTests(unittest.TestCase):
     def test_custom_pressure_idle_minutes(self) -> None:
         now = 10_000.0
         # 默认 10 分钟不够，自定义 1 分钟后应收
-        items = [(f"corral-claude-{i:08x}", now - 90) for i in range(13)]
+        items = [(f"corral-claude-{i:08x}", now - 90) for i in range(9)]
         with mock.patch.dict(
             "os.environ",
             {"CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES": "1"},

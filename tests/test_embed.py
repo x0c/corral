@@ -231,6 +231,19 @@ class SessionIoTests(unittest.TestCase):
                                   side_effect=subprocess.CalledProcessError(1, [])):
             self.assertFalse(embed.is_alive("sc-claude-1"))
 
+    def test_is_alive_timeout_is_not_death(self):
+        """has-session 超时不得当成 pane 已死，否则切走再切回会把还在跑的会话画成预览。"""
+        liveness.note_alive("corral-claude-timeout")
+        try:
+            with mock.patch.object(liveness.shutil, "which", return_value="/usr/bin/tmux"), \
+                    mock.patch.object(
+                        liveness.subprocess, "run",
+                        side_effect=subprocess.TimeoutExpired(cmd="has-session", timeout=1),
+                    ):
+                self.assertTrue(liveness.is_alive("corral-claude-timeout"))
+        finally:
+            liveness.forget_alive("corral-claude-timeout")
+
     def test_alive_evidence_cache_skips_fork(self):
         """抓帧成功即存活证据：`max_age` 内的活跃判定不得再 fork has-session。
 

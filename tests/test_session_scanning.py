@@ -4108,11 +4108,10 @@ class TuiLayoutTests(unittest.TestCase):
         self.assertNotIn(key, store._provisional)
         self.assertEqual(len([s for s in store.all_sessions() if s.get("source") == "pi"]), 1)
 
-    def test_refresh_rebinds_hosted_name_via_embed_is_alive(self) -> None:
-        """本进程托管记录在 annotate 未命中时，必须能调用 embed.is_alive 兜底回填。
+    def test_refresh_rebinds_hosted_name_without_is_alive(self) -> None:
+        """本进程仍登记 hosted 时，annotate 未命中也必须回填 keepalive。
 
-        回归：src 包化后 store 漏 import embed，托管会话后台重扫会 NameError，
-        搜索框一直显示 Failed to refresh。
+        切走再切回时 has-session 超时不能把还在跑的会话降成已结束预览。
         """
         session = {
             "source": "claude", "id": "s1", "short_id": "s1", "mtime": 1.0,
@@ -4129,16 +4128,44 @@ class TuiLayoutTests(unittest.TestCase):
             store = corral.SessionStore(limit=20, registry=registry)
             store.load()
         store.hosted["claude:s1"] = "corral-claude-s1"
-        # 去掉 keepalive_name，迫使走 hosted + embed.is_alive 分支
         store.find_session("claude:s1").pop("keepalive_name", None)
         claude_runtime.scan_sessions.return_value = [dict(session)]
         with (
             mock.patch.object(corral.liveness, "annotate"),
-            mock.patch("corral.store.liveness.is_alive", return_value=True) as alive,
+            mock.patch("corral.store.liveness.is_alive", return_value=False) as alive,
         ):
             store.refresh()
-        alive.assert_called_with("corral-claude-s1")
+        alive.assert_not_called()
         self.assertEqual(store.find_session("claude:s1").get("keepalive_name"), "corral-claude-s1")
+        self.assertEqual(store.hosted.get("claude:s1"), "corral-claude-s1")
+
+    def test_refresh_keeps_provisional_when_hosted_even_if_is_alive_false(self) -> None:
+        """刚开的占位卡：探活假阴性不得在切走期间把卡退役成已结束。"""
+        cursor_runtime = mock.Mock()
+        cursor_runtime.id = "cursor"
+        cursor_runtime.display_name = "Cursor"
+        cursor_runtime.scan_signature.return_value = None
+        cursor_runtime.scan_sessions.return_value = []
+        registry = corral.RuntimeRegistry((cursor_runtime,))
+        with mock.patch.object(corral.titles, "load_cache", return_value={}):
+            store = corral.SessionStore(limit=20, registry=registry)
+            store.load()
+        provisional = store.register_hosted_session(
+            runtime_id="cursor",
+            keepalive_name="corral-cursor-abcd1234",
+            title="新 Cursor 会话",
+            cwd="/tmp/proj",
+        )
+        key = corral.session_key(provisional)
+        with mock.patch.object(corral.liveness, "annotate"), mock.patch.object(
+            corral.liveness, "is_alive", return_value=False,
+        ):
+            store.refresh()
+        kept = store.find_session(key)
+        self.assertIsNotNone(kept)
+        self.assertTrue(kept.get("provisional"))
+        self.assertEqual(kept.get("keepalive_name"), "corral-cursor-abcd1234")
+        self.assertEqual(store.hosted.get(key), "corral-cursor-abcd1234")
 
 
 class NavStub:

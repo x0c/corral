@@ -676,7 +676,15 @@ class SessionStore:
                 real_session = claimed_keepalive[str(name)]
                 self._retire_provisional(key, provisional, real_session, name, attention_migrations)
                 continue
-            if not name or not liveness.is_alive(str(name)):
+            if not name:
+                self._provisional.pop(key, None)
+                self.hosted.pop(key, None)
+                continue
+            if key not in self.hosted and not liveness.is_alive(str(name)):
+                # Only drop a placeholder when this window is no longer hosting
+                # it *and* tmux confirmed the pane is gone. A has-session
+                # timeout while the user is looking at another session must
+                # not turn a just-opened live session into Ended preview.
                 self._provisional.pop(key, None)
                 self.hosted.pop(key, None)
                 continue
@@ -850,15 +858,14 @@ class SessionStore:
                     session.pop("keepalive_name", None)
                 else:
                     self._force_ended.discard(key)
-            # annotate 没匹配上时，用本进程的内嵌托管记录兜底（见 __init__ 注释）；
-            # 托管会话已死则清掉记录，让状态回到真实的「已结束」
-            if "keepalive_name" not in session:
-                hosted_name = self.hosted.get(key)
-                if hosted_name:
-                    if liveness.is_alive(hosted_name):
-                        session["keepalive_name"] = hosted_name
-                    else:
-                        self.hosted.pop(key, None)
+            # annotate 没匹配上时，用本进程的内嵌托管记录兜底（见 __init__ 注释）。
+            # 本窗口仍登记 hosted 时一律回填，禁止拿单次 is_alive 假阴性把还在
+            # 跑的会话降成已结束预览（切走再切回最容易踩：右栏 remount 后
+            # has-session 超时会被当成死亡）。真正结束只走 mark_hosted(None)
+            # 或占位卡在「本窗口已不托管且 pane 确认消失」时退役。
+            hosted_name = self.hosted.get(key)
+            if hosted_name:
+                session["keepalive_name"] = hosted_name
             title, needs = titles.resolve_initial_title(session, self.cache)
             self.display_titles[key] = title
             # 生成状态必须以标题状态机返回的 needs 为唯一依据。低价值会话、
@@ -991,6 +998,36 @@ class SessionStore:
                 for session in bucket:
                     if session_key(session) == key:
                         return session
+        return None
+
+    def canonical_session_key(self, key: str) -> str:
+        """Follow placeholder→real identity hops recorded this process.
+
+        Selection follow must use the live continuation, not the card the user
+        originally opened, once that card has retired onto a new session id.
+        """
+        with self.lock:
+            seen: set[str] = set()
+            current = key
+            while current in self._session_key_migrations and current not in seen:
+                seen.add(current)
+                current = self._session_key_migrations[current]
+            return current
+
+    def hosted_name_for(self, key: str) -> str | None:
+        """Keepalive name this window is hosting for ``key``, after identity hops."""
+        canonical = self.canonical_session_key(key)
+        with self.lock:
+            name = self.hosted.get(canonical) or self.hosted.get(key)
+            if name:
+                return str(name)
+            for bucket in self.sessions.values():
+                for session in bucket:
+                    session_id = session_key(session)
+                    if session_id in (canonical, key):
+                        existing = session.get("keepalive_name")
+                        if existing:
+                            return str(existing)
         return None
 
     def attention_for(self, key: str) -> AttentionState:

@@ -65,6 +65,8 @@ def is_alive(name: str, *, max_age: float | None = None) -> bool:
     `max_age` 给出可接受的证据陈旧上限（秒）：这段时间内有过成功抓帧 / 状态查询
     就直接返回 True，不再 fork。判定「会话是否已结束」这类必须拿准的场景一律
     不要传 `max_age`——缓存只能加速「确认活着」，不能替代宣告死亡。
+    `has-session` 超时是未知，不是死亡：切走实时格时 tmux 忙碌很容易超时，
+    把超时当成 False 会清掉本窗口 hosted，回来就画成已结束预览。
     """
     if max_age is not None and name:
         with _alive_lock:
@@ -80,7 +82,13 @@ def is_alive(name: str, *, max_age: float | None = None) -> bool:
             timeout=_CALL_TIMEOUT, check=True,
             env=keepalive.tmux_env(),
         )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        # Unknown ≠ dead. Switching away from a live pane often coincides with
+        # a busy tmux; treating timeout as death pops hosted and the next
+        # follow paints Ended preview for a session that is still running.
+        with _alive_lock:
+            return name in _alive_marks
+    except (OSError, subprocess.CalledProcessError):
         forget_alive(name)
         return False
     note_alive(name)

@@ -898,11 +898,18 @@ class MainScreen(
         if self._split_store.get_group(key) is not None:
             self._show_session_group(key, include_inactive=True)
             return
+        canonical = self.store.canonical_session_key(key)
+        if canonical != key:
+            found = self.store.find_session(canonical)
+            if found is not None:
+                session_list.select_session_key(canonical)
+                key = canonical
+                session = found
         # 托管成功后 store 会先写入 keepalive，列表卡片要到下一次异步重建才
         # 换成新 dict。此间若旧高亮事件到达，必须以 store 的最新快照为准；
         # 否则旧卡会被误判成静态会话，把刚挂上的实时终端盖回预览。
         session = self.store.find_session(key) or session
-        kname = session.get("keepalive_name")
+        kname = session.get("keepalive_name") or self.store.hosted_name_for(key)
         if kname or session.get("live"):
             # 当前右侧已是该组合时仍走 show_hosted_group：内部按有序
             # (session_key, keepalive) 身份就地更新，禁止整排 remount。

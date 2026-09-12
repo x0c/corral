@@ -32,7 +32,7 @@ from corral.legacy_names import (
 from corral.models import LaunchPlan
 
 _DEFAULT_IDLE_HOURS = 2.0
-_DEFAULT_MAX_SESSIONS = 12
+_DEFAULT_MAX_SESSIONS = 8
 _DEFAULT_PRESSURE_IDLE_MINUTES = 10.0
 _SUBPROCESS_TIMEOUT = 1.5
 SUBPROCESS_TIMEOUT = _SUBPROCESS_TIMEOUT
@@ -347,7 +347,7 @@ def reap_idle(now: float | None = None) -> list[str]:
 def reap_pressure(now: float | None = None) -> list[str]:
     """托管数超过软上限时，关掉闲置够久且非「执行中」的会话。
 
-    默认上限 12（`CORRAL_KEEPALIVE_MAX_SESSIONS`，`0` 禁用）；候选须 tmux
+    默认上限 8（`CORRAL_KEEPALIVE_MAX_SESSIONS`，`0` 禁用）；候选须 tmux
     无活动超过默认 10 分钟（`CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES`），且关注
     状态不是 working。按空闲最久优先，关到 ≤ 上限或没有合格候选为止——软上限，
     不会拦新建。

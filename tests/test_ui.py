@@ -5215,6 +5215,60 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
                 live.assert_called_once()
                 static.assert_not_called()
 
+    async def test_switching_back_to_hosted_session_stays_live_when_probe_fails(
+        self,
+    ) -> None:
+        """刚开的托管会话切到别人再切回来，探活失败也必须仍是实时画面。
+
+        切走会把右栏换成静态预览。旧逻辑在 refresh 里把 is_alive 假阴性当成
+        死亡并清掉 hosted，回来就画成 Ended + 对话预览。
+        """
+        store, _ = _make_store()
+        live_key = "claude:s0"
+        ended_key = "claude:s1"
+        store.mark_hosted(live_key, "corral-claude-s0")
+        app = CorralApp(store, embed_ok=True)
+        with mock.patch("corral.liveness.is_alive", return_value=False):
+            async with app.run_test(size=(120, 30)) as pilot:
+                await pilot.pause(delay=0.2)
+                screen = app.screen
+                list_view = screen.query_one(SessionListView)
+                area = screen.query_one(SplitPaneArea)
+
+                self.assertTrue(list_view.select_session_key(live_key))
+                screen._follow_current_selection()
+                self.assertTrue(
+                    any(p.keepalive_name == "corral-claude-s0" for p in area.pane_specs()),
+                    "刚托管时应先看到实时格",
+                )
+
+                self.assertTrue(list_view.select_session_key(ended_key))
+                screen._follow_current_selection()
+                self.assertFalse(
+                    any(p.keepalive_name for p in area.pane_specs()),
+                    "切到已结束会话应走静态预览",
+                )
+
+                # 模拟切走期间一轮重扫没把字段写回会话 dict，但本窗口仍登记托管。
+                live_session = store.find_session(live_key)
+                live_session.pop("keepalive_name", None)
+                self.assertEqual(store.hosted.get(live_key), "corral-claude-s0")
+                self.assertTrue(list_view.select_session_key(live_key))
+                with (
+                    mock.patch.object(
+                        area, "show_hosted_group", wraps=area.show_hosted_group,
+                    ) as live,
+                    mock.patch.object(
+                        area, "show_single_preview", wraps=area.show_single_preview,
+                    ) as static,
+                ):
+                    screen._follow_current_selection()
+                live.assert_called()
+                static.assert_not_called()
+                self.assertTrue(
+                    any(p.keepalive_name == "corral-claude-s0" for p in area.pane_specs()),
+                )
+
     async def test_right_pane_wheel_scrolls_while_list_focused(self) -> None:
         """焦点在侧边栏时，鼠标在右栏滚轮仍应滚动静态预览（与焦点无关）。"""
         store, registry = _make_store()

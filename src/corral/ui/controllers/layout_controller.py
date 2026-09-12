@@ -349,10 +349,18 @@ class LayoutControllerMixin:
         entries: list[tuple[dict, str | None, object]] = []
         seen_names: set[str] = set()
         for key in keys:
-            session = self.store.find_session(key)
+            resolve = getattr(self.store, "canonical_session_key", None)
+            canonical = resolve(key) if callable(resolve) else key
+            session = self.store.find_session(canonical)
+            if session is None and canonical != key:
+                session = self.store.find_session(key)
             if session is None:
                 continue
             kname = session.get("keepalive_name")
+            if not kname:
+                hosted_of = getattr(self.store, "hosted_name_for", None)
+                if callable(hosted_of):
+                    kname = hosted_of(canonical)
             if kname:
                 name = str(kname)
                 if name in seen_names:
