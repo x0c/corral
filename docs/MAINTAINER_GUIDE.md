@@ -544,11 +544,12 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 - **Kitty 键盘协议回归用例在 5 个 Python 版本上全挂（确定性，非偶发）。** `TEXTUAL_DISABLE_KITTY_KEY` 原先只在 `cli.py` 顶部 `setdefault`，而 `textual.constants` 是**导入时一次性读环境变量定死**的：任何先 `import textual` 再碰 `corral.cli` 的路径（测试套件、只 `import corral` 的脚本、第三方嵌入）都会让这道保护整个失效。本机之所以一直看不出来，是因为开发环境的 shell 里已经导出了 `TEXTUAL_DISABLE_KITTY_KEY=1`，把问题掩盖掉了——**复现必须 `env -u TEXTUAL_DISABLE_KITTY_KEY` 清掉再跑**。已修：开关上移到 `corral/__init__.py`（包顶层是唯一「任何用法必经」的位置），`cli.py` 不再重复设置。
 - **macOS 作业挂死并空烧 6 小时，进而拖垮整个队列。** 作业没有配 `timeout-minutes`，单测跑到 `test_ui` 后半段卡住后一直占着 runner 直到平台 6 小时上限才被杀。免费额度的 macOS 并发本就少，两个这样的僵尸作业把后续排队拖到 **14 小时以上**（实测：11:48 推送的作业次日 02:22 才开始跑），连带一大片 `cancelled`。已加 `timeout-minutes: 40`，并让 `scripts/ci-test.py` 用 `faulthandler.dump_traceback_later` 在 1500 秒时打印**全部线程栈**再退出——下次再挂，日志里直接能看到卡在哪个用例，而不是只剩一句 `The operation was canceled`。**挂死点已于当天定位并修复**——见下面「macOS 专有挂死」一条，这套打栈机制第一次上线就把它抓了出来（26 分钟自曝，而不是空烧 6 小时）。
 - **已知 Pilot 偶发污染结论。** 见「界面」节的分屏聚焦竞态那条。CI 现在走 `scripts/ci-test.py`，首轮失败的用例自动单独重跑一次，两次都失败才算真回归。
-- **排查「ci-test 跑很久 / 每次都要等很久 / 发版检查跑三遍 / 不要每次都跑这么重 / 是不是卡住了」（2026-08-30；2026-09-12 起默认模块并行）**：单次完整套件仍要数分钟（多核常见约五六分钟），不是故障。墙钟几乎都在界面自动化和真实终端集成；`ci-test.py` 把其它模块与这条串行车道重叠跑（`--jobs` / `CORRAL_TEST_JOBS`，`1` 退回单进程）。日常推送只跑几秒的格式检查。还在刷新的通过行 / shard 完成行、或夹杂「任务执行超过 0.1 秒」= 仍在跑。连续许多分钟零输出、或约 25 分钟打出全部线程栈才是挂死（见上条 macOS 空烧，已修）。发版若连等三轮，是门禁在重复跑同一套（已改为认戳跳过）。禁止把「发版门禁太慢」修成跳过界面/终端集成，或把 Pilot/tmux 模块拆进并行（共享保活 socket 会互抢）。
+- **排查 / 优化「ci-test 跑很久 / 每次都要等很久 / 发版检查跑三遍 / 不要每次都跑这么重 / 是不是卡住了 / 想并行或异步加速」（2026-08-30；2026-09-12 起默认模块并行）**：单次完整套件仍要数分钟（多核常见约四五分钟），不是故障。墙钟几乎都在 `test_ui`（本机约四五分钟）加真实终端集成；`ci-test.py` 把其它模块与这条串行车道重叠跑（`--jobs` / `CORRAL_TEST_JOBS`，默认约 `min(CPU,6)` 且 ≥2；`1` 退回单进程）。日常推送只跑几秒的格式检查。还在刷新的通过行 / shard 完成行、或夹杂「任务执行超过 0.1 秒」= 仍在跑。连续许多分钟零输出、或约 25 分钟打出全部线程栈才是挂死（见上条 macOS 空烧，已修）。发版若连等三轮，是门禁在重复跑同一套（已改为认戳跳过）。**禁止**把「发版门禁太慢」修成：跳过界面/终端集成、只跑改过的文件、用异步协程冒充加速（瓶颈是真实等待不是解释器空转）、或把 Pilot/tmux 模块拆进并行（共享 `tmux -L corral-keepalive` 会互抢）。并行负载下首轮偶发失败可能略多，仍以「失败用例单独重跑一次」为准，不要把首轮 FAIL 直接当回归。
+- **AI 易错点**【改 `ci-test.py` 并行入口】**（2026-09-12）**：子进程跑模块必须与 `discover(start_dir="tests")` 同语义——把 `tests/` 放进 `sys.path`，用顶层名 `test_foo`，**禁止** `tests.test_foo`（仓内无 `tests` 包）。串行车道名单在脚本 `_SERIAL_MODULES`（含 `test_ui` / `test_embed` 与其它 Pilot 模块）；新增真实 tmux 或 Pilot 文件必须登记进该集合。单测用 importlib 加载本脚本时，须先把模块登记进 `sys.modules` 再 `exec_module`（否则 `@dataclass` 会报 `NoneType.__dict__`）。墙钟应接近串行车道时长，不是各模块耗时之和。
 
 另外两处工作流层面的浪费也一并修了：`on: push` 不带过滤时，tag 推送会和同一提交在 `main` 上的推送产生**完全重复的一轮矩阵**（每次发版凭空多 7 个作业），已收窄为 `branches: ["**"]`；并加了 `concurrency` + `cancel-in-progress`，同分支后推的提交自动作废前一轮排队。
 
-改这个工作流或 `scripts/ci-test.py` 后，本机至少验证：`env -u TEXTUAL_DISABLE_KITTY_KEY python scripts/ci-test.py` 全绿，且用临时目录造一个「首轮失败、重跑通过」和一个「两轮都失败」的假用例，确认退出码分别是 0 和 1。
+改这个工作流或 `scripts/ci-test.py` 后，本机至少验证：`env -u TEXTUAL_DISABLE_KITTY_KEY python scripts/ci-test.py` 全绿（默认并行路径），再跑一次 `CORRAL_TEST_JOBS=1` 确认单进程仍绿；并用临时目录造一个「首轮失败、重跑通过」和一个「两轮都失败」的假用例，确认退出码分别是 0 和 1。
 
 ### macOS 专有挂死：`TCSADRAIN` 在无人读取的伪终端上永不返回（2026-07-31 已修）
 
@@ -563,7 +564,7 @@ README/夹具截图用 `python3 docs/screenshots/capture.py`（会清 `NO_COLOR`
 
 `test_projects` 有 7 个用例只在 macOS 挂。macOS 的 `/var` 是指向 `/private/var` 的软链，`tempfile` 交回 `/var/folders/...`，而 `projects.scan_git_roots` 会如实解析成 `/private/var/folders/...`（解析软链是既定行为，`test_scan_resolves_symlink_root` 专门守着），两边字符串对不上。修法是 `tests/test_projects.py` 的 `_temp_root()`：临时目录先 `resolve()` 再当断言基准。
 
-**这类「只在某个平台失败」的问题可以在 Linux 上复现**，别干等 CI：把 `TMPDIR` 指向一个软链目录即可等价重演——`mkdir /tmp/realtmp && ln -s /tmp/realtmp /tmp/linktmp && TMPDIR=/tmp/linktmp python -m unittest tests.test_projects`。修复前失败 6 个、修复后全过，是本次实际用的验证手法。
+**这类「只在某个平台失败」的问题可以在 Linux 上复现**，别干等 CI：把 `TMPDIR` 指向一个软链目录即可等价重演——`mkdir /tmp/realtmp && ln -s /tmp/realtmp /tmp/linktmp && TMPDIR=/tmp/linktmp python -m unittest test_projects`（在仓根且 `tests/` 已在 `PYTHONPATH` / 用 `unittest discover -s tests -p 'test_projects.py'`；**禁止**写成 `tests.test_projects`——与 `ci-test` discover 同语义，仓内无 `tests` 包）。修复前失败 6 个、修复后全过，是本次实际用的验证手法。
 
 ### 焦点竞态：焦点被从刚点进去的格子抢回列表（2026-07-31 已修）
 
