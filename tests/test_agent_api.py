@@ -84,8 +84,7 @@ def _session(history_path: str, **overrides) -> dict:
         "size_bytes": 100,
         "size_kb": 0.1,
         "native_title": None,
-        # 三个候选与 fallback_title 保持一致长度关系，避免 titles._temporary_title 的
-        # "取最短候选" 策略在测试之间选出不同文本，让标题解析结果不稳定。
+        # 三个候选与 fallback_title 保持一致，避免临时标题解析结果不稳定。
         "fallback_title": "天气 App 开发",
         "status_tag": titles.STATUS_DONE,
         "first_user_msg": "天气 App 开发",

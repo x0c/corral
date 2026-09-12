@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import unittest
+from unittest import mock
+
+from corral import i18n, titles
+from corral.models import Handoff
+
+i18n.set_lang("en")
+
+
+def _session(**overrides) -> dict:
+    base = {
+        "source": "cursor",
+        "id": "sample",
+        "mtime": 1,
+        "size_bytes": 100,
+        "size_kb": 0.1,
+        "native_title": None,
+        "fallback_title": None,
+        "first_user_msg": None,
+        "last_user_msg": None,
+        "last_agent_msg": None,
+    }
+    base.update(overrides)
+    return base
+
+
+class TemporaryTitleRankingTests(unittest.TestCase):
+    def test_insult_prefix_does_not_beat_the_real_task(self) -> None:
+        session = _session(
+            native_title="Assemble annotated UI change requests",
+            first_user_msg="怎么把标注请求组装成给 Agent 的说明",
+            last_user_msg="你他妈的，全面排查无效提示词，把全局提示词里过时的入口删掉",
+            fallback_title="怎么把标注请求组装成给 Agent 的说明",
+        )
+
+        title, needs = titles.resolve_initial_title(session, {})
+
+        self.assertEqual(title, "怎么把标注请求组装成给 Agent 的说明")
+        self.assertNotEqual(title, "你他妈的")
+        self.assertTrue(needs)
+
+    def test_compact_title_keeps_substance_after_an_insult(self) -> None:
+        self.assertEqual(
+            titles._compact_title("你他妈的，全面排查无效提示词"),
+            "全面排查无效提示词",
+        )
+
+    def test_closing_doc_update_does_not_replace_the_original_task(self) -> None:
+        session = _session(
+            first_user_msg="修复 JotBox 退出后菜单栏图标还在",
+            last_user_msg="/doc-update",
+            fallback_title="修复 JotBox 退出后菜单栏图标还在",
+        )
+
+        title, needs = titles.resolve_initial_title(session, {})
+
+        self.assertEqual(title, "修复 JotBox 退出后菜单栏图标还在")
+        self.assertNotIn(title, titles._command_label_values())
+        self.assertTrue(needs)
+
+    def test_one_line_handoff_wrapper_is_not_kept_as_title(self) -> None:
+        blob = (
+            "Task: 实现 You are picking up a session from Cursor. "
+            "Start a new session of your own and continue the work"
+        )
+        session = _session(
+            source="claude",
+            first_user_msg=blob,
+            fallback_title=blob,
+            native_title="Fix Corral CI failures",
+        )
+
+        title, needs = titles.resolve_initial_title(session, {})
+
+        self.assertEqual(title, "Fix Corral CI failures")
+        self.assertNotIn("You are picking up", title)
+        self.assertTrue(needs)
+
+    def test_cached_handoff_wrapper_title_is_ignored(self) -> None:
+        session = _session(
+            id="wrap",
+            first_user_msg="修复 Corral 测试失败",
+            fallback_title="修复 Corral 测试失败",
+        )
+        cache = {
+            "cursor:wrap": {
+                "fp": "v4:1",
+                "title": "Task: 实现 You are picking up a session from Cursor. Start a n…",
+            }
+        }
+
+        title, needs = titles.resolve_initial_title(session, cache)
+
+        self.assertEqual(title, "修复 Corral 测试失败")
+        self.assertTrue(needs)
+
+    def test_handoff_task_wrapper_does_not_collapse_to_task(self) -> None:
+        session = _session(
+            source="codex",
+            first_user_msg="Task: 修复 Corral 测试失败",
+            last_user_msg="Task: 修复 Corral 测试失败",
+            fallback_title="Task: 修复 Corral 测试失败",
+        )
+
+        title, needs = titles.resolve_initial_title(session, {})
+
+        self.assertEqual(title, "修复 Corral 测试失败")
+        self.assertNotEqual(title, "Task")
+        self.assertTrue(needs)
+
+    def test_context_free_reply_loses_to_native_task_title(self) -> None:
+        session = _session(
+            native_title="Fix Corral CI failures",
+            first_user_msg="实现",
+            last_user_msg="实现",
+            fallback_title="实现",
+        )
+
+        title, needs = titles.resolve_initial_title(session, {})
+
+        self.assertEqual(title, "Fix Corral CI failures")
+        self.assertTrue(needs)
+
+    def test_scanner_fallback_beats_raw_first_user_when_they_differ(self) -> None:
+        session = _session(
+            first_user_msg="旧首问",
+            last_user_msg="另一条问题",
+            fallback_title="旧标题",
+            native_title="旧标题",
+        )
+
+        title, needs = titles.resolve_initial_title(session, {})
+
+        self.assertEqual(title, "旧标题")
+        self.assertTrue(needs)
+
+    def test_later_execute_reply_does_not_steal_the_first_request(self) -> None:
+        session = _session(
+            first_user_msg="恢复已安装的命令行工具并核对版本",
+            last_user_msg="执行",
+            fallback_title="恢复已安装的命令行工具并核对版本",
+        )
+
+        title, needs = titles.resolve_initial_title(session, {})
+
+        self.assertEqual(title, "恢复已安装的命令行工具并核对版本")
+        self.assertTrue(needs)
+
+    def test_cached_placeholder_success_is_ignored_when_task_exists(self) -> None:
+        session = _session(
+            id="empty-cache",
+            fallback_title="整理应用图标多尺寸变体",
+            first_user_msg="整理应用图标多尺寸变体",
+        )
+        cache = {"cursor:empty-cache": {"fp": "v4:1", "title": "空白会话"}}
+
+        title, needs = titles.resolve_initial_title(session, cache)
+
+        self.assertEqual(title, "整理应用图标多尺寸变体")
+        self.assertTrue(needs)
+
+    def test_cached_session_recap_is_ignored_when_task_exists(self) -> None:
+        session = _session(
+            id="recap",
+            first_user_msg="给 Harbor 加回家离家自动化",
+            last_user_msg="/doc-update",
+            fallback_title="给 Harbor 加回家离家自动化",
+        )
+        cache = {"cursor:recap": {"fp": "v4:1", "title": "Session recap"}}
+
+        title, needs = titles.resolve_initial_title(session, cache)
+
+        self.assertEqual(title, "给 Harbor 加回家离家自动化")
+        self.assertTrue(needs)
+
+    def test_shortest_candidate_is_no_longer_preferred(self) -> None:
+        session = _session(
+            first_user_msg="修复支付回调重复扣款",
+            last_user_msg="好了吗",
+            fallback_title="修复支付回调重复扣款",
+            native_title="pay",
+        )
+
+        title, _needs = titles.resolve_initial_title(session, {})
+
+        self.assertEqual(title, "修复支付回调重复扣款")
+
+
+class TitlePromptTests(unittest.TestCase):
+    def test_prompt_keeps_marker_and_asks_for_insufficient_token(self) -> None:
+        session = _session(
+            first_user_msg="修复 JotBox 退出无效",
+            last_user_msg="/doc-update",
+            fallback_title="修复 JotBox 退出无效",
+            native_title="jotbox-quit",
+        )
+
+        prompt = titles._build_batch_prompt([session])
+
+        self.assertTrue(prompt.startswith(titles.PROMPT_MARKER))
+        self.assertIn(titles.INSUFFICIENT_TITLE_TOKEN, prompt)
+        self.assertIn("user_request", prompt)
+        self.assertNotIn("preferred_title 是扫描器选出的最佳用户意图", prompt)
+        self.assertIn("修复 JotBox 退出无效", prompt)
+        self.assertNotIn("/doc-update", prompt)
+
+    def test_handoff_prompt_uses_digest_instead_of_wrapper_prefix(self) -> None:
+        handoff = Handoff(
+            source_runtime_id="cursor",
+            source_runtime_name="Cursor",
+            title="实现",
+            history_path="/tmp/history.jsonl",
+            original_cwd="/tmp/proj",
+            history_reading_hint="Codex rollout JSONL",
+            conversation_digest="User: 修复 Corral 测试失败\nAssistant: 开始改相关用例",
+        )
+        session = _session(
+            source="codex",
+            id="handoff",
+            first_user_msg=handoff.render_prompt(),
+            last_user_msg=handoff.render_prompt(),
+            fallback_title=handoff.render_prompt(),
+        )
+
+        item = titles._prompt_item(session)
+        prompt = titles._build_batch_prompt([session])
+
+        self.assertEqual(item["inherited_task"], "实现")
+        self.assertIn("修复 Corral 测试失败", item["user_request"])
+        self.assertNotIn("You are picking up a session from", item["user_request"])
+        self.assertTrue(prompt.startswith(titles.PROMPT_MARKER))
+        self.assertIn("修复 Corral 测试失败", prompt)
+
+
+class TitleGenerationStateTests(unittest.TestCase):
+    def test_insufficient_result_waits_for_new_content(self) -> None:
+        session = _session(
+            id="thin",
+            size_bytes=10,
+            fallback_title="在吗",
+            first_user_msg="继续",
+        )
+        cache: dict = {}
+        raw = {"cursor:thin": titles.INSUFFICIENT_TITLE_TOKEN}
+
+        with (
+            mock.patch.object(titles, "generate_titles_batch", return_value=raw),
+            mock.patch.object(titles, "save_cache"),
+        ):
+            result = titles.refresh_titles([session], cache, generator=mock.Mock())
+
+        self.assertEqual(result, {})
+        self.assertEqual(cache["cursor:thin"]["generation_state"], "insufficient")
+        title, needs = titles.resolve_initial_title(session, cache)
+        self.assertFalse(needs)
+        self.assertNotEqual(title, titles.INSUFFICIENT_TITLE_TOKEN)
+
+        grown = dict(session, size_bytes=500, first_user_msg="修复登录页空白", fallback_title="修复登录页空白")
+        grown_title, grown_needs = titles.resolve_initial_title(grown, cache)
+        self.assertEqual(grown_title, "修复登录页空白")
+        self.assertTrue(grown_needs)
+
+    def test_missing_config_retries_after_key_appears(self) -> None:
+        session = _session(
+            source="claude",
+            id="offline",
+            fallback_title="整理离线安装流程",
+        )
+        cache: dict = {}
+
+        with (
+            mock.patch.object(titles.titlegen, "available_generators", return_value=()),
+            mock.patch.object(titles.titlegen, "gateway_key", return_value=None),
+            mock.patch.object(titles, "save_cache"),
+        ):
+            titles.refresh_titles([session], cache)
+
+        self.assertEqual(cache["claude:offline"]["failure_reason"], "missing_config")
+        with mock.patch.object(titles.titlegen, "gateway_key", return_value=None):
+            self.assertFalse(titles.resolve_initial_title(session, cache)[1])
+        with mock.patch.object(titles.titlegen, "gateway_key", return_value="vk-test"):
+            self.assertTrue(titles.resolve_initial_title(session, cache)[1])
+
+    def test_transport_failure_keeps_cooldown_even_if_key_exists(self) -> None:
+        session = _session(id="net", fallback_title="排查网络超时")
+        cache = {
+            "cursor:net": titles._failed_cache_entry(session, reason="transport"),
+        }
+
+        with mock.patch.object(titles.titlegen, "gateway_key", return_value="vk-test"):
+            title, needs = titles.resolve_initial_title(session, cache)
+
+        self.assertEqual(title, "排查网络超时")
+        self.assertFalse(needs)
+
+
+if __name__ == "__main__":
+    unittest.main()

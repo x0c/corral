@@ -9,10 +9,11 @@
 列表滚。置顶块、Pinned 分隔线与未置顶日期段都在 `#sidebar-scroll`
 里一起滚——置顶只改变排序，不冻在视口里。鼠标在固定头（含筛选框）上滚轮
 仍带动会话列表，顶部位置不变。
-置顶块与未置顶块都非空时，中间插一行居中 `Pinned`/`置顶` 的
+置顶块与未置顶块都非空时，中间插一行居中 `Pinned↑`/`置顶↑` 的
 `$primary` 蓝横线；未置顶按本地日历日切桶（今天 / 昨天 / 近 7 日内其余各日用星期几
-/ 更早合成一桶），桶内不重排。命名桶后面还有内容时才在该桶末尾插线（标签标明上面
-这一段）。分隔高 1、disabled、键盘跳过；禁止 Older/其他标签。斑马纹按**块**交替，
+/ 更早合成一桶），桶内不重排。命名桶后面还有内容时才在该桶末尾插线（标签为
+`Today↑` 这种「名字 + 向上箭头」，标明上面这一段）。分隔高 1、disabled、键盘跳过；
+禁止 Older/其他标签。斑马纹按**块**交替，
 不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
 `＋ 新建`、活跃会话看板与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
 起头）。条纹画在 `SessionCard` / `SessionGroupCard` 上，用 `$foreground` 的半透明
@@ -63,6 +64,7 @@ PIN_SEP_ID = "__pin_sep__"
 TODAY_SEP_ID = "__today_sep__"
 YESTERDAY_SEP_ID = "__yesterday_sep__"
 DATE_SEP_PREFIX = "__date_sep_"
+SEP_ABOVE_MARK = "↑"
 GROUP_ID_PREFIX = "__group__-"
 # Named calendar buckets: 0=today, 1=yesterday, 2–6=weekday; 7+ is unlabeled.
 _OLDER_BUCKET = 7
@@ -962,9 +964,11 @@ class ActivityBoardCard(Widget):
 class PinSeparatorCard(Widget):
     """Trailing divider: `─` on both sides, centered label, whole row `$primary`.
 
-    Labels the section above (Pinned / Today / Yesterday / weekday). Never
+    Labels the section above as `{name}↑` (Pinned / Today / Yesterday /
+    weekday). The arrow is appended in render, not in i18n strings. Never
     Older/Other — that would mark sessions below as second-class. Narrow
-    columns clip by display width, not `len()`.
+    columns clip by display width, not `len()`, and keep the arrow when
+    there is room.
     """
 
     ALLOW_SELECT = False
@@ -985,10 +989,16 @@ class PinSeparatorCard(Widget):
         import corral
 
         width = max(10, self.size.width or 40)
-        label = t(self.label_key)
-        # 至少留 ─␠label␠─ 四格；放不下就只画截断后的标签。
+        name = t(self.label_key)
+        # Reserve ─␠label↑␠─ when possible; keep the up-arrow (section above)
+        # unless the column is too narrow even for the mark.
         max_label = max(1, width - 4)
-        fitted = corral._fit_cell(label, max_label).rstrip(" ")
+        arrow_w = corral._text_width(SEP_ABOVE_MARK)
+        if max_label > arrow_w:
+            text = corral._fit_cell(name, max_label - arrow_w).rstrip(" ")
+            fitted = f"{text}{SEP_ABOVE_MARK}"
+        else:
+            fitted = corral._fit_cell(name, max_label).rstrip(" ")
         inner = f" {fitted} "
         inner_w = corral._text_width(inner)
         if inner_w >= width:

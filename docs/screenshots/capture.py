@@ -18,7 +18,7 @@ macOS Homebrew 已装 cairo 时，cairocffi 仍可能报 ``no library called "ca
     export DYLD_FALLBACK_LIBRARY_PATH="/tmp/cairo-libs:$(brew --prefix cairo)/lib"
     python3 docs/screenshots/capture.py
 
-产物写入本目录：list.png（左栏列表 + 右栏完整对话预览；无 Rich 假窗口边框）。
+产物写入本目录：list.png（主界面静图）、search.png（全文搜索）、demo.gif（短操作演示）。
 
 **NO_COLOR：** 许多 CI / Agent 环境默认 `NO_COLOR=1`。Textual 会启用 Monochrome
 滤镜，整屏真彩变灰阶。本脚本在创建 App 前清除该变量；不要在带着 NO_COLOR 的
@@ -62,37 +62,16 @@ if (_homebrew_lib / "libcairo.2.dylib").is_file():
             )
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 os.chdir(ROOT)
 
 import corral
 from corral.models import ConversationMessage
 from corral import session_key
-from corral.split_layout import _FRUIT_EMOJI
 from corral.ui.app import CorralApp
 
 
 OUT_DIR = Path(__file__).resolve().parent
-
-# Rich/Textual SVG 默认 Fira Code，本机常无 CJK；换成 mono+CJK 本地字体，避免豆腐块。
-# CJK 字体必须排在最前：cairosvg 不做逐字形回退，整个文本段只用第一个可用
-# 字体族，把非 CJK 的 "Noto Sans Mono" 前置会让全部中文变成豆腐块（实测）。
-_FONT_CSS = '"Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Droid Sans Fallback", monospace'
-# 代价：`●`（U+25CF）的 East Asian Width 是 Ambiguous，CJK 字体按两格宽画，会
-# 盖掉后面的分隔空格，出图看着像「●项目」。真实终端按一格推进（已实测），所以
-# 这是纯出图字体现象；用 _NARROW_GLYPH_FONT 只给这个字形单独换族来修，不要去改
-# 产品侧的圆点字符或间距。
-# 单引号故意的：这串会写进 SVG 的 style="…" 属性里，用双引号会把属性提前闭合。
-_NARROW_GLYPH_FONT = "'Noto Sans Mono', 'DejaVu Sans Mono', monospace"
-_NARROW_GLYPHS = "●"
-
-# 会话组名前的水果 emoji：session_list.py 把它单独成一个 style span（见该文件
-# render() 注释），这里才能像圆点一样按字形单独换成彩色 emoji 字体——
-# cairosvg 不做逐字形回退，跟 CJK 正文共用字体族只会画出方框。本机没有
-# fonts-noto-color-emoji 时同样会变豆腐块，跟 CJK 缺字体是同类出图环境问题，
-# 不代表产品有问题（真实终端由终端自身的 emoji 字体回退渲染，不受此限）。
-_EMOJI_FONT = "'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif"
-_FRUIT_EMOJI_GLYPHS = "".join(sorted(set(_FRUIT_EMOJI.values())))
 
 # 演示用外层终端底色：对齐左栏列表空区实测色 (#1e242b)，避免右栏垫成
 # corral-dark $background (#0d1117) 后出现「半边深半边浅」的割裂感。
@@ -111,99 +90,34 @@ def _demo_store():
     import time as _time
 
     now = _time.time()
-    sessions = [
-        {
-            "source": "claude",
-            "id": "demo-claude-1",
-            "short_id": "demo1",
-            "mtime": now - _DEMO_AGES[0],
-            "size_bytes": 4096,
-            "size_kb": 4.0,
-            "native_title": "Fix login flake",
-            "fallback_title": "Fix login flake",
-            "cwd": "/Users/demo/Codes/webapp",
-            "cwd_display": "~/Codes/webapp",
-            "live": True,
-            "path": "/tmp/demo-claude-1.jsonl",
-            "first_user_msg": "登录偶发失败，帮我定位",
-            "last_user_msg": "再补一组回归测试",
-            "last_agent_msg": "已加上 flaky 重试与断言",
-        },
-        {
-            "source": "cursor",
-            "id": "demo-cursor-1",
-            "short_id": "democ1",
-            "mtime": now - _DEMO_AGES[1],
-            "size_bytes": 2048,
-            "size_kb": 2.0,
-            "native_title": "Add Cursor runtime",
-            "fallback_title": "Add Cursor runtime",
-            "cwd": "/Users/demo/Codes/corral",
-            "cwd_display": "~/Codes/corral",
-            "live": True,
-            "path": "/tmp/demo-cursor-1",
-            "first_user_msg": "帮我加上 cursor-cli 支持",
-            "last_user_msg": "静态预览也要画 Your prompts",
-            "last_agent_msg": "已改选中即预览",
-        },
-        {
-            "source": "codex",
-            "id": "demo-codex-1",
-            "short_id": "demox1",
-            "mtime": now - _DEMO_AGES[2],
-            "size_bytes": 1024,
-            "size_kb": 1.0,
-            "native_title": "Tighten handoff prompt",
-            "fallback_title": "Tighten handoff prompt",
-            "cwd": "/Users/demo/Codes/corral",
-            "cwd_display": "~/Codes/corral",
-            "live": False,
-            "path": "/tmp/demo-codex-1.jsonl",
-            "first_user_msg": "接力提示词太散",
-            "last_user_msg": "再压一版摘录",
-            "last_agent_msg": "已收敛 digest 字段",
-        },
+    demo = [
+        ("claude", "Fix the login race", "Fix the login race", "Serialize cookie updates and add a regression test."),
+        ("cursor", "Export reports to CSV", "Export reports to CSV", "Include headers and quote values containing commas."),
+        ("codex", "Review login changes", "Review the login changes", "Check cancellation, retries, and cookie expiry."),
     ]
-    conversations = {
-        "claude:demo-claude-1": [
-            ConversationMessage(
-                "user",
-                "登录偶发失败，帮我定位：并发下 session cookie 被覆盖，"
-                "还要核对过期策略、补一组会在高峰期复现的回归，并把失败日志接到现有告警通道",
-            ),
-            ConversationMessage(
-                "assistant",
-                "根因是并发下 session cookie 被覆盖。已加锁并补 flaky 回归。",
-            ),
-            ConversationMessage("user", "再补一组回归测试"),
-            ConversationMessage("assistant", "已加上重试与断言，本地全绿。"),
-            ConversationMessage("user", "失败日志接到现有告警通道"),
-            ConversationMessage("assistant", "已接到 pager，误报阈值跟现网一致。"),
-            ConversationMessage("user", "把这次的根因写进 runbook"),
-            ConversationMessage("assistant", "runbook 补了复现步骤和回滚。"),
-        ],
-        "cursor:demo-cursor-1": [
-            ConversationMessage(
-                "user",
-                "帮我加上 cursor-cli 支持：扫描、恢复、接力、直启都要按完整适配器接入，"
-                "还要把标题生成和会话关注状态一起接上，别只做列表扫描那一层",
-            ),
-            ConversationMessage("assistant", "已按完整适配器接入扫描/恢复/接力/直启。"),
-            ConversationMessage("user", "右栏统一完整预览"),
-            ConversationMessage("assistant", "选中即完整对话；进行中仍走内嵌实时窗口。"),
-            ConversationMessage("user", "静态预览也要画 Your prompts"),
-            ConversationMessage("assistant", "每个分屏格各自一份小窗。"),
-        ],
-        "codex:demo-codex-1": [
-            ConversationMessage("user", "接力提示词太散"),
-            ConversationMessage("assistant", "已把摘录收敛到原始需求 + 最近对话。"),
-        ],
-    }
+    sessions = []
+    conversations = {}
+    for index, (runtime, title, request, reply) in enumerate(demo):
+        ident = f"demo-{runtime}-1"
+        sessions.append({
+            "source": runtime, "id": ident, "short_id": ident,
+            "mtime": now - _DEMO_AGES[index], "size_bytes": 4096, "size_kb": 4.0,
+            "native_title": title, "fallback_title": title,
+            "cwd": "/work/webapp", "cwd_display": "/work/webapp", "live": False,
+            "path": f"/tmp/{ident}.jsonl", "first_user_msg": request,
+            "last_user_msg": "Add a regression test", "last_agent_msg": reply,
+        })
+        conversations[f"{runtime}:{ident}"] = [
+            ConversationMessage("user", request),
+            ConversationMessage("assistant", f"## Findings\n\n{reply}\n\n### Next steps\n\n- Make the change.\n- Cover the edge cases.\n- Run the regression tests."),
+            ConversationMessage("user", "Add a regression test"),
+            ConversationMessage("assistant", "The regression test now reproduces the issue reliably.\n\n```text\nTests: 24 passed\nFailures: 0\n```\n\nThe change is ready for review."),
+        ]
     # 截图用稳定「已生成」标题，避免转圈兜底文案进 README
     demo_titles = {
-        "claude:demo-claude-1": "Fix login flake",
-        "cursor:demo-cursor-1": "Add Cursor runtime",
-        "codex:demo-codex-1": "Tighten handoff prompt",
+        "claude:demo-claude-1": "Fix the login race",
+        "cursor:demo-cursor-1": "Export reports to CSV",
+        "codex:demo-codex-1": "Review login changes",
     }
 
     from unittest import mock
@@ -356,130 +270,80 @@ def _strip_window_chrome(svg_text: str) -> str:
 
 
 def _prepare_svg(svg_text: str) -> str:
-    """去假窗口铬、远程 @font-face，换成带 CJK 的本地字体，并去掉 textLength/逐行 clip。
-
-    Rich 按 Fira Code 字宽写了 textLength；换成 Droid 后字宽对不上，cairosvg
-    会把字形压成豆腐块。去掉强制字宽与行裁剪后，截图可读（间距略松一点可接受）。
-    """
+    """Keep terminal cell geometry and clipping while using an installed font."""
     svg_text = _strip_window_chrome(svg_text)
     svg_text = re.sub(r"@font-face\s*\{.*?\}", "", svg_text, flags=re.S)
-    svg_text = re.sub(
-        r"font-family:\s*Fira Code,\s*monospace;",
-        f"font-family: {_FONT_CSS};",
-        svg_text,
-    )
-    svg_text = re.sub(
-        r'font-family:\s*"Fira Code"',
-        f"font-family: {_FONT_CSS}",
-        svg_text,
-    )
-    # 侧边栏关注圆点在 SVG 里是独立 `<text>`（内容就一个字形、不含中文），只给
-    # 这类元素换成非 CJK 等宽族，圆点就按一格宽画、不再吃掉后面的分隔空格。必须
-    # 限定「内容恰为该字形」：右栏对话里的 `●` 与中文同段，换族会整段变豆腐块。
-    svg_text = re.sub(
-        rf"(<text\b[^>]*)(>[{_NARROW_GLYPHS}]</text>)",
-        rf'\1 style="font-family: {_NARROW_GLYPH_FONT}"\2',
-        svg_text,
-    )
-    # 会话组名前的水果 emoji 同理：内容恰为该字形时才单独换成彩色 emoji 字体。
-    svg_text = re.sub(
-        rf"(<text\b[^>]*)(>[{_FRUIT_EMOJI_GLYPHS}]</text>)",
-        rf'\1 style="font-family: {_EMOJI_FONT}"\2',
-        svg_text,
-    )
-    svg_text = re.sub(r'\s+textLength="[^"]*"', "", svg_text)
-    svg_text = re.sub(r'\s+clip-path="url\([^"]+\)"', "", svg_text)
-    # Droid Sans Fallback 无真正的 bold；合成粗体时 cairosvg 常把字形渲成空框。
-    svg_text = re.sub(r"font-weight:\s*bold;?", "", svg_text)
-    return svg_text
+    return svg_text.replace("Fira Code", "Menlo")
 
 
 def _svg_to_png(svg_path: Path, png_path: Path) -> None:
     prepared = _prepare_svg(svg_path.read_text(encoding="utf-8"))
     prepared_path = svg_path.with_suffix(".prepared.svg")
     prepared_path.write_text(prepared, encoding="utf-8")
-
-    # cairosvg 可能装在另一份 Python（如 python3.11）；本解释器没有就 subprocess 调。
-    converters: list[list[str]] = []
-    try:
-        from cairosvg import svg2png  # noqa: F401
-        converters.append([sys.executable, "-c", _CAIRO_SNIPPET, str(prepared_path), str(png_path)])
-    except (ImportError, OSError):
-        # OSError: cairosvg imports but libcairo isn't on the loader path
-        # (Homebrew cairo lives in /opt/homebrew/lib; uv's Python won't see it).
-        pass
-    for candidate in ("python3.11", "python3.12", "python3"):
-        converters.append([candidate, "-c", _CAIRO_SNIPPET, str(prepared_path), str(png_path)])
-
-    last_err: Exception | None = None
-    for cmd in converters:
-        try:
-            subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            return
-        except (OSError, subprocess.CalledProcessError) as exc:
-            last_err = exc
-            continue
-
-    # 最后才回退 ImageMagick：对 Rich 的 per-glyph clipPath 支持很差，常出空白图。
-    try:
-        subprocess.check_call(
-            ["convert", "-background", "#121212", str(prepared_path), str(png_path)],
-        )
-        print(
-            "warning: cairosvg 不可用，已回退 ImageMagick convert；"
-            "Rich SVG 常被渲成空白，请 pip install cairosvg",
-            file=sys.stderr,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            "无法将 SVG 转为 PNG：请安装 cairosvg（pip install cairosvg）"
-        ) from (last_err or exc)
+    renderer = os.environ.get("CORRAL_SCREENSHOT_RENDERER")
+    if renderer:
+        subprocess.run(["node", renderer, str(prepared_path), str(png_path)], check=True)
+        return
+    from cairosvg import svg2png
+    svg2png(bytestring=prepared.encode(), write_to=str(png_path))
 
 
-_CAIRO_SNIPPET = (
-    "import sys; from cairosvg import svg2png; "
-    "svg2png(url=sys.argv[1], write_to=sys.argv[2])"
-)
+def _save_frame(app, png_path: Path) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        svg = app.save_screenshot(png_path.name.replace(".png", ".svg"), path=td)
+        _svg_to_png(Path(td) / Path(svg).name, png_path)
+        _assert_png_sane(png_path)
+
+
+def _write_gif(frame_paths: list[Path], dest: Path, durations_ms: list[int]) -> None:
+    from PIL import Image
+
+    if len(frame_paths) != len(durations_ms):
+        raise ValueError("each GIF frame needs a duration")
+    opened = [Image.open(path).convert("RGBA") for path in frame_paths]
+    width = min(960, opened[0].width)
+    if opened[0].width != width:
+        ratio = width / opened[0].width
+        opened = [
+            frame.resize(
+                (width, max(1, int(frame.height * ratio))),
+                Image.Resampling.LANCZOS,
+            )
+            for frame in opened
+        ]
+    quantized = [
+        frame.convert("P", palette=Image.ADAPTIVE, colors=128) for frame in opened
+    ]
+    quantized[0].save(
+        dest,
+        save_all=True,
+        append_images=quantized[1:],
+        duration=durations_ms,
+        loop=0,
+        optimize=True,
+        disposal=2,
+    )
+    if dest.stat().st_size > 2_000_000:
+        raise RuntimeError(f"demo GIF is {dest.stat().st_size} bytes; shorten the clip")
+
 
 async def _capture() -> None:
+    """Capture the real terminal UI with isolated English demo conversations."""
     from corral import split_layout
 
     store = _demo_store()
     with tempfile.TemporaryDirectory() as layout_td:
-        with mock.patch.dict(
-            os.environ, {"CORRAL_CACHE_DIR": str(layout_td)}, clear=False,
-        ):
+        with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": layout_td}, clear=False):
             split_layout.reset_default_layout_db()
-            keys = ["cursor:demo-cursor-1", "codex:demo-codex-1"]
-            seed = split_layout.default_layout_db().set_group(
-                "/Users/demo/Codes/corral", keys, focus_key=keys[0]
-            )
-            group_id = seed.get_group(keys[0]).group_id
-            split_layout.default_layout_db().apply(
-                lambda store: (
-                    setattr(store.groups[group_id], "name", "Group Pineapple"),
-                    setattr(store.groups[group_id], "collapsed", False),
-                )
-            )
-            split_layout.reset_default_layout_db()
-
-            app = CorralApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
-            if app.no_color:
-                raise RuntimeError(
-                    "CorralApp.no_color 仍为 True：NO_COLOR 未在创建 App 前清除，截图会灰阶"
-                )
-            async with app.run_test(size=(140, 36)) as pilot:
-                await pilot.pause(delay=0.4)
-                # 默认高亮独立会话；再 ↓ 一次落到会话组，让截图同时看到
-                # 「独立卡无条纹 / 组卡+成员同色条纹 / 选中底压过条纹」。
-                await pilot.press("down")
-                await pilot.pause(delay=0.5)
-                with tempfile.TemporaryDirectory() as td:
-                    svg = app.save_screenshot("list.svg", path=td)
-                    png_path = OUT_DIR / "list.png"
-                    _svg_to_png(Path(td) / Path(svg).name, png_path)
-                    _assert_png_sane(png_path)
-                print(f"wrote {OUT_DIR / 'list.png'}")
+            try:
+                app = CorralApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
+                async with app.run_test(size=(120, 32)) as pilot:
+                    await pilot.pause(delay=0.6)
+                    await _collapse_hud(pilot)
+                    _save_frame(app, OUT_DIR / "list.png")
+                    print(f"wrote {OUT_DIR / 'list.png'}")
+            finally:
+                split_layout.reset_default_layout_db()
 
 
 def _assert_png_sane(png_path: Path) -> None:
@@ -529,27 +393,82 @@ async def _capture_search() -> None:
                 app = CorralApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
                 async with app.run_test(size=(140, 36)) as pilot:
                     await pilot.pause(delay=0.4)
+                    await _collapse_hud(pilot)
                     await pilot.press("ctrl+f")
-                    for _ in range(100):
-                        if (
-                            isinstance(app.screen, FullTextSearchModal)
-                            and not app.screen._indexing
-                        ):
-                            break
-                        await asyncio.sleep(0.05)
-                    else:
-                        raise RuntimeError("全文搜索弹窗没有就绪")
+                    await _wait_search_ready(app)
                     modal = app.screen
-                    modal.query_one("#search-query").load_text("回归")
+                    modal.query_one("#search-query").load_text("regression")
                     await pilot.pause(delay=0.5)
-                    if not modal._matches:
+                    if not isinstance(modal, FullTextSearchModal) or not modal._matches:
                         raise RuntimeError("演示查询没有命中，截图会是空列表")
+                    _save_frame(app, OUT_DIR / "search.png")
+                    print(f"wrote {OUT_DIR / 'search.png'}")
+            finally:
+                split_layout.reset_default_layout_db()
+
+
+async def _collapse_hud(pilot) -> None:
+    await pilot.press("ctrl+g")
+    await pilot.pause(delay=0.2)
+
+
+async def _wait_search_ready(app, *, tries: int = 100) -> None:
+    from corral.ui.search_modal import FullTextSearchModal
+
+    for _ in range(tries):
+        if isinstance(app.screen, FullTextSearchModal) and not app.screen._indexing:
+            return
+        await asyncio.sleep(0.05)
+    raise RuntimeError("全文搜索弹窗没有就绪")
+
+
+async def _capture_demo_gif() -> None:
+    """Short sanitized walkthrough: switch sessions, search, then split."""
+    from corral import split_layout
+    from corral.ui.search_modal import FullTextSearchModal
+
+    store = _demo_store()
+    with tempfile.TemporaryDirectory() as layout_td:
+        with mock.patch.dict(os.environ, {"CORRAL_CACHE_DIR": layout_td}, clear=False):
+            split_layout.reset_default_layout_db()
+            try:
+                app = CorralApp(store, embed_ok=True, osc_report=_DEMO_OSC_REPORT)
+                async with app.run_test(size=(120, 32)) as pilot:
+                    await pilot.pause(delay=0.6)
+                    await _collapse_hud(pilot)
                     with tempfile.TemporaryDirectory() as td:
-                        svg = app.save_screenshot("search.svg", path=td)
-                        png_path = OUT_DIR / "search.png"
-                        _svg_to_png(Path(td) / Path(svg).name, png_path)
-                        _assert_png_sane(png_path)
-                    print(f"wrote {png_path}")
+                        frame_dir = Path(td)
+                        list_frame = frame_dir / "01-list.png"
+                        switch_frame = frame_dir / "02-switch.png"
+                        search_frame = frame_dir / "03-search.png"
+                        split_frame = frame_dir / "04-split.png"
+                        _save_frame(app, list_frame)
+                        await pilot.press("down")
+                        await pilot.pause(delay=0.4)
+                        _save_frame(app, switch_frame)
+                        await pilot.press("ctrl+f")
+                        await _wait_search_ready(app)
+                        app.screen.query_one("#search-query").load_text("regression")
+                        await pilot.pause(delay=0.5)
+                        if (
+                            not isinstance(app.screen, FullTextSearchModal)
+                            or not app.screen._matches
+                        ):
+                            raise RuntimeError("演示查询没有命中，动图会是空列表")
+                        _save_frame(app, search_frame)
+                        await pilot.press("escape")
+                        await pilot.pause(delay=0.3)
+                        keys = [session_key(session) for session in store.all_sessions()[:2]]
+                        app.screen._open_split_from_selection(keys)
+                        await pilot.pause(delay=0.6)
+                        _save_frame(app, split_frame)
+                        gif_path = OUT_DIR / "demo.gif"
+                        _write_gif(
+                            [list_frame, switch_frame, search_frame, split_frame],
+                            gif_path,
+                            [2000, 2200, 2800, 3200],
+                        )
+                        print(f"wrote {gif_path}")
             finally:
                 split_layout.reset_default_layout_db()
 
@@ -557,6 +476,7 @@ async def _capture_search() -> None:
 def main() -> None:
     asyncio.run(_capture())
     asyncio.run(_capture_search())
+    asyncio.run(_capture_demo_gif())
 
 
 if __name__ == "__main__":

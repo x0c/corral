@@ -271,7 +271,7 @@ flowchart TD
 
 - **AI 易错点**【禁止】在 Corral 恢复列表 / 侧栏扫描打开 SessKit 的 `include_missing_cwd` → 默认必须继续丢掉「项目 cwd 已不存在」的会话（原因：恢复入口只应列出还能进目录开跑的会话；归档检索才用 SessKit CLI `--include-missing-cwd`）。
 - **AI 易错点**【禁止】为「与 SessKit CLI 一致」把桥接改成缺失历史就抛错 → Corral 必须软失败返回空列表（原因：一个损坏文件不能拖垮主界面；CLI 硬失败是产品面差异，见 §1 2026-09-11 注）。
-- **AI 易错点**【禁止】`SessionStore` / 列表合并相关单测在有本机托管窗格时不 mock `list_managed_hosts`（或未设 `CORRAL_ISOLATE_MANAGED_HOSTS=1`）→ 真窗格会灌进空扫描夹具，表现为「夹具会话被挤掉 / 顺序断言莫名失败」（原因：`_adopt_foreign_hosted` 会认领本机保活 socket）。
+- **AI 易错点**【禁止】`SessionStore` / 列表合并相关单测在有本机托管窗格时不 mock `list_managed_hosts`（或未设 `CORRAL_ISOLATE_MANAGED_HOSTS=1`）→ 真窗格会灌进空扫描夹具，表现为「夹具会话被挤掉 / 顺序断言莫名失败」（原因：`_adopt_foreign_hosted` 会认领本机保活 socket）。**反向同样成立（2026-09-12 真机）**：界面测试若把测试托管开在真实保活通道（`selftest.sh` 与部分 `test_ui` 直启本来就会），正在用的 TUI 会把 `corral-claude-s0` / `corral-claude-directli`（`directlist01` 截成 8 位）认领成用户卡片。cwd 常是 `cli/`，无历史文件、点开没有消息预览；若真实 `titles.json` 也被单测写过 `claude:s0` → `生成s0`，侧栏就会显示「cli 生成 s0」。这不是标题生成去调了 Claude，也不要按「Claude 历史漏过滤」去改扫描器。单测必须隔离 `CORRAL_CACHE_DIR`；碰真实保活通道的用例必须收掉自己建的名字，不得让机主 TUI 当作用户会话。
 - **AI 易错点**【禁止】用 Claude 的 `stop_reason` 判断 assistant 文本是否应展示 → 必须只要存在非空 text 分片就保留（原因：thinking、文本与工具调用是独立顶层记录，却可能共享 `tool_use` 的 stop reason）。
 - **AI 易错点**【禁止】把原始 `type: "user"` 一律视为真人输入 → 必须检查 `origin.kind`；Claude 只接受缺失或 `human`，Kimi 只接受缺失或 `user`（原因：Monitor、task-notification 等系统注入会伪装在用户轮次中）。
 - **AI 易错点**【禁止】让完整对话出现 system、think、工具定义、工具结果或空文本 → 对话预览只保留真实用户消息和助手最终可读答复（原因：右栏是用户对话预览，不是原始事件调试器）。

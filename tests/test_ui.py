@@ -2804,7 +2804,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             sep_item = list_view.query_one(f"#{PIN_SEP_ID}")
             self.assertTrue(sep_item.disabled)
             plain = seps[0].render().plain
-            self.assertIn("Pinned", plain)
+            self.assertIn("Pinned↑", plain)
             self.assertNotIn("Today", plain)
             self.assertNotIn("其他", plain)
             self.assertNotIn("Other", plain)
@@ -3004,12 +3004,23 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
     def test_separator_render_centers_label(self) -> None:
         card = PinSeparatorCard("list.sep_pinned")
         plain = card.render().plain
-        self.assertIn("Pinned", plain)
+        self.assertIn("Pinned↑", plain)
         self.assertTrue(plain.startswith("─"))
-        after = plain.split("Pinned", 1)[1]
+        after = plain.split("Pinned↑", 1)[1]
         self.assertTrue(after.lstrip().startswith("─") or after.startswith("─"))
         self.assertNotIn("Other", plain)
         self.assertNotIn("其他", plain)
+
+    def test_date_separator_labels_append_up_arrow(self) -> None:
+        for key in (
+            "list.sep_today",
+            "list.sep_yesterday",
+            "list.sep_monday",
+        ):
+            plain = PinSeparatorCard(key).render().plain
+            self.assertTrue(plain.endswith("↑") or "↑" in plain)
+            name = t(key)
+            self.assertIn(f"{name}↑", plain)
 
     async def test_today_separator_between_recent_and_older(self) -> None:
         """今天与更早都有时画 Today 线；today 全在线前、older 全在线后。"""
@@ -3037,7 +3048,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(identities[sep_at + 1 :], ["claude:old-c"])
             plains = [card.render().plain for card in list_view.query(PinSeparatorCard)]
             joined = "\n".join(plains)
-            self.assertIn("Today", joined)
+            self.assertIn("Today↑", joined)
             self.assertNotIn("Pinned", joined)
             self.assertNotIn("Other", joined)
             self.assertNotIn("其他", joined)
@@ -3079,9 +3090,9 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 card.render().plain for card in list_view.query(PinSeparatorCard)
             ]
             joined = "\n".join(plains)
-            self.assertIn("Today", joined)
-            self.assertIn("Yesterday", joined)
-            self.assertIn(t(_sep_label_key(weekday_sep)), joined)
+            self.assertIn("Today↑", joined)
+            self.assertIn("Yesterday↑", joined)
+            self.assertIn(f"{t(_sep_label_key(weekday_sep))}↑", joined)
             self.assertNotIn("Other", joined)
             self.assertNotIn("Older", joined)
             self.assertNotIn("其他", joined)
@@ -3250,9 +3261,9 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                     card.render().plain for card in list_view.query(PinSeparatorCard)
                 ]
                 joined = "\n".join(plains)
-                self.assertIn("置顶", joined)
-                self.assertIn("今天", joined)
-                self.assertIn("昨天", joined)
+                self.assertIn("置顶↑", joined)
+                self.assertIn("今天↑", joined)
+                self.assertIn("昨天↑", joined)
                 self.assertNotIn("Pinned", joined)
                 self.assertNotIn("Today", joined)
                 self.assertNotIn("Yesterday", joined)
@@ -4642,7 +4653,7 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             "mtime": 100.0, "size_bytes": 1, "size_kb": 1,
             "native_title": "旧标题", "fallback_title": "旧标题",
             "cwd": "/tmp/corral", "live": False, "path": "/tmp/corral-detail.jsonl",
-            "first_user_msg": "旧首问", "last_user_msg": "旧问题",
+            "first_user_msg": "旧标题", "last_user_msg": "旧问题",
             "last_agent_msg": "旧回复",
         }
         new_session = dict(
@@ -4650,12 +4661,18 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             mtime=200.0,
             native_title="新标题",
             fallback_title="新标题",
+            first_user_msg="新标题",
             last_user_msg="新问题",
             last_agent_msg="新回复",
         )
         runtime = mock.Mock(id="claude", display_name="Claude")
         runtime.scan_signature.return_value = None
-        runtime.scan_sessions.side_effect = [[old_session], [new_session]]
+        scan_state = {"use_new": False}
+
+        def _scan(*_args, **_kwargs):
+            return [new_session] if scan_state["use_new"] else [old_session]
+
+        runtime.scan_sessions.side_effect = _scan
         runtime.load_conversation.side_effect = [
             [
                 corral.ConversationMessage("user", "旧问题"),
@@ -4691,6 +4708,9 @@ class MainScreenNavigationTests(unittest.IsolatedAsyncioTestCase):
             card_before = list_view._session_cards()[0]
             await _wait_until(lambda: "旧标题" in pane.render().plain)
             old_snapshot = store.sessions["claude"][0]
+            scan_state["use_new"] = True
+            store._last_local_scan_at = None
+            store._last_full_merge_at = None
 
             with mock.patch.object(corral.liveness, "annotate"):
                 self.assertTrue(store.refresh())
@@ -5925,10 +5945,10 @@ class FooterActionGatingTests(unittest.TestCase):
 
 
 class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
-    """底栏右端常驻版本号；不再展示框架自带的 `^p palette`。"""
+    """底栏右端常驻仓库名与版本号；不再展示框架自带的 `^p palette`。"""
 
-    async def test_footer_shows_version_without_command_palette(self) -> None:
-        from corral.ui.footer import CorralFooter
+    async def test_footer_shows_brand_and_version_without_command_palette(self) -> None:
+        from corral.ui.footer import BRAND_LABEL, CorralFooter, _FooterBrand
 
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
@@ -5937,14 +5957,34 @@ class FooterVersionTests(unittest.IsolatedAsyncioTestCase):
             footer = app.screen.query_one(Footer)
             self.assertIsInstance(footer, CorralFooter)
             await _wait_until(lambda: bool(footer.query("#footer-version")))
+            brand = footer.query_one("#footer-brand", _FooterBrand)
             version = footer.query_one("#footer-version", Label)
+            self.assertEqual(str(brand.content), BRAND_LABEL)
+            self.assertEqual(BRAND_LABEL, "x0c/corral")
             self.assertEqual(str(version.content), f"v{corral.__version__}")
+            self.assertFalse(brand.can_focus)
             right = footer.query_one("#footer-right")
             kids = list(right.children)
-            self.assertEqual([child.id for child in kids], ["footer-version"])
+            self.assertEqual([child.id for child in kids], ["footer-brand", "footer-version"])
+            self.assertFalse(right.can_focus)
+            self.assertFalse(right.can_focus_children)
             self.assertFalse(
                 any("-command-palette" in child.classes for child in footer.query("*"))
             )
+
+    async def test_footer_brand_opens_github_without_stealing_focus(self) -> None:
+        from corral.ui.footer import GITHUB_URL
+
+        store, _ = _make_store()
+        app = CorralApp(store, embed_ok=False)
+        async with app.run_test(size=(100, 30)) as pilot:
+            footer = app.screen.query_one(Footer)
+            await _wait_until(lambda: bool(footer.query("#footer-brand")))
+            focused_before = app.screen.focused
+            with mock.patch.object(app, "open_url") as open_url:
+                await pilot.click("#footer-brand")
+                open_url.assert_called_once_with(GITHUB_URL)
+            self.assertIs(app.screen.focused, focused_before)
 
     async def test_footer_hides_back_to_list_and_toggle_sidebar(self) -> None:
         """回列表 / 显隐侧栏仍绑着，底栏不再画出来（点按界面已有同一条路）。"""

@@ -801,7 +801,8 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
         entry = cache["claude:offline"]
         self.assertEqual(entry["generation_state"], "failed")
         self.assertEqual(entry["generation_version"], titles.TITLE_CACHE_VERSION)
-        self.assertEqual(titles.resolve_initial_title(sessions[0], cache), ("整理离线安装流程", False))
+        with mock.patch.object(titles.titlegen, "gateway_key", return_value=None):
+            self.assertEqual(titles.resolve_initial_title(sessions[0], cache), ("整理离线安装流程", False))
 
     def test_refresh_titles_partial_result_marks_missing_and_low_value_items_finished(self) -> None:
         sessions = [

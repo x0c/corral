@@ -4,11 +4,24 @@
 
 iOS and TUI must use the same session-title generation logic, generation channel, and resulting title for the same host and session. iOS must not independently generate a competing title.
 
+**Title quality requirement (2026-09-12):** a title must identify the session's task without requiring the reader to open the conversation. Standalone insults, `Task`, `实现`, and a closing `Session recap` command label do not satisfy this requirement for a substantive work session.
+
+**Remediation delivered (2026-09-12):** local fallback ranking, handoff/command stripping, generation prompt, and cache acceptance now follow that requirement. Confirmed-valid cached successes still stay stable; demonstrably invalid cached strings (bare command labels, empty-session placeholders, context-free `实现`/`执行`/`Task`, truncated handoff wrappers) are no longer treated as successes. The investigation below remains the evidence record.
+
 ## Status and scope
 
 **Host implementation delivered (2026-09-11):** shared `TitleState` + `poll_title_updates`, remote title-only list/metadata events with additive `revision`, remote path injects the same title daemon launcher as the TUI, and generation transport is the shared OpenAI-compatible LLM gateway (`titlegen.py`). Existing successful cache entries are preserved (no mass regeneration).
 
-Still out of this host slice: iOS identity-store merge / stale-revision rejection on the phone (additive `revision` is already on the wire), and end-to-end iPhone vs TUI screen acceptance. Parent release verifies and ships.
+**Title-quality slice delivered (2026-09-12):**
+
+1. Temporary titles prefer the scanner fallback (already the first real request after scanner scoring), then the raw first user message, then native title, over later confirmations, wrap-up commands, and insults. Shortest-candidate ranking is gone. Emotional prefixes are stripped when later text still names the task. Corral handoff wrappers (`Task: …` plus the pickup boilerplate) are not titles.
+2. Generation input is bounded task context (`user_request`, optional `later_user`, `assistant`, `native_title` as auxiliary, `inherited_task` as untrusted). The prompt must keep `PROMPT_MARKER`, must not call native titles the user's intent, and must allow `__INSUFFICIENT__` instead of inventing a title.
+3. `__INSUFFICIENT__` is stored as `generation_state=insufficient` and retries only when the content fingerprint changes. Missing gateway configuration is `failure_reason=missing_config` and retries as soon as a virtual key is present; transport failures keep the six-hour cooldown.
+4. Do not restore assistant CLI generation. Do not read every transcript database on the list's first-paint path.
+
+Still out of this host slice: iOS identity-store merge / stale-revision rejection on the phone (additive `revision` is already on the wire), end-to-end iPhone vs TUI screen acceptance, and provisioning a Corral virtual key on a machine that has none. Parent release verifies and ships. Without a key, the improved local fallback is what the list shows during cooldown.
+
+**Do not treat a sidebar row like `cli 生成 s0` as proof that title generation still launches Claude.** The 2026-09-12 Mac case was a test-hosted empty shell (no history, so no preview) wearing a cache key written by unit tests. Generation transport is the gateway; the retired “use whichever assistant recently succeeded” CLI rotation must not come back. Isolation of old CLI noise remains `PROMPT_MARKER` filtering, not a private history room.
 
 This scope covers Corral titles on one owning host, not independently generated native assistant UI titles or deduplication of copied histories across hosts.
 
@@ -20,6 +33,42 @@ This scope covers Corral titles on one owning host, not independently generated 
 - Production remote construction (`RemoteDaemon` / default `RemoteService` hub) injects `default_title_spawn_fn` → `corral._spawn_title_daemon`. Bare `SessionHub()` leaves spawn unset so tests stay side-effect free.
 - Generation uses gateway aliases from live `/v1/models`, preferring `budget-chat` when present. Config: `~/.config/corral/llm-gateway.json` with `base_url`, `api_key`, optional `model`. Env overrides: `CORRAL_LLM_GATEWAY_URL`, `CORRAL_LLM_GATEWAY_KEY`, `CORRAL_TITLE_MODEL`. Default base URL: `http://10.10.10.2:18081/v1`. **Maintainer note:** this Mac had no provisioned Corral virtual key in env/keychain/`~/.config/corral/`; generation stays unavailable until a virtual key is written to that config (or `CORRAL_LLM_GATEWAY_KEY`). Title sync/propagation of existing cache entries does not require a key.
 
+## Local title-quality investigation (2026-09-12)
+
+**Status: diagnosis recorded 2026-09-12; title-quality slice implemented the same day.** The installed Mac command at investigation time reported 0.24.191 and loaded this checkout through its pipx interpreter. A read-only `corral list --limit 300 --compact` returned 730 sessions: Cursor 277, Codex 236, OpenCode 189, Pi 20, Claude 8; no Kimi rows were returned. Inspected six deterministic samples per represented runtime plus targeted anomalies, comparing displayed titles, cache state, scanner excerpts, and selected native history metadata. Counts describe this bounded scan, not all history or a measured bad-title rate. Historical cache entries do not retain generator/model/request provenance.
+
+### Confirmed failure paths
+
+| Symptom | Evidence and mechanism |
+|---|---|
+| An insult replaces a meaningful task title | A Cursor sample had a meaningful native title and an initial question about assembling annotation requests. Its final user prompt started with an insult followed by the actual request. `_compact_title` split at punctuation and kept the insult; `_temporary_title` chose it because it was shorter than every meaningful candidate. An independent Codex sample and OpenCode samples show the same shortest-candidate problem. |
+| `Session recap` replaces the original task | Four Cursor rows displayed this title. Their final prompt was `/doc-update`; `_normalize_title` translated that command through `session.title.cmd.doc_update`, and the resulting label won the shortest-candidate comparison. This text is Corral's command label, not evidence of a model hallucinating a summary. English labels can appear on Chinese conversations via this fallback path. |
+| `Task` after switching assistants | Two Codex samples and one Claude sample began with Corral's handoff text `Task: ...`. `_compact_title` split at the colon, retained `Task` (four characters), and accepted it as meaningful. One chain starts at the Cursor `实现` sample and carries that weak title into the Claude handoff. This is a shared handoff/presentation defect, not proof that either native parser misidentified the runtime. |
+| `实现`, `执行`, and similar context-free replies | The Cursor `实现` sample had a native title describing a CI problem, but its first prompt was only `实现`; shorter text displaced the useful native title. Two OpenCode `执行` samples had clear initial tasks about application code and restoring an installed utility, yet the final confirmation won. Excluding only a few known small-talk strings is insufficient. |
+| Old `空白会话` / `新建会话` remains on a substantive conversation | Two Codex records were accepted as successful cached titles even though current excerpts clearly described icon variants and fixing application exit. The validator rejects some synonymous empty-session phrases but accepts these. Accepted successes ignore later content growth. The original generation input, model, and failure timeline are not retained, so the exact historical origin is unproven. A separate `回复正常` sample really was a response-check task; short titles alone are not sufficient evidence of corruption. |
+| No automatic recovery from weak fallback titles | The actual installed interpreter reported no configured gateway key, no default config file, and zero available generators. In the 730-row scan, 266 rows had failed cache records, 432 had non-failed records, and 32 had no matching record. The complete cache snapshot contained 857 entries, including 287 failures; it also contains entries outside the scan and test-looking identities, so do not use its total as the number of real sessions. Missing configuration enters `_persist_failed_sessions` without a model request. Failed records impose a six-hour cooldown; retrying cannot help while configuration remains absent. This verifies the current invoking environment, not the unseen environment of every already-running process. |
+
+Failed-cache titles are not necessarily what the user sees: `resolve_initial_title` recomputes the local fallback during cooldown. In the insult sample, the persisted failed title was still meaningful, while the displayed title had already degraded to the latest insult. Inspecting `titles.json` alone would miss this case.
+
+### Runtime-specific input limitations
+
+- Cursor supplies native metadata title as its first fallback candidate, with first/last prompts from `prompt_history.json` (newest first). It leaves the assistant excerpt empty in the list path. Before 2026-09-12 the batch prompt called `preferred_title` the "best user intent"; current prompts label `native_title` as auxiliary metadata. The `实现` sample has little task information in its three plain prompt-history entries, although its native title supplies useful context.
+- Codex and Claude can receive Corral handoff wrappers as their first apparent user request. The wrapper must not become the task; a short excerpt can be consumed by boilerplate before reaching inherited context.
+- OpenCode provides useful initial task and assistant excerpts in the inspected examples. Their loss occurred in shared fallback selection, so a blanket OpenCode parser rewrite is not supported by this evidence.
+- All 20 returned Pi rows had non-failed cache entries; six sampled titles were interpretable. This sample neither establishes universal Pi correctness nor supports blaming Pi for the reported symptoms.
+
+### Remediation boundaries and acceptance
+
+At investigation time, generation readiness meant that a temporary candidate passed a small lexical rejection list, not that the task was understandable. `Task` and `实现` passed this check. A result then became stable without a recorded input-quality assessment. The input prompt used only `preferred_title`, first user, last user, and last assistant excerpts, each capped at 300 characters. Intermediate planning context was absent; raw handoff text could consume the user excerpt. Repair must separate "not enough task information yet" from a transport failure or a valid final title. A later substantive request should allow a previously insufficient candidate to be reconsidered; a trailing confirmation, command, or emotional remark should not replace an established task. This does not require regenerating after every message or waiting until the whole session ends.
+
+Delivered behavior matching those boundaries:
+
+1. Restore the configured shared-gateway route and expose distinct failure causes (missing configuration vs transport/invalid). Current missing-config failures retry when a virtual key appears. Do not restore assistant CLI generation.
+2. Rank candidates by task information and source, not minimum length. Preserve useful intent after emotional prefixes; treat closing commands and context-dependent confirmations as secondary. Strip handoff framing before compacting. Do not solve this by filtering only the four reported strings.
+3. Give bounded title input explicit provenance and meaningful task context from fields already on the session. When first/last excerpts are insufficient, the model may return `__INSUFFICIENT__`; do not read all transcript databases on the list's first-paint path.
+4. Repair only demonstrably invalid accepted cache records (wrapper fragments, empty-session placeholders, bare command labels, context-free action words). Keep valid stable titles. Merely raising `TITLE_CACHE_VERSION` does not invalidate accepted successes.
+5. Recheck targeted real sessions after install: insult suffix, `/doc-update` suffix, `Task:` handoff, `实现`/`执行`, cached `空白会话`/`Session recap`, and missing gateway key. Confirm actual displayed task meaning through the installed command.
+
 ## Proposed ownership
 
 Keep this feature in the Corral host domain. SessKit remains responsible for parsing native histories and supplying title candidates; it should not own Corral model credentials, scheduling, or presentation policy. Relay continues to transport ciphertext only.
@@ -30,15 +79,16 @@ Keep this feature in the Corral host domain. SessKit remains responsible for par
 4. **One iOS session record per host and canonical session:** still the phone-side follow-on — merge list/search/detail through one identity store and reject stale revisions.
 5. **Offline and recovery:** display the last successfully synchronized title immediately while offline. Never regenerate on the phone.
 
-A successful title stays stable as conversation content grows. Re-generation of existing successes is outside this proposal. Preserve the existing language rule: infer title language from user conversation content; do not translate titles based on phone UI language.
+A successful title stays stable as conversation content grows. Re-generation of existing **valid** successes is outside this proposal; demonstrably invalid cached strings may be replaced. Preserve the existing language rule: infer title language from user conversation content; do not translate titles based on phone UI language.
 
 ## Delivery sequence and acceptance
 
 1. ~~Extract the host title repository/coordinator, fix remote consumption and generation startup, and wire title-only notifications together.~~ Done on host.
 2. ~~Replace the legacy generation transport with the gateway adapter while preserving cache identity and success/failure semantics.~~ Done on host.
-3. Merge iOS metadata through one identity-based store and support updates for visible details/search results independently of normal-list membership. (Phone follow-on; host already emits additive `revision`.)
-4. Verify at least five real sessions, then the affected iPhone screen and TUI side by side for the same host/session. Include cold cache with only remote running; generated result with unchanged history; open detail and search results; provisional identity migration; two TUI windows plus a phone (no duplicate completed jobs); failed generation/cooldown; process restart; disconnect/reconnect and late stale responses. Measure title propagation separately from model latency, with a proposed target of two seconds after durable title completion on an established healthy connection.
-5. Check existing successes are preserved, title-only changes reach every subscriber, no user cache corruption causes fallback flicker, and gateway unavailability leaves readable titles. Parent handles release, install, and real UI acceptance.
+3. ~~Fix fallback ranking, handoff/command stripping, generation prompt provenance, insufficient-vs-failure states, and targeted invalid-cache repair.~~ Done on host.
+4. Merge iOS metadata through one identity-based store and support updates for visible details/search results independently of normal-list membership. (Phone follow-on; host already emits additive `revision`.)
+5. Verify at least five real sessions, then the affected iPhone screen and TUI side by side for the same host/session. Include cold cache with only remote running; generated result with unchanged history; open detail and search results; provisional identity migration; two TUI windows plus a phone (no duplicate completed jobs); failed generation/cooldown; process restart; disconnect/reconnect and late stale responses. Measure title propagation separately from model latency, with a proposed target of two seconds after durable title completion on an established healthy connection.
+6. Check existing successes are preserved, title-only changes reach every subscriber, no user cache corruption causes fallback flicker, and gateway unavailability leaves readable titles. Parent handles release, install, and real UI acceptance.
 
 ## References
 
