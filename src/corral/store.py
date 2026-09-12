@@ -116,10 +116,14 @@ class SessionStore:
         # 启动分屏恢复等仍等真扫描完成。
         self.hydrated = False
         self._load_event = threading.Event()
+        # 有侧栏快照时：main() 推迟启动 load 线程，等首帧画完再扫，避免与铺表抢锁。
+        self._load_deferred = False
         self.load_error: str | None = None
         # 最近一次完整 `_merge_scanned`（非整表缓存命中后的轻量合并）的单调时钟。
         # 助手持续写 WAL 时签名仍可能命中；周期性全量合并兜住新会话与结束态。
         self._last_full_merge_at: float | None = None
+        # 最近一次真正本地磁盘扫描（非共享索引）的单调时钟；到点强制 prefer_shared=False。
+        self._last_local_scan_at: float | None = None
 
     # ---- 侧边栏快照：启动秒开（stale-while-revalidate） ----
 
@@ -221,14 +225,24 @@ class SessionStore:
 
         try:
             t0 = time.perf_counter()
+            keep_ids = self._remembered_scan_ids()
             scanned = self.registry.scan_all(
-                self.limit, keep_ids_by_runtime=self._remembered_scan_ids(),
+                self.limit, keep_ids_by_runtime=keep_ids,
             )
             duration_ms = int((time.perf_counter() - t0) * 1000)
             session_count = sum(len(items) for items in scanned.values())
-            observe.event("scan_all", duration_ms=duration_ms, session_count=session_count, reason="load")
+            shared = bool(getattr(self.registry, "last_scan_shared", False))
+            observe.event(
+                "scan_all",
+                duration_ms=duration_ms,
+                session_count=session_count,
+                reason="load",
+                shared_index=shared,
+            )
             self._merge_scanned(scanned)
             self._last_full_merge_at = time.monotonic()
+            if not shared:
+                self._last_local_scan_at = self._last_full_merge_at
             self._save_sidebar_snapshot()
             with self.lock:
                 self.load_error = None
@@ -272,18 +286,31 @@ class SessionStore:
         签名缓存时，走轻量合并：不整表替换会话字典，只更新托管标注与关注态。
         这样 Cursor 流式写 WAL 不会每 3 秒付一次完整列表重建代价；新会话 /
         进程启停仍由签名未命中或周期性全量合并兜住。
+
+        跨进程共享索引（``scan_index``）在间隔内可代替本机磁盘扫描；到
+        ``_FULL_MERGE_INTERVAL`` 仍强制本地扫一轮，避免新会话永远等不到。
         """
         from corral import observe
 
         try:
             t0 = time.perf_counter()
+            now = time.monotonic()
+            force_local = (
+                self._last_local_scan_at is None
+                or (now - self._last_local_scan_at) >= self._FULL_MERGE_INTERVAL
+            )
+            keep_ids = self._remembered_scan_ids()
             scanned = self.registry.scan_all(
-                self.limit, keep_ids_by_runtime=self._remembered_scan_ids(),
+                self.limit,
+                keep_ids_by_runtime=keep_ids,
+                prefer_shared=not force_local,
             )
             duration_ms = int((time.perf_counter() - t0) * 1000)
             session_count = sum(len(items) for items in scanned.values())
-            now = time.monotonic()
             cache_hit = bool(getattr(self.registry, "last_scan_cache_hit_all", False))
+            shared = bool(getattr(self.registry, "last_scan_shared", False))
+            if not shared:
+                self._last_local_scan_at = now
             use_live = (
                 cache_hit
                 and self._last_full_merge_at is not None
@@ -299,6 +326,7 @@ class SessionStore:
                 session_count=session_count,
                 reason="refresh_live" if use_live else "refresh",
                 cache_hit=cache_hit,
+                shared_index=shared,
             )
             before = self._sessions_signature()
             if use_live:

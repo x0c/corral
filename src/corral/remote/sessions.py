@@ -390,6 +390,9 @@ class SessionHub:
     # -- 生命周期 ---------------------------------------------------------
 
     def start(self) -> None:
+        from corral.schedprio import demote_background
+
+        demote_background()
         self.store.load()
         self._snapshot_attention()
         for target in (self._refresh_loop, self._screen_loop, self._conversation_loop):
@@ -411,6 +414,9 @@ class SessionHub:
     # -- 后台循环 ---------------------------------------------------------
 
     def _refresh_loop(self) -> None:
+        from corral.schedprio import demote_background
+
+        demote_background()
         while not self._stop.wait(_REFRESH_INTERVAL):
             # Title cache updates are independent of history mtimes. Poll them
             # before/after the scan so a completed title reaches subscribers

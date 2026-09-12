@@ -17,6 +17,11 @@ class SchedPrioTests(unittest.TestCase):
 
         schedprio.boost_ui_worker()
 
+    def test_demote_background_never_raises(self) -> None:
+        from corral import schedprio
+
+        schedprio.demote_background()
+
     def test_darwin_path_calls_qos_api(self) -> None:
         from corral import schedprio
 
@@ -47,6 +52,22 @@ class SchedPrioTests(unittest.TestCase):
         fake_lib.pthread_set_qos_class_self_np.assert_called_once_with(
             schedprio._QOS_USER_INITIATED, 0
         )
+
+    def test_darwin_demote_uses_utility(self) -> None:
+        from corral import schedprio
+
+        fake_lib = mock.Mock()
+        fake_lib.pthread_set_qos_class_self_np.return_value = 0
+        with (
+            mock.patch.object(sys, "platform", "darwin"),
+            mock.patch("ctypes.CDLL", return_value=fake_lib),
+            mock.patch.object(schedprio, "_best_effort_nice") as nice,
+        ):
+            schedprio.demote_background()
+        fake_lib.pthread_set_qos_class_self_np.assert_called_once_with(
+            schedprio._QOS_UTILITY, 0
+        )
+        nice.assert_called_once_with(5)
 
     def test_qos_api_failure_is_swallowed(self) -> None:
         from corral import schedprio

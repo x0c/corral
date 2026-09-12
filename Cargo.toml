@@ -1,6 +1,6 @@
 [package]
 name = "corral-native"
-version = "0.24.185"
+version = "0.24.186"
 edition = "2021"
 description = "Native hot-path accelerator for corral"
 homepage = "https://github.com/x0c/corral"

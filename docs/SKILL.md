@@ -255,10 +255,10 @@ corral list --live --status pending --compact # 更进一步：正在跑、且�
 
 ## 界面异常排查（只读）
 
-TUI 卡顿、侧边栏不刷新、内嵌面板异常时：
+TUI 卡顿、卡死、按键极慢、侧边栏不刷新、内嵌面板异常时（本机可观测，无远程遥测）：
 
-1. 先跑 `corral diagnose`，看 `data.last_error`（最近一次完整 traceback；无记录则为 null）。
-2. 读 `~/.cache/corral/events.log`（JSON 行：`scan_all` / `list_rebuild` / `host_session` / `capture_slow` / `error`）。
+1. 先跑 `corral diagnose`，看 `data.last_error`（最近一次完整 traceback；无记录则为 null），并核 `corral --version`。
+2. 读 `~/.cache/corral/events.log`（JSON 行：`scan_all` / `list_rebuild` / `host_session` / `capture_slow` / `error`）。卡顿时重点看 `scan_all` 的 `duration_ms`、`session_count`、`reason`：v0.24.185+ 签名命中应为 `refresh_live` + `cache_hit=true`；仍每 3–4s 全是 `refresh` 且耗时偏高 → 先确认已完全退出旧 TUI，再读 `docs/PERFORMANCE_KNOWLEDGE_BASE.md` 与 `docs/OBSERVABILITY_KNOWLEDGE_BASE.md`。
 3. 需要更多历史时再读 `~/.cache/corral/embed-error.log`（后台线程 + 致命闪退的完整栈）。
 4. 真机 TUI 内按 **F12** 导出当前画面到 `~/.cache/corral/screenshots/`（勿把含真实对话的截图提交仓库）。
 5. 需要细日志时设 `CORRAL_DEBUG=1` 后重启 TUI。

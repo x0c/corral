@@ -9719,6 +9719,16 @@ class SidebarSnapshotTests(unittest.TestCase):
             [corral.session_key(s) for b in store.sessions.values() for s in b],
         )
 
+    def test_hydrated_store_marks_deferred_load_contract(self) -> None:
+        """有快照时 main 应推迟 load；字段契约供 MainScreen 首帧后再开扫。"""
+        store = self._store_with(self._sessions(3))
+        fresh = corral.SessionStore(limit=50, registry=store.registry)
+        self.assertTrue(fresh.hydrate_from_snapshot())
+        fresh._load_deferred = True
+        self.assertTrue(fresh._load_deferred)
+        self.assertFalse(fresh.loaded)
+        self.assertFalse(fresh._load_event.is_set())
+
     def test_hydrate_is_noop_after_load_or_repeated(self) -> None:
         """已 loaded 或已 hydrated 时不再覆盖（防真扫描后被旧快照冲掉）。"""
         store = self._store_with(self._sessions(3))

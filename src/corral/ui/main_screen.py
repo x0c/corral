@@ -350,6 +350,9 @@ class MainScreen(
             # 必须等首帧 refresh 之后再开始倒计时：从 on_mount 起算墙钟，
             # 首屏本身一慢（真机高负载 / Pilot）预热就会撞上出卡片。
             self.call_after_refresh(self._schedule_search_index_warm)
+        elif getattr(self.store, "_load_deferred", False):
+            # 快照秒开：先让 SessionListView.on_mount 的 rebuild 把卡铺上，再开扫。
+            self.call_after_refresh(self._begin_deferred_load)
         else:
             self._await_initial_load()
         self.set_interval(CACHE_POLL_INTERVAL, self._poll_cache)
@@ -550,6 +553,19 @@ class MainScreen(
 
     # ---- 首屏异步加载：main() 把 store.load() 挪到后台线程异步跑，这里等它跑完
     # 再渲染真实列表（骨架已经在 compose() 时就显示出来了：空列表 + "＋ 新建会话"） ----
+
+    def _begin_deferred_load(self) -> None:
+        """快照已铺卡后的首帧回调：这才启动全量扫描，避免与首铺抢锁。"""
+        import threading
+
+        if self.store.loaded:
+            self._on_initial_load_done()
+            return
+        if not self.store._load_event.is_set():
+            # 仅启动一次：标记清掉，防止重复 after_refresh 再开线程。
+            self.store._load_deferred = False
+            threading.Thread(target=self.store.load, daemon=True).start()
+        self._await_initial_load()
 
     @work(thread=True, group="initial-load")
     def _await_initial_load(self) -> None:

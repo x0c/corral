@@ -12,7 +12,7 @@
 - **Apple Silicon**：QoS 还会影响更偏向性能核还是能效核。Background 档会被钉在能效核；交互档优先性能核。别把「慢」一两个原因混为一谈——单线程算法慢 ≠ 被钉到能效核（见 Eclectic Light 对命令行工具与 QoS 的辨析）。
 - **对策**（`schedprio.py`，v0.24.72 起进入 TUI 时生效）：启动时先撤销遗留的 macOS 后台让位标记，再把主线程提到 User Interactive；抓帧 / 控制通道读 / 鼠标发送线程使用 User Initiated。Linux 尽力 `nice(-5)`，Windows 尽力抬到 Above Normal。调用失败一律忽略，不得挡启动。
 - **前台会话不得被后台治理误伤**：corral 正在展示或接收输入的界面及其托管助手属于用户正在等待结果的工作，绝不能被本机性能治理工具标记为后台让位；工具必须识别并拒绝此类目标。排查“列表不慢、但首帧或输入很卡”时，先检查会话及其运行时是否被后台降级，再归因到扫描或 Cursor 重绘。
-- **不要**给标题生成守护进程、纯扫描后台也抬到 Interactive——那些可以让路；只保「用户正在看的界面」。
+- **不要**给标题生成守护进程、纯扫描后台也抬到 Interactive——那些可以让路；只保「用户正在看的界面」。远程守护的刷新线程用 `demote_background()`（Utility / nice+5）。
 - **优先级反转**：界面线程若同步等更低 QoS 的辅助进程（如未抬档的 tmux 子进程），高负载下仍可能一起卡。macOS 对 Mach IPC 有 QoS override，但对「fork 出去的普通 tmux 客户端」不保证同等提权——因此热路径应走常驻控制通道，并给喂画面的线程也抬档。
 - 这解决的是**被别人抢走时间片**，不是替代抓帧节流 / 原生解析等业务侧优化。若空闲时也卡，仍按本文其它节与下方踩坑地图排查。
 
@@ -81,15 +81,29 @@
 
 要降占用，优先让「助手还在跑」时不必每 3 秒付一次完整扫描代价（廉价签名跳过、多窗口共用一轮结果、或把「只有相对时间变了」从完整重扫里拆出去），而不是先砍实时画面帧率。
 
-**已落地（v0.24.153）**：嵌套历史改为逐文件 `stat` + pid 快照做 `scan_signature`（含 Cursor/Kimi），签名未变的运行时跳过完整扫描（含 macOS `lsof`）；`live_processes` 在 Darwin 上一次合并查询 cwd，并按 pid 集合缓存 cwd / 命令行 / 环境。不要退回祖先目录 mtime 或逐 pid `lsof`。未变化窗口的重扫应从秒级降到几十毫秒量级；正在写 WAL 的 Cursor 仍会重扫该运行时，但 cwd/`store.db`/命令行探测不再对每个 agent 各 fork 一次。
+**已落地（v0.24.153）**：嵌套历史改为逐文件 `stat` + pid 快照做 `scan_signature`（含 Cursor/Kimi），签名未变的运行时跳过完整扫描（含 macOS `lsof`）；`live_processes` 在 Darwin 上一次合并查询 cwd，并按 pid 集合缓存 cwd / 命令行 / 环境。不要退回祖先目录 mtime 或逐 pid `lsof`。未变化窗口的重扫应从秒级降到几十毫秒量级。**列表级 Cursor WAL 仍会每轮打穿签名 → 见下方 v0.24.185**；在那之前 cwd/`store.db`/命令行探测已不再对每个 agent 各 fork 一次。
 
 **已落地（v0.24.185 / SessKit 0.1.2，2026-09-12 本机复现）**：用户可见症状是 TUI 卡死或按键极慢，事件日志里 `scan_all` 约每 3–4 秒一条、界面 `session_count≈178`、远程≈617，单次重扫 P50 约 0.5s、尖峰可到十几秒甚至远程 60s+，进程瞬时 70%+ CPU。根因仍是「助手在写时签名永远变 → 全量重扫 + 整表合并」叠远程同盘争用，不是抓帧死循环。
 
-1. **Cursor 列表级 `scan_signature` 不再包含 `store.db-wal`**（正文缓存的 `extra_version` 仍带 WAL）。流式写入只动 WAL 时复用上一轮 `scan_sessions`；`store.db`/meta 真正 checkpoint 或进程启停仍会失效。
+1. **Cursor 列表级 `scan_signature` 不再包含 `store.db-wal`**（正文缓存的 `extra_version` 仍带 WAL）。流式写入只动 WAL 时复用上一轮 `scan_sessions`；`store.db`/meta 真正 checkpoint 或进程启停仍会失效。**禁止**为「预览要看见 WAL」把 `-wal` 加回列表签名——预览/对话缓存与列表签名是两套版本键。
 2. **macOS `ps -axo` 在约 1s 内跨 agent/pi 签名复用**；同一轮 `_merge_scanned` / `_merge_live_state` 内 `tmux list-sessions` 只列一次（`liveness.tmux_list_wave`），禁止跨刷新 TTL（会串单测 mock）。
 3. **`SessionStore.refresh`：签名全命中且距上次完整合并 <12s 时走 `_merge_live_state`**（只刷新托管标注与关注圆点，不整表替换）；事件里 `reason=refresh_live`、`cache_hit=true`。完整合并仍兜住新会话与集合变化。
+4. **轻量合并前必须 `_memory_keys_match_scan(scanned)`**：内存会话键集合与本轮扫描键不一致时强制完整 `_merge_scanned`。乐观删除先清空内存、磁盘删除失败后若仍走 live merge，侧栏会空着不回来（2026-09-12 修 live 路径时踩过）。禁止「签名命中就永远不看 scanned」。
 
-仍未做：TUI 与 `remote on` 跨进程共用一轮扫描结果（两进程仍会各自扫；优先结束不看的托管格、少开刷屏分屏）。
+**修完后验收**：必须完全退出再开 TUI（旧进程仍跑旧代码）。再读 `~/.cache/corral/events.log`：助手流式写入期间应出现 `reason=refresh_live` + `cache_hit=true`；若仍全是 `reason=refresh` 且每 3–4s 一条、`duration_ms` 经常数百毫秒以上，先核版本号与 SessKit ≥0.1.2，再查是否两扇窗口 / `remote on` 同盘重复扫。
+
+**已落地（v0.24.186，2026-09-12）——跨进程共享扫描索引 + 首帧优先 + 远程降档**：
+
+用户体感「启动白屏好几秒、会话中又卡」在 16GB 忙机上复现：`load` 一次 28s、首铺 `list_rebuild` full 3.5s、界面与 `remote _serve` 各扫一遍。阶段 0 拆解（负载已回落时）：冷 `scan_all(50)` ≈540ms（OpenCode/Claude 等并行），签名全命中仍 ≈100ms，`annotate` ≈70ms——所以「共享索引跳过整段扫描」比「把轮询间隔拉长」更符合体验优先。
+
+1. **`scan_index`（`~/.cache/corral/scan-index.json`）**：任一方完成本地 `scan_all` 后原子发布；另一方在 TTL（默认 12s）内若发布方 `limit` 覆盖自己的需求且置顶/组成员 id 都在索引里，直接消费（可按更小 limit 收窄）。事件字段 `shared_index=true`。`CORRAL_CACHE=0` 或 **`CORRAL_ISOLATE_MANAGED_HOSTS=1`（单测隔离）全禁用**——后者禁止把开发机真实索引泄漏进 mock 扫描。
+2. **`SessionStore.refresh` 每 `_FULL_MERGE_INTERVAL`（12s）强制本地扫一轮**（`prefer_shared=False`），避免只喝共享索引时新会话永远不出现；间隔内可喝共享或本机签名缓存。
+3. **启动首帧优先**：有侧栏快照时 `main()` **不**立即起 `load` 线程（`store._load_deferred`），等 Textual 首帧 `call_after_refresh` 后再扫——消除「六个解析线程与首铺抢 GIL」的白屏。无快照仍与 OSC 探测并行开扫。
+4. **远程刷新线程 `demote_background()`**（macOS Utility QoS + nice+5）：纯扫描后台给前台 TUI 让路；不得用于界面主线程。
+
+**目标架构（未完，阶段 2+）**：变化驱动（FSEvents/inotify + 增量尾读）代替定时全量；诚实「N 秒前更新」提示。阶段 1 只解决「同一份历史被多进程重复扫」和「首帧与扫描抢锁」。
+
+**禁止的误修**：不要为了降占用把刷新固定改成 15s（牺牲空闲新鲜度）；不要砍实时画面帧率；不要把列表签名再塞回 WAL。
 
 ### 2026-08-31 suzhou：扫描降下来之后，吃核的变成实时抓帧
 
@@ -109,7 +123,7 @@
 
 马上减占用：在调度界面结束不看的托管会话（结束进程不删历史）；少开几格正在刷屏的实时画面。不要为了这次去关图形版 Cursor，也不要给抓帧再加一层中间态过滤。
 
-还没做、且值得做的（不要先砍帧率）：TUI 与 `remote on` 常驻进程共用一轮扫描结果，避免两个进程重复读同一批历史。列表级 WAL 容错与签名命中后的轻量合并已在 v0.24.185 / SessKit 0.1.2 落地（见上节「已落地」）。
+还没做、且值得做的（不要先砍帧率）：变化驱动的增量索引（阶段 2）。跨进程共用扫描结果已在 v0.24.186 以 `scan_index` 落地（见上节「已落地」）；列表级 WAL 容错与签名命中后的轻量合并已在 v0.24.185 / SessKit 0.1.2 落地。
 
 ### 高输出时的画面降载原则（2026-08-31）
 
@@ -217,7 +231,7 @@ A/B 实测（同一进程内把挂载协程换回旧实现对照，n=6，口径�
 2. **首铺分片**：全量重建同步只挂前 `_MOUNT_CHUNK`（40）行，尾部每 `_TAIL_MOUNT_INTERVAL`（10ms，**必须 > 0**，Textual Timer 间隔做除法）挂一批，批次间可交互。作废机制：`_rebuild_seq` 递增即作废旧尾（rebuild 入口已递增；`clear()` 不走 rebuild，自己手动作废）。分片批必须持 `_rebuild_lock`（与 rebuild 同闸门，防两条消息泵交错），持锁后再验 token。批后幂等重贴分屏标与斑马纹。分片中途身份比对只看已挂前缀，新重建自然走全量再分片，正确性不变。
 3. 回归：`SidebarSnapshotTests`（roundtrip/收敛/幂等/损坏降级）、`MainScreenNavigationTests.test_full_rebuild_mounts_first_chunk_and_fills_tail_in_frames`（首批/作废/补齐/条纹一致）。observe `list_rebuild` 新增 `chunked` 字段。
 
-边界（未做，已评估）：敲命令到首帧之间还有 ~0.5s（Python 导入）+ OSC 探测 ≤0.25s，与提示窗口无关；直启子命令路径是同步全扫后进 TUI（另一条流）。Textual 官方 `Reveal` 每 20ms 只挂 1 个（218 卡要 4 秒+），节奏不可用，故自实现按批分片。启动首建 200 卡全量重建的 ~0.6 秒冻结已由本轮分片挂载消除（observe `chunked=True`，首帧只挂首批）。
+边界（未做，已评估）：敲命令到首帧之间还有 ~0.5s（Python 导入）+ OSC 探测 ≤0.25s，与提示窗口无关；直启子命令路径是同步全扫后进 TUI（另一条流）。**有快照时全量 `load` 推迟到首帧之后**（v0.24.186，`_load_deferred`），忙机上避免与首铺抢锁。Textual 官方 `Reveal` 每 20ms 只挂 1 个（218 卡要 4 秒+），节奏不可用，故自实现按批分片。启动首建 200 卡全量重建的 ~0.6 秒冻结已由本轮分片挂载消除（observe `chunked=True`，首帧只挂首批）。
 
 ## 全文搜索索引
 

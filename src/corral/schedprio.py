@@ -16,9 +16,11 @@ import sys
 # Apple sys/qos.h
 _QOS_USER_INTERACTIVE = 0x21
 _QOS_USER_INITIATED = 0x19
+_QOS_UTILITY = 0x11
 
 # Windows KERNEL32
 _ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+_BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 
 
 def boost_interactive() -> None:
@@ -37,6 +39,17 @@ def boost_ui_worker() -> None:
         _darwin_set_thread_qos(_QOS_USER_INITIATED)
     # Windows / Linux：进程级优先级已在 boost_interactive 里抬过；线程级无廉价 API。
 
+
+def demote_background() -> None:
+    """纯后台扫描 / 远程守护刷新：机器忙时给前台 TUI 让路。
+
+    不得用于正在展示或接收输入的界面线程。失败一律忽略。
+    """
+    if sys.platform == "darwin":
+        _darwin_set_thread_qos(_QOS_UTILITY)
+    elif sys.platform == "win32":
+        _windows_set_process_below_normal()
+    _best_effort_nice(5)
 
 def _darwin_set_thread_qos(qos_class: int) -> None:
     try:
@@ -72,6 +85,17 @@ def _windows_set_process_above_normal() -> None:
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         handle = kernel32.GetCurrentProcess()
         kernel32.SetPriorityClass(handle, _ABOVE_NORMAL_PRIORITY_CLASS)
+    except Exception:
+        return
+
+
+def _windows_set_process_below_normal() -> None:
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetCurrentProcess()
+        kernel32.SetPriorityClass(handle, _BELOW_NORMAL_PRIORITY_CLASS)
     except Exception:
         return
 

@@ -478,14 +478,16 @@ def main() -> None:
     if _cache_enabled():
         store.hydrate_from_snapshot()
     # store.load()（磁盘扫描 + JSON 解析）和下面的 _probe_osc_colours()（终端 OSC
-    # 10/11 探测，最长阻塞 1.2s）互不依赖，串行执行会把两者耗时直接相加、白白
-    # 拖长首屏。这里提前在后台线程里开始扫描，让它跟随后的 OSC 探测重叠执行；
-    # UI 启动后 MainScreen 通过 store.wait_loaded() 等它跑完（大多数情况下，扫描
-    # 会在 OSC 探测的等待期间就已经跑完，UI 挂载时可以直接渲染，不需要额外等待）。
+    # 10/11 探测，最长阻塞约 0.25s）互不依赖。无快照时仍提前开扫，与 OSC 重叠；
+    # 有快照时推迟到首帧画完再扫（MainScreen._begin_deferred_load），避免六个解析
+    # 线程与 Textual 首铺抢同一把解释器锁——忙时曾把首帧卡到数秒白屏。
     # 找不到任何会话不再在这里直接 sys.exit(1)：扫描本身现在是异步的，主进程无法
     # 同步判断"扫完了但真的一条都没有"，这个空状态提示改由 MainScreen 在
     # wait_loaded() 完成后展示（见 ui/main_screen.py 的 _update_header）。
-    threading.Thread(target=store.load, daemon=True).start()
+    if store.hydrated:
+        store._load_deferred = True
+    else:
+        threading.Thread(target=store.load, daemon=True).start()
 
     # 拉起脱离终端的后台进程生成标题：用户秒退或原生恢复（execvp 替换进程）后仍继续，
     # TUI 通过轮询缓存文件拾取它逐批写入的标题。

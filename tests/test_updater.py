@@ -40,22 +40,24 @@ class ChannelDetectionTests(unittest.TestCase):
             self.assertEqual(updater.detect_channel(), "brew")
 
     def test_detects_pip_user_site_packages(self) -> None:
-        with mock.patch.object(
-            updater.site, "getusersitepackages",
-            return_value="/home/user/.local/lib/python3.12/site-packages",
-        ):
-            with mock.patch.object(updater.site, "getsitepackages", return_value=[]):
-                with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/corral"):
-                    self.assertEqual(updater.detect_channel(), "pip")
+        with mock.patch.object(updater, "_is_pipx_install", return_value=False):
+            with mock.patch.object(
+                updater.site, "getusersitepackages",
+                return_value="/home/user/.local/lib/python3.12/site-packages",
+            ):
+                with mock.patch.object(updater.site, "getsitepackages", return_value=[]):
+                    with self._with_pkg_file("/home/user/.local/lib/python3.12/site-packages/corral"):
+                        self.assertEqual(updater.detect_channel(), "pip")
 
     def test_detects_dev_source_checkout(self) -> None:
-        with mock.patch.object(
-            updater.site, "getusersitepackages",
-            return_value="/home/user/.local/lib/python3.12/site-packages",
-        ):
-            with mock.patch.object(updater.site, "getsitepackages", return_value=[]):
-                with self._with_pkg_file("/Users/demo/Codes/corral/cli/src/corral"):
-                    self.assertEqual(updater.detect_channel(), "dev")
+        with mock.patch.object(updater, "_is_pipx_install", return_value=False):
+            with mock.patch.object(
+                updater.site, "getusersitepackages",
+                return_value="/home/user/.local/lib/python3.12/site-packages",
+            ):
+                with mock.patch.object(updater.site, "getsitepackages", return_value=[]):
+                    with self._with_pkg_file("/Users/demo/Codes/corral/cli/src/corral"):
+                        self.assertEqual(updater.detect_channel(), "dev")
 
     def test_find_checkout_root_and_stale_warning(self) -> None:
         with tempfile.TemporaryDirectory() as td:

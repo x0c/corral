@@ -40,6 +40,8 @@ class RuntimeRegistry:
         # 上一轮 scan_all 是否全部命中签名缓存（无实现签名的运行时不计）。
         # SessionStore 用它在「助手还在写 WAL」时走轻量合并，避免每 3 秒整表替换。
         self.last_scan_cache_hit_all = False
+        # 上一轮是否来自跨进程共享扫描索引（见 scan_index）；与签名命中互斥。
+        self.last_scan_shared = False
 
     def __iter__(self):
         return iter(self._runtimes.values())
@@ -88,6 +90,8 @@ class RuntimeRegistry:
         self,
         limit: int,
         keep_ids_by_runtime: dict[str, set[str]] | None = None,
+        *,
+        prefer_shared: bool = True,
     ) -> dict[str, list[SessionInfo]]:
         """并发扫描各运行时。各适配器只读各自独立的历史目录，互不干扰，
         用线程池重叠磁盘 I/O 等待时间即可，不需要多进程。
@@ -103,9 +107,25 @@ class RuntimeRegistry:
 
         ``keep_ids_by_runtime`` 把侧边栏置顶/分组成员的会话 id 交给各扫描器，
         避免 mtime 配额把仍被钉住的历史挤出列表。
+
+        ``prefer_shared``：为真时先尝试跨进程共享扫描索引（见 ``scan_index``）。
+        命中则跳过本机磁盘扫描；调用方仍应按自己的节奏强制本地全量（
+        ``prefer_shared=False``）以免新会话永远等不到。
         """
+        from corral import scan_index
+
         runtimes = list(self)
         keep_ids_by_runtime = keep_ids_by_runtime or {}
+        self.last_scan_shared = False
+
+        if prefer_shared:
+            shared = scan_index.try_consume(limit, keep_ids_by_runtime)
+            if shared is not None:
+                # Fill missing runtime keys so callers see a complete map.
+                result = {runtime.id: list(shared.get(runtime.id) or []) for runtime in runtimes}
+                self.last_scan_cache_hit_all = True
+                self.last_scan_shared = True
+                return result
 
         def _copy_sessions(sessions: list[SessionInfo]) -> list[SessionInfo]:
             """缓存与调用方之间隔离可变会话字典，避免界面注入字段反向污染缓存。"""
@@ -153,6 +173,9 @@ class RuntimeRegistry:
                 }
         hits = [hit for _sessions, hit in scanned if hit is not None]
         self.last_scan_cache_hit_all = bool(hits) and all(hits)
+        scan_index.publish(
+            result, limit=limit, keep_ids_by_runtime=keep_ids_by_runtime,
+        )
         return result
 
     def build_launch_plan(self, request: LaunchRequest) -> LaunchPlan:

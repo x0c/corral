@@ -273,8 +273,9 @@ class SessionStoreAttentionTests(unittest.TestCase):
         class _HitRegistry:
             ids = ("claude", "codex", "cursor")
             last_scan_cache_hit_all = True
+            last_scan_shared = False
 
-            def scan_all(self, limit, keep_ids_by_runtime=None):
+            def scan_all(self, limit, keep_ids_by_runtime=None, *, prefer_shared=True):
                 return {
                     "claude": [dict(session, last_agent_msg="should-not-replace")],
                     "codex": [],

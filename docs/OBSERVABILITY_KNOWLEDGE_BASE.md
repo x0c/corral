@@ -118,6 +118,7 @@ flowchart TD
 | 异常双写 | `python3 -m unittest -v test_observe.py` | `error` 事件无 traceback，异常日志有完整 traceback |
 | 只读诊断 | `python3 -m corral diagnose` 或已安装命令 `corral diagnose` | 返回日志/截图目录、存在性、`last_error`、tmux 与配色事实；不启动 TUI |
 | 事件现场读取 | `python3 -m corral diagnose` 后读取 `data.last_error` 或 `~/.cache/corral/events.log` | 能看到最近闪退栈，或按 JSON 行查看 `scan_all`、`list_rebuild`、`host_session`、`capture_slow`、`host_size_drift`、`error` 等 |
+| TUI 卡死 / 按键极慢取证 | 先 `corral diagnose`，再读 `events.log` 最近几分钟的 `scan_all` / `list_rebuild` / `capture_slow`；对照 `corral --version` | 无远程遥测。卡顿时常见：`scan_all` 约每 3–4s、`session_count`≈界面深度、`duration_ms` 经常 ≥300。v0.24.185+ 在签名命中时应看到 `reason=refresh_live`、`cache_hit=true`；只有 `refresh` 且尖峰很大 → 先核是否未重启旧进程，再进 `PERFORMANCE_KNOWLEDGE_BASE.md` |
 | 截图观测 | 在真实 TUI 中按 F12 | 生成 `~/.cache/corral/screenshots/tui-*.svg`，并只作本地排查使用 |
 | 验收截图消歧 | `python3 docs/screenshots/capture.py` | 生成虚构数据的验收图；不读取真实历史，不替代 F12 现场截图 |
 
@@ -126,6 +127,7 @@ flowchart TD
 | 文档 | 联读场景 |
 |---|---|
 | `docs/TERMINAL_UI_KNOWLEDGE_BASE.md` | 排查终端界面刷新、快捷键、列表或右栏展示异常时 |
+| `docs/PERFORMANCE_KNOWLEDGE_BASE.md` | `scan_all` 过密、`refresh_live` 未出现、TUI 卡死归因到全量重扫或抓帧时；可观测只取证，性能根因与已落地修法以该文为准 |
 | `docs/EMBEDDED_TERMINAL_KNOWLEDGE_BASE.md` | 排查内嵌实时终端、抓帧、控制通道或托管画面问题时；抓帧协议细节以该文档为准 |
 | `docs/SKILL.md` | 面向 Agent 执行“界面异常排查”只读流程、解释 `corral diagnose` 时 |
 | `PRIVACY.md` | 判断日志、截图、会话历史和本地缓存的隐私边界与提交限制时 |
