@@ -21,7 +21,10 @@ from corral.models import ConversationMessage
 
 SCHEMA_VERSION = 1
 DEFAULT_MAX_MB = 256
-_PARSER_VERSION = "2026-07-22.1"
+# Bump when list metadata extraction changes; otherwise performance-cache keeps
+# old first_user_msg slices (2026-09-12: handoff digest must be extracted before
+# the 300-char clip).
+_PARSER_VERSION = "2026-09-12.1"
 
 
 def enabled() -> bool:
