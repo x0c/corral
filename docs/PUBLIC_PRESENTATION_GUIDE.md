@@ -22,3 +22,5 @@ Do not claim title generation launches installed assistant CLIs. The public priv
 - [Lazygit](https://github.com/jesseduffield/lazygit): show the actual terminal product early and link deeper usage; do not copy sponsor blocks or badge volume.
 
 README quality improves the explanation offered to visitors; it does not demonstrate increased discovery or stars. Measure those separately.
+
+The conversion page order that other flagships should copy lives in the global star-growth guide §3.5.1; this file keeps Corral-only identity, capture, and retired-asset rules.
