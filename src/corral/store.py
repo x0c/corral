@@ -124,6 +124,8 @@ class SessionStore:
         self._last_full_merge_at: float | None = None
         # 最近一次真正本地磁盘扫描（非共享索引）的单调时钟；到点强制 prefer_shared=False。
         self._last_local_scan_at: float | None = None
+        # Wall clock of the last successful load/refresh (for honest "updated Ns ago").
+        self.last_refresh_at: float | None = None
 
     # ---- 侧边栏快照：启动秒开（stale-while-revalidate） ----
 
@@ -246,6 +248,7 @@ class SessionStore:
             self._save_sidebar_snapshot()
             with self.lock:
                 self.load_error = None
+                self.last_refresh_at = time.time()
         except Exception as exc:
             # main() 在裸后台线程里调用 load()；异常不能让线程直接退出、让 UI
             # 永远等不到完成事件。保留中文错误给页头展示，后台 refresh 仍会继续
@@ -345,7 +348,16 @@ class SessionStore:
             raise
         with self.lock:
             self.load_error = None
+            self.last_refresh_at = time.time()
         return changed
+
+    def refresh_age_seconds(self) -> float | None:
+        """Seconds since the last successful load/refresh, or None if never."""
+        with self.lock:
+            at = self.last_refresh_at
+        if at is None:
+            return None
+        return max(0.0, time.time() - at)
 
     def _memory_keys_match_scan(self, scanned: dict[str, list[dict]]) -> bool:
         """True when in-memory session keys match this scan result (ignoring order)."""

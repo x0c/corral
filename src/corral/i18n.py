@@ -138,6 +138,15 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Filter groups / projects / titles… ({count})",
         "zh": "筛选分组 / 项目 / 标题… ({count})",
     },
+    # Honest staleness when the list has not been rescanned recently (event-driven idle).
+    "filter.placeholder_count_stale": {
+        "en": "Filter groups / projects / titles ({count}) · updated {age}s ago",
+        "zh": "筛选分组 / 项目 / 标题 ({count}) · {age} 秒前更新",
+    },
+    "filter.placeholder_count_active_stale": {
+        "en": "Filter groups / projects / titles… ({count}) · updated {age}s ago",
+        "zh": "筛选分组 / 项目 / 标题… ({count}) · {age} 秒前更新",
+    },
     "filter.load_error": {
         "en": "Filter groups / projects / titles… — {error}; retrying",
         "zh": "筛选分组 / 项目 / 标题… — {error}；正在自动重试",

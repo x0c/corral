@@ -101,9 +101,18 @@
 3. **启动首帧优先**：有侧栏快照时 `main()` **不**立即起 `load` 线程（`store._load_deferred`），等 Textual 首帧 `call_after_refresh` 后再扫——消除「六个解析线程与首铺抢 GIL」的白屏。无快照仍与 OSC 探测并行开扫。
 4. **远程刷新线程 `demote_background()`**（macOS Utility QoS + nice+5）：纯扫描后台给前台 TUI 让路；不得用于界面主线程。
 
-**目标架构（未完，阶段 2+）**：变化驱动（FSEvents/inotify + 增量尾读）代替定时全量；诚实「N 秒前更新」提示。阶段 1 只解决「同一份历史被多进程重复扫」和「首帧与扫描抢锁」。
+**已落地（v0.24.187，2026-09-12）——变化驱动刷新 + 诚实新鲜度**：
 
-**禁止的误修**：不要为了降占用把刷新固定改成 15s（牺牲空闲新鲜度）；不要砍实时画面帧率；不要把列表签名再塞回 WAL。
+阶段 1 仍会在「助手持续写历史」时按最短间隔付扫描代价。阶段 2 把定时全量改成「有变化再扫」：
+
+1. **`history_watch`**：监视各助手历史根目录；Darwin 用 FSEvents（ctypes）、Linux 用 inotify（ctypes），失败则退回慢速 reconcile。突发写入 debounce ≈0.35s。**`CORRAL_ISOLATE_MANAGED_HOSTS=1` / `CORRAL_CACHE=0` 时默认根目录为空**（单测不得盯开发机真实历史，否则 FS 事件会提前吃掉 mock `scan_sessions` side_effect）。
+2. **TUI**：后台重扫最短间隔仍 3s（防抖 thrash）；**空闲最多睡约 60s** 才 reconcile；有 FS 事件立刻醒。无原生监视时 reconcile 退回 10s。
+3. **远程**：同样事件唤醒（会话落盘可早于 15s 醒来）；完整扫描最短间隔与空闲 reconcile 仍为 **15s**（不低于旧节奏，保证手机关注态 / 列表不过久冻住）；标题缓存同周期轻量轮询。
+4. **诚实提示**：筛选框在列表距上次成功扫描 ≥10s 时显示「N 秒前更新」（`filter.placeholder_*_stale`）；`SessionStore.last_refresh_at` / `refresh_age_seconds()`。
+
+**仍未完（阶段 3）**：SessKit 增量尾读 JSONL/DB，让「有写入」时也不必整 runtime 重解析——空闲成本才能真正趋近 0。
+
+**禁止的误修**：不要为了降占用把刷新固定改成 15s（牺牲空闲新鲜度）；不要砍实时画面帧率；不要把列表签名再塞回 WAL；不要在无 FS 监视的平台上把 reconcile 留在 60s 却不显示陈旧提示。
 
 ### 2026-08-31 suzhou：扫描降下来之后，吃核的变成实时抓帧
 

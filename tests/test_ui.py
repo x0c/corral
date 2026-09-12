@@ -1574,6 +1574,9 @@ class MainScreenWorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         started_at = time.monotonic()
         with (
+            mock.patch("corral.ui.main_screen.REFRESH_MIN_GAP", 0.01),
+            mock.patch("corral.ui.main_screen.REFRESH_RECONCILE", 0.02),
+            mock.patch("corral.ui.main_screen.REFRESH_RECONCILE_FALLBACK", 0.02),
             mock.patch("corral.ui.main_screen.REFRESH_INTERVAL", 0.01),
             mock.patch("corral.ui.main_screen.REFRESH_INTERVAL_MAX", 0.02),
         ):

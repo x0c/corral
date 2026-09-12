@@ -60,9 +60,17 @@ try:
 except ImportError:  # pragma: no cover
     from textual import Screen
 
-REFRESH_INTERVAL = 3.0  # 秒，后台重扫会话列表的最短间隔，与旧版 _background_refresh 一致
-REFRESH_INTERVAL_MAX = 10.0  # 秒，连续空闲多轮后退避到的最长间隔
-_IDLE_ROUNDS_BEFORE_BACKOFF = 3  # 连续几轮扫描都没变化才开始拉长间隔，避免偶发抖动误判空闲
+# Event-driven refresh: sleep until history FS events, with a slow reconcile backup.
+# Min gap keeps bursty writers from scanning every debounce tick.
+REFRESH_MIN_GAP = 3.0
+REFRESH_RECONCILE = 60.0
+# No FSEvents/inotify: fall back to a moderate poll (not the full 60s idle).
+REFRESH_RECONCILE_FALLBACK = 10.0
+# Show "updated Ns ago" in the filter placeholder once the list is this old.
+REFRESH_STALE_HINT_AFTER = 10.0
+# Back-compat aliases for tests that still patch the old names.
+REFRESH_INTERVAL = REFRESH_MIN_GAP
+REFRESH_INTERVAL_MAX = REFRESH_RECONCILE_FALLBACK
 CACHE_POLL_INTERVAL = 0.5  # 秒，标题缓存文件轮询间隔（比会话重扫轻得多，保持高频）
 # 秒，侧边栏记忆的跨窗口同步间隔。每次只读一个版本号（单行 SELECT），版本号没变就什么都不做；
 # 变了才重新读快照，且只有「看得见的部分」真的变了才重建列表（全量重建是秒级重活）。
@@ -292,6 +300,7 @@ class MainScreen(
         self._activity_board = ActivityBoard()
         self._activity_board_active = False
         self._shell_after_board = False
+        self._history_watcher = None
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -604,51 +613,70 @@ class MainScreen(
         self._try_restore_startup_layout()
         self._schedule_search_index_warm()
 
-    # ---- 后台重扫：Textual worker（取代旧版裸 threading.Thread + 0.5s dirty 轮询），
-    # 发现变化直接 call_from_thread 触发重建，不再有轮询延迟；连续空闲多轮后自适应
-    # 拉长扫描间隔，省磁盘/CPU；任何异常都要捕获且继续循环，不能让后台线程静默死掉 ----
+    # ---- 后台重扫：Textual worker；FSEvents/inotify 唤醒 + 慢速 reconcile。
+    # 有变化才 call_from_thread 重建列表；异常必须吞掉并继续，不能让线程静默死掉 ----
 
     def _start_background_refresh(self) -> None:
         self._background_refresh_worker()
 
     @work(thread=True, exclusive=True, group="session-refresh")
     def _background_refresh_worker(self) -> None:
+        import time as _time
+
         import corral
+        from corral.history_watch import HistoryWatcher
 
         worker = get_current_worker()
-        interval = REFRESH_INTERVAL
-        idle_rounds = 0
-        while not worker.is_cancelled:
-            # cancelled_event.wait() 同时承担定时器和取消唤醒；Screen 一退出便立即
-            # 返回，不再被 time.sleep(10) 拖住。
-            if worker.cancelled_event.wait(interval):
-                return
-            had_error = self.store.get_load_error() is not None
-            try:
-                changed = self.store.refresh()
-            except Exception as exc:  # 全异常兜底：只捕获 OSError 曾经让这个线程
-                # 遇到未预料异常（如扫描器 bug）就静默死掉，此后列表再也不会更新
-                # 且没有任何提示；模式与 ui/embed_pane.py 的 _capture_loop 一致，
-                # 复用同一个错误日志，写文件留证并继续循环，而不是让线程退出。
-                corral._log_embed_error("后台会话重扫线程", exc)
-                idle_rounds = 0
-                interval = REFRESH_INTERVAL
-                if not worker.is_cancelled:
+        watcher = HistoryWatcher()
+        self._history_watcher = watcher
+        watcher.start()
+        # Give the watch thread a moment to pick fsevents/inotify vs none.
+        worker.cancelled_event.wait(0.05)
+        reconcile = (
+            REFRESH_RECONCILE
+            if watcher.backend != "none"
+            else REFRESH_RECONCILE_FALLBACK
+        )
+        last_refresh = 0.0
+        try:
+            while not worker.is_cancelled:
+                deadline = _time.monotonic() + reconcile
+                while not worker.is_cancelled:
+                    left = deadline - _time.monotonic()
+                    if left <= 0:
+                        break
+                    if watcher.wait(timeout=min(0.5, left)):
+                        break
+                    if worker.cancelled_event.is_set():
+                        return
+                if worker.is_cancelled:
+                    return
+                if last_refresh > 0:
+                    gap = REFRESH_MIN_GAP - (_time.monotonic() - last_refresh)
+                    if gap > 0 and worker.cancelled_event.wait(gap):
+                        return
+                watcher.clear()
+                had_error = self.store.get_load_error() is not None
+                try:
+                    changed = self.store.refresh()
+                except Exception as exc:  # noqa: BLE001 — keep the loop alive
+                    corral._log_embed_error("后台会话重扫线程", exc)
+                    last_refresh = _time.monotonic()
+                    if not worker.is_cancelled:
+                        self.app.call_from_thread(self._update_header)
+                    continue
+                last_refresh = _time.monotonic()
+                if worker.is_cancelled:
+                    return
+                recovered = had_error and self.store.get_load_error() is None
+                if changed:
+                    self.app.call_from_thread(self._rebuild_list)
+                elif recovered:
                     self.app.call_from_thread(self._update_header)
-                continue
-            if worker.is_cancelled:
-                return
-            recovered = had_error and self.store.get_load_error() is None
-            if changed:
-                idle_rounds = 0
-                interval = REFRESH_INTERVAL
-                self.app.call_from_thread(self._rebuild_list)
-            else:
-                if recovered:
-                    self.app.call_from_thread(self._update_header)
-                idle_rounds += 1
-                if idle_rounds >= _IDLE_ROUNDS_BEFORE_BACKOFF:
-                    interval = min(REFRESH_INTERVAL_MAX, interval * 2)
+        finally:
+            watcher.stop()
+            if self._history_watcher is watcher:
+                self._history_watcher = None
 
     def _poll_cache(self) -> None:
         """标题缓存文件轮询：比会话重扫轻得多（只 stat 一个文件），保持独立的
@@ -657,6 +685,17 @@ class MainScreen(
         if self.store.dirty.is_set():
             self.store.dirty.clear()
             self.call_next(self._rebuild_list)
+        else:
+            # Event-driven refresh may sleep up to ~60s; tick the filter age hint.
+            age = self.store.refresh_age_seconds()
+            if age is not None and age >= REFRESH_STALE_HINT_AFTER:
+                shown = int(age)
+                if shown != getattr(self, "_stale_hint_age", None):
+                    self._stale_hint_age = shown
+                    self._update_header()
+            elif getattr(self, "_stale_hint_age", None) is not None:
+                self._stale_hint_age = None
+                self._update_header()
         self._sustain_preview_warm()
 
     # 详情预览在会话活跃写入期的续温节流间隔：会话每写一条历史，缓存版本就
@@ -740,10 +779,26 @@ class MainScreen(
                 [runtime.display_name for runtime in self.store.registry]
             )
             search.placeholder = t("filter.no_sessions", names=names)
-        elif active:
-            search.placeholder = t("filter.placeholder_count_active", count=count)
         else:
-            search.placeholder = t("filter.placeholder_count", count=count)
+            age = self.store.refresh_age_seconds()
+            stale = (
+                age is not None
+                and age >= REFRESH_STALE_HINT_AFTER
+                and self.store.loaded
+            )
+            age_i = int(age) if age is not None else 0
+            if active and stale:
+                search.placeholder = t(
+                    "filter.placeholder_count_active_stale", count=count, age=age_i,
+                )
+            elif active:
+                search.placeholder = t("filter.placeholder_count_active", count=count)
+            elif stale:
+                search.placeholder = t(
+                    "filter.placeholder_count_stale", count=count, age=age_i,
+                )
+            else:
+                search.placeholder = t("filter.placeholder_count", count=count)
 
     # ---- 选择跟随：右栏默认展示左栏当前选中项 ----
 
@@ -797,6 +852,10 @@ class MainScreen(
         self._cancel_follow_selection()
         self._suppress_selection_follow = 0
         self._cancel_attention_read()
+        watcher = self._history_watcher
+        if watcher is not None:
+            watcher.stop()
+            self._history_watcher = None
 
 
     def _follow_current_selection(self) -> None:

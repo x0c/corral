@@ -29,7 +29,11 @@ from corral.split_layout import default_layout_db, group_emoji
 from corral.store import SessionStore
 
 _SCAN_LIMIT = 200
-_REFRESH_INTERVAL = 15.0  # 远程进程与桌面界面抢同一把 GIL；3 秒全量扫会把中继心跳拖死
+# Event-driven history refresh: wake early on FS change; idle reconcile matches the
+# old 15s cadence so phone attention / list freshness do not regress to ~60s.
+_REFRESH_RECONCILE = 15.0
+_REFRESH_MIN_GAP = 15.0  # do not scan more often than the old remote cadence under thrash
+_TITLE_POLL_SLICE = 15.0
 _PHONE_LIST_LIMIT = 80
 _SCREEN_INTERVAL = 0.2       # 有人在看终端视图时的抓帧周期
 _CONVERSATION_INTERVAL = 1.0  # 实时会话的富消息轮询周期（空闲）
@@ -386,13 +390,18 @@ class SessionHub:
         self._threads: list[threading.Thread] = []
         self._last_attention: dict[str, str] = {}
         self._attention_hook = None  # 由推送层注入：(session, 旧状态, 新状态)
+        self._history_watcher = None
 
     # -- 生命周期 ---------------------------------------------------------
 
     def start(self) -> None:
+        from corral.history_watch import HistoryWatcher
         from corral.schedprio import demote_background
 
         demote_background()
+        watcher = HistoryWatcher()
+        self._history_watcher = watcher
+        watcher.start()
         self.store.load()
         self._snapshot_attention()
         for target in (self._refresh_loop, self._screen_loop, self._conversation_loop):
@@ -402,6 +411,10 @@ class SessionHub:
 
     def stop(self) -> None:
         self._stop.set()
+        watcher = self._history_watcher
+        if watcher is not None:
+            watcher.stop()
+            self._history_watcher = None
         for thread in self._threads:
             thread.join(timeout=1.0)
         embed.close_channel()
@@ -417,43 +430,76 @@ class SessionHub:
         from corral.schedprio import demote_background
 
         demote_background()
-        while not self._stop.wait(_REFRESH_INTERVAL):
-            # Title cache updates are independent of history mtimes. Poll them
-            # before/after the scan so a completed title reaches subscribers
-            # even when the session itself is otherwise unchanged.
+        watcher = self._history_watcher
+        last_scan = 0.0
+        while not self._stop.is_set():
+            # Title updates are independent of history mtimes — poll them on the
+            # short slice even when the full scan sleeps until FSEvents / reconcile.
+            title_only = True
+            if watcher is None:
+                if self._stop.wait(_TITLE_POLL_SLICE):
+                    return
+                title_only = False
+            else:
+                deadline = time.monotonic() + _REFRESH_RECONCILE
+                while not self._stop.is_set():
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        title_only = False
+                        break
+                    if watcher.wait(timeout=min(_TITLE_POLL_SLICE, left)):
+                        title_only = False
+                        break
+                    # Slice elapsed without FS change: still propagate titles.
+                    title_keys = self.store.poll_title_updates()
+                    if title_keys and self._sessions_watchers:
+                        self._emit_title_events(title_keys)
+                if self._stop.is_set():
+                    return
+                if last_scan > 0:
+                    gap = _REFRESH_MIN_GAP - (time.monotonic() - last_scan)
+                    if gap > 0 and self._stop.wait(gap):
+                        return
+                watcher.clear()
+
             title_keys = self.store.poll_title_updates()
             changed = False
-            try:
-                changed = self.store.refresh()
-            except Exception:
-                # History scan failures must not block title-only propagation.
-                pass
+            if not title_only:
+                try:
+                    changed = self.store.refresh()
+                except Exception:
+                    # History scan failures must not block title-only propagation.
+                    pass
+                last_scan = time.monotonic()
             title_keys.update(self.store.poll_title_updates())
             self._follow_key_migrations()
             self._detect_attention_changes()
             if (changed or title_keys) and self._sessions_watchers:
                 self._on_event("sessions", self.list_snapshot())
             if title_keys:
-                with self._lock:
-                    watches = [
-                        w for w in self._conversations.values()
-                        if w.watchers > 0
-                        and (w.canonical_key or w.key) in title_keys
-                    ]
-                for watch in watches:
-                    session = self.store.find_session(watch.canonical_key or watch.key)
-                    if session is None:
-                        continue
-                    self._on_event(
-                        f"session:{watch.key}",
-                        {
-                            "version": 1,
-                            "kind": "metadata",
-                            "session": watch.key,
-                            "revision": self.store.title_revision,
-                            "summary": self.session_payload(session, self._layout()),
-                        },
-                    )
+                self._emit_title_events(title_keys)
+
+    def _emit_title_events(self, title_keys: set[str]) -> None:
+        with self._lock:
+            watches = [
+                w for w in self._conversations.values()
+                if w.watchers > 0
+                and (w.canonical_key or w.key) in title_keys
+            ]
+        for watch in watches:
+            session = self.store.find_session(watch.canonical_key or watch.key)
+            if session is None:
+                continue
+            self._on_event(
+                f"session:{watch.key}",
+                {
+                    "version": 1,
+                    "kind": "metadata",
+                    "session": watch.key,
+                    "revision": self.store.title_revision,
+                    "summary": self.session_payload(session, self._layout()),
+                },
+            )
 
     def _screen_loop(self) -> None:
         while not self._stop.wait(_SCREEN_INTERVAL):
