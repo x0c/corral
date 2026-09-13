@@ -174,6 +174,8 @@
 | 手机一开终端，电脑窗口变窄 | 某处发了 `screen.resize`；手机端必须删掉这条调用；服务端应拒绝而非执行 |
 | 新建会话页项目列表空白 | `projects.list` 缺 `path`/`name`（旧版只有 `cwd`/`label`）；两端需同时认两套字段 |
 | 发送失败但输入框已清空 | 客户端在 `try?` 后无条件清空草稿；应仅在成功时清空并展示服务端错误文案 |
+| 手机往已结束会话发消息红感叹号 / 回执 `unavailable` / 「快点动手实现」发不出 | 会话不在保活窗格里（`keepalive_name` 空），旧逻辑直接拒绝注入。自本修复起：`input.text` / `input.keys` / `input.image` 在注入前会先走原生恢复再粘贴（对齐电脑「回车重开」）。若仍失败：看回执 `reason`、该会话是否真能 resume、以及常驻远程是否已换新版。**不要**只当成中继超时 |
+| Pi 会话有对话却看不到 Agent activity / 工具调用 | 旧远程把 Pi 挂在纯文本解析上，`supports_tool_calls` 也不含 pi。现已按活动分支解析 `toolCall` / `toolResult`；须抬高规范化缓存版本并 `corral remote off && on`。手机端活动卡本身不用改 |
 | 置顶接口永远回未置顶 / 组内会话点置顶无效 | `session.pin` 必须读 `pinned_session_keys`（不是已废弃的 `pinned_sessions`）；组成员不能单独置顶，应改切 `pinned_group_ids`（与桌面侧栏一致）。列表载荷里组字段用 `group.id`（值取自 `SplitGroup.group_id`） |
 | 手机删掉组内一条后，另一条仍挂着幽灵分组 | `session.delete` 成功后必须 `layout_db.remove_session`，不足两成员时解散组 |
 | 会话列表整页空白 | 手机 `SessionSummary` 对 `id`/`short_id` 按 String、数值按 Double 解码；`session_payload` 必须先做类型收口，任一字段类型不符会让整份 `sessions.list` 解码失败（客户端 `catch` 后静默空白） |

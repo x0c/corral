@@ -13,17 +13,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import socket
 
 from corral import observe
 from corral.remote import protocol, ratelimit
 from corral.remote.config import RemoteState
 from corral.remote.crypto import random_id
+from corral.remote.lan import DEFAULT_LOCAL_PORT
 from corral.remote.service import RemoteService
 from corral.remote.transport.channel import HostChannel
 from corral.remote.transport.relay import _websockets
 
-_DEFAULT_PORT = 8737
+# Deprecated: 用 `corral.remote.lan.DEFAULT_LOCAL_PORT`；这里只留别名兼容旧 import。
+_DEFAULT_PORT = DEFAULT_LOCAL_PORT
 _MAX_LOCAL_CHANNELS = 8
 
 
@@ -144,26 +145,8 @@ async def _send(socket_conn, frame: bytes) -> None:
         pass
 
 
-def lan_addresses() -> list[str]:
-    """列出这台开发机在局域网上的地址，写进配对二维码供手机直连。
+# Deprecated: 真实现已搬到 `corral.remote.lan`；这里只做 re-export，
+# 保持 `from corral.remote.transport.local import lan_addresses` 可用。
+from corral.remote.lan import lan_addresses  # noqa: E402,F401
 
-    刻意不做完整的网卡枚举：用一次到外网地址的 UDP「连接」（不产生任何流量）
-    问操作系统「出去的话会走哪个地址」，这是跨平台且不依赖第三方库的可靠办法。
-    """
-    addresses: list[str] = []
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.connect(("192.0.2.1", 9))  # 文档保留地址，不会真的发包
-        addresses.append(probe.getsockname()[0])
-    except OSError:
-        pass
-    finally:
-        probe.close()
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            address = info[4][0]
-            if address not in addresses and not address.startswith("127."):
-                addresses.append(address)
-    except OSError:
-        pass
-    return addresses
+__all__ = ["LocalServer", "lan_addresses"]

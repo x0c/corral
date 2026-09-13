@@ -1170,6 +1170,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "LAN direct connect: off",
         "zh": "局域网直连：已关闭",
     },
+    "remote.status.local_hint": {
+        "en": "  LAN address: {hint}",
+        "zh": "  局域网地址：{hint}",
+    },
+    "remote.status.mdns_on": {
+        "en": "  mDNS discovery: on ({service})",
+        "zh": "  局域网发现：已开启（{service}）",
+    },
     "remote.status.paired_count": {
         "en": "Paired phones: {count}",
         "zh": "已配对手机：{count} 台",

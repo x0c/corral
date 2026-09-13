@@ -726,12 +726,14 @@ class DedupeKeepaliveNameTests(unittest.TestCase):
         entries = host._build_hosted_entries(["pi:aaa", "pi:bbb"])
         self.assertEqual(entries[0][0]["id"], "aaa")
         self.assertEqual(entries[0][1], "corral-pi-aaa")
-        # Live unique host keeps a transcript renderer as an ended fallback.
+        # Live unique host keeps a lazy transcript renderer as an ended fallback.
         self.assertIsNotNone(entries[0][2])
         self.assertEqual(entries[1][0]["id"], "bbb")
         self.assertIsNone(entries[1][1])
         self.assertIsNotNone(entries[1][2])
-        self.assertEqual(host.warmed, ["aaa", "bbb"])
+        # Only the duplicate pane falls back to a static preview. The live
+        # owner must not reread its history while tmux is still rendering it.
+        self.assertEqual(host.warmed, ["bbb"])
 
 
 if __name__ == "__main__":

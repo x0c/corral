@@ -78,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.with_remote:
             check += "; import cryptography, websockets, segno"
+            # NOTE: zeroconf (mDNS broadcast) is an optional part of [remote]:
+            # the daemon must keep working without it, so it stays out of the
+            # hard clean-install check.
         _run([str(py), "-c", check], env=env)
         _run([str(py), "-m", "corral", "--version"], env=env)
     print("ok clean install")

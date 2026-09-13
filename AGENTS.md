@@ -161,7 +161,7 @@ env -u TEXTUAL_DISABLE_KITTY_KEY python3 scripts/ci-test.py
 
 - 日常 `git push`：自动只跑 `python3 scripts/ci-test.py --lint-only`（几秒）；不过则推送被拦。
 - 提交说明以 `release:` 开头，或推送 `v*` 标签：需要完整检查。**完整套件每个版本只跑一次**：本机刚跑过且产品代码未改时，推送门禁和收尾脚本认戳跳过整套、只再拦 ruff。戳失效（改过 `src/` / `tests/` / `scripts/` 等）才再跑全量。不要指望每次手设 `CORRAL_SKIP_*`。
-- `scripts/publish-release.sh` 同样认戳；应急才用 `CORRAL_SKIP_CI_GATE=1` / `CORRAL_SKIP_PUSH_GATE=1`。
+- `scripts/publish-release.sh` 同样认戳，但不能跳过完整检查；`CORRAL_SKIP_PUSH_GATE=1` 只绕过推送钩子，不能绕过发布门禁。
 
 全量单测约 560 项；墙钟主要卡在界面自动化（`test_ui` 单文件就约四五分钟）加真实终端集成。`scripts/ci-test.py` 默认按**模块多进程并行**：碰共享保活 socket / Textual Pilot 的模块走同一条串行车道，其余模块与之重叠跑（`--jobs N` / `CORRAL_TEST_JOBS`，`1`=旧单进程）。多核上常见墙钟大约五六分钟量级，别按「几十秒跑完」设超时。**排查「ci-test 跑很久 / 每次都要等很久 / 发版检查跑三遍 / 不要每次都跑这么重 / 是不是卡住了」：** 单次完整检查仍要数分钟，不是故障；发版慢曾是因为同一套连跑最多三遍（发版前、推送门禁、收尾脚本），已改为认戳跳过重复。中途刷「某任务执行超过 0.1 秒」是界面框架在抱怨慢，不是挂死。还在往下出新的通过行 / shard 完成行 = 正常；连续许多分钟没有任何新结果、或跑到约 25 分钟被打出全部线程栈才是挂死（那条已修过）。**禁止**把「跑快点」修成跳过界面/终端集成、只跑改过的文件、或把 Pilot/tmux 模块也拆进并行（会抢 `tmux -L corral-keepalive`）。异步协程帮不上这段墙钟——瓶颈在真实等待，不是解释器空转。机器负载高时，涉及真实 tmux 回显和 Textual Pilot 等待的用例（`ControlChannelIntegrationTests`、`MainScreenEmbedFlowTests` 等）会因 4s 级等待超时而假失败：**先把失败用例单独重跑一遍确认，再判定是否真回归**，不要直接当成自己改坏了去查。
 

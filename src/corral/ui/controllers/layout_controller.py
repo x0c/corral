@@ -377,7 +377,6 @@ class LayoutControllerMixin:
                 # flash chat; once the host is confirmed gone the pane
                 # switches to this preview instead of a blank "session ended".
                 entries.append((session, name, self._detail_renderer_for(session)))
-                self._warm_conversation(session, self._preview_gen)
                 continue
             entries.append((session, None, self._detail_renderer_for(session)))
             if session.get("live"):

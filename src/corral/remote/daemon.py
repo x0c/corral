@@ -14,6 +14,8 @@ import time
 from corral import observe
 from corral.i18n import t
 from corral.remote import config as remote_config
+from corral.remote.lan import DEFAULT_LOCAL_PORT, local_hints
+from corral.remote.mdns import MdnsAdvertiser
 from corral.remote.push import PushNotifier
 from corral.remote.service import RemoteService
 from corral.remote.sessions import SessionHub, default_title_spawn_fn
@@ -31,6 +33,15 @@ class RemoteDaemon:
         self.service = RemoteService(self.hub)
         self.relay = RelayClient(self.service, state, self.static_private) if state.relay_enabled else None
         self.local = LocalServer(self.service, state, self.static_private) if state.local_enabled else None
+        self.mdns = (
+            MdnsAdvertiser(
+                state.host_id,
+                state.host_name,
+                lambda: self.local.port if self.local is not None else 0,
+            )
+            if state.local_enabled
+            else None
+        )
         self.push = PushNotifier(state, self.static_private)
         if self.relay is not None:
             self.push.set_sender(self.relay.send_push)
@@ -55,6 +66,10 @@ class RemoteDaemon:
             tasks.append(asyncio.create_task(self.relay.run(stop)))
         if self.local is not None:
             tasks.append(asyncio.create_task(self.local.run(stop)))
+        if self.mdns is not None:
+            # zeroconf 注册是阻塞式（短暂等待冲突探测），放线程里别堵事件循环。
+            # 端口此时可能还是 0：MdnsAdvertiser 内部会等 LocalServer listen 完。
+            tasks.append(asyncio.create_task(asyncio.to_thread(self.mdns.start)))
         if not tasks:
             raise RuntimeError(t("remote.err.no_entry"))
         tasks.append(asyncio.create_task(self._reconcile_loop(stop)))
@@ -67,6 +82,8 @@ class RemoteDaemon:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if self.mdns is not None:
+                await asyncio.to_thread(self.mdns.stop)
             await asyncio.to_thread(self.hub.stop)
             remote_config.clear_pid()
             remote_config.clear_status_snapshot()
@@ -92,6 +109,9 @@ class RemoteDaemon:
             relay_online = self.relay.is_connected
             relay_connected_at = self.relay.connected_at
             relay_error = self.relay.last_error
+        port = self.local.port if self.local is not None else 0
+        if not port:
+            port = DEFAULT_LOCAL_PORT if self.state.local_enabled else 0
         remote_config.write_status_snapshot(
             {
                 "updated_at": time.time(),
@@ -100,6 +120,9 @@ class RemoteDaemon:
                 "relay_online": relay_online,
                 "relay_connected_at": relay_connected_at,
                 "relay_error": relay_error,
+                "local_port": port,
+                "local_hints": local_hints(port) if self.state.local_enabled and port else [],
+                "mdns": bool(self.mdns is not None and self.mdns.advertising),
             }
         )
 

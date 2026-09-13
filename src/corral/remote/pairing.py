@@ -16,12 +16,15 @@ import urllib.parse
 
 from corral.i18n import t
 from corral.remote.config import RemoteState
+from corral.remote.lan import effective_local_port, local_hints
 
 
 def build_payload(state: RemoteState, code: str, public_key: bytes, local_port: int = 0) -> str:
-    """生成配对链接。手机端扫到后直接按这条链接建立连接。"""
-    from corral.remote.transport.local import lan_addresses
+    """生成配对链接。手机端扫到后直接按这条链接建立连接。
 
+    `local_port` 为 0 表示自动：取 `state.local_port`，再没有则走默认端口。
+    参数保留只为兼容旧调用方。
+    """
     params = {
         "v": "2",
         "n": state.host_name,
@@ -30,24 +33,26 @@ def build_payload(state: RemoteState, code: str, public_key: bytes, local_port: 
     }
     if state.relay_enabled and state.relay_url:
         params["r"] = state.relay_url
-    if state.local_enabled and local_port:
-        addresses = lan_addresses()
-        if addresses:
-            params["l"] = ",".join(f"{a}:{local_port}" for a in addresses[:3])
+    port = local_port or effective_local_port(state)
+    if state.local_enabled and port:
+        hints = local_hints(port)
+        if hints:
+            params["l"] = ",".join(hints)
     return "corral://pair?" + urllib.parse.urlencode(params)
 
 
 def as_json(state: RemoteState, code: str, public_key: bytes, local_port: int = 0) -> str:
     """同样的配对信息，但给脚本和自动化用（``--json`` 输出）。"""
+    port = local_port or effective_local_port(state)
     return json.dumps(
         {
-            "url": build_payload(state, code, public_key, local_port),
+            "url": build_payload(state, code, public_key, port),
             "host_id": state.host_id,
             "host_name": state.host_name,
             "code": code,
             "public_key": public_key.hex(),
             "relay_url": state.relay_url if state.relay_enabled else "",
-            "local_port": local_port if state.local_enabled else 0,
+            "local_port": port if state.local_enabled else 0,
         },
         ensure_ascii=False,
         indent=2,

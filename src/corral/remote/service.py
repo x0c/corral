@@ -575,6 +575,9 @@ class RemoteService:
         )
         self.refresh_state()
         # 未配对也返回中继/局域网开关，便于旧配对手机补上中继地址、不必重新扫码。
+        # local_hints 同理：手机配对后 IP 变化也能自愈。旧客户端忽略未知字段。
+        from corral.remote.lan import effective_local_port, local_hints
+
         payload = {
             "protocol": protocol_version(),
             "corral_version": __version__,
@@ -588,6 +591,11 @@ class RemoteService:
             "relay_url": self.state.relay_url if self.state.relay_enabled else "",
             "relay_enabled": self.state.relay_enabled,
             "local_enabled": self.state.local_enabled,
+            "local_hints": (
+                local_hints(effective_local_port(self.state))
+                if self.state.local_enabled
+                else []
+            ),
             "capabilities": {
                 "compression": ["deflate"],
                 "message_page_limit": MESSAGE_PAGE_LIMIT,

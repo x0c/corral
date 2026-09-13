@@ -810,10 +810,15 @@ class SessionHub:
             current = self._transcripts.get(key)
             if current is None or not new_messages:
                 return
-            known = {item.seq for item in current.messages}
+            by_seq = {item.seq: index for index, item in enumerate(current.messages)}
             for item in new_messages:
-                if item.seq not in known:
+                index = by_seq.get(item.seq)
+                if index is None:
+                    by_seq[item.seq] = len(current.messages)
                     current.messages.append(item)
+                else:
+                    # Same seq with updated tool status (Claude/Pi result fill-in).
+                    current.messages[index] = item
             current.signature = history_signature(current.path) if current.path else None
             snapshot = current
         self._persist_transcript(snapshot)
@@ -1192,12 +1197,23 @@ class SessionHub:
             watch.last_capture = None
         return self._capture_frame(watch)
 
-    def _keepalive_name(self, key: str) -> str:
+    def _keepalive_name(self, key: str, *, resume_if_needed: bool = False) -> str:
+        """Return the hosted tmux name; optionally native-resume a stopped session.
+
+        Phone chat can open ended history and still send. Desktop Enter-to-restart
+        already resumes; phone input must do the same instead of a red failed bubble.
+        """
         session = self.require_session(key)
         name = str(session.get("keepalive_name") or "")
-        if not name:
-            raise ActionError("unavailable", t("remote.err.session_not_running"))
-        return name
+        if name:
+            return name
+        if resume_if_needed:
+            self.resume_session(key)
+            session = self.require_session(key)
+            name = str(session.get("keepalive_name") or "")
+            if name:
+                return name
+        raise ActionError("unavailable", t("remote.err.session_not_running"))
 
     def _capture_frame(self, watch: _ScreenWatch) -> dict | None:
         session = self.store.find_session(self.resolve_session_key(watch.key))
@@ -1263,7 +1279,7 @@ class SessionHub:
         Raises ActionError when injection fails with no proven side effect.
         Raises PartialInjectionError when paste succeeded but Enter failed.
         """
-        name = self._keepalive_name(key)
+        name = self._keepalive_name(key, resume_if_needed=True)
         session = self.store.find_session(self.resolve_session_key(key)) or {}
         pasted = False
         if text:
@@ -1294,7 +1310,7 @@ class SessionHub:
             )
 
     def send_keys(self, key: str, keys: list[str]) -> None:
-        name = self._keepalive_name(key)
+        name = self._keepalive_name(key, resume_if_needed=True)
         cleaned = [str(k) for k in keys if str(k).strip()]
         if not cleaned:
             raise ActionError("usage_error", t("remote.err.no_keys"))
@@ -1305,7 +1321,7 @@ class SessionHub:
         """把图片落到会话工作目录并把路径交给助手，复用桌面端已有的落盘+粘贴路径协议。"""
         if not image_bytes:
             raise ActionError("usage_error", t("remote.err.no_image"))
-        name = self._keepalive_name(key)
+        name = self._keepalive_name(key, resume_if_needed=True)
         path = embed.save_image_and_paste_path(name, image_bytes)
         if not path:
             raise ActionError("unavailable", t("remote.err.image_save_failed"))

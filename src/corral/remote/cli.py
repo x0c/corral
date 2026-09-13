@@ -439,9 +439,23 @@ def _cmd_pair(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _cmd_status(args) -> int:
+    from corral.remote.lan import effective_local_port, local_hints
+
     state = remote_config.load_state()
     pid = remote_config.read_pid()
     window = remote_config.read_pairing()
+    effective_port = effective_local_port(state) if state.local_enabled else 0
+    snapshot = remote_config.read_status_snapshot() if pid else None
+    snapshot_hints: list[str] = []
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("local_hints"), list):
+        snapshot_hints = [str(h) for h in snapshot["local_hints"] if str(h).strip()]
+    if not snapshot_hints and state.local_enabled and effective_port:
+        snapshot_hints = local_hints(effective_port)
+    if isinstance(snapshot, dict) and snapshot.get("local_port"):
+        try:
+            effective_port = int(snapshot["local_port"])
+        except (TypeError, ValueError):
+            pass
     data = {
         "running": bool(pid),
         "enabled": bool(pid),
@@ -453,7 +467,8 @@ def _cmd_status(args) -> int:
         "relay_url": state.relay_url if state.relay_enabled else "",
         "relay_enabled": state.relay_enabled,
         "local_enabled": state.local_enabled,
-        "local_port": state.local_port,
+        "local_port": effective_port,
+        "local_hints": snapshot_hints,
         "devices": len(state.devices),
         "pairing_open": bool(window),
         "pairing_mode": remote_config.read_pairing_mode() if window else "",
@@ -474,7 +489,6 @@ def _cmd_status(args) -> int:
         "account_id": account.get("account_id") or "",
         "quota": account.get("quota") or {},
     }
-    snapshot = remote_config.read_status_snapshot() if pid else None
     if snapshot:
         data["online"] = snapshot.get("online") or []
         data["recent"] = snapshot.get("recent") or []
@@ -530,6 +544,17 @@ def _cmd_status(args) -> int:
         if state.local_enabled
         else t("remote.status.local_off")
     )
+    if state.local_enabled and snapshot_hints:
+        print(t("remote.status.local_hint", hint=snapshot_hints[0]))
+    if isinstance(snapshot, dict) and snapshot.get("mdns"):
+        from corral.remote.mdns import SERVICE_TYPE, service_name
+
+        print(
+            t(
+                "remote.status.mdns_on",
+                service=service_name(state.host_id) + "." + SERVICE_TYPE,
+            )
+        )
     print(t("remote.status.paired_count", count=len(state.devices)))
     for device in state.devices:
         print(

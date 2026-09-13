@@ -870,6 +870,147 @@ class PlainRuntimeRichmsgTests(unittest.TestCase):
             messages = richmsg.RichReader(_session("pi", path)).read_all()
         self.assertEqual([(item.role, item.text) for item in messages], [("user", "你好"), ("assistant", "收到")])
 
+    def test_pi_tool_call_and_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "2026-08-26T00-00-00-000Z_sess-tools.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "session",
+                        "id": "sess-tools",
+                        "timestamp": "2026-08-26T00:00:00Z",
+                        "cwd": directory,
+                    },
+                    {
+                        "type": "message",
+                        "id": "u1",
+                        "parentId": None,
+                        "timestamp": "2026-08-26T00:00:01Z",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "查版本"}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "id": "a1",
+                        "parentId": "u1",
+                        "timestamp": "2026-08-26T00:00:02Z",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "我先跑一下"},
+                                {
+                                    "type": "toolCall",
+                                    "id": "call_bash_1",
+                                    "name": "bash",
+                                    "arguments": {"command": "corral --version"},
+                                },
+                            ],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "id": "tr1",
+                        "parentId": "a1",
+                        "timestamp": "2026-08-26T00:00:03Z",
+                        "message": {
+                            "role": "toolResult",
+                            "toolCallId": "call_bash_1",
+                            "toolName": "bash",
+                            "isError": False,
+                            "content": [{"type": "text", "text": "corral 0.24.207"}],
+                        },
+                    },
+                ],
+            )
+            reader = richmsg.RichReader(_session("pi", path))
+            first = reader.read_all()
+        self.assertEqual(richmsg.supports_tool_calls("pi"), True)
+        self.assertEqual(len(first), 2)
+        self.assertEqual(first[0].role, "user")
+        self.assertEqual(first[1].role, "assistant")
+        self.assertEqual(first[1].text, "我先跑一下")
+        self.assertEqual(len(first[1].tools), 1)
+        tool = first[1].tools[0]
+        self.assertEqual(tool.name, "bash")
+        self.assertEqual(tool.kind, "shell")
+        self.assertEqual(tool.status, "ok")
+        self.assertIn("corral 0.24.207", tool.output)
+        self.assertTrue(tool.has_body())
+
+    def test_pi_poll_reemits_when_tool_result_arrives(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "2026-08-26T00-00-00-000Z_sess-live.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "session",
+                        "id": "sess-live",
+                        "timestamp": "2026-08-26T00:00:00Z",
+                        "cwd": directory,
+                    },
+                    {
+                        "type": "message",
+                        "id": "u1",
+                        "parentId": None,
+                        "timestamp": "2026-08-26T00:00:01Z",
+                        "message": {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "读文件"}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "id": "a1",
+                        "parentId": "u1",
+                        "timestamp": "2026-08-26T00:00:02Z",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "toolCall",
+                                    "id": "call_read_1",
+                                    "name": "read",
+                                    "arguments": {"path": "/tmp/a.py"},
+                                },
+                            ],
+                        },
+                    },
+                ],
+            )
+            reader = richmsg.RichReader(_session("pi", path))
+            first = reader.poll()
+            self.assertEqual(len(first), 2)
+            self.assertEqual(first[1].tools[0].status, "running")
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "type": "message",
+                            "id": "tr1",
+                            "parentId": "a1",
+                            "timestamp": "2026-08-26T00:00:03Z",
+                            "message": {
+                                "role": "toolResult",
+                                "toolCallId": "call_read_1",
+                                "toolName": "read",
+                                "isError": False,
+                                "content": [{"type": "text", "text": "print(1)"}],
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+            second = reader.poll()
+            self.assertEqual(len(second), 1)
+            self.assertEqual(second[0].seq, first[1].seq)
+            self.assertEqual(second[0].tools[0].status, "ok")
+            self.assertIn("print(1)", second[0].tools[0].output)
+
     def test_jsonl_incomplete_last_line_is_not_consumed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "claude.jsonl"

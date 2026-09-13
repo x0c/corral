@@ -17,7 +17,10 @@
   消息里同 ``tool_use_id`` 的 ``tool_result``。
 - Cursor：assistant 消息 ``content`` 里的 ``tool-call``，结果在 ``role="tool"``
   的 ``tool-result`` 里，按 ``toolCallId`` 关联。
-- Kimi / OpenCode / Pi：暂时回落到纯文本（保持可用，不产出工具卡片）。
+- Pi：JSONL ``message`` 里助手 ``content`` 的 ``toolCall``，结果是
+  ``role=toolResult`` 且带 ``toolCallId`` / ``isError``。只走活动分支
+  （``active_messages``），不要按字节偏移扫整份文件以免混入已废弃分叉。
+- Kimi / OpenCode：暂时回落到纯文本（保持可用，不产出工具卡片）。
   漏登记的助手在桌面预览正常、手机详情却是空白，因为远程层不会回落到扫描器。
 
 拿不准的格式一律降级成「有一次工具调用」，绝不猜测语义——宁可少显示，也不能
@@ -459,6 +462,7 @@ class RichReader:
         self._unmatched_results = 0
         self._read_until: int | None = None
         self.parsed_line_count = 0
+        self._pi_fps: dict[int, tuple] = {}
 
     def reset(self) -> None:
         self._offset = 0
@@ -473,6 +477,7 @@ class RichReader:
         self._unmatched_results = 0
         self._read_until = None
         self.parsed_line_count = 0
+        self._pi_fps = {}
 
     def has_earlier(self) -> bool:
         """尾部窗口左侧是否还有未解析的历史。"""
@@ -558,6 +563,7 @@ class RichReader:
             "earliest_offset": self._earliest_offset,
             "earliest_rowid": self._earliest_rowid,
             "has_earlier": self._has_earlier,
+            "pi_fps": getattr(self, "_pi_fps", {}) or {},
         }
 
     def restore_state(self, state: dict, messages: list[RichMessage]) -> None:
@@ -573,6 +579,18 @@ class RichReader:
         except (TypeError, ValueError):
             self.reset()
             return
+        raw_fps = state.get("pi_fps") if isinstance(state.get("pi_fps"), dict) else {}
+        restored_fps: dict[int, tuple] = {}
+        for key, value in raw_fps.items():
+            try:
+                restored_fps[int(key)] = _normalize_pi_fp(value)
+            except (TypeError, ValueError):
+                continue
+        # Old caches omit pi_fps; seed from restored messages so the next poll
+        # does not re-push every turn as a "tool status changed" delta.
+        if not restored_fps and messages and self.runtime_id == "pi":
+            restored_fps = {item.seq: _pi_fingerprint(item) for item in messages}
+        self._pi_fps = restored_fps
         by_seq = {item.seq: item for item in messages}
         pending_raw = state.get("pending") if isinstance(state.get("pending"), dict) else {}
         host_seq_raw = state.get("host_seq") if isinstance(state.get("host_seq"), dict) else {}
@@ -1212,11 +1230,11 @@ def _cursor_assistant(content: object, reader: RichReader) -> tuple[str, list[To
 # --- 其余运行时：回落到纯文本 ----------------------------------------------
 
 def _parse_plain(reader: RichReader) -> list[RichMessage]:
-    """Kimi / OpenCode / Pi 走桌面同一套纯文本对话；文件变长时补读新句。
+    """Kimi / OpenCode 走桌面同一套纯文本对话；文件变长时补读新句。
 
     这几家没有独立的增量游标，所以每次都整份重读，只把尚未发出的尾部交给上层。
     会话条数有限，重读成本可接受。禁止在 ``_seq > 0`` 时直接返回空——否则
-    正在看的 Pi/Kimi 会话追加新回复后手机一直停在旧画面。
+    正在看的会话追加新回复后手机一直停在旧画面。
     """
     from corral.runtime import default_registry
 
@@ -1241,18 +1259,199 @@ def _parse_plain(reader: RichReader) -> list[RichMessage]:
     ]
 
 
+# --- Pi -------------------------------------------------------------------
+
+def _pi_timestamp(item: dict, message: dict) -> float | None:
+    from corral.scan.common import parse_timestamp
+
+    return parse_timestamp(item.get("timestamp")) or parse_timestamp(message.get("timestamp"))
+
+
+def _pi_build_messages(path: str) -> list[RichMessage]:
+    """Parse the active Pi branch into rich messages (text + tool cards)."""
+    from corral.scan import pi as scan_pi
+
+    built: list[RichMessage] = []
+    pending: dict[str, ToolCall] = {}
+    host_by_call: dict[str, RichMessage] = {}
+    seq = 0
+
+    def next_seq() -> int:
+        nonlocal seq
+        seq += 1
+        return seq
+
+    for item in scan_pi.active_messages(scan_pi.read_entries(path)):
+        message = item.get("message")
+        if not isinstance(message, dict):
+            continue
+        timestamp = _pi_timestamp(item, message)
+        role = message.get("role")
+
+        if role == "user":
+            clipped = _clip(scan_pi.message_text(message.get("content")), _MAX_TEXT)
+            if clipped and not _phone_injected_user(clipped):
+                built.append(RichMessage(next_seq(), "user", clipped, timestamp))
+            continue
+
+        if role == "toolResult":
+            call_id = str(message.get("toolCallId") or "")
+            tool = pending.pop(call_id, None)
+            if tool is None:
+                continue
+            explicit = message.get("isError")
+            if explicit is None and message.get("error"):
+                explicit = True
+            output = message.get("content")
+            tool.output = _result_text(output)
+            if isinstance(explicit, bool):
+                tool.status = "error" if explicit or _looks_failed(tool.output) else "ok"
+            else:
+                tool.status = "error" if _looks_failed(tool.output) else "ok"
+            continue
+
+        if role != "assistant":
+            continue
+
+        content = message.get("content")
+        texts: list[str] = []
+        tools: list[ToolCall] = []
+        if isinstance(content, str):
+            if content.strip():
+                texts.append(content.strip())
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = part.get("type")
+                if part_type == "text":
+                    value = str(part.get("text") or "").strip()
+                    if value:
+                        texts.append(value)
+                elif part_type == "toolCall":
+                    name = str(part.get("name") or "tool")
+                    kind = classify(name)
+                    raw_args = (
+                        part.get("arguments")
+                        if part.get("arguments") is not None
+                        else part.get("input")
+                    )
+                    args = _tool_args(raw_args)
+                    summary, detail = summarize(name, kind, args)
+                    options, groups = _question_fields(kind, args)
+                    tool = ToolCall(
+                        call_id=str(part.get("id") or ""),
+                        name=name,
+                        kind=kind,
+                        summary=summary,
+                        detail=detail,
+                        options=options,
+                        question_groups=groups,
+                    )
+                    tools.append(tool)
+
+        if not texts and not tools:
+            continue
+        host = RichMessage(
+            next_seq(),
+            "assistant",
+            _clip("\n\n".join(texts), _MAX_TEXT),
+            timestamp,
+            tools,
+        )
+        built.append(host)
+        for tool in tools:
+            if not tool.call_id:
+                continue
+            pending[tool.call_id] = tool
+            host_by_call[tool.call_id] = host
+    return built
+
+
+def _pi_fingerprint(message: RichMessage) -> tuple:
+    return (
+        message.role,
+        message.text or "",
+        tuple(
+            (tool.call_id, tool.status, tool.summary, bool(tool.output), bool(tool.detail))
+            for tool in message.tools
+        ),
+    )
+
+
+def _normalize_pi_fp(value: object) -> tuple:
+    """JSON round-trips turn nested tuples into lists; compare in one shape."""
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return ("", "", ())
+    role, text, tools = value
+    tool_fps: list[tuple] = []
+    if isinstance(tools, (list, tuple)):
+        for item in tools:
+            if not isinstance(item, (list, tuple)) or len(item) < 5:
+                continue
+            tool_fps.append(
+                (str(item[0]), str(item[1]), str(item[2]), bool(item[3]), bool(item[4]))
+            )
+    return (str(role or ""), str(text or ""), tuple(tool_fps))
+
+
+def _parse_pi(reader: RichReader) -> list[RichMessage]:
+    """Pi: full active-branch rebuild; emit new turns and updated tool hosts.
+
+    Pi history is a parent-linked tree. Byte-offset JSONL reads would mix in
+    abandoned forks, so each poll rebuilds the active leaf path (same as share
+    export / desktop preview). Message count is modest; rebuild cost is fine.
+    """
+    path = reader.path
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        built = _pi_build_messages(path)
+    except (OSError, ValueError):
+        return []
+
+    already = reader._seq
+    prev_raw = getattr(reader, "_pi_fps", {}) or {}
+    prev_fps = {int(key): _normalize_pi_fp(value) for key, value in prev_raw.items()}
+    new_fps: dict[int, tuple] = {}
+    out: list[RichMessage] = []
+    for message in built:
+        fingerprint = _pi_fingerprint(message)
+        new_fps[message.seq] = fingerprint
+        if message.seq > already:
+            out.append(message)
+        elif prev_fps.get(message.seq) != fingerprint:
+            # Tool result landed on an already-pushed assistant turn.
+            out.append(message)
+
+    reader._pi_fps = new_fps
+    reader._seq = built[-1].seq if built else already
+    reader._pending = {}
+    reader._host_by_call = {}
+    for message in built:
+        for tool in message.tools:
+            if tool.status == "running" and tool.call_id:
+                reader._pending[tool.call_id] = tool
+                reader._host_by_call[tool.call_id] = message
+    try:
+        reader._size = os.path.getsize(path)
+    except OSError:
+        pass
+    return out
+
+
 _PARSERS = {
     "codex": _parse_codex,
     "claude": _parse_claude,
     "cursor": _parse_cursor,
     "kimi": _parse_plain,
     "opencode": _parse_plain,
-    "pi": _parse_plain,
+    "pi": _parse_pi,
 }
 
 
 def supports_tool_calls(runtime_id: str) -> bool:
-    return runtime_id in ("codex", "claude", "cursor")
+    return runtime_id in ("codex", "claude", "cursor", "pi")
 
 
 def _tool_args(raw: object) -> dict:

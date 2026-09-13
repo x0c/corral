@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-08-31.1"  # 提问按题分组、过期问卷不再摊平；旧缓存仍是 8 个按钮钉底
+PARSER_VERSION = "2026-09-13.1"  # Pi toolCall/toolResult on mobile activity cards
 _SCHEMA_VERSION = 1
 
 

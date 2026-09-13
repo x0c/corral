@@ -738,6 +738,28 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.hub.send_text("claude:a", "")
         self.assertEqual(events, [])
 
+    def test_send_text_resumes_when_session_not_hosted(self) -> None:
+        session = _session(sid="ended")
+        self.hub.store.sessions = {"claude": [session]}
+
+        def _fake_resume(key: str) -> dict:
+            found = self.hub.store.find_session("claude:ended")
+            self.assertIsNotNone(found)
+            assert found is not None
+            found["keepalive_name"] = "pane-resumed"
+            return {"key": key}
+
+        with (
+            mock.patch.object(self.hub, "resume_session", side_effect=_fake_resume) as resume,
+            mock.patch.object(remote_sessions.embed, "paste", return_value=True) as paste,
+            mock.patch.object(remote_sessions.embed, "send_key", return_value=True) as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+        ):
+            self.hub.send_text("claude:ended", "快点动手实现")
+            resume.assert_called_once_with("claude:ended")
+            paste.assert_called_once_with("pane-resumed", "快点动手实现")
+            send_key.assert_called_once_with("pane-resumed", "Enter")
+
     def test_send_text_cursor_promotes_with_second_enter(self) -> None:
         """Phone Cursor submits must steer: paste + Enter + empty Enter."""
         session = _session(source="cursor", sid="c1", attention="working")
