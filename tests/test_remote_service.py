@@ -673,6 +673,51 @@ class RemoteServiceTests(unittest.TestCase):
         self.assertEqual(len(inbound_data), 1)
         self.assertTrue(inbound_data[0]["ok"])
 
+    # -- 同一设备只保留一条控制面 -----------------------------------------
+
+    def test_new_control_plane_supersedes_stale_one_from_same_device(self):
+        """手机重连/换网留下的旧控制面必须被新控制面取代并关闭，不能永远算在线。"""
+        old = self._paired()
+        closed: list[str] = []
+        old.close_hook = lambda: closed.append("old")
+        token = self._call(old, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})["d"][
+            "data_bind"
+        ]
+        self.service.attach_data_plane(
+            token, old.device_public_key, lambda _m: None, lambda: closed.append("old-data"), channel=object()
+        )
+
+        new = Connection(old.device_public_key, self.sent.append)
+        self.service.attach(new)
+
+        self.assertTrue(old.closed)
+        self.assertNotIn(old, self.service._connections)
+        self.assertIn(new, self.service._connections)
+        self.assertEqual(sorted(closed), ["old", "old-data"])
+        online = self.service.online_devices()
+        self.assertEqual(len(online), 1)
+        self.assertEqual(online[0]["public_key"], new.device_public_key[:16] + "…")
+        # 新控制面照常可用。
+        listing = self._call(new, protocol.M_SESSIONS_LIST)
+        self.assertTrue(listing["ok"])
+
+    def test_other_devices_are_not_touched_when_one_reconnects(self):
+        first = self._connect("aa" * 32)
+        second = self._connect("bb" * 32)
+        replacement = Connection("aa" * 32, self.sent.append)
+        self.service.attach(replacement)
+        self.assertTrue(first.closed)
+        self.assertFalse(second.closed)
+        self.assertIn(second, self.service._connections)
+        self.assertIn(replacement, self.service._connections)
+
+    def test_detach_twice_only_reports_once(self):
+        connection = self._connect()
+        self.service.detach(connection)
+        # 第二次 detach（例如 close_hook 回调再进来）不应抛错，也不重复计数。
+        self.service.detach(connection)
+        self.assertNotIn(connection, self.service._connections)
+
 
 class PairingWindowTests(unittest.TestCase):
     """配对窗口存在文件里，所以要单独确认过期与清理的行为。"""

@@ -28,7 +28,7 @@ from corral.remote import config as remote_config
 from corral.remote import protocol, ratelimit
 from corral.remote.config import RemoteState
 from corral.remote.service import RemoteService
-from corral.remote.transport.channel import HostChannel
+from corral.remote.transport.channel import UNCONFIRMED_TTL, HostChannel
 
 _INITIAL_BACKOFF = 1.0
 _MAX_BACKOFF = 60.0
@@ -318,12 +318,32 @@ class RelayClient:
             channel_id,
             lambda frame_type, payload, cid=channel_id: self._write(frame_type, cid, payload),
             address="relay",
+            # Host-initiated close (kick / supersede / expiry) must free the slot
+            # here and tell the relay to drop the device socket; otherwise the
+            # relay keeps the phone attached to a channel the host has forgotten.
+            close_transport=lambda cid=channel_id: self._release_channel(cid),
         )
         # 中继上每个 DEVICE_OPEN 是一条独立通道（独立握手与计数器）。
         # 数据面第二条 WebSocket 会再开一个 channel_id，由 HostChannel 在 hello
         # 里 bind 到同一逻辑 Connection，而不是当成第二台设备。
         self._channels[channel_id] = channel
+        loop = self._loop
+        if loop is not None:
+            loop.call_later(UNCONFIRMED_TTL, self._expire_unconfirmed, channel_id)
         return channel
+
+    def _expire_unconfirmed(self, channel_id: bytes) -> None:
+        """Drop a channel that completed HELLO but never proved it holds the key."""
+        channel = self._channels.get(channel_id)
+        if channel is None or channel.ready:
+            return
+        observe.event("remote_channel_unconfirmed_expired", transport="relay")
+        self._close_channel(channel_id)
+
+    def _release_channel(self, channel_id: bytes) -> None:
+        """Forget the channel and ask the relay to detach that device socket."""
+        self._channels.pop(channel_id, None)
+        self._write(protocol.FRAME_DEVICE_CLOSE, channel_id, b"")
 
     def _close_channel(self, channel_id: bytes) -> None:
         channel = self._channels.pop(channel_id, None)

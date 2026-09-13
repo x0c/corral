@@ -278,14 +278,40 @@ class RemoteService:
             remote_config.touch_device(self.state, connection.device_public_key)
             self._sync_state_mtime()
         with self._lock:
+            # One device key owns one control plane. An older confirmed control
+            # connection from the same key is a stale socket the phone already
+            # abandoned (reconnect / path change); keeping it would leave the
+            # device counted online forever and burn a channel slot.
+            superseded = [
+                other
+                for other in self._connections
+                if other is not connection and other.device_public_key == connection.device_public_key
+            ]
             self._connections.add(connection)
+        for old in superseded:
+            observe.event(
+                "remote_device_superseded",
+                device=old.device_name or old.device_id,
+                address=old.address,
+            )
+            self._supersede(old)
         observe.event(
             "remote_device_attached",
             device=connection.device_name or connection.device_id,
             reason="控制面连接",
         )
 
-    def detach(self, connection: Connection) -> None:
+    def _supersede(self, connection: Connection) -> None:
+        hook = connection.close_hook
+        connection.close_hook = None
+        self.detach(connection, reason="被同一设备的新控制面取代")
+        if hook is not None:
+            try:
+                hook()
+            except Exception:
+                pass
+
+    def detach(self, connection: Connection, *, reason: str = "控制面断开") -> None:
         """控制面断开：设备离线，退订，并关掉已附着的数据面。"""
         connection.closed = True
         data_hook = connection.data_close_hook
@@ -293,6 +319,7 @@ class RemoteService:
         connection.data_send = None
         connection.data_channel = None
         with self._lock:
+            was_attached = connection in self._connections
             self._connections.discard(connection)
             stale = [token for token, bind in self._data_binds.items() if bind.connection is connection]
             for token in stale:
@@ -312,11 +339,12 @@ class RemoteService:
                 data_hook()
             except Exception:
                 pass
-        observe.event(
-            "remote_device_detached",
-            device=connection.device_name or connection.device_id,
-            reason="控制面断开",
-        )
+        if was_attached:
+            observe.event(
+                "remote_device_detached",
+                device=connection.device_name or connection.device_id,
+                reason=reason,
+            )
 
     def attach_data_plane(self, token: str, device_public_key: str, send, close_hook, channel) -> Connection | None:
         """把第二条物理连接附着到已有逻辑 Connection。校验失败返回 None，不得踢控制面。"""

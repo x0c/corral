@@ -26,6 +26,11 @@ _STOP = object()
 # 首条密文若带毫秒时间戳，允许的时钟偏差（防重放 HELLO+旧 DATA）
 _CONFIRM_SKEW_MS = 5 * 60 * 1000
 _DEFAULT_QUEUE_SIZE = 256
+# A channel that never sends a decryptable frame must not hold a slot forever.
+# Handshake losers on the phone (parallel LAN/relay race) can leave the socket
+# open after HELLO; the transport closes them once this many seconds pass
+# without key confirmation. Normal clients send `hello` right after handshake.
+UNCONFIRMED_TTL = 20.0
 
 
 class HostChannel:

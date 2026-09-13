@@ -5,7 +5,7 @@
 1. 并发抢出一条加密通道（这里只走中继，与出门/蜂窝同一条路）
 2. 20 秒内必须拿到 ``sessions.watch`` 的整表首包
 3. 再对点开的那条发 ``session.watch``，同样 20 秒超时
-4. 连接竞速时可能同时存在两条通道
+4. 同一部手机的第二条控制面确认后，旧控制面须被开发机关闭（一台设备一条控制面）
 
 本脚本把上述路径拆成具名用例。可叠加往返延迟与带宽上限，用来暴露
 「本机回包很快、经中继加上限速就超时」的问题。失败以非零退出。
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import sys
 import time
@@ -361,22 +362,35 @@ async def run(args) -> int:
         except Exception as err:
             report.add(f"session.watch {runtime} 抽样", False, str(err))
 
-    # 连接竞速：第二条通道同时拉列表，模拟局域网+中继都握手成功。
+    # 连接取代：同一部手机的第二条控制面握手并确认后，开发机必须让新通道工作，
+    # 并在短时间内关掉旧通道（一台设备只保留一条控制面；旧通道是手机已放弃的僵尸）。
     try:
         rival = await asyncio.wait_for(_open_client(args, host_key), timeout=args.timeout)
-        first_watch = asyncio.create_task(client.call("sessions.list"))
-        second_watch = asyncio.create_task(rival.call("sessions.watch"))
-        results = await asyncio.gather(first_watch, second_watch, return_exceptions=True)
-        failures = [item for item in results if isinstance(item, Exception)]
+        elapsed, _listing = await rival.call("sessions.watch")
+        old_closed = False
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            # websockets ≥ 13 暴露 `state`；旧版本用 `closed`。
+            state = getattr(client.socket, "state", None)
+            if state is not None and getattr(state, "name", "") in {"CLOSING", "CLOSED"}:
+                old_closed = True
+                break
+            if getattr(client.socket, "closed", False):
+                old_closed = True
+                break
+            await asyncio.sleep(0.2)
         report.add(
-            "双连接竞速：原通道 list + 新通道 watch",
-            not failures,
-            "两条都在超时前返回" if not failures else str(failures[0]),
-            0.0,
+            "控制面取代：新通道 watch 成功且旧通道被开发机关闭",
+            old_closed,
+            "旧通道已关闭" if old_closed else "旧通道 5 秒内仍未被关闭（会累积僵尸通道）",
+            elapsed,
         )
-        await rival.socket.close()
+        # 之后的步骤全部走新通道。
+        with contextlib.suppress(Exception):
+            await client.socket.close()
+        client = rival
     except Exception as exc:
-        report.add("双连接竞速：原通道 list + 新通道 watch", False, str(exc))
+        report.add("控制面取代：新通道 watch 成功且旧通道被开发机关闭", False, str(exc))
 
     idle = min(25.0, args.idle_seconds)
     if idle > 0:

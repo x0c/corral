@@ -20,7 +20,7 @@ from corral.remote.config import RemoteState
 from corral.remote.crypto import random_id
 from corral.remote.lan import DEFAULT_LOCAL_PORT
 from corral.remote.service import RemoteService
-from corral.remote.transport.channel import HostChannel
+from corral.remote.transport.channel import UNCONFIRMED_TTL, HostChannel
 from corral.remote.transport.relay import _websockets
 
 # Deprecated: 用 `corral.remote.lan.DEFAULT_LOCAL_PORT`；这里只留别名兼容旧 import。
@@ -110,6 +110,16 @@ class LocalServer:
         # 直连时也先发一次通道分配，让手机端的收包逻辑与走中继时完全一致——
         # 客户端不必为两种连接方式各写一套。
         await _send(socket_conn, protocol.encode_frame(protocol.FRAME_DEVICE_OPEN, channel_id, b""))
+
+        async def _expire_unconfirmed() -> None:
+            # Phone-side handshake losers can sit here after HELLO without ever
+            # sending a decryptable frame; they must not eat a channel slot.
+            await asyncio.sleep(UNCONFIRMED_TTL)
+            if not channel.ready:
+                observe.event("remote_channel_unconfirmed_expired", transport="local", address=address)
+                channel.close()
+
+        watchdog = asyncio.create_task(_expire_unconfirmed())
         try:
             async for raw in socket_conn:
                 if closed.is_set():
@@ -125,6 +135,7 @@ class LocalServer:
         except Exception:
             pass
         finally:
+            watchdog.cancel()
             channel.close()
             async with self._channels_lock:
                 self._channels = max(0, self._channels - 1)
