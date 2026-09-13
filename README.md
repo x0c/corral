@@ -70,7 +70,7 @@ corral claude
 
 Select two to four sessions with `Space`, then press `Enter` to open them side by side. Closing a pane hides that view; it does not stop a hosted agent.
 
-To continue elsewhere, open a session, press `Ctrl+A`, and choose an assistant. After Claude finishes an implementation, you can hand that conversation to Codex for review. The source session stays intact; the receiving assistant reads the history it needs. Press `Enter` instead when you want the original assistant's native resume.
+To continue elsewhere, open a session, press `Ctrl+T`, and choose an assistant. After Claude finishes an implementation, you can hand that conversation to Codex for review. The source session stays intact; the receiving assistant reads the history it needs. Press `Enter` instead when you want the original assistant's native resume.
 
 Press `Ctrl+\` to return keyboard control to the sidebar. Quitting Corral leaves hosted agents running.
 
@@ -85,7 +85,7 @@ Corral launches supported assistants with their automatic-approval modes enabled
 | `Enter` | Resume or enter the selected session |
 | `Ctrl+N` | Start a new session |
 | `Space`, then `Enter` | Select two to four sessions and split the view |
-| `Ctrl+A` | Export, copy, or hand off a session |
+| `Ctrl+T` | Export, copy, or hand off a session |
 | `Ctrl+\` | Return input to the sidebar |
 | `Esc` | Close the current dialog or quit |
 

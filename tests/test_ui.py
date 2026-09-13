@@ -925,7 +925,7 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(area.can_add_pane())
 
     async def test_footer_binds_ctrl_n_not_bare_n_for_new_session(self) -> None:
-        """新建走全局 Ctrl+N；单字母 n/a/x/q 不绑。Ctrl+A/X 是全局高级操作/删除。"""
+        """新建走全局 Ctrl+N；单字母 n/a/x/q 不绑。Ctrl+T/X 是全局高级操作/删除。"""
         store, _ = _make_store()
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
@@ -936,7 +936,8 @@ class AppThemeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("x", keys)
             self.assertNotIn("q", keys)
             self.assertIn("ctrl+n", keys)
-            self.assertIn("ctrl+a", keys)
+            self.assertIn("ctrl+t", keys)
+            self.assertNotIn("ctrl+a", keys)
             self.assertIn("ctrl+x", keys)
             actions = {b.action for b in app.screen.BINDINGS}
             self.assertIn("new_session", actions)
@@ -5689,7 +5690,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(source)
                 source_key = corral.session_key(source)
 
-                await pilot.press("ctrl+a")
+                await pilot.press("ctrl+t")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 await pilot.press("down")  # claude 原生恢复 → cursor
@@ -5767,7 +5768,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 source_key = corral.session_key(source)
                 main = app.screen
                 with mock.patch.object(main, "notify") as notify:
-                    await pilot.press("ctrl+a")
+                    await pilot.press("ctrl+t")
                     await pilot.pause()
                     self.assertIsInstance(app.screen, RuntimePickerModal)
                     await pilot.press("down")
@@ -5839,7 +5840,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(source)
                 source_key = corral.session_key(source)
 
-                await pilot.press("ctrl+a")
+                await pilot.press("ctrl+t")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 # 本用例只有 claude，默认即源助手；回车 = 同助手读历史后新建
@@ -5899,7 +5900,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(source)
                 source_key = corral.session_key(source)
 
-                await pilot.press("ctrl+a")
+                await pilot.press("ctrl+t")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 # 默认高亮在接力项；上移两次落到「复制会话」（上面依次是重启、导出）
@@ -5939,7 +5940,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=True)
         async with app.run_test(size=(120, 30)) as pilot:
             await pilot.pause(delay=0.2)
-            await pilot.press("ctrl+a")
+            await pilot.press("ctrl+t")
             await pilot.pause()
             self.assertIsInstance(app.screen, RuntimePickerModal)
             self.assertEqual(app.screen._choices[0].id, EXPORT_SESSION_CHOICE)
@@ -5988,7 +5989,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
                 store.mark_hosted(source_key, "corral-claude-s0")
                 await pilot.pause()
 
-                await pilot.press("ctrl+a")
+                await pilot.press("ctrl+t")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 choices = app.screen._choices
@@ -6020,7 +6021,7 @@ class MainScreenHostWorkerTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("corral.embed.host_session") as host_mock:
             async with app.run_test(size=(120, 30)) as pilot:
                 await pilot.pause(delay=0.2)
-                await pilot.press("ctrl+a")
+                await pilot.press("ctrl+t")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, RuntimePickerModal)
                 choices = app.screen._choices
@@ -6089,7 +6090,7 @@ class FooterActionGatingTests(unittest.TestCase):
         # 无回列表快捷键；方法仍在，焦点已在右栏时 check 为 True 但无 binding
         self.assertTrue(screen.check_action("focus_list", ()))
         self.assertTrue(screen.check_action("toggle_sidebar", ()))
-        # Ctrl+F/P/N/A/X 全局：右栏持焦时仍可用
+        # Ctrl+F/P/N/T/X 全局：右栏持焦时仍可用
         self.assertTrue(screen.check_action("toggle_pin", ()))
         self.assertTrue(screen.check_action("search_content", ()))
         self.assertTrue(screen.check_action("new_session", ()))
@@ -7718,7 +7719,7 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_live_pane_forwards_enter_but_ctrl_f_opens_search(self) -> None:
-        """回车照常发给助手，但 Ctrl+F 必须由 corral 打开全文搜索，Ctrl+N 打开新建。"""
+        """回车和 Ctrl+A 发给助手；Ctrl+F / Ctrl+N / Ctrl+T 由 corral 拦截。"""
         store, registry = _make_store()
         registry.build_launch_plan = lambda request: LaunchPlan(("claude",), None)
         app = CorralApp(store, embed_ok=True)
@@ -7753,6 +7754,13 @@ class RestartEndedSessionTests(unittest.IsolatedAsyncioTestCase):
 
                 with mock.patch("corral.embed.send_key") as send_key:
                     await pilot.press("ctrl+a")
+                    await pilot.pause()
+                    self.assertTrue(send_key.called)
+                    send_key.assert_called_with("corral-claude-s0", "C-a")
+                    self.assertNotIsInstance(app.screen, RuntimePickerModal)
+
+                with mock.patch("corral.embed.send_key") as send_key:
+                    await pilot.press("ctrl+t")
                     await _wait_until(lambda: isinstance(app.screen, RuntimePickerModal))
                     self.assertFalse(send_key.called)
                     await pilot.press("escape")
@@ -7974,7 +7982,7 @@ class RightPanePreviewTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
-            await pilot.press("ctrl+a")
+            await pilot.press("ctrl+t")
             await _wait_until(lambda: isinstance(app.screen, RuntimePickerModal))
             await pilot.press("down")  # claude(原生恢复) -> codex
             await pilot.press("enter")
@@ -8399,7 +8407,7 @@ class ModalTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
             await pilot.press("down")
-            await pilot.press("ctrl+a")
+            await pilot.press("ctrl+t")
             await pilot.pause()
             self.assertIsInstance(app.screen, RuntimePickerModal)
             await pilot.press("down")  # 移到未安装的 kimi

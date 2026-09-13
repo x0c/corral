@@ -894,6 +894,7 @@ class TranslateTextualKeyTests(unittest.TestCase):
         self.assertEqual(embed.translate_textual_key("ctrl+c"), ("keys", "C-c"))
         self.assertEqual(embed.translate_textual_key("ctrl+z"), ("keys", "C-z"))
         self.assertEqual(embed.translate_textual_key("ctrl+a"), ("keys", "C-a"))
+        self.assertEqual(embed.translate_textual_key("ctrl+t"), ("keys", "C-t"))
 
     def test_control_underscore_and_slash_aliases(self):
         # 多数终端 Ctrl+/ ≡ Ctrl+_（ASCII 0x1F）；tmux 不认 C-/，统一成 C-_。

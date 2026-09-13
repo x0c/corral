@@ -33,7 +33,7 @@ flowchart TD
     A[选会话] --> B{入口}
     B -- 回车 --> C[原生恢复]
     C --> D[来源适配器生成原生 LaunchPlan]
-    B -- 高级操作 a --> P{弹窗选项}
+    B -- Ctrl+T 高级操作 --> P{弹窗选项}
     P -- 导出会话 --> Q[写 share JSON 并复制路径]
     P -- 复制会话 --> R[同助手完整克隆]
     P -- 选目标助手 含自身 --> E[选目标助手]
@@ -159,7 +159,7 @@ LaunchPlan 只包含 `argv` 参数数组和可选 `cwd`，让计划能被测试�
 13. **在适配器内接入保活实现**：适配器只生成 LaunchPlan；保活只可在计划生成之后的外层介入。
 14. **改了 render_prompt 却只测 TUI**：`corral context` 会同步变化，必须覆盖两种消费面。
 15. **为了判活去改写接力说明、删掉 `session` 等词**：错方向。OpenCode 跨助手新建本来就把整段说明放进 `--prompt`；操作系统里进程命令行是空格拼接的，扫描必须在 `--prompt` 处停扫，而不是让提示词迁就解析器。改完提示词后仍要用含这些词的原文跑扫描回归。
-16. **把缺历史路径的 `LaunchError` 冒泡出 `@work` 的 `action_handoff`**：会变成 `WorkerFailed`，Textual `_handle_exception` 整屏退出。复制会话已经 catch；接力新建的计划生成在 `_embed_open` 里，那里必须 notify + 响铃后返回，不能让异常回到 worker。典型触发是刚托管、历史还未落盘的占位卡（`path=""`）。**不要**为了消这个现象去伪造空路径、把别的会话历史塞给目标，或在 `_handle_exception` 里吞掉 `LaunchError`。也不要在 `action_handoff` 里先 `build_launch_plan` 再交给 `_embed_open`——成功路径会把对话摘录做两遍，现有捕获计划的回归会失败。真机：2026-08-24 刚托管 Codex 占位卡后按 `a` 选助手闪退。回归：`test_handoff_without_history_path_keeps_tui_alive`、`test_embed_open_launch_error_keeps_tui_alive`、`test_cross_runtime_requires_history_path`。
+16. **把缺历史路径的 `LaunchError` 冒泡出 `@work` 的 `action_handoff`**：会变成 `WorkerFailed`，Textual `_handle_exception` 整屏退出。复制会话已经 catch；接力新建的计划生成在 `_embed_open` 里，那里必须 notify + 响铃后返回，不能让异常回到 worker。典型触发是刚托管、历史还未落盘的占位卡（`path=""`）。**不要**为了消这个现象去伪造空路径、把别的会话历史塞给目标，或在 `_handle_exception` 里吞掉 `LaunchError`。也不要在 `action_handoff` 里先 `build_launch_plan` 再交给 `_embed_open`——成功路径会把对话摘录做两遍，现有捕获计划的回归会失败。真机：2026-08-24 刚托管 Codex 占位卡后按 Ctrl+T 选助手闪退。回归：`test_handoff_without_history_path_keeps_tui_alive`、`test_embed_open_launch_error_keeps_tui_alive`、`test_cross_runtime_requires_history_path`。
 
 ## §7. 验证与排查
 

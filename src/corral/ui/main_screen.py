@@ -1,6 +1,6 @@
 """主屏：左栏会话列表 + 右栏预览/内嵌终端（corral 唯一界面）。
 
-按键语义（/ 聚焦项目搜索 / a 或 Ctrl+A 高级操作 /
+按键语义（/ 聚焦项目搜索 / Ctrl+T 高级操作 /
 q 结束会话 / x 删除会话 / c 关闭面板 / Ctrl+Shift+B 显隐侧栏 / Esc 退出）；选中非进行中会话时右栏直接
 展示完整对话预览。键盘焦点跟随明确意图：回车 / 单击会话卡打开、新建或直启托管成功后
 输入交给右栏那一格（仅限活着的实时会话），上下浏览不抢焦点；再点当前持有输入的那张
@@ -224,14 +224,17 @@ _LIST_ONLY_ACTIONS = frozenset(
 def _main_bindings() -> list[Binding]:
     """按当前语言生成底部快捷键说明。"""
     return [
-        # Ctrl+F / Ctrl+P / Ctrl+N / Ctrl+A / Ctrl+X 是壳层全局键。priority 让它们
+        # Ctrl+F / Ctrl+P / Ctrl+N / Ctrl+T / Ctrl+X 是壳层全局键。priority 让它们
         # 先于当前聚焦控件处理，运行中助手不能再截走；临时弹窗不继承主屏绑定。
+        # 不绑 Ctrl+A：那是行首，必须透传给助手。不绑 Ctrl+O：Claude 详细记录 /
+        # Codex 复制回复 / OpenCode 选模型。不绑 Ctrl+]：机主否决「不好记」，
+        # 只要 Ctrl+字母。Ctrl+T 会挡住 Claude 待办清单，是 2026-09-13 选定的代价。
         # 不绑单字母 a/x/q/c：右栏持焦时会变成打给助手的字符。结束托管走高级操作。
         # Esc 只关弹窗，不退出应用。侧栏显隐只点顶栏 ◀/▶（无回列表快捷键）。
         Binding("ctrl+f", "search_content", t("action.search"), priority=True),
         Binding("ctrl+p", "toggle_pin", t("action.toggle_pin"), priority=True),
         Binding("ctrl+n", "new_session", t("action.new"), priority=True),
-        Binding("ctrl+a", "advanced", t("action.advanced"), priority=True),
+        Binding("ctrl+t", "advanced", t("action.advanced"), priority=True),
         Binding("ctrl+x", "delete_session", t("action.delete_session"), priority=True),
         # 会话小窗展开/收起。Footer 已经很挤，这个键不展示；小窗自身可点。
         Binding("ctrl+g", "toggle_hud", t("action.toggle_hud"), show=False),
@@ -1490,7 +1493,7 @@ class MainScreen(
             if getattr(self, "_activity_board_active", False):
                 return False
         if action in ("advanced", "delete_session"):
-            # Ctrl+A / Ctrl+X：列表持焦，或右栏正对着某个会话。筛选框里让路给输入。
+            # Ctrl+T / Ctrl+X：列表持焦，或右栏正对着某个会话。筛选框里让路给输入。
             if isinstance(self.focused, Input):
                 return False
             if self._any_embed_focused():
@@ -1793,7 +1796,7 @@ class MainScreen(
 
     @work
     async def action_advanced(self) -> None:
-        """Ctrl+A 全局高级操作：列表或右栏关联会话时打开，与 `a` 同一条流程。"""
+        """Ctrl+T 全局高级操作：列表或右栏关联会话时打开。"""
         await self._run_handoff()
 
     @work
