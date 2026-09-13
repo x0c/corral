@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from collections import deque
@@ -49,6 +50,18 @@ _CONVERSATION_DELTA_LIMIT = 200  # 每条被看会话只留最近这么多增量
 
 _ATTENTION_LABELS = {"none": "none", "unread": "unread", "working": "working", "waiting": "waiting"}
 
+# Dump/adapters (EditHere corral-cursor): wait for the TUI to accept keys before
+# pasting, then pause longer than phone send_text so Enter is not lost on a
+# still-starting Cursor Agent. Retry submit if the prompt is still in the composer.
+_TURN_READY_TIMEOUT = 45.0
+_TURN_READY_POLL = 0.25
+_TURN_SUBMIT_PAUSE = 0.25
+_TURN_SUBMIT_RETRIES = 3
+_TURN_IMAGE_GAP = 0.15
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b."
+)
+
 
 class ActionError(RuntimeError):
     """动作无法执行；给用户看的 message 必须走 i18n.t()，随开发机界面语言。"""
@@ -78,6 +91,42 @@ def _phone_steer_promote(session: dict) -> bool:
         return False
     attention = str(session.get("attention_kind") or "none").strip().lower()
     return attention != "waiting"
+
+
+def _plain_pane_text(raw: str | None) -> str:
+    if not raw:
+        return ""
+    return _ANSI_RE.sub("", raw)
+
+
+def _pane_accepts_input(plain: str) -> bool:
+    """True when the hosted assistant UI shows an input prompt."""
+    if "→" not in plain and "->" not in plain:
+        return False
+    # Fresh Cursor / Claude panes show the arrow once the TUI is interactive.
+    return True
+
+
+def _composer_still_holds(plain: str, needle: str) -> bool:
+    """True when ``needle`` still sits in the bottom composer after ``→``."""
+    marker = (needle or "").strip().splitlines()[0].strip()
+    if not marker:
+        return False
+    # Keep the marker short — long prompt first lines may wrap in the pane.
+    marker = marker[:48]
+    idx = plain.rfind("→")
+    if idx < 0:
+        idx = plain.rfind("->")
+    if idx < 0:
+        return False
+    window = plain[idx : idx + 1600]
+    if marker not in window:
+        return False
+    # Submitted turns move the prompt into history; the composer becomes the
+    # follow-up placeholder while the agent runs.
+    if "Add a follow-up" in window:
+        return False
+    return True
 
 
 @dataclass
@@ -1288,14 +1337,10 @@ class SessionHub:
             pasted = True
         if submit:
             time.sleep(0.05)  # 给目标程序一点时间收完粘贴，避免回车抢在正文前面
-            if not embed.send_key(name, "Enter"):
+            if not self._submit_enter(name, session, pasted=pasted):
                 if pasted:
                     raise PartialInjectionError(t("remote.err.inject_partial"))
                 raise ActionError("unavailable", t("remote.err.inject_failed"))
-            # Cursor CLI: first Enter queues; second empty Enter steers / sends now.
-            if _phone_steer_promote(session):
-                time.sleep(0.05)
-                embed.send_key(name, "Enter")  # best-effort; first Enter already landed
         if text:
             # 立刻回显到手机传来的通道，不占规范化 seq；助手历史落地后的正式消息才带 seq。
             self._on_event(
@@ -1326,6 +1371,104 @@ class SessionHub:
         if not path:
             raise ActionError("unavailable", t("remote.err.image_save_failed"))
         return path
+
+    def send_turn(
+        self,
+        key: str,
+        text: str,
+        *,
+        images: list[bytes] | None = None,
+        submit: bool = True,
+        ready_timeout: float = _TURN_READY_TIMEOUT,
+    ) -> list[str]:
+        """Deliver images + text as one turn. Built for dump adapters (EditHere).
+
+        ``send_image`` only pastes a path; ``send_text`` submits, but on a
+        still-starting Cursor Agent the Enter can land before the TUI accepts
+        keys — the prompt then sits in the composer forever while dump.log
+        already says success. This method waits until the pane shows an input
+        prompt, pastes paths then text, submits with a longer pause, and
+        retries Enter while the prompt is still stuck in the composer.
+
+        Returns the saved image paths (empty when no images).
+        """
+        name = self._keepalive_name(key, resume_if_needed=True)
+        session = self.store.find_session(self.resolve_session_key(key)) or {}
+        self._wait_pane_ready(name, timeout=ready_timeout)
+
+        paths: list[str] = []
+        for index, image_bytes in enumerate(images or []):
+            if not image_bytes:
+                raise ActionError("usage_error", t("remote.err.no_image"))
+            path = embed.save_image_and_paste_path(name, image_bytes)
+            if not path:
+                raise ActionError("unavailable", t("remote.err.image_save_failed"))
+            paths.append(path)
+            if index + 1 < len(images or []):
+                time.sleep(_TURN_IMAGE_GAP)
+
+        pasted = False
+        if text:
+            if not embed.paste(name, text):
+                raise ActionError("unavailable", t("remote.err.inject_failed"))
+            pasted = True
+
+        if submit:
+            time.sleep(_TURN_SUBMIT_PAUSE)
+            if not self._submit_enter(name, session, pasted=pasted):
+                if pasted or paths:
+                    raise PartialInjectionError(t("remote.err.inject_partial"))
+                raise ActionError("unavailable", t("remote.err.inject_failed"))
+            self._ensure_turn_submitted(name, session, text)
+
+        if text:
+            self._on_event(
+                f"session:{key}",
+                {
+                    "version": 1,
+                    "kind": "echo",
+                    "session": key,
+                    "role": "user",
+                    "text": text,
+                },
+            )
+        return paths
+
+    def _wait_pane_ready(self, name: str, *, timeout: float) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            plain = _plain_pane_text(embed.capture(name, 0, 0))
+            if _pane_accepts_input(plain):
+                return
+            if time.monotonic() >= deadline:
+                raise ActionError("unavailable", t("remote.err.inject_failed"))
+            time.sleep(_TURN_READY_POLL)
+
+    def _submit_enter(self, name: str, session: dict, *, pasted: bool) -> bool:
+        """Send Enter (+ Cursor steer promote). Returns False if the first Enter failed."""
+        del pasted  # callers use this only for error class selection
+        if not embed.send_key(name, "Enter"):
+            return False
+        if _phone_steer_promote(session):
+            time.sleep(0.05)
+            embed.send_key(name, "Enter")  # best-effort; first Enter already landed
+        return True
+
+    def _ensure_turn_submitted(self, name: str, session: dict, text: str) -> None:
+        """Retry Enter while the prompt is still sitting in the composer."""
+        marker = (text or "").strip()
+        if not marker:
+            return
+        for _ in range(_TURN_SUBMIT_RETRIES):
+            time.sleep(_TURN_SUBMIT_PAUSE)
+            plain = _plain_pane_text(embed.capture(name, 0, 0))
+            if not _composer_still_holds(plain, marker):
+                return
+            if not self._submit_enter(name, session, pasted=True):
+                raise PartialInjectionError(t("remote.err.inject_partial"))
+        plain = _plain_pane_text(embed.capture(name, 0, 0))
+        if _composer_still_holds(plain, marker):
+            raise PartialInjectionError(t("remote.err.inject_partial"))
 
     # -- 会话动作 ---------------------------------------------------------
 

@@ -794,6 +794,70 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.hub.send_text("cursor:c2", "选 A")
             send_key.assert_called_once_with("pane-cursor", "Enter")
 
+    def test_send_turn_waits_pastes_images_text_and_submits(self) -> None:
+        session = _session(source="cursor", sid="turn1", attention="none")
+        session["keepalive_name"] = "pane-turn"
+        self.hub.store.sessions = {"cursor": [session]}
+        captures = iter(["booting", "ready → idle", "working → Add a follow-up"])
+
+        def _capture(_name: str, _scroll: int = 0, _rows: int = 0):
+            return next(captures, "working → Add a follow-up")
+
+        with (
+            mock.patch.object(remote_sessions.embed, "capture", side_effect=_capture),
+            mock.patch.object(
+                remote_sessions.embed,
+                "save_image_and_paste_path",
+                return_value="/tmp/paste-1.png",
+            ) as save_img,
+            mock.patch.object(remote_sessions.embed, "paste", return_value=True) as paste,
+            mock.patch.object(remote_sessions.embed, "send_key", return_value=True) as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+            mock.patch.object(
+                remote_sessions,
+                "_composer_still_holds",
+                return_value=False,
+            ),
+        ):
+            paths = self.hub.send_turn(
+                "cursor:turn1",
+                "改成叫Item888",
+                images=[b"png-bytes"],
+            )
+            self.assertEqual(paths, ["/tmp/paste-1.png"])
+            save_img.assert_called_once_with("pane-turn", b"png-bytes")
+            paste.assert_called_once_with("pane-turn", "改成叫Item888")
+            self.assertEqual(
+                send_key.call_args_list,
+                [
+                    mock.call("pane-turn", "Enter"),
+                    mock.call("pane-turn", "Enter"),
+                ],
+            )
+
+    def test_send_turn_retries_enter_while_prompt_stuck_in_composer(self) -> None:
+        session = _session(source="cursor", sid="stuck", attention="none")
+        session["keepalive_name"] = "pane-stuck"
+        self.hub.store.sessions = {"cursor": [session]}
+        hold_checks = [True, False]
+
+        with (
+            mock.patch.object(
+                remote_sessions.embed, "capture", return_value="→ ready"
+            ),
+            mock.patch.object(remote_sessions.embed, "paste", return_value=True),
+            mock.patch.object(remote_sessions.embed, "send_key", return_value=True) as send_key,
+            mock.patch.object(remote_sessions.time, "sleep"),
+            mock.patch.object(
+                remote_sessions,
+                "_composer_still_holds",
+                side_effect=lambda _plain, _needle: hold_checks.pop(0),
+            ),
+        ):
+            self.hub.send_turn("cursor:stuck", "改成叫Item888", images=None)
+            # initial submit (2 Enters for Cursor) + one retry submit (2 more)
+            self.assertEqual(send_key.call_count, 4)
+
     def test_phone_steer_promote_helper(self) -> None:
         self.assertTrue(
             remote_sessions._phone_steer_promote(
