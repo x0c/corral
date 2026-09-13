@@ -42,7 +42,11 @@ def effective_local_port(state: RemoteState) -> int:
 
 
 def _rank(address: object) -> tuple[int, str] | None:
-    """地址分类：真局域网 (0) 优先，其它单播 (1) 保留；其余一律丢掉。"""
+    """地址分类：家用 Wi-Fi 段优先，再其它 RFC1918，再叠加组网/公网；脏地址丢掉。
+
+    同属 RFC1918 时把 ``192.168/16``、``172.16/12`` 排在 ``10/8`` 前面——后者常被
+    ZeroTier / 虚拟网卡占用；手机同 Wi-Fi 抢答应先试真正的局域网地址。
+    """
     try:
         ip = ip_address(str(address).strip())
     except ValueError:
@@ -53,10 +57,14 @@ def _rank(address: object) -> tuple[int, str] | None:
         return None
     if ip in _FAKE_IP:
         return None
-    if any(ip in net for net in _RFC1918):
+    if ip in ip_network("192.168.0.0/16"):
         return (0, str(ip))
-    # Tailscale / ZeroTier 这类私有组网与公网地址落在这里：能用，排后面。
-    return (1, str(ip))
+    if ip in ip_network("172.16.0.0/12"):
+        return (1, str(ip))
+    if ip in ip_network("10.0.0.0/8"):
+        return (2, str(ip))
+    # Tailscale / 其它私有组网与公网地址落在这里：能用，排后面。
+    return (3, str(ip))
 
 
 def lan_addresses() -> list[str]:

@@ -13,7 +13,8 @@ subagent 抢占主 pane）。替代方案是把 Pi 会话放回默认 cwd 目录
 1. ``ensure_extension_installed``：把包内 TypeScript 扩展资产原子安装/升级到
    Pi 全局扩展目录（幂等，Corral-owned 才可覆盖）；
 2. claim 写入侧的配套参数（instance id、claim 路径、tmux 环境注入对）；
-3. claim 读取与时效校验，供扫描器做精确 live 绑定。
+3. claim 读取与时效校验，供扫描器做精确 live 绑定；并读取可选
+   ``agentPhase`` 字段，供关注圆点在 Working 尚未落盘时跟上 TUI。
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ INSTANCE_ENV = "CORRAL_PI_INSTANCE_ID"
 CLAIM_PATH_ENV = "CORRAL_PI_CLAIM_PATH"
 PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR"
 CLAIM_PROTOCOL = 1
-EXTENSION_VERSION = "1.0.0"
+EXTENSION_VERSION = "1.1.0"
 MANIFEST_NAME = "corral-manifest.json"
 #: 扩展 15s 心跳；超过 4 个周期未更新视为过期（含系统睡眠的短暂窗口）。
 CLAIM_TTL_SECONDS = 60.0
@@ -248,6 +249,35 @@ def claim_is_live(claim: dict | None, now: datetime | None = None) -> bool:
     if now is None:
         now = datetime.now(timezone.utc)
     return now - updated <= timedelta(seconds=CLAIM_TTL_SECONDS)
+
+
+def live_agent_phases(
+    root: str | os.PathLike[str] | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, dict[str, str]]:
+    """Map live claim sessionId → agent phase fields for attention dots.
+
+    Optional claim fields ``agentPhase`` / ``agentPhaseEvent`` / ``agentPhaseAt``
+    (extension 1.1+) report TUI Working before jsonl catches up. Missing or
+    invalid phase is omitted so history-only inspectors keep working.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    out: dict[str, dict[str, str]] = {}
+    for claim in read_claims(root):
+        if not claim_is_live(claim, now):
+            continue
+        session_id = str(claim.get("sessionId") or "").strip()
+        phase = str(claim.get("agentPhase") or "").strip()
+        if not session_id or phase not in {"idle", "working", "waiting"}:
+            continue
+        out[session_id] = {
+            "phase": phase,
+            "event": str(claim.get("agentPhaseEvent") or ""),
+            "at": str(claim.get("agentPhaseAt") or claim.get("updatedAt") or ""),
+        }
+    return out
 
 
 def _parse_iso(value: object) -> datetime | None:

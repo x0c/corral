@@ -299,17 +299,22 @@ pip/pipx 卸载不会可靠执行用户目录清理钩子，因此不能假装�
     "reason": { "enum": ["startup", "reload", "new", "resume", "fork", "quit"] },
     "targetSessionFile": { "type": ["string", "null"] },
     "updatedAt": { "type": "string", "format": "date-time" },
-    "sequence": { "type": "integer", "minimum": 0 }
+    "sequence": { "type": "integer", "minimum": 0 },
+    "agentPhase": { "enum": ["idle", "working", "waiting"] },
+    "agentPhaseEvent": { "type": "string", "minLength": 1 },
+    "agentPhaseAt": { "type": "string", "format": "date-time" }
   }
 }
 ```
+
+可选字段（extension `1.1.0+`）：`agentPhase` / `agentPhaseEvent` / `agentPhaseAt` 由 `agent_start`、`agent_settled`、`ui_prompt_start` / `ui_prompt_end` 写入。Pi 在整轮助手落盘前 TUI 已显示 Working；Corral 用这些字段补绿/黄点，**仍禁止**只用进程存活冒充执行中。心跳必须原样带上当前相位，不得清空。旧 reader 忽略未知字段。
 
 ### 5.2 示例
 
 ```json
 {
   "protocolVersion": 1,
-  "extensionVersion": "1.0.0",
+  "extensionVersion": "1.1.0",
   "instanceId": "3f62d970-88e2-47f4-9060-98115d787d58",
   "pid": 42173,
   "processStartedAt": "2026-08-26T11:15:47.124Z",
@@ -319,10 +324,13 @@ pip/pipx 卸载不会可靠执行用户目录清理钩子，因此不能假装�
   "sessionFile": "/Users/example/.pi/agent/sessions/--Users-example-Codes-Corral--/2026-08-26T11-19-26-000Z_01a06f32-41f2-7ac0-9ccf-b388b8b289e8.jsonl",
   "cwd": "/Users/example/Codes/Corral",
   "parentSession": null,
-  "reason": "startup",
+  "reason": "agent_start",
   "targetSessionFile": null,
-  "updatedAt": "2026-08-26T11:19:26.015Z",
-  "sequence": 1
+  "agentPhase": "working",
+  "agentPhaseEvent": "agent_start",
+  "agentPhaseAt": "2026-09-13T10:00:01.000Z",
+  "updatedAt": "2026-09-13T10:00:01.000Z",
+  "sequence": 12
 }
 ```
 

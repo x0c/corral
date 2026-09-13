@@ -354,6 +354,85 @@ class PiAttentionSignalTests(unittest.TestCase):
             self.assertEqual(inspect_session(_session("pi", path)).phase, "working")
             self.assertEqual(inspect_session(_session("pi", path, live=False)).phase, "idle")
 
+    def test_live_claim_working_covers_user_tail_before_assistant_lands(self) -> None:
+        """TUI shows Working before jsonl gets an assistant row — claim phase must green."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pi.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "message", "id": "u1", "timestamp": "2026-09-13T10:00:00Z",
+                        "message": {"role": "user", "content": "请继续"},
+                    }
+                ],
+            )
+            without_claim = inspect_session(_session("pi", path))
+            self.assertEqual(without_claim.phase, "idle")
+            evidence = inspect_session(
+                _session(
+                    "pi",
+                    path,
+                    agent_phase="working",
+                    agent_phase_event="agent_start",
+                    agent_phase_at="2026-09-13T10:00:01Z",
+                )
+            )
+            self.assertEqual(evidence.phase, "working")
+            self.assertEqual(evidence.source, "observer")
+
+    def test_live_claim_waiting_from_ui_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pi.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "message", "id": "u1", "timestamp": "2026-09-13T10:00:00Z",
+                        "message": {"role": "user", "content": "请继续"},
+                    }
+                ],
+            )
+            evidence = inspect_session(
+                _session(
+                    "pi",
+                    path,
+                    agent_phase="waiting",
+                    agent_phase_event="ui_prompt_start",
+                    agent_phase_at="2026-09-13T10:00:02Z",
+                )
+            )
+            self.assertEqual(evidence.phase, "waiting")
+            self.assertEqual(evidence.source, "observer")
+            self.assertIsNotNone(evidence.question_token)
+
+    def test_newer_history_idle_beats_stale_claim_working(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pi.jsonl"
+            _write_jsonl(
+                path,
+                [
+                    {
+                        "type": "message", "id": "a1", "timestamp": "2026-09-13T10:05:00Z",
+                        "message": {
+                            "role": "assistant", "stopReason": "stop",
+                            "content": [{"type": "text", "text": "做完了"}],
+                        },
+                    }
+                ],
+            )
+            evidence = inspect_session(
+                _session(
+                    "pi",
+                    path,
+                    agent_phase="working",
+                    agent_phase_event="agent_start",
+                    agent_phase_at="2026-09-13T10:00:00Z",
+                )
+            )
+            self.assertEqual(evidence.phase, "idle")
+            self.assertEqual(evidence.source, "history")
+
 
 class OpenCodeAttentionSignalTests(unittest.TestCase):
     def _database(self, path: Path) -> sqlite3.Connection:

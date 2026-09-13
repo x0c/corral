@@ -470,6 +470,14 @@ class SessionStore:
         with self._attention_lock:
             prepared: list[tuple[dict, tuple]] = []
             current_cursor_signatures: dict[str, tuple] = {}
+            pi_phases: dict[str, dict[str, str]] = {}
+            if any(session.get("source") == "pi" for session in sessions):
+                try:
+                    from corral.pi_identity import live_agent_phases
+
+                    pi_phases = live_agent_phases()
+                except Exception:
+                    pi_phases = {}
             for session in sessions:
                 candidate = dict(session)
                 key = session_key(candidate)
@@ -493,6 +501,21 @@ class SessionStore:
                     else:
                         candidate.pop("signal_probe", None)
                     evidence_signature = base_signature + (cursor_signature,)
+                elif candidate.get("source") == "pi":
+                    phase_info = pi_phases.get(str(candidate.get("id") or ""))
+                    if phase_info:
+                        candidate["agent_phase"] = phase_info.get("phase")
+                        candidate["agent_phase_event"] = phase_info.get("event")
+                        candidate["agent_phase_at"] = phase_info.get("at")
+                    else:
+                        candidate.pop("agent_phase", None)
+                        candidate.pop("agent_phase_event", None)
+                        candidate.pop("agent_phase_at", None)
+                    # Claim phase changes without jsonl mtime; must bust the cache.
+                    evidence_signature = base_signature + (
+                        candidate.get("agent_phase"),
+                        candidate.get("agent_phase_at"),
+                    )
                 else:
                     evidence_signature = base_signature
                 prepared.append((candidate, evidence_signature))

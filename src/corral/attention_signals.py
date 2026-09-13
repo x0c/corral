@@ -390,11 +390,16 @@ def _inspect_pi(session: dict) -> AttentionEvidence:
     ``aborted`` 都是稳定的空闲证据。常驻 TUI 不退出时 ``live`` 仍可为真，但不能
     只因为最后一条是用户消息就亮绿；执行中只认尚未收束的工具调用。自定义扩展若
     使用统一的结构化提问工具名，同样可得到等待回答提示。
+
+    身份扩展 1.1+ 在 claim 上附带 ``agentPhase``（来自 ``agent_start`` /
+    ``agent_settled`` / ``ui_prompt_*``）。Working 尚未落盘时由该观察相位补绿/黄点，
+    仍禁止用「进程还在」冒充执行中。
     """
     path = str(session.get("path") or "")
     entries = _read_jsonl_tail(path)
     if not entries:
-        return _evidence(observed_at=_stable_observed_at(session, path))
+        history = _evidence(observed_at=_stable_observed_at(session, path))
+        return _merge_pi_claim_phase(session, history)
 
     live = session.get("live") is True
     phase = "unknown"
@@ -446,14 +451,56 @@ def _inspect_pi(session: dict) -> AttentionEvidence:
         observed_at = _advance_observed(observed_at, timestamp)
 
     if pending and live:
-        return _evidence(
+        history = _evidence(
             "waiting",
             activity_token=activity_token,
             question_token=next(reversed(pending.values())),
             observed_at=observed_at,
         )
+        return _merge_pi_claim_phase(session, history)
     phase = _finalize_history_phase(phase, live)
-    return _evidence(phase, activity_token=activity_token, observed_at=observed_at)
+    history = _evidence(phase, activity_token=activity_token, observed_at=observed_at)
+    return _merge_pi_claim_phase(session, history)
+
+
+def _merge_pi_claim_phase(session: dict, history: AttentionEvidence) -> AttentionEvidence:
+    """Overlay live claim agentPhase onto history when the TUI is ahead of jsonl."""
+    if session.get("live") is not True:
+        return history
+    claim_phase = str(session.get("agent_phase") or "").strip()
+    if claim_phase not in {"working", "waiting"}:
+        return history
+    # Structured history questions stay authoritative for yellow dots.
+    if history.phase == "waiting" and history.question_token:
+        return history
+    observed_at = _timestamp(session.get("agent_phase_at")) or 0.0
+    if observed_at <= 0:
+        observed_at = history.observed_at or _stable_observed_at(
+            session, str(session.get("path") or "")
+        )
+    # Stale claim working must not override a newer completed assistant stop.
+    if (
+        history.phase == "idle"
+        and history.activity_token
+        and history.observed_at > observed_at
+    ):
+        return history
+    event = str(session.get("agent_phase_event") or claim_phase)
+    token = _token("pi", "claim", f"{event}\0{session.get('agent_phase_at') or observed_at}")
+    if claim_phase == "waiting":
+        return AttentionEvidence(
+            phase="waiting",
+            activity_token=token,
+            question_token=token or "pi-ui-prompt",
+            observed_at=observed_at,
+            source="observer",
+        )
+    return AttentionEvidence(
+        phase="working",
+        activity_token=token,
+        observed_at=observed_at,
+        source="observer",
+    )
 
 
 def _connect_ro(path: str, *, immutable: bool = False) -> sqlite3.Connection | None:

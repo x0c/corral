@@ -124,6 +124,32 @@ class ClaimReaderTests(unittest.TestCase):
         self.assertIsNone(pi_identity.read_claim("../escape"))
         self.assertIsNone(pi_identity.read_claim(""))
 
+    def test_live_agent_phases_maps_working_from_live_claims(self) -> None:
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as td:
+            directory = pi_identity.claims_dir(td)
+            directory.mkdir(parents=True)
+            working = _claim("inst-w", "sess-w", 21, updated=now)
+            working["agentPhase"] = "working"
+            working["agentPhaseEvent"] = "agent_start"
+            working["agentPhaseAt"] = _iso(now)
+            idle = _claim("inst-i", "sess-i", 22, updated=now)
+            idle["agentPhase"] = "idle"
+            expired = _claim(
+                "inst-e",
+                "sess-e",
+                23,
+                updated=now - timedelta(seconds=pi_identity.CLAIM_TTL_SECONDS + 5),
+            )
+            expired["agentPhase"] = "working"
+            (directory / "inst-w.json").write_text(json.dumps(working), encoding="utf-8")
+            (directory / "inst-i.json").write_text(json.dumps(idle), encoding="utf-8")
+            (directory / "inst-e.json").write_text(json.dumps(expired), encoding="utf-8")
+            phases = pi_identity.live_agent_phases(td, now=now)
+            self.assertEqual(phases["sess-w"]["phase"], "working")
+            self.assertEqual(phases["sess-i"]["phase"], "idle")
+            self.assertNotIn("sess-e", phases)
+
     def test_instance_env_pairs_shape(self) -> None:
         pairs = pi_identity.instance_env_pairs("abc", "/root")
         self.assertEqual(pairs[0], "-e")
