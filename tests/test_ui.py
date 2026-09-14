@@ -7147,6 +7147,7 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
         import corral.ui.embed_pane as embed_pane_mod
 
         pane = EmbedPane()
+        pane._capture_hot = True  # noqa: SLF001
         channel = object()
 
         def sample_times() -> list[float]:
@@ -7176,6 +7177,29 @@ class EmbedPaneResizeTests(unittest.IsolatedAsyncioTestCase):
             "交互窗口内仍必须走 40ms 最小间隔，保证输入回显即时",
         )
         self.assertEqual(embed_pane_mod.AUTO_OUTPUT_CAPTURE_INTERVAL, 0.1)
+
+    def test_unfocused_live_pane_uses_background_capture_interval(self) -> None:
+        """分屏里没持焦的格子按更慢节奏抓，焦点格仍走 100ms 自动输出。"""
+        import corral.ui.embed_pane as embed_pane_mod
+
+        pane = EmbedPane()
+        channel = object()
+        now = 10.0
+        self.assertEqual(
+            pane._minimum_capture_interval(channel, now),  # noqa: SLF001
+            embed_pane_mod.BACKGROUND_CAPTURE_INTERVAL,
+        )
+        pane._capture_hot = True  # noqa: SLF001
+        self.assertEqual(
+            pane._minimum_capture_interval(channel, now),  # noqa: SLF001
+            embed_pane_mod.AUTO_OUTPUT_CAPTURE_INTERVAL,
+        )
+        pane._interactive_capture_until = now + 1  # noqa: SLF001
+        pane._capture_hot = False  # noqa: SLF001
+        self.assertEqual(
+            pane._minimum_capture_interval(channel, now),  # noqa: SLF001
+            embed_pane_mod.MIN_CAPTURE_INTERVAL,
+        )
 
     def test_sync_strips_accepts_native_parsed_rows(self) -> None:
         """原生解析器返回预编译行时，首帧和逐行更新都不能按 Cell 列表取长度。"""

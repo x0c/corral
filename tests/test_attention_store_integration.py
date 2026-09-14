@@ -313,6 +313,50 @@ class SessionStoreAttentionTests(unittest.TestCase):
         self.assertEqual(merges, ["full"])
         self.assertEqual(live_calls, [])
 
+    def test_refresh_live_merge_ignores_hosted_placeholders(self) -> None:
+        """Unmatched hosted placeholders must not force a whole-table merge."""
+        session = _session("claude", "one", live=True, mtime=10)
+        with mock.patch(
+            "corral.store.inspect_session",
+            return_value=AttentionEvidence(phase="working", observed_at=1),
+        ):
+            self.store._merge_scanned({"claude": [session]})
+            self.store.register_hosted_session(
+                runtime_id="cursor",
+                keepalive_name="corral-cursor-deadbeef",
+                title="New Cursor",
+                cwd="/tmp/project",
+                ident="deadbeef",
+            )
+        self.store._last_full_merge_at = 1_000_000.0
+        held = self.store.find_session("claude:one")
+        placeholder = self.store.find_session("cursor:deadbeef")
+        self.assertTrue(placeholder.get("provisional"))
+
+        class _HitRegistry:
+            ids = ("claude", "codex", "cursor")
+            last_scan_cache_hit_all = True
+            last_scan_shared = False
+
+            def scan_all(self, limit, keep_ids_by_runtime=None, *, prefer_shared=True):
+                return {
+                    "claude": [dict(session)],
+                    "codex": [],
+                    "cursor": [],
+                }
+
+        self.store.registry = _HitRegistry()
+        merges: list[str] = []
+        live_calls: list[str] = []
+        self.store._merge_scanned = lambda scanned: merges.append("full")  # type: ignore[method-assign]
+        self.store._merge_live_state = lambda: live_calls.append("live")  # type: ignore[method-assign]
+        with mock.patch("corral.store.time.monotonic", return_value=1_000_005.0):
+            changed = self.store.refresh()
+        self.assertEqual(live_calls, ["live"])
+        self.assertEqual(merges, [])
+        self.assertIs(self.store.find_session("claude:one"), held)
+        self.assertFalse(changed)
+
 
 if __name__ == "__main__":
     unittest.main()

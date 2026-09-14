@@ -181,6 +181,9 @@ MIN_CAPTURE_INTERVAL = 0.04  # 事件驱动下的最小抓帧间隔，避免 %ou
 # 输入、切换或滚动后的回显：这些路径会打开下面的即时窗口，仍按 40ms 抓取。
 # 这既压低 capture-pane 的读取量，也保证 Textual 主线程不会积压不可见中间帧。
 AUTO_OUTPUT_CAPTURE_INTERVAL = 0.1
+# 焦点不在本格时不必按持焦节奏抓：分屏里另外几路助手仍在刷，但用户正在看的
+# 是当前格或侧栏。250ms 仍能看出「还在动」，比 100ms 再少一半以上读屏。
+BACKGROUND_CAPTURE_INTERVAL = 0.25
 _INTERACTIVE_CAPTURE_GRACE = 0.25
 # pane_state 降频查询间隔：光标位置/鼠标标志/回滚量都是慢变状态，但它每次也是
 # 一次 tmux fork（约 10ms）。输出风暴期若每帧都查，抓帧循环的 fork 频率直接
@@ -381,6 +384,8 @@ class EmbedPane(Widget):
         self._capture_delivery_pending = False
         self._latest_capture_key: tuple | None = None
         self._interactive_capture_until = 0.0
+        # 抓帧线程只读这个布尔，避免跨线程碰 Textual 的 has_focus reactive。
+        self._capture_hot = False
         # 每次切换展示对象都提升版本。抓帧线程不能只比较 session_name：主线程可能
         # 在它醒来前经历“实时会话 → 详情 → 同一个实时会话”，最终名字虽然没变，
         # 旧帧缓存却已经失效；版本号能让这种快速往返也强制重抓，并拦住旧回调回写。
@@ -765,6 +770,8 @@ class EmbedPane(Widget):
         """本轮抓帧的最小间隔：自动输出降载，交互操作优先回显。"""
         if channel is None or now < self._interactive_capture_until:
             return MIN_CAPTURE_INTERVAL
+        if not self._capture_hot:
+            return BACKGROUND_CAPTURE_INTERVAL
         return AUTO_OUTPUT_CAPTURE_INTERVAL
 
     def _note_latest_capture(self, frame_key: tuple) -> None:
@@ -1381,6 +1388,9 @@ class EmbedPane(Widget):
         # Textual 派发 Focus/Blur 时 reactive `has_focus` 往往尚未翻转；在事件处理
         # 里读 self.has_focus 会得到旧值，导致「已聚焦却按失焦路径藏光标」。跟
         # reactive 同步后再刷新外层真实光标，IME 锚定才稳定。
+        self._capture_hot = has_focus
+        if has_focus:
+            self._request_immediate_capture()
         self._update_app_cursor()
 
     def _cursor_local_offset(self):

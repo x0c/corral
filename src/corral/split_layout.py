@@ -140,6 +140,7 @@ class SplitLayoutStore:
     session_to_group: dict[str, str] = field(default_factory=dict)
     pinned_session_keys: dict[str, float] = field(default_factory=dict)
     pinned_group_ids: dict[str, float] = field(default_factory=dict)
+    derived_group_pins: set[str] = field(default_factory=set, repr=False)
     revision: int = 0
 
     def adopt(self, other: SplitLayoutStore) -> None:
@@ -157,6 +158,7 @@ class SplitLayoutStore:
         self.session_to_group = other.session_to_group
         self.pinned_session_keys = other.pinned_session_keys
         self.pinned_group_ids = other.pinned_group_ids
+        self.derived_group_pins = set(other.derived_group_pins)
         self.revision = other.revision
 
     def get_group(self, session_key: str) -> SplitGroup | None:
@@ -188,7 +190,13 @@ class SplitLayoutStore:
         return True
 
     def toggle_session_pin(self, session_key: str) -> bool:
-        """切换独立会话置顶状态，返回切换后的状态。"""
+        """切换独立会话置顶状态，返回切换后的状态。
+
+        本方法只翻独立键，不在这里提升整组——提升统一由 ``_normalize_store``
+        在读/写路径收敛（桌面侧栏默认提升；移动端经
+        ``SidebarLayoutDB.toggle_session_pin(..., promote_to_group=False)`` /
+        ``read_with_promote(skip_promote=True)`` 跳过提升）。
+        """
         if session_key in self.pinned_session_keys:
             del self.pinned_session_keys[session_key]
             return False
@@ -205,6 +213,7 @@ class SplitLayoutStore:
         """
         if group_id in self.pinned_group_ids:
             del self.pinned_group_ids[group_id]
+            self.derived_group_pins.discard(group_id)
             group = self.groups.get(group_id)
             if group is not None:
                 for key in group.session_keys:
@@ -354,6 +363,7 @@ class SplitLayoutStore:
         """删除组及其全部反向索引，不删除任何会话。"""
         self.groups.pop(gid, None)
         self.pinned_group_ids.pop(gid, None)
+        self.derived_group_pins.discard(gid)
         for key in list(self.session_to_group):
             if self.session_to_group.get(key) == gid:
                 del self.session_to_group[key]
@@ -393,7 +403,11 @@ class SplitLayoutStore:
             self.session_to_group[key] = gid
 
     def _promote_member_pins_to_group(self, gid: str) -> None:
-        """成员上的独立置顶在组可见时提升为整组置顶，但 sqlite 里仍保留原键。
+        """成员上的独立置顶在组可见时提升为整组置顶（纯桌面展示派生）。
+
+        落盘只保留独立键与桌面显式组钉；这里算出来的组钉记进
+        ``derived_group_pins``，写盘时过滤掉，别的桌面写操作不会把它固化成
+        显式组意图（否则手机解钉后桌面会留下幽灵组钉）。
 
         进组不再毁掉独立置顶：组后来不足两名可见成员时（筛选、对端电脑的
         另一成员没被扫到），独立置顶还能回到 pinned 区。组正在展示时用组
@@ -410,6 +424,7 @@ class SplitLayoutStore:
         ]
         if times:
             self.pinned_group_ids[gid] = max(times)
+            self.derived_group_pins.add(gid)
 
 
 def sidebar_fingerprint(store: SplitLayoutStore) -> tuple:
@@ -617,7 +632,7 @@ class SidebarLayoutDB:
     # ---- 读 ----
 
     @staticmethod
-    def _read_conn(conn: sqlite3.Connection) -> SplitLayoutStore:
+    def _read_conn(conn: sqlite3.Connection, *, skip_promote: bool = False) -> SplitLayoutStore:
         store = SplitLayoutStore()
         try:
             store.revision = int(SidebarLayoutDB._get_meta(conn, "revision") or 0)
@@ -653,7 +668,7 @@ class SidebarLayoutDB:
                 store.pinned_group_ids[gid] = _timestamp(row["pinned_at"])
         for row in conn.execute("SELECT session_key, pinned_at FROM pinned_session"):
             store.pinned_session_keys[str(row["session_key"])] = _timestamp(row["pinned_at"])
-        _normalize_store(store)
+        _normalize_store(store, skip_promote=skip_promote)
         return store
 
     @staticmethod
@@ -673,7 +688,7 @@ class SidebarLayoutDB:
                     group.focus_key,
                     1 if group.collapsed else 0,
                     group.updated_at,
-                    store.pinned_group_ids.get(gid),
+                    None if gid in store.derived_group_pins else store.pinned_group_ids.get(gid),
                 ),
             )
             for position, key in enumerate(group.session_keys):
@@ -698,12 +713,21 @@ class SidebarLayoutDB:
 
     def read(self) -> SplitLayoutStore:
         """读一份最新快照；库不可用时返回进程内兜底状态。"""
+        return self.read_with_promote(skip_promote=False)
+
+    def read_with_promote(self, *, skip_promote: bool = False) -> SplitLayoutStore:
+        """读一份最新快照，可选跳过成员独立钉到整组置顶的提升。
+
+        移动端（没有分组概念）传 ``skip_promote=True``：只看独立会话置顶，
+        读出来的 ``pinned_group_ids`` 只含桌面真正钉过的组（落盘 ``pinned_at``
+        非空），不会把成员独立钉提升进来。桌面侧栏仍用默认 ``read()``。
+        """
         with self._lock:
             conn = self._open()
             if conn is None:
                 return self._fallback()
             try:
-                return self._read_conn(conn)
+                return self._read_conn(conn, skip_promote=skip_promote)
             except (OSError, sqlite3.Error) as error:
                 self._discard_conn(conn)
                 self._report_degraded(error)
@@ -724,22 +748,22 @@ class SidebarLayoutDB:
 
     # ---- 写 ----
 
-    def _mutate(self, apply: Callable[[SplitLayoutStore], None]) -> SplitLayoutStore:
+    def _mutate(self, apply: Callable[[SplitLayoutStore], None], *, skip_promote: bool = False) -> SplitLayoutStore:
         """事务内重读最新状态，重放这一次改动，再整体写回。"""
         with self._lock:
             conn = self._open()
             if conn is None:
                 store = self._fallback()
                 apply(store)
-                _normalize_store(store)
+                _normalize_store(store, skip_promote=skip_promote)
                 store.revision += 1
                 return store
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                store = self._read_conn(conn)
+                store = self._read_conn(conn, skip_promote=skip_promote)
                 before = _persisted_state(store)
                 apply(store)
-                _normalize_store(store)
+                _normalize_store(store, skip_promote=skip_promote)
                 if _persisted_state(store) != before:
                     store.revision += 1
                     self._write_conn(conn, store)
@@ -754,7 +778,7 @@ class SidebarLayoutDB:
                 self._report_degraded(error)
                 store = self._fallback()
                 apply(store)
-                _normalize_store(store)
+                _normalize_store(store, skip_promote=skip_promote)
                 return store
 
     def apply(self, mutate: Callable[[SplitLayoutStore], object]) -> SplitLayoutStore:
@@ -789,13 +813,20 @@ class SidebarLayoutDB:
     def set_collapsed(self, group_id: str, collapsed: bool) -> SplitLayoutStore:
         return self._mutate(lambda store: store.set_collapsed(group_id, collapsed))
 
-    def toggle_session_pin(self, session_key: str) -> SplitLayoutStore:
+    def toggle_session_pin(
+        self, session_key: str, *, promote_to_group: bool = True
+    ) -> SplitLayoutStore:
         """切换独立会话置顶。
 
         翻转依据是库里的最新状态，不是调用方手上那份快照——多窗口下这是唯一不会
-        互相覆盖的语义。调用方从返回的快照里读切换结果。
+        互相覆盖的语义。调用方从返回的快照里读切换结果。移动端（没有分组概念）
+        传 ``promote_to_group=False``：pin 一条只钉那一条，不提升整组置顶。
         """
-        return self._mutate(lambda store: store.toggle_session_pin(session_key))
+        skip = not promote_to_group
+        return self._mutate(
+            lambda store: store.toggle_session_pin(session_key),
+            skip_promote=skip,
+        )
 
     def toggle_group_pin(self, group_id: str) -> SplitLayoutStore:
         return self._mutate(lambda store: store.toggle_group_pin(group_id))
@@ -842,8 +873,16 @@ def _is_legacy_fallback_name(name: str) -> bool:
     return bool(suffix) and suffix.isdigit()
 
 
-def _normalize_store(store: SplitLayoutStore) -> None:
-    """统一收敛快照里的派生约束：组名、反向索引、置顶与组的从属关系。"""
+def _normalize_store(store: SplitLayoutStore, *, skip_promote: bool = False) -> None:
+    """统一收敛快照里的派生约束：组名、反向索引、置顶与组的从属关系。
+
+    ``skip_promote=True`` 时不提升成员独立钉为整组置顶——移动端 pin 单会话
+    的写路径用：pin 一条只钉那一条，不得把同组其它会话一起钉上去。
+    """
+    # Derived desktop presentation must never become an explicit persisted pin.
+    for gid in store.derived_group_pins:
+        store.pinned_group_ids.pop(gid, None)
+    store.derived_group_pins.clear()
     for gid in list(store.groups):
         if len(store.groups[gid].session_keys) < 2:
             store._delete_group(gid)
@@ -880,7 +919,8 @@ def _normalize_store(store: SplitLayoutStore) -> None:
         if gid in store.groups
     }
     for gid in store.groups:
-        store._promote_member_pins_to_group(gid)
+        if not skip_promote:
+            store._promote_member_pins_to_group(gid)
 
 
 def _load_legacy_layout(path: str) -> SplitLayoutStore | None:

@@ -93,17 +93,15 @@ class SessionHubPayloadTests(unittest.TestCase):
             self.assertIsNone(self.hub._capture_frame(watch))
         parse_screen.assert_called_once_with("ok", 80, 24)
 
-    def test_session_payload_group_uses_group_id_attribute(self) -> None:
+    def test_session_payload_carries_no_group_for_phone(self) -> None:
+        """移动端没有分组概念：载荷不再带 group，桌面整组置顶也不得带进来。"""
         layout = split_layout.SplitLayoutStore()
         layout.set_group("/tmp/proj", ["claude:a", "codex:b"])
         layout.toggle_group_pin(layout.get_group("claude:a").group_id)
         session = _session(sid="a")
         with mock.patch.object(self.hub.store, "get_title", return_value="A"):
             payload = self.hub.session_payload(session, layout)
-        group = payload["group"]
-        self.assertEqual(group["id"], layout.get_group("claude:a").group_id)
-        self.assertTrue(group["pinned"])
-        self.assertIn("emoji", group)
+        self.assertNotIn("group", payload)
         self.assertFalse(payload["pinned"])
 
     def test_toggle_pin_independent_session_returns_true_then_false(self) -> None:
@@ -114,45 +112,91 @@ class SessionHubPayloadTests(unittest.TestCase):
         layout = self.hub.layout_db.read()
         self.assertNotIn("claude:solo", layout.pinned_session_keys)
 
-    def test_toggle_pin_group_member_pins_whole_group(self) -> None:
-        """组成员单独置顶会被布局层抹掉；远程应改为切换整组置顶。"""
+    def test_toggle_pin_group_member_pins_only_that_session(self) -> None:
+        """移动端 pin 一条只钉那一条：桌面分屏组、整组置顶都不参与。"""
         self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])
         self.assertTrue(self.hub.toggle_pin("claude:a"))
-        layout = self.hub.layout_db.read()
+        # 移动端读必须走不提升的快照：默认 read() 的 normalize 会把成员独立钉
+        # 提升成整组置顶（桌面侧栏展示用），不能拿它断言手机置顶状态。
+        layout = self.hub.layout_db.read_with_promote(skip_promote=True)
         gid = layout.get_group("claude:a").group_id
-        self.assertIn(gid, layout.pinned_group_ids)
-        self.assertNotIn("claude:a", layout.pinned_session_keys)
-        # 手机列表靠 group.pinned 归入置顶区
+        self.assertIn("claude:a", layout.pinned_session_keys)
+        self.assertNotIn(gid, layout.pinned_group_ids)
+        self.assertNotIn("codex:b", layout.pinned_session_keys)
+        # 手机列表只靠独立置顶归入置顶区
         session = _session(sid="a")
         with mock.patch.object(self.hub.store, "get_title", return_value="A"):
             payload = self.hub.session_payload(session, layout)
-        self.assertTrue(payload["group"]["pinned"])
+        self.assertTrue(payload["pinned"])
 
-    def test_toggle_pin_unpins_group_promoted_from_member_pin(self) -> None:
-        """先钉成员再进组：远程再切一次必须取消整组置顶，不能被 promote 钉回去。"""
-        self.hub.layout_db.toggle_session_pin("claude:a")
+    def test_toggle_pin_twice_unpins_group_member_session(self) -> None:
+        """组内会话 pin 两次回到未置顶，不得触碰桌面整组置顶。"""
         self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])
+        self.assertTrue(self.hub.toggle_pin("claude:a"))
+        self.assertFalse(self.hub.toggle_pin("claude:a"))
+        layout = self.hub.layout_db.read_with_promote(skip_promote=True)
+        gid = layout.get_group("claude:a").group_id
+        self.assertNotIn("claude:a", layout.pinned_session_keys)
+        self.assertNotIn(gid, layout.pinned_group_ids)
+
+    def test_desktop_write_does_not_persist_phone_pin_as_group_pin(self) -> None:
+        """手机 pin 只是独立钉：别的桌面写操作不得把它固化成显式组钉。"""
+        self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])
+        self.assertTrue(self.hub.toggle_pin("claude:a"))
+        gid = self.hub.layout_db.read().get_group("claude:a").group_id
+        self.hub.layout_db.set_collapsed(gid, True)
         self.assertFalse(self.hub.toggle_pin("claude:a"))
         layout = self.hub.layout_db.read()
-        gid = layout.get_group("claude:a").group_id
         self.assertNotIn(gid, layout.pinned_group_ids)
         self.assertNotIn("claude:a", layout.pinned_session_keys)
 
-    def test_list_sessions_respects_limit_and_searches_group_name(self) -> None:
+    def test_desktop_explicit_group_pin_survives_phone_pin_cycle(self) -> None:
+        """桌面显式钉整组：手机 pin/unpin 同组另一条不得清掉它。"""
+        self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])
+        gid = self.hub.layout_db.read().get_group("claude:a").group_id
+        snapshot = self.hub.layout_db.toggle_group_pin(gid)
+        self.assertIn(gid, snapshot.pinned_group_ids)
+        self.assertTrue(self.hub.toggle_pin("claude:a"))
+        phone = self.hub.layout_db.read_with_promote(skip_promote=True)
+        self.assertIn("claude:a", phone.pinned_session_keys)
+        self.assertFalse(self.hub.toggle_pin("claude:a"))
+        phone = self.hub.layout_db.read_with_promote(skip_promote=True)
+        self.assertNotIn("claude:a", phone.pinned_session_keys)
+        layout = self.hub.layout_db.read()
+        self.assertIn(gid, layout.pinned_group_ids)
+
+    def test_desktop_group_pin_does_not_leak_into_phone_list(self) -> None:
+        """桌面显式钉整组：手机列表仍按独立钉判定，不进置顶区。"""
+        self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])
+        gid = self.hub.layout_db.read().get_group("claude:a").group_id
+        snapshot = self.hub.layout_db.toggle_group_pin(gid)
+        self.assertIn(gid, snapshot.pinned_group_ids)
+        sessions = [_session(sid="a"), _session(sid="b", source="codex")]
+        with (
+            mock.patch.object(self.hub.store, "all_sessions", return_value=sessions),
+            mock.patch.object(
+                self.hub.store, "get_title", side_effect=lambda item: item["fallback_title"]
+            ),
+        ):
+            listed = self.hub.list_sessions()
+        by_key = {item["key"]: item for item in listed}
+        self.assertFalse(by_key["claude:a"]["pinned"])
+        self.assertFalse(by_key["codex:b"]["pinned"])
+        self.assertNotIn("group", by_key["claude:a"])
+        phone_layout = self.hub.layout_db.read_with_promote(skip_promote=True)
+        self.assertFalse(remote_sessions._session_is_priority(sessions[0], phone_layout))
+
+    def test_list_search_ignores_desktop_group_name(self) -> None:
         sessions = [
             _session(sid="a", title="alpha"),
             _session(source="codex", sid="b", title="beta"),
         ]
-        layout = self.hub.layout_db.set_group("/tmp/proj", ["claude:a", "codex:b"])
-        group_name = layout.get_group("claude:a").name
         with (
             mock.patch.object(self.hub.store, "all_sessions", return_value=sessions),
             mock.patch.object(self.hub.store, "get_title", side_effect=lambda s: s["fallback_title"]),
         ):
             limited = self.hub.list_sessions(limit=1)
             self.assertEqual(len(limited), 1)
-            found = self.hub.list_sessions(query=group_name.split()[-1].lower())
-            self.assertEqual(len(found), 2)
             miss = self.hub.list_sessions(query="zzz-no-match")
             self.assertEqual(miss, [])
 

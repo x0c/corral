@@ -360,7 +360,14 @@ class SessionStore:
         return max(0.0, time.time() - at)
 
     def _memory_keys_match_scan(self, scanned: dict[str, list[dict]]) -> bool:
-        """True when in-memory session keys match this scan result (ignoring order)."""
+        """True when in-memory session keys match this scan result (ignoring order).
+
+        Hosted placeholders are extra on purpose until the next full merge
+        retires them. Counting them here made live-merge unreachable whenever
+        any pane was still provisional (phone / other-window hosts), so every
+        3s paid a whole-table replace. Optimistic delete still fails this
+        check because memory is empty.
+        """
         scan_keys = {
             session_key(session)
             for bucket in scanned.values()
@@ -371,8 +378,8 @@ class SessionStore:
                 session_key(session)
                 for bucket in self.sessions.values()
                 for session in bucket
+                if not session.get("provisional")
             }
-            memory_keys.update(self._provisional)
         return memory_keys == scan_keys
 
     def _merge_live_state(self) -> None:

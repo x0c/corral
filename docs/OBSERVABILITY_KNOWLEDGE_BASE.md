@@ -120,7 +120,7 @@ flowchart TD
 | 异常双写 | `python3 -m unittest -v test_observe.py` | `error` 事件无 traceback，异常日志有完整 traceback |
 | 只读诊断 | `python3 -m corral diagnose` 或已安装命令 `corral diagnose` | 返回日志/截图目录、存在性、`last_error`、tmux 与配色事实；不启动 TUI |
 | 事件现场读取 | `python3 -m corral diagnose` 后读取 `data.last_error` 或 `~/.cache/corral/events.log` | 能看到最近闪退栈，或按 JSON 行查看 `scan_all`、`list_rebuild`、`host_session`、`capture_slow`、`host_size_drift`、`error` 等 |
-| TUI 卡死 / 按键极慢取证 | 先 `corral diagnose`，再读 `events.log` 最近几分钟的 `scan_all` / `list_rebuild` / `capture_slow`；对照 `corral --version` | 无远程遥测。卡顿时常见：`scan_all` 约每 3–4s、`session_count`≈界面深度、`duration_ms` 经常 ≥300。v0.24.185+ 在签名命中时应看到 `reason=refresh_live`、`cache_hit=true`；只有 `refresh` 且尖峰很大 → 先核是否未重启旧进程，再进 `PERFORMANCE_KNOWLEDGE_BASE.md` |
+| TUI 卡死 / 按键极慢取证 | 先 `corral diagnose`，再读 `events.log` 最近几分钟的 `scan_all` / `list_rebuild` / `capture_slow`；对照 `corral --version` | 无远程遥测。卡顿时常见：`scan_all` 约每 3–4s、`session_count`≈界面深度、`duration_ms` 经常 ≥300。v0.24.185+ 在签名命中时应看到 `reason=refresh_live`、`cache_hit=true`；只有 `refresh` 且尖峰很大 → 先核是否未重启旧进程，再进 `PERFORMANCE_KNOWLEDGE_BASE.md`。**`cache_hit=true` 却零条 `refresh_live`**：v0.24.212 前占位卡会挡住轻量合并；升到该版并重启 TUI 后再看 |
 | 远程 RPC 服务端耗时取证 | `corral remote status` 看最近操作行的 `耗时ms [平面]`，或读运行快照 `recent` 的 `duration_ms` / `plane` / `req_id` | 成功 RPC 必带耗时与平面；`session.*` 走 data 说明数据面生效，走 control 说明未附着或回落。失败请求无耗时条目，查 `events.log` 的 `remote_method_failed` |
 | 截图观测 | 在真实 TUI 中按 F12 | 生成 `~/.cache/corral/screenshots/tui-*.svg`，并只作本地排查使用 |
 | 验收截图消歧 | `python3 docs/screenshots/capture.py` | 生成虚构数据的验收图；不读取真实历史，不替代 F12 现场截图 |

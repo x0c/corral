@@ -26,7 +26,7 @@ from corral.models import LaunchRequest, NewSessionRequest, session_key
 from corral.remote import richmsg, transcript_cache
 from corral.remote.screen import ScreenEncoder
 from corral.runtime import LaunchError
-from corral.split_layout import default_layout_db, group_emoji
+from corral.split_layout import default_layout_db
 from corral.store import SessionStore
 
 _SCAN_LIMIT = 200
@@ -263,6 +263,7 @@ def _phone_list_window_items(
 
 
 def _session_is_priority(session: dict, layout) -> bool:
+    """移动端按单会话判定：等回复/执行中/独立置顶优先；分组不参与。"""
     attention = str(session.get("attention_kind") or "none")
     if attention in ("waiting", "working"):
         return True
@@ -271,22 +272,19 @@ def _session_is_priority(session: dict, layout) -> bool:
     key = session_key(session)
     if key in (getattr(layout, "pinned_session_keys", {}) or {}):
         return True
-    group = layout.get_group(key)
-    return bool(
-        group is not None and group.group_id in (getattr(layout, "pinned_group_ids", {}) or {})
-    )
+    # 移动端没有分组概念：哪怕该会话在桌面侧栏属于某个分屏组，也只看它自己
+    # 有没有独立置顶。整组置顶是桌面侧栏的展示行为，不能把同组其它会话一起抬进
+    # 移动端置顶区（否则 pin 一条会把整组都钉上去）。
+    return False
 
 
 def _phone_list_window(payloads: list[dict], *, cap: int = _PHONE_LIST_LIMIT) -> list[dict]:
-    """手机首包只带当前页用得上的会话：等待/执行中/置顶优先，其余按原顺序截断。"""
+    """手机首包只带当前页用得上的会话：等待/执行中/独立置顶优先，分组不参与。"""
     return _phone_list_window_items(
         payloads,
         is_priority=lambda payload: (
             payload.get("attention") in ("waiting", "working")
             or payload.get("pinned")
-            or (
-                isinstance(payload.get("group"), dict) and payload["group"].get("pinned")
-            )
         ),
         cap=cap,
     )
@@ -601,7 +599,13 @@ class SessionHub:
     # -- 会话查询 ---------------------------------------------------------
 
     def _layout(self):
+        # 移动端没有分组概念：读布局必须跳过成员独立钉到整组置顶的提升，
+        # 否则 pin 一条会把同组其它会话一起抬进手机置顶区。桌面侧栏仍走
+        # 默认 read()（组可见时整组展示）。
         try:
+            reader = getattr(self.layout_db, "read_with_promote", None)
+            if callable(reader):
+                return reader(skip_promote=True)
             return self.layout_db.read()
         except Exception:
             return None
@@ -650,15 +654,9 @@ class SessionHub:
             "pinned": False,
         }
         if layout is not None:
-            group = layout.get_group(key)
-            if group is not None:
-                pinned_groups = getattr(layout, "pinned_group_ids", {}) or {}
-                payload["group"] = {
-                    "id": str(group.group_id),
-                    "name": str(group.name or ""),
-                    "emoji": group_emoji(group.name),
-                    "pinned": group.group_id in pinned_groups,
-                }
+            # 移动端没有分组概念：只发独立会话置顶，不发 group 字段。桌面侧栏的
+            # 分屏组（含整组置顶）只影响桌面展示，不得把同组其它会话一起抬进
+            # 移动端置顶区（否则 pin 一条会把整组都钉上去）。
             pinned_sessions = getattr(layout, "pinned_session_keys", {}) or {}
             payload["pinned"] = key in pinned_sessions
         return payload
@@ -668,27 +666,18 @@ class SessionHub:
         cwd = str(session.get("cwd_display") or session.get("cwd") or "")
         last_user = str(session.get("last_user_msg") or "")
         last_agent = str(session.get("last_agent_msg") or "")
-        group_name = ""
-        if layout is not None:
-            group = layout.get_group(session_key(session))
-            if group is not None:
-                group_name = str(group.name or "")
-        haystack = f"{title}\n{cwd}\n{last_user}\n{last_agent}\n{group_name}".lower()
+        haystack = f"{title}\n{cwd}\n{last_user}\n{last_agent}".lower()
         return needle in haystack
 
     def _window_version(self, sessions: list[dict], layout) -> str:
         rows = []
         for session in sessions:
             key = session_key(session)
+            # 移动端版本指纹只看独立会话置顶：桌面整组置顶变化不得让手机列表
+            # 版本跳动（否则组一动手机就整表重拉）。
             pinned = False
-            group_pinned = False
             if layout is not None:
                 pinned = key in (getattr(layout, "pinned_session_keys", {}) or {})
-                group = layout.get_group(key)
-                if group is not None:
-                    group_pinned = group.group_id in (
-                        getattr(layout, "pinned_group_ids", {}) or {}
-                    )
             rows.append(
                 [
                     key,
@@ -699,7 +688,6 @@ class SessionHub:
                     str(session.get("last_agent_msg") or "")[:160],
                     bool(session.get("live")),
                     pinned,
-                    group_pinned,
                 ]
             )
         return _list_version_blob(rows)
@@ -1480,18 +1468,14 @@ class SessionHub:
         return _ATTENTION_LABELS.get(state.kind, "none")
 
     def toggle_pin(self, key: str) -> bool:
-        """切换置顶；组成员不能单独置顶，改为切换整组置顶（与桌面侧栏一致）。
+        """切换移动端单会话置顶：只翻独立会话键，分组不参与。
 
-        返回值必须读 ``pinned_session_keys`` / ``pinned_group_ids``，不要再用已废弃的
-        ``pinned_sessions``——那个属性不存在时 ``getattr`` 会落到空集合，接口永远回 false。
+        移动端没有分组概念：不管该会话在桌面侧栏是否属于某个分屏组，都只
+        切 ``pinned_session_keys``。桌面整组置顶只是桌面侧栏的展示派生（落盘
+        不存，由成员独立钉算出来），手机 pin 一条不得把同组其它会话一起钉上去。
         """
         key = self.resolve_session_key(key)
-        snapshot = self.layout_db.read()
-        group = snapshot.get_group(key)
-        if group is not None:
-            layout = self.layout_db.toggle_group_pin(group.group_id)
-            return group.group_id in (getattr(layout, "pinned_group_ids", {}) or {})
-        layout = self.layout_db.toggle_session_pin(key)
+        layout = self.layout_db.toggle_session_pin(key, promote_to_group=False)
         return key in (getattr(layout, "pinned_session_keys", {}) or {})
 
     def stop_session(self, key: str) -> None:

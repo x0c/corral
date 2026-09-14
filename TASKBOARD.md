@@ -4,6 +4,7 @@
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
+| 移动端单会话置顶去分组化 | 进行中 | src/corral/split_layout.py（提升改展示派生+落盘过滤）、src/corral/remote/sessions.py（toggle_pin/payload/搜索/版本指纹只认独立钉）、tests/test_remote_sessions.py、ios 会话列表置顶/搜索（见 ios 看板） | 21:29 | 2026-09-15 00:05 | CLI 134 用例+ruff 绿；用户场景 4 步全过；iOS 构建绿+新单测绿；iOS 全量回归仅剩键盘/Working 旧失败（与本改动无关，HEAD 同样红）。未提交，等发布窗口 |
 | 局域网探测失效 + 换网无感 | 进行中 | REMOTE_KB/AGENTS 文档；本机 remote 重启+zeroconf；iOS LanDiscovery（见 ios 看板） | 17:41 | 2026-09-13 17:41 | 不碰 send_turn/sessions；CLI 代码已在 207 |
 | RPC 服务端耗时进 audit+status（Slice0 分段计时） | 待发布 | cli/src/corral/remote/service.py（record_rpc_timing+handle 计时）、remote/cli.py（status 耗时列）、tests/test_remote_service.py（3 用例）、docs/OBSERVABILITY_KNOWLEDGE_BASE.md（§5/§7） | 20:52 | 2026-09-13 22:25 | 只读观测，不改协议/会话逻辑；不碰版本文件与并行任务未提交改动（除 service.py 纯追加 helper+4 调用点的回执失败归因外，不动 receipt/command_receipts/agent_api/SKILL/版本bump）。验证：remote_service+remote_status 75 用例绿，ruff 绿，真实 handle+status 冒烟 OK |
 | 回执失败归因 remote_input_receipt + iOS detail 透出 | 进行中 | cli/src/corral/remote/service.py（纯追加 _receipt_ms/_receipt_detail/_observe_receipt_outcome + 4 调用点，不改 receipt 结构/协议）、ios/Corral/Models/RemoteModels.swift（CommandStatusResponse 加 detail 可选字段+receipt helper，旧包忽略未知字段） | 22:40 | 2026-09-13 22:40 | 范围外文件一律不动：command_receipts/agent_api/SKILL/版本bump/i18n/rename/cli.py/tests 均为他人进行中；CLI service.py 与 iOS RemoteModels 与他人条目无重叠。验证待补：command_receipts+remote_service 单测、ruff、真机重现 rejected 看 events.log |
