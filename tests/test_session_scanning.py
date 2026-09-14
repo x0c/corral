@@ -1377,11 +1377,6 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
             f"/home/user/.codex/sessions/2026/07/04/rollout-2026-07-04T16-03-52-{uuid}.jsonl"
         )
 
-        def fake_check_output(cmd, **kwargs):
-            if cmd[0] == "pgrep":
-                return b"47372\n"
-            raise AssertionError(f"unexpected command: {cmd}")
-
         def fake_listdir(path):
             if path == "/proc/47372/fd":
                 return ["0", "1", "2", "45"]
@@ -1392,7 +1387,7 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
                 return rollout_path
             raise OSError("not a symlink we care about")
 
-        with mock.patch("corral.scan.codex.subprocess.check_output", side_effect=fake_check_output), \
+        with mock.patch("corral.scan.codex.live_pid_snapshot", return_value=(47372,)), \
              mock.patch("corral.scan.codex.sys.platform", "linux"), \
              mock.patch("corral.scan.codex.os.listdir", side_effect=fake_listdir), \
              mock.patch("corral.scan.codex.os.readlink", side_effect=fake_readlink):
@@ -1411,27 +1406,26 @@ class CodexScanTests(TimezoneMixin, unittest.TestCase):
         )
 
         def fake_check_output(cmd, **kwargs):
-            if cmd[0] == "pgrep":
-                return b"47372\n"
             if cmd[0] == "lsof":
                 self.assertEqual(cmd, ["lsof", "-n", "-P", "-Fpn", "-p", "47372"])
                 return lsof_output.encode()
             raise AssertionError(f"unexpected command: {cmd}")
 
-        with mock.patch("corral.scan.codex.subprocess.check_output", side_effect=fake_check_output), \
+        with mock.patch("corral.scan.codex.live_pid_snapshot", return_value=(47372,)), \
+             mock.patch("corral.scan.codex.subprocess.check_output", side_effect=fake_check_output), \
              mock.patch("corral.scan.codex.sys.platform", "darwin"):
             live_ids = scan_codex._live_session_ids()
 
         self.assertEqual(live_ids, {uuid: 47372})  # 判活的同时要能精确回填 pid
 
     def test_live_session_ids_returns_empty_when_pgrep_unavailable(self) -> None:
-        # pgrep 缺失或调用失败时静默降级为空集，不抛异常。
-        with mock.patch(
-            "corral.scan.codex.subprocess.check_output", side_effect=FileNotFoundError()
-        ):
+        # 进程快照为空时不再调用 lsof，静默降级为空集。
+        with mock.patch("corral.scan.codex.live_pid_snapshot", return_value=()), \
+             mock.patch("corral.scan.codex.subprocess.check_output") as probe:
             live_ids = scan_codex._live_session_ids()
 
         self.assertEqual(live_ids, {})
+        probe.assert_not_called()
 
     def test_scan_filters_self_generated_title_sessions(self) -> None:
         # 后台标题生成兜底路径若真在 ~/.codex/sessions/ 留下会话
@@ -4743,6 +4737,15 @@ class AgentApiTests(unittest.TestCase):
         plain_payload = agent_api.session_payload(no_keepalive_session, {}, runtime=None)
         self.assertFalse(plain_payload["keepalive"])
 
+    def test_session_payload_exposes_attention_kind(self) -> None:
+        session = self._session("attn1234", "等回话的会话", 1, live=True, pid=7)
+        session["attention_kind"] = "waiting"
+        payload = agent_api.session_payload(session, {}, runtime=None)
+        self.assertEqual(payload["attention"], "waiting")
+
+        idle = agent_api.session_payload(self._session("idle5678", "普通会话", 1), {}, runtime=None)
+        self.assertEqual(idle["attention"], "none")
+
     def test_list_and_search_annotate_scanned_sessions_before_building_payload(self) -> None:
         # cmd_list/cmd_search 必须先对本次扫描出的会话跑一次 keepalive.annotate，
         # 才能把「是否在后台保活」正确反映进输出字段，不能让调用方自己再查一遍。
@@ -4778,6 +4781,29 @@ class AgentApiTests(unittest.TestCase):
         result = agent_api.cmd_list(args, registry)
 
         self.assertEqual([s["id"] for s in result["data"]["sessions"]], ["run11111"])
+
+    def test_list_keepalive_filter_keeps_only_hosted_sessions(self) -> None:
+        sessions = [
+            self._session("run11111", "托管的", 20, live=True, pid=111),
+            self._session("run22222", "外面跑的", 15, live=True, pid=222),
+        ]
+        registry, _ = self._registry(sessions)
+
+        def _fake_annotate(scanned_sessions):
+            for item in scanned_sessions:
+                if item.get("pid") == 111:
+                    item["keepalive_name"] = "corral-claude-run11111"
+
+        with mock.patch.object(agent_api.liveness, "annotate", side_effect=_fake_annotate):
+            args = mock.Mock(
+                runtime=None, limit=10, top=None, compact=True, status=None, cwd=None,
+                fields=None, live=True, keepalive=True,
+            )
+            result = agent_api.cmd_list(args, registry)
+
+        self.assertEqual([s["id"] for s in result["data"]["sessions"]], ["run11111"])
+        self.assertTrue(result["data"]["sessions"][0]["keepalive"])
+        self.assertEqual(result["data"]["sessions"][0]["attention"], "none")
 
     def test_list_without_live_flag_still_returns_all_sessions(self) -> None:
         # 回归：mock.Mock() 未显式设置的属性会自动生成一个真值 Mock，--live 判断必须
@@ -4823,8 +4849,10 @@ class AgentApiTests(unittest.TestCase):
         result = agent_api.cmd_describe(args, registry=None)
         list_flags = [flag for arg in result["data"]["args"] for flag in arg["flags"]]
         self.assertIn("--live", list_flags)
+        self.assertIn("--keepalive", list_flags)
         self.assertIn("live", result["data"]["fields"])
         self.assertIn("keepalive", result["data"]["fields"])
+        self.assertIn("attention", result["data"]["fields"])
         self.assertIn("pid", result["data"]["fields"])
         self.assertIn("last_user", result["data"]["fields"])
         self.assertIn("last_agent", result["data"]["fields"])
@@ -4833,6 +4861,7 @@ class AgentApiTests(unittest.TestCase):
         result = agent_api.cmd_describe(args, registry=None)
         search_flags = [flag for arg in result["data"]["args"] for flag in arg["flags"]]
         self.assertIn("--live", search_flags)
+        self.assertIn("--keepalive", search_flags)
 
 
 class CursorScanTests(unittest.TestCase):

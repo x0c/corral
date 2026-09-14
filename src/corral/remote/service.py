@@ -230,17 +230,39 @@ class RemoteService:
         with self._lock:
             return list(self._audit[-limit:])
 
-    def _audit_event(self, connection: Connection, method: str) -> None:
+    def record_rpc_timing(
+        self,
+        connection: Connection,
+        method: str,
+        duration_ms: int,
+        *,
+        plane: str,
+        ok: bool,
+        req_id: int = 0,
+    ) -> None:
+        """Slice0 分段计时：服务端业务耗时进 audit，供 status/快照展示。
+
+        只记低基数事实（方法、耗时、平面、成败），不记会话 key、正文与参数，
+        与 observe 脱敏口径一致。失败请求（鉴权/参数/内部错误）不记，
+        由 remote_method_failed / remote_response_send_failed 覆盖。
+        """
         entry = {
             "ts": time.time(),
             "method": method,
             "device": connection.device_name or connection.device_id or "?",
             "access": connection.access,
+            "duration_ms": max(0, int(duration_ms)),
+            "plane": plane,
+            "ok": bool(ok),
+            "req_id": int(req_id),
         }
         with self._lock:
             self._audit.append(entry)
             if len(self._audit) > 100:
                 self._audit = self._audit[-100:]
+
+    # NOTE: _audit_event 已删除（audit 只收 record_rpc_timing 的成功耗时条目；
+    # 失败请求由 remote_method_failed / remote_response_send_failed 覆盖）。
 
     # -- 配对 -------------------------------------------------------------
 
@@ -469,6 +491,7 @@ class RemoteService:
         req_id = int(message.get("id") or 0)
         method = str(message.get("m") or "")
         params = message.get("p") if isinstance(message.get("p"), dict) else {}
+        started = time.perf_counter()
         try:
             data = self._invoke(connection, method, params)
         except ActionError as exc:
@@ -481,6 +504,17 @@ class RemoteService:
             observe.event("remote_method_failed", method=method, error=str(exc))
             inbound(protocol.error(req_id, protocol.E_INTERNAL, t("remote.err.internal")))
             return
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        writer = self._writer_for_response(connection, method, inbound)
+        # plane 按响应实际写出的 socket 记：经 connection.data_send 发出即 data，
+        # 其余（控制面原路、未附着数据面、旧客户端）记 control。覆盖三种情形：
+        # 控制面大响应改道数据面、数据面进来的请求原路回数据面、控制面短 RPC
+        # 原路回控制面。半升级过渡态同样按实际写出归属。
+        data_send = connection.data_send
+        plane = "data" if (data_send is not None and writer is data_send) else "control"
+        self.record_rpc_timing(
+            connection, method, duration_ms, plane=plane, ok=True, req_id=req_id
+        )
         response = protocol.response(req_id, data)
         negotiate_compression = (
             not connection.compression_enabled and self._requests_compression(message)
@@ -545,7 +579,6 @@ class RemoteService:
         handler = _HANDLERS.get(method)
         if handler is None:
             raise NotImplementedError(method)
-        self._audit_event(connection, method)
         return handler(self, connection, params)
 
     # -- 具体方法 ---------------------------------------------------------
@@ -881,11 +914,17 @@ class RemoteService:
         receipt = self.receipts.mark_dispatching(receipt)
         if receipt.status != STATUS_DISPATCHING:
             return receipt.to_wire()
+        started_mono = time.perf_counter()
         try:
             side_effect()
-        except PartialInjectionError:
+        except PartialInjectionError as exc:
             # Paste may have landed; Enter (or a later step) did not — do not claim delivered.
             receipt = self.receipts.mark_unknown(receipt, reason="partial_injection")
+            _observe_receipt_outcome(
+                connection, receipt, method, target_key,
+                duration_ms=_receipt_ms(started_mono),
+                detail=_receipt_detail(exc.message),
+            )
             return receipt.to_wire()
         except ActionError as exc:
             receipt = self.receipts.mark_rejected(
@@ -893,12 +932,26 @@ class RemoteService:
                 reason=exc.code or "action_error",
                 retryable=exc.code in (protocol.E_UNAVAILABLE, protocol.E_RATE_LIMITED),
             )
+            _observe_receipt_outcome(
+                connection, receipt, method, target_key,
+                duration_ms=_receipt_ms(started_mono),
+                detail=_receipt_detail(exc.message),
+            )
             return receipt.to_wire()
-        except Exception:
+        except Exception as exc:
             receipt = self.receipts.mark_unknown(receipt, reason="ambiguous")
+            _observe_receipt_outcome(
+                connection, receipt, method, target_key,
+                duration_ms=_receipt_ms(started_mono),
+                detail=_receipt_detail(str(exc)),
+            )
             return receipt.to_wire()
         # Only mark delivered when the adapter completed with proven success.
         receipt = self.receipts.mark_delivered(receipt)
+        _observe_receipt_outcome(
+            connection, receipt, method, target_key,
+            duration_ms=_receipt_ms(started_mono), detail="",
+        )
         return receipt.to_wire()
 
     def _screen_resize(self, connection: Connection, params: dict):
@@ -975,6 +1028,46 @@ def _key(params: dict) -> str:
     if not key:
         raise ActionError(protocol.E_USAGE, t("remote.err.missing_session_key"))
     return key
+
+
+def _receipt_ms(started_mono: float) -> int:
+    return max(0, int((time.perf_counter() - started_mono) * 1000))
+
+
+def _receipt_detail(message: object, limit: int = 300) -> str:
+    """回执人类可读文案：取 ActionError message（已本地化），截断防刷屏。
+
+    会话正文、按键、图片字节永远不进这里——调用方只传异常 message。"""
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    one_line = " ".join(text.split())
+    return one_line if len(one_line) <= limit else one_line[:limit] + "…"
+
+
+def _observe_receipt_outcome(
+    connection: Connection,
+    receipt,
+    method: str,
+    target_key: str,
+    *,
+    duration_ms: int,
+    detail: str,
+) -> None:
+    """回执终态落盘后记一条低基数事件：方法、终态、耗时、人类可读失败文案。
+
+    只记 target_key（会话键）不记正文；detail 来自 ActionError 本地化 message，
+    不含用户输入。成功时 detail 为空串。"""
+    observe.event(
+        "remote_input_receipt",
+        method=method,
+        status=getattr(receipt, "status", "?"),
+        reason=getattr(receipt, "reason", None),
+        target_key=target_key,
+        duration_ms=max(0, int(duration_ms)),
+        detail=detail,
+        device=connection.device_name or connection.device_id or "?",
+    )
 
 
 def _int_param(params: dict, name: str, default: int, *, max_value: int = 10_000) -> int:

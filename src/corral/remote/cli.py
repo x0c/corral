@@ -585,7 +585,16 @@ def _cmd_status(args) -> int:
             for entry in recent[-8:]:
                 ts = entry.get("ts") or 0
                 stamp = time.strftime("%H:%M:%S", time.localtime(ts)) if ts else "--:--:--"
-                print(f"  {stamp}  {entry.get('device') or '?'}  {entry.get('method') or '?'}")
+                line = f"  {stamp}  {entry.get('device') or '?'}  {entry.get('method') or '?'}"
+                duration = entry.get("duration_ms")
+                if isinstance(duration, bool):
+                    duration = None
+                if isinstance(duration, (int, float)):
+                    line += f"  {int(duration)}ms"
+                plane = entry.get("plane")
+                if plane in ("control", "data"):
+                    line += f"  [{plane}]"
+                print(line)
     if window:
         remaining = int(window[1] - time.time())
         mode = remote_config.read_pairing_mode()
@@ -651,6 +660,35 @@ def _cmd_unpair(args) -> int:
         return _fail(t("remote.unpair.not_found", device_id=args.device_id), args.json)
     message = t("remote.unpair.done")
     print(_envelope(True, {"device_id": args.device_id}) if args.json else message)
+    return EXIT_OK
+
+
+def _cmd_rename(args) -> int:
+    state = remote_config.load_state()
+    if getattr(args, "clear", False):
+        state.host_name = remote_config.default_host_name()
+        remote_config.save_state(state)
+        message = t("remote.rename.cleared", default_name=state.host_name)
+        if args.json:
+            print(_envelope(True, {"host_name": state.host_name, "cleared": True}))
+        else:
+            print(message)
+        return EXIT_OK
+    name = remote_config.sanitize_display_name(
+        str(getattr(args, "name", "") or ""), max_len=80, fallback=""
+    )
+    if not name:
+        if args.json:
+            print(_envelope(False, message=t("remote.rename.empty")))
+        else:
+            print(t("remote.rename.empty"), file=sys.stderr)
+        return EXIT_USAGE
+    state.host_name = name
+    remote_config.save_state(state)
+    if args.json:
+        print(_envelope(True, {"host_name": state.host_name, "cleared": False}))
+    else:
+        print(t("remote.rename.done", name=state.host_name))
     return EXIT_OK
 
 
@@ -782,6 +820,13 @@ def build_parser() -> argparse.ArgumentParser:
     rotate = sub.add_parser("rotate-key", help=t("remote.help.rotate_key"))
     rotate.set_defaults(func=_cmd_rotate_key)
 
+    rename = sub.add_parser("rename", help=t("remote.help.rename"))
+    rename.add_argument("name", nargs="?", default="",
+                          help=t("remote.help.rename_value"))
+    rename.add_argument("--clear", action="store_true",
+                        help=t("remote.help.rename_clear"))
+    rename.set_defaults(func=_cmd_rename)
+
     login = sub.add_parser("login", help=t("remote.help.login"))
     login.add_argument("--relay-url", help=t("remote.help.relay_url"))
     login.set_defaults(func=_cmd_login)
@@ -792,7 +837,7 @@ def build_parser() -> argparse.ArgumentParser:
     whoami = sub.add_parser("whoami", help=t("remote.help.whoami"))
     whoami.set_defaults(func=_cmd_whoami)
 
-    for action in (on, start, off, stop, pair, status, devices, unpair, rotate, login, logout, whoami):
+    for action in (on, start, off, stop, pair, status, devices, unpair, rotate, rename, login, logout, whoami):
         action.add_argument("--json", action="store_true", help=t("remote.help.json"))
     return parser
 

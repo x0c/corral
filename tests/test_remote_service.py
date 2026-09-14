@@ -718,6 +718,48 @@ class RemoteServiceTests(unittest.TestCase):
         self.service.detach(connection)
         self.assertNotIn(connection, self.service._connections)
 
+    # -- Slice0 服务端分段计时 -------------------------------------------------
+
+    def test_successful_rpc_records_duration_plane_and_req_id(self):
+        """成功 RPC 在 audit 留一条带耗时/平面/req_id 的条目，不记会话 key 与参数。"""
+        connection = self._paired()
+        self._call(connection, protocol.M_SESSIONS_WATCH, {})
+        audit = self.service.recent_audit(10)
+        timed = [e for e in audit if e["method"] == protocol.M_SESSIONS_WATCH]
+        self.assertEqual(len(timed), 1)
+        entry = timed[0]
+        self.assertIn("duration_ms", entry)
+        self.assertGreaterEqual(entry["duration_ms"], 0)
+        self.assertEqual(entry["plane"], "control")
+        self.assertTrue(entry["ok"])
+        self.assertEqual(entry["req_id"], 1)
+        self.assertNotIn("key", entry)
+        self.assertNotIn("params", entry)
+
+    def test_failed_rpc_does_not_leave_timing_entry(self):
+        """鉴权/参数失败不记耗时条目，由 remote_method_failed 覆盖。"""
+        connection = self._connect()  # 未配对
+        before = len(self.service.recent_audit(100))
+        self._call(connection, protocol.M_SESSIONS_LIST, {})
+        self.assertEqual(len(self.service.recent_audit(100)), before)
+
+    def test_data_plane_response_is_marked_data(self):
+        """附着数据面后，大响应的 audit 平面记 data。"""
+        connection = self._paired()
+        data_sent: list[dict] = []
+        connection.data_send = data_sent.append
+        self.sent.clear()
+        self.service.handle(
+            connection,
+            protocol.request(1, protocol.M_SESSION_MESSAGES, {"key": "codex:abc"}),
+        )
+        self.assertEqual(self.sent, [])
+        self.assertEqual(len(data_sent), 1)
+        audit = self.service.recent_audit(10)
+        timed = [e for e in audit if e["method"] == protocol.M_SESSION_MESSAGES]
+        self.assertEqual(len(timed), 1)
+        self.assertEqual(timed[0]["plane"], "data")
+
 
 class PairingWindowTests(unittest.TestCase):
     """配对窗口存在文件里，所以要单独确认过期与清理的行为。"""

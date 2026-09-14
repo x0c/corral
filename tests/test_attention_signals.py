@@ -121,6 +121,20 @@ class ClaudeAttentionSignalTests(unittest.TestCase):
 
 
 class CodexAttentionSignalTests(unittest.TestCase):
+    def test_native_response_tail_preserves_working_without_start(self):
+        for kind in ("reasoning", "custom_tool_call", "function_call", "custom_tool_call_output"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "codex.jsonl"
+                entries = [{"type": "response_item", "payload": {"type": kind, "name": "exec"}}]
+                _write_jsonl(path, entries)
+                self.assertEqual(inspect_session(_session("codex", path)).phase, "working")
+                self.assertEqual(inspect_session(_session("codex", path, live=False)).phase, "idle")
+                entries.append({"type": "response_item", "payload": {
+                    "type": "message", "role": "assistant", "channel": "final",
+                }})
+                _write_jsonl(path, entries)
+                self.assertEqual(inspect_session(_session("codex", path)).phase, "idle")
+
     def test_task_lifecycle_and_structured_question(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "codex.jsonl"

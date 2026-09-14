@@ -324,13 +324,45 @@ class AnnotateTests(unittest.TestCase):
         self.assertNotIn("keepalive_name", sessions[1])
 
 
+class AutomaticCleanupSafetyTests(unittest.TestCase):
+    def test_default_never_kills_even_with_old_many_sessions(self):
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch("corral.liveness._list_tmux_sessions") as listing, \
+             mock.patch("corral.keepalive.kill") as kill:
+            self.assertEqual(keepalive.reap(now=10**12), [])
+        listing.assert_not_called()
+        kill.assert_not_called()
+
+    def test_idle_cleanup_protects_working_and_detached_output(self):
+        rows = [
+            ["corral-pi-working", "1", "1"],
+            ["corral-pi-output", "1", "99999"],
+            ["corral-pi-idle", "1", "1"],
+        ]
+        with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "2"}, clear=True), \
+             mock.patch("corral.liveness._list_tmux_sessions", return_value=rows), \
+             mock.patch("corral.keepalive._load_working_pairs", return_value=[("pi", "working")]), \
+             mock.patch("corral.keepalive.kill", return_value=True) as kill:
+            self.assertEqual(keepalive.reap_idle(now=100000), ["corral-pi-idle"])
+        kill.assert_called_once_with("corral-pi-idle")
+
+    def test_pressure_cleanup_protects_detached_output(self):
+        rows = [["corral-pi-output", "1", "99999"], ["corral-pi-idle", "1", "1"]]
+        with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_MAX_SESSIONS": "1"}, clear=True), \
+             mock.patch("corral.liveness._list_tmux_sessions", return_value=rows), \
+             mock.patch("corral.keepalive._load_working_pairs", return_value=[]), \
+             mock.patch("corral.keepalive.kill", return_value=True) as kill:
+            self.assertEqual(keepalive.reap_pressure(now=100000), ["corral-pi-idle"])
+        kill.assert_called_once_with("corral-pi-idle")
+
+
 class ReapIdleTests(unittest.TestCase):
     def test_kills_sessions_past_idle_threshold(self) -> None:
         # 新旧两种前缀的会话都要被回收（sc-* 是改名前留下的存量）
         rows = "corral-claude-old|1000\nsc-claude-legacy|1000\ncorral-claude-fresh|99999\n"
         now = 100000.0  # 前两个空闲 99000 秒 ≈ 27.5 小时，超过默认 2 小时阈值
 
-        with mock.patch.dict("os.environ", {}, clear=True), \
+        with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "2"}, clear=True), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
              mock.patch("corral.liveness.subprocess.check_output", return_value=rows.encode()), \
              mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill:
@@ -339,13 +371,13 @@ class ReapIdleTests(unittest.TestCase):
         self.assertEqual(reaped, ["corral-claude-old", "sc-claude-legacy"])
         self.assertEqual(mocked_kill.call_count, 2)
 
-    def test_default_threshold_is_two_hours(self) -> None:
+    def test_explicit_threshold_is_two_hours(self) -> None:
         now = 10000.0
         over = now - 2.5 * 3600
         under = now - 1.5 * 3600
         rows = f"corral-claude-over|{over:.0f}\ncorral-claude-under|{under:.0f}\n"
 
-        with mock.patch.dict("os.environ", {}, clear=True), \
+        with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_IDLE_HOURS": "2"}, clear=True), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
              mock.patch("corral.liveness.subprocess.check_output", return_value=rows.encode()), \
              mock.patch("corral.keepalive.kill", return_value=True) as mocked_kill:
@@ -392,7 +424,7 @@ class ReapPressureTests(unittest.TestCase):
         now = 100_000.0
         # 上限及以下：即使都很闲也不压
         items = [(f"corral-claude-{i:08x}", now - 3600) for i in range(10)]
-        with mock.patch.dict("os.environ", {}, clear=True), \
+        with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_MAX_SESSIONS": "10"}, clear=True), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
              mock.patch(
                  "corral.liveness.subprocess.check_output",
@@ -412,7 +444,7 @@ class ReapPressureTests(unittest.TestCase):
         items = [(f"corral-claude-{i:08x}", idle - i) for i in range(12)]
         items[0] = ("corral-claude-00000000", fresh)  # 刚活动过，不收
         # 00000001 标记为执行中，不收
-        with mock.patch.dict("os.environ", {}, clear=True), \
+        with mock.patch.dict("os.environ", {"CORRAL_KEEPALIVE_MAX_SESSIONS": "10"}, clear=True), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \
              mock.patch(
                  "corral.liveness.subprocess.check_output",
@@ -448,7 +480,7 @@ class ReapPressureTests(unittest.TestCase):
         items = [(f"corral-claude-{i:08x}", now - 90) for i in range(11)]
         with mock.patch.dict(
             "os.environ",
-            {"CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES": "1"},
+            {"CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES": "1", "CORRAL_KEEPALIVE_MAX_SESSIONS": "10"},
             clear=True,
         ), \
              mock.patch("corral.liveness.shutil.which", return_value="/usr/bin/tmux"), \

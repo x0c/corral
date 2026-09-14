@@ -1173,12 +1173,14 @@ class SessionHub:
             if after_seq is not None:
                 replayed = _try_replay(watch, transcript, int(after_seq), generation)
         if after_seq is not None and replayed is not None:
-            return _replay_page(
+            page = _replay_page(
                 replayed,
                 after_seq=int(after_seq),
                 generation=transcript.generation,
                 total=len(transcript.messages),
             )
+            page.update(attention=self.session_payload(session)["attention"], live=bool(session.get("live")))
+            return page
         page = _message_page(
             transcript.messages,
             limit=limit,
@@ -1186,6 +1188,7 @@ class SessionHub:
             has_earlier=transcript.reader.has_earlier(),
         )
         page["resume"] = "tail"
+        page.update(attention=self.session_payload(session)["attention"], live=bool(session.get("live")))
         return page
 
     def unwatch_conversation(self, key: str) -> None:

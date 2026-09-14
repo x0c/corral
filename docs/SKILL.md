@@ -33,8 +33,8 @@ SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的
 
 | 命令 | 用途 |
 | --- | --- |
-| `corral list [--runtime R] [--limit N] [--top N] [--compact] [--status S] [--cwd 子串] [--live] [--fields a,b]` | 结构化列出会话 |
-| `corral search <关键词...> [--deep] [--runtime R] [--limit N] [--top N] [--compact] [--live] [--fields a,b]` | 按主题找会话 |
+| `corral list [--runtime R] [--limit N] [--top N] [--compact] [--status S] [--cwd 子串] [--live] [--keepalive] [--fields a,b]` | 结构化列出会话 |
+| `corral search <关键词...> [--deep] [--runtime R] [--limit N] [--top N] [--compact] [--live] [--keepalive] [--fields a,b]` | 按主题找会话 |
 | `corral show <会话> [--messages N \| --full] [--compact] [--out 路径] [--fields a,b]` | 会话详情 + 对话内容 |
 | `corral share <会话> [--out 路径] [--compact]` | 导出含 thinking / 工具调用的统一 transcript，给其他 Agent 做元认知 |
 | `corral export [--since T] [--until T] [--runtime R] [--status S] [--cwd 子串] [--limit N] [--out 路径] [--compact]` | 导出某时间范围内所有会话的完整对话，合并为一个 JSON |
@@ -116,6 +116,17 @@ corral list --live --status pending --compact # 更进一步：正在跑、且�
 由人类回到 `corral` TUI 按 Enter 接回现场，管家 Agent 判断"能不能直接下指令"时应把 `keepalive=true`
 当作"这条会话已经有人在管，只能提示人类去接，不要建议或代为执行 resume_command"的信号。
 
+`attention` 是界面关注态，与侧栏圆点同源：`waiting`（等你回话）/ `working`（正在干活）/
+`unread`（有未读新结果）/ `none`。它只描述这条会话此刻的关注信号，**不是**「该不该阻止电脑休眠」
+这类产品结论。本机工具若要根据会话决定合盖后是否继续跑，应自己组合 `live`、`keepalive`、
+`attention`、`mtime`，并叠电量、发热等安全策略；不要让 corral 新增一条布尔「有没有活跃会话」命令。
+
+只要 corral 托管着、进程还在跑的会话：
+
+```bash
+corral list --live --keepalive --compact
+```
+
 `list`/`search` 默认输出已经带 `last_user`/`last_agent`（最近一轮真人消息和助手回复，硬截断精简），
 多数情况下看这两个字段就够判断"这条会话在干嘛"，不必为每条候选都跑一次 `corral show`。
 
@@ -133,6 +144,8 @@ corral list --live --status pending --compact # 更进一步：正在跑、且�
   默认会经过这层，SSH 断开也不中断）。为 `true` 时该会话的进程实际跑在保活层里，`resume_command`
   会另起一个直接抢同一份会话文件的新进程，不应该在这种情况下使用；corral 不提供从命令行直接"接管"
   保活会话的能力（这属于交互式 TUI 的 Enter 键行为），调用方需要接管时只能提示人类回到 `corral` TUI 操作。
+- `attention`：英文枚举 `waiting` / `working` / `unread` / `none`，与终端界面侧栏圆点同源；程序判断用这个
+  字段。不是「是否活跃到该阻止休眠」的结论，调用方按自己的产品规则组合本字段与 `live` / `keepalive` / `mtime`。
 - `last_user` / `last_agent`：最后一条真人消息和助手最后一轮回复的硬截断摘要（约 120 字），用于
   快速判断会话在干嘛；需要完整对话仍然用 `corral show`。
 - `status`：英文枚举 `done` / `pending` / `aborted` / `unknown`，程序判断用这个字段，不要解析

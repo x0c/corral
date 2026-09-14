@@ -439,9 +439,11 @@ class SessionHubPayloadTests(unittest.TestCase):
         _write_assistant_jsonl(path, ["一", "二", "三", "四", "五"])
         session = _session(sid="a")
         session["path"] = str(path)
+        session.update(attention_kind="working", live=True)
         with mock.patch.object(self.hub, "require_session", return_value=session):
             page = self.hub.watch_conversation("claude:a", limit=3)
         self.assertEqual(page["resume"], "tail")
+        self.assertEqual((page["attention"], page["live"]), ("working", True))
         self.assertEqual([item["seq"] for item in page["messages"]], [3, 4, 5])
         self.assertEqual(page["kind"], "snapshot")
         self.hub.unwatch_conversation("claude:a")
@@ -452,6 +454,7 @@ class SessionHubPayloadTests(unittest.TestCase):
         _write_assistant_jsonl(path, ["一", "二", "三", "四", "五"])
         session = _session(sid="a")
         session["path"] = str(path)
+        session.update(attention_kind="working", live=True)
         with mock.patch.object(self.hub, "require_session", return_value=session):
             first = self.hub.watch_conversation("claude:a")
             self.hub.unwatch_conversation("claude:a")
@@ -462,6 +465,7 @@ class SessionHubPayloadTests(unittest.TestCase):
             )
         self.assertEqual(first["resume"], "tail")
         self.assertEqual(gap["resume"], "replay")
+        self.assertEqual((gap["attention"], gap["live"]), ("working", True))
         self.assertEqual([item["seq"] for item in gap["messages"]], [4, 5])
         self.assertEqual(gap["generation"], first["generation"])
         self.hub.unwatch_conversation("claude:a")

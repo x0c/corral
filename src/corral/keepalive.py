@@ -31,8 +31,8 @@ from corral.legacy_names import (
 )
 from corral.models import LaunchPlan
 
-_DEFAULT_IDLE_HOURS = 2.0
-_DEFAULT_MAX_SESSIONS = 10
+_DEFAULT_IDLE_HOURS = 0.0
+_DEFAULT_MAX_SESSIONS = 0
 _DEFAULT_PRESSURE_IDLE_MINUTES = 10.0
 _SUBPROCESS_TIMEOUT = 1.5
 SUBPROCESS_TIMEOUT = _SUBPROCESS_TIMEOUT
@@ -316,30 +316,38 @@ def kill(name: str) -> bool:
 
 
 def reap_idle(now: float | None = None) -> list[str]:
-    """关闭空闲超过阈值（默认 2 小时，`CORRAL_KEEPALIVE_IDLE_HOURS=0` 禁用）的保活会话。
+    """Opt-in idle cleanup; disabled by default to protect unfinished tasks.
 
-    会话历史仍在各自运行时的磁盘记录里，关闭的只是 tmux 后台进程，不丢数据。
+    Detached output advances window_activity, not session_activity. Working
+    Agents remain protected even during long periods without terminal output.
     """
     threshold_hours = _idle_threshold_hours()
     if threshold_hours <= 0:
         return []
     from corral import liveness
 
-    rows = liveness._list_tmux_sessions("#{session_name}|#{session_activity}")
+    rows = liveness._list_tmux_sessions(
+        "#{session_name}|#{session_activity}|#{window_activity}"
+    )
     if not rows:
         return []
     if now is None:
         now = time.time()
+    working_pairs = _load_working_pairs()
     reaped = []
     for row in rows:
         if len(row) < 2:
             continue
         name, activity_text = row[0], row[1]
         try:
-            activity = float(activity_text)
+            activity = max(float(activity_text), float(row[2])) if len(row) > 2 else float(activity_text)
         except ValueError:
             continue
-        if now - activity > threshold_hours * 3600 and kill(name):
+        if (
+            now - activity > threshold_hours * 3600
+            and not _is_working_keepalive(name, working_pairs)
+            and kill(name)
+        ):
             reaped.append(name)
     return reaped
 
@@ -347,7 +355,7 @@ def reap_idle(now: float | None = None) -> list[str]:
 def reap_pressure(now: float | None = None) -> list[str]:
     """托管数超过软上限时，关掉闲置够久且非「执行中」的会话。
 
-    默认上限 10（`CORRAL_KEEPALIVE_MAX_SESSIONS`，`0` 禁用）；候选须 tmux
+    默认关闭（`CORRAL_KEEPALIVE_MAX_SESSIONS=0`）；候选须 tmux
     无活动超过默认 10 分钟（`CORRAL_KEEPALIVE_PRESSURE_IDLE_MINUTES`），且关注
     状态不是 working。按空闲最久优先，关到 ≤ 上限或没有合格候选为止——软上限，
     不会拦新建。
@@ -357,7 +365,9 @@ def reap_pressure(now: float | None = None) -> list[str]:
         return []
     from corral import liveness
 
-    rows = liveness._list_tmux_sessions("#{session_name}|#{session_activity}")
+    rows = liveness._list_tmux_sessions(
+        "#{session_name}|#{session_activity}|#{window_activity}"
+    )
     if not rows:
         return []
     if now is None:
@@ -368,7 +378,7 @@ def reap_pressure(now: float | None = None) -> list[str]:
             continue
         name, activity_text = row[0], row[1]
         try:
-            activity = float(activity_text)
+            activity = max(float(activity_text), float(row[2])) if len(row) > 2 else float(activity_text)
         except ValueError:
             continue
         sessions.append((name, activity))

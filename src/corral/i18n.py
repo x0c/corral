@@ -897,6 +897,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "  corral remote pair         # print a pairing QR code\n"
             "  corral remote pair --readonly  # read-only pairing (no input/delete)\n"
             "  corral remote status       # check whether it is on\n"
+            "  corral remote rename NAME  # rename this machine's display name\n"
             "  corral remote rotate-key   # rotate the relay registration key\n"
             "  corral remote off          # turn it off\n"
         ),
@@ -907,6 +908,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "  corral remote pair         # 打出配对二维码\n"
             "  corral remote pair --readonly  # 只读配对（不能输入/删改）\n"
             "  corral remote status       # 看看开着没有\n"
+            "  corral remote rename 名字   # 改这台开发机的显示名\n"
             "  corral remote rotate-key   # 轮换中继注册密钥\n"
             "  corral remote off          # 关掉\n"
         ),
@@ -994,6 +996,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "remote.help.stop": {
         "en": "Alias for “off”",
         "zh": "off 的别名",
+    },
+    "remote.help.rename_value": {
+        "en": "New display name (omit with --clear to restore the default)",
+        "zh": "新的显示名（用 --clear 时可省略，恢复默认名）",
+    },
+    "remote.help.rename_clear": {
+        "en": "Clear the custom name and restore the default",
+        "zh": "清除自定义名，恢复默认名",
+    },
+    "remote.help.rename": {
+        "en": "Rename this machine's display name shown on paired phones",
+        "zh": "改这台开发机在已配对手机上显示的名字",
     },
     "remote.help.json": {
         "en": "Print machine-readable JSON",
@@ -1251,6 +1265,31 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "已解除配对。若手机接力开着，那台手机最多约两秒内会被踢下线；"
             "之后需要重新扫码才能再连上。"
         ),
+    },
+    "remote.rename.cleared": {
+        "en": (
+            "Display name cleared; paired phones will show the default name "
+            "(\"{default_name}\") on next connect. Already-renamed phones keep "
+            "their own local names."
+        ),
+        "zh": (
+            "已清除显示名；已配对手机下次连上后会显示默认名「{default_name}」。"
+            "已在手机上单独改过名的不受影响。"
+        ),
+    },
+    "remote.rename.done": {
+        "en": (
+            "Renamed this machine to \"{name}\". Paired phones pick it up on next "
+            "connect unless renamed locally on the phone."
+        ),
+        "zh": (
+            "已把这台开发机改名为「{name}」。已配对手机下次连上后自动跟随；"
+            "已在手机上单独改过名的不受影响。"
+        ),
+    },
+    "remote.rename.empty": {
+        "en": "Name is empty after cleanup; pass a visible name or use --clear.",
+        "zh": "名字清理后是空的；请给一个看得见的名字，或用 --clear 恢复默认。",
     },
     "remote.rotate.done": {
         "en": (

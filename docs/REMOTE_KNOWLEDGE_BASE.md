@@ -4,6 +4,13 @@
 
 配套客户端：`../ios/`（见 `../ios/AGENTS.md`）。零知识中继：`../relay/`（开源自建看其 README）。维护者本人的多租户公网实例运维只写在私有 agentsync 基础设施知识库，**禁止**写进公开 GitHub 门面当默认地址。
 
+## Task execution reliability
+
+- Execution state must agree across the host, mobile list, and open conversation. Opening or reconnecting during a running turn must immediately restore the current state; reading a conversation must not clear working. Process existence alone does not prove an active turn.
+
+
+Phone-submitted tasks must continue through normal Agent execution; delivery acknowledgement is not task completion. Automatic idle and capacity cleanup are disabled by default. Manual termination remains available. Automatic cleanup must never terminate an executing Agent. Input sent through the phone and output from detached terminals count as activity. If execution is interrupted or cannot resume, preserve the original task and surface failure rather than implying completion. Never blindly replay a delivered task because it may already have changed user data.
+
 ## 开源中继硬规则（2026-09-12 用户裁定 · 记牢）
 
 1. **开源产品不提供、不暗示共用维护者的多租户中继。** 陌生人 clone / brew / 装 App 之后，默认只能走**局域网直连**；要换网/蜂窝可达，必须**自己部署** `corral-relay`（或显式配置自己的 `wss://`），再 `corral remote on --relay-url …` / 配对载荷里的 `r=`。
@@ -46,6 +53,7 @@
 | `corral remote off` | 关掉常驻服务，清除开关记忆并撤销开机自启；已关闭则幂等回报。别名 `stop` |
 | `corral remote pair` | 打开配对窗口，展示二维码 / `corral://pair?v=2...`（与开关无关） |
 | `corral remote status` | 查看服务、开关记忆、开机自启、账号与已配对设备（人读状态为 on/off） |
+| `corral remote rename NAME` / `--clear` | 改这台开发机在手机上显示的名字（无参报错；`--clear` 恢复系统默认名）；手机上单独改过名的不受影响 |
 | `corral remote rotate-key` | 轮换 Ed25519 注册密钥；路由标识不变，手机不必重扫 |
 
 入口挂在 `bootstrap.py` 的 `remote` 分支，不进 TUI、不碰 Agent 只读接口。

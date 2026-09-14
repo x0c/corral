@@ -92,6 +92,8 @@ flowchart TD
 | `error` | 抓帧、重扫、截图、TUI/进程未捕获异常等路径 | 位置、异常类型、短消息；完整栈另存 |
 | debug 事件 | 已开启细日志时 | 仅用于补充诊断上下文，不应承载正文 |
 | `corral diagnose` → `last_error` | 只读解析 `embed-error.log` 末条 | `ts`/`where`/`exc_type`/`exc_msg`/`traceback`；无记录为 null |
+| 远程 RPC 服务端耗时（Slice0） | 每个成功 RPC 在 `RemoteService.handle` 计业务耗时 | audit 条目 `method` / `duration_ms` / `plane`（control/data）/ `ok` / `req_id`；失败请求不记耗时，由 `remote_method_failed` / `remote_response_send_failed` 覆盖。不记会话 key、正文与参数 |
+| `corral remote status` 最近操作 | 运行快照 `recent` + 人读输出 | 每行 `时间 设备 方法 耗时ms [平面]`；旧条目（无耗时字段）只显示前三段 |
 
 `timed` 在操作结束时补充 `duration_ms`，使“发生了什么”和“是否变慢”可在同一事件日志中关联。事件日志默认只记录低基数名称和状态；会话文本、提示词、命令参数、令牌等不应作为诊断字段。
 
@@ -119,6 +121,7 @@ flowchart TD
 | 只读诊断 | `python3 -m corral diagnose` 或已安装命令 `corral diagnose` | 返回日志/截图目录、存在性、`last_error`、tmux 与配色事实；不启动 TUI |
 | 事件现场读取 | `python3 -m corral diagnose` 后读取 `data.last_error` 或 `~/.cache/corral/events.log` | 能看到最近闪退栈，或按 JSON 行查看 `scan_all`、`list_rebuild`、`host_session`、`capture_slow`、`host_size_drift`、`error` 等 |
 | TUI 卡死 / 按键极慢取证 | 先 `corral diagnose`，再读 `events.log` 最近几分钟的 `scan_all` / `list_rebuild` / `capture_slow`；对照 `corral --version` | 无远程遥测。卡顿时常见：`scan_all` 约每 3–4s、`session_count`≈界面深度、`duration_ms` 经常 ≥300。v0.24.185+ 在签名命中时应看到 `reason=refresh_live`、`cache_hit=true`；只有 `refresh` 且尖峰很大 → 先核是否未重启旧进程，再进 `PERFORMANCE_KNOWLEDGE_BASE.md` |
+| 远程 RPC 服务端耗时取证 | `corral remote status` 看最近操作行的 `耗时ms [平面]`，或读运行快照 `recent` 的 `duration_ms` / `plane` / `req_id` | 成功 RPC 必带耗时与平面；`session.*` 走 data 说明数据面生效，走 control 说明未附着或回落。失败请求无耗时条目，查 `events.log` 的 `remote_method_failed` |
 | 截图观测 | 在真实 TUI 中按 F12 | 生成 `~/.cache/corral/screenshots/tui-*.svg`，并只作本地排查使用 |
 | 验收截图消歧 | `python3 docs/screenshots/capture.py` | 生成虚构数据的验收图；不读取真实历史，不替代 F12 现场截图 |
 

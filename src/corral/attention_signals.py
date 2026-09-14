@@ -279,6 +279,22 @@ def _inspect_codex(session: dict) -> AttentionEvidence:
             if call_id:
                 pending[call_id] = _token("codex", "question", call_id) or call_id
                 relevant = True
+        elif entry.get("type") == "response_item" and payload_type in {
+            "reasoning", "function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output",
+        }:
+            # A bounded tail can omit task_started during a long tool-heavy turn.
+            # Native response items are execution evidence; process presence is not.
+            pending.pop(str(payload.get("call_id") or ""), None)
+            phase = "working"
+            relevant = True
+        elif (
+            entry.get("type") == "response_item"
+            and payload_type == "message"
+            and payload.get("role") == "assistant"
+        ):
+            phase = "idle" if payload.get("channel") == "final" else "working"
+            activity_token = _token("codex", "assistant", native) or activity_token
+            relevant = True
         elif payload_type in {"function_call_output", "custom_tool_call_output"}:
             if pending.pop(str(payload.get("call_id") or ""), None) is not None:
                 phase = "working"

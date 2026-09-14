@@ -44,12 +44,12 @@ STATUS_LABELS = {
 _RESOLVE_SCAN_LIMIT = 200  # show/share/context 按标识定位会话时的扫描深度，独立于 list/search 的展示条数
 
 # --compact 模式下 list 的精简默认字段集（省 token）；需要更多字段用 --fields 显式指定
-# live/keepalive/last_user/last_agent 默认就带上：管家 Agent 一眼看懂"这条会话在跑没跑、
-# 有没有在后台保活、最近聊了什么"，不必为此再多一次 show 往返。pid 体积小但多数为 null，
-# 不进精简集，需要时用 --fields 或 --live 取。
+# live/keepalive/attention/last_user/last_agent 默认就带上：调用方一眼看懂这条会话在跑没跑、
+# 有没有挂在 corral 托管里、界面关注态是等你 / 干活 / 未读，不必再多一次 show。
+# pid 体积小但多数为 null，不进精简集，需要时用 --fields 或 --live 取。
 DEFAULT_LIST_FIELDS = (
-    "id", "short_id", "runtime", "title", "status", "live", "keepalive", "mtime", "cwd_display",
-    "resumable", "resume_command", "last_user", "last_agent",
+    "id", "short_id", "runtime", "title", "status", "live", "keepalive", "attention", "mtime",
+    "cwd_display", "resumable", "resume_command", "last_user", "last_agent",
 )
 # search 的精简字段集在 list 基础上额外保留命中方式、命中字段和相关性得分，方便调用方理解排序
 DEFAULT_SEARCH_FIELDS = DEFAULT_LIST_FIELDS + ("matched_via", "matched_fields", "score")
@@ -161,11 +161,32 @@ def _apply_fields(payload: dict, fields: list[str] | None) -> dict:
     return {k: v for k, v in payload.items() if k in fields}
 
 
+def _attach_attention(sessions: list[dict]) -> None:
+    """把关注态写进扫描结果，供 session_payload 输出。库损坏时整批降为 none。"""
+    from corral.attention import AttentionStore
+
+    keys = [session_key(item) for item in sessions if item.get("id")]
+    try:
+        states = AttentionStore().get_many(keys)
+    except Exception:
+        states = {}
+    for item in sessions:
+        if not item.get("id"):
+            item["attention_kind"] = "none"
+            continue
+        state = states.get(session_key(item))
+        kind = getattr(state, "kind", None) if state is not None else None
+        item["attention_kind"] = kind if kind in {"waiting", "working", "unread", "none"} else "none"
+
+
 def session_payload(session: dict, cache: dict, runtime=None, fields: list[str] | None = None) -> dict:
     """把内部会话结构裁剪为对 Agent 友好的输出：语义化标题、英文状态枚举。"""
     title, _ = titles.resolve_initial_title(session, cache)
     status_tag = session.get("status_tag") or ""
     resume_command = _resume_command(runtime, session) if runtime is not None else None
+    attention = session.get("attention_kind") or "none"
+    if attention not in {"waiting", "working", "unread", "none"}:
+        attention = "none"
     payload = {
         "runtime": session.get("source"),
         "id": session.get("id"),
@@ -183,6 +204,7 @@ def session_payload(session: dict, cache: dict, runtime=None, fields: list[str] 
         "resume_command": resume_command,
         "live": bool(session.get("live")),
         "keepalive": bool(session.get("keepalive_name")),
+        "attention": attention,
         "pid": session.get("pid"),
         "last_user": _trim(session.get("last_user_msg")),
         "last_agent": _trim(session.get("last_agent_msg")),
@@ -246,6 +268,7 @@ def resolve_ref(registry, ref: str, limit: int) -> dict:
             next_commands=[f"corral search {ref}", "corral list"],
         )
     liveness.annotate(matches)
+    _attach_attention(matches)
 
     exact = [s for s in matches if s.get("id") == ref or session_key(s) == ref]
     if len(exact) == 1:
@@ -317,7 +340,9 @@ def cmd_list(args, registry) -> dict:
     cache = titles.load_cache()
 
     scanned = _scan_runtimes(runtimes, args.limit)
-    liveness.annotate([session for bucket in scanned.values() for session in bucket])
+    flat = [session for bucket in scanned.values() for session in bucket]
+    liveness.annotate(flat)
+    _attach_attention(flat)
 
     candidates = []
     for runtime in runtimes:
@@ -330,6 +355,8 @@ def cmd_list(args, registry) -> dict:
             # 没显式设置的属性会自动生成一个真值 Mock（不是抛异常/落回默认值），
             # truthy 判断会让老测试静默被过滤成"只剩 live 会话"。
             if getattr(args, "live", None) is True and not session.get("live"):
+                continue
+            if getattr(args, "keepalive", None) is True and not session.get("keepalive_name"):
                 continue
             candidates.append((runtime, session))
 
@@ -354,7 +381,9 @@ def cmd_search(args, registry) -> dict:
     cache = titles.load_cache()
 
     scanned = _scan_runtimes(runtimes, args.limit)
-    liveness.annotate([session for bucket in scanned.values() for session in bucket])
+    flat = [session for bucket in scanned.values() for session in bucket]
+    liveness.annotate(flat)
+    _attach_attention(flat)
 
     results = []
     for runtime in runtimes:
@@ -363,6 +392,8 @@ def cmd_search(args, registry) -> dict:
             # 没显式设置的属性会自动生成一个真值 Mock（不是抛异常/落回默认值），
             # truthy 判断会让老测试静默被过滤成"只剩 live 会话"。
             if getattr(args, "live", None) is True and not session.get("live"):
+                continue
+            if getattr(args, "keepalive", None) is True and not session.get("keepalive_name"):
                 continue
             title, _ = titles.resolve_initial_title(session, cache)
             quick_parts = [
@@ -507,7 +538,9 @@ def cmd_export(args, registry) -> dict:
     cache = titles.load_cache()
 
     scanned = _scan_runtimes(runtimes, args.limit)
-    liveness.annotate([session for bucket in scanned.values() for session in bucket])
+    flat = [session for bucket in scanned.values() for session in bucket]
+    liveness.annotate(flat)
+    _attach_attention(flat)
 
     candidates = []
     for runtime in runtimes:
@@ -821,6 +854,10 @@ COMMANDS = [
             {"flags": ["--status"], "kwargs": {"choices": ["done", "pending", "aborted", "unknown"], "help": "按状态过滤"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--cwd"], "kwargs": {"help": "按工作目录子串过滤（大小写不敏感）"}},
             {"flags": ["--live"], "kwargs": {"action": "store_true", "help": "只返回进程仍在运行的会话"}},
+            {
+                "flags": ["--keepalive"],
+                "kwargs": {"action": "store_true", "help": "只返回正挂在 corral 后台保活（tmux）里的会话"},
+            },
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段"}},
         ],
         "fields": {
@@ -837,6 +874,10 @@ COMMANDS = [
             "status_tag": "中文状态标签（含图标），供人类展示用",
             "live": "进程是否真实运行中（true/false），不是文件时间推断",
             "keepalive": "是否正挂在 corral 的后台保活（tmux）里；为 true 时 resume_command 会另起一个竞争同一份会话文件的新进程，应改用 corral 的 Enter/接回操作而不是 resume_command",  # noqa: E501 - describe 字段文档，一行一条，拆行破坏输出
+            "attention": (
+                "界面关注态英文枚举：waiting / working / unread / none；"
+                "与侧栏圆点同源，不是「该不该阻止休眠」的结论"
+            ),
             "pid": "运行中会话的进程号；非运行中为 null，可用于定位/发信号给该进程",
             "last_user": "最后一条真人消息，硬截断精简，一眼看懂最近在聊什么",
             "last_agent": "助手最后一轮回复片段，硬截断精简",
@@ -856,10 +897,14 @@ COMMANDS = [
             {"flags": ["--top"], "kwargs": {"type": int, "help": "最多返回多少条结果；不影响扫描深度"}},
             {"flags": ["--compact"], "kwargs": {"action": "store_true", "help": "使用紧凑 JSON，并默认只返回常用字段"}},
             {"flags": ["--live"], "kwargs": {"action": "store_true", "help": "只返回进程仍在运行的会话"}},
+            {
+                "flags": ["--keepalive"],
+                "kwargs": {"action": "store_true", "help": "只返回正挂在 corral 后台保活（tmux）里的会话"},
+            },
             {"flags": ["--fields"], "kwargs": {"help": "逗号分隔的字段名，只返回这些字段"}},
         ],
         "fields": {
-            "...": "与 list 命令的字段相同（含 live / keepalive / pid / last_user / last_agent）",
+            "...": "与 list 命令的字段相同（含 live / keepalive / attention / pid / last_user / last_agent）",
             "score": "相关性分数；分数越高排序越靠前，同分按 mtime 倒序",
             "matched_via": "quick（元数据命中）或 deep（全文命中），兼容旧调用方",
             "matched_fields": "命中的字段列表，如 title / first_user_msg / conversation",
