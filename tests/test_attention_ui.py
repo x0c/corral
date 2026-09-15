@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
+
+# Before any textual import: same guard as corral/__init__.py (isort would
+# otherwise put first-party corral after third-party textual).
+os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
+
+import asyncio
 import tempfile
 import time
 import unittest

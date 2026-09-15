@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -178,6 +179,29 @@ class SessionHubStatusHookTests(unittest.TestCase):
         session["path"] = str(path)
         self.hub.store.sessions = {"pi": [session]}
         self.hub._snapshot_status()
+        self.hub._detect_status_changes()
+        self.assertEqual(self.calls, [])
+
+    def test_fresh_new_terminal_session_notifies(self) -> None:
+        """Session that first appears already DONE still notifies when mtime is fresh."""
+        path = Path(self._tmp.name) / "pi.jsonl"
+        path.write_text("", encoding="utf-8")
+        session = _session(status_tag=sesskit_titles.STATUS_DONE, last_agent="PONG")
+        session["path"] = str(path)
+        session["mtime"] = time.time()
+        self.hub.store.sessions = {"pi": [session]}
+        # No snapshot — key is brand new to the hub
+        self.hub._detect_status_changes()
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][1], sesskit_titles.STATUS_DONE)
+
+    def test_stale_new_terminal_session_is_silent(self) -> None:
+        path = Path(self._tmp.name) / "pi.jsonl"
+        path.write_text("", encoding="utf-8")
+        session = _session(status_tag=sesskit_titles.STATUS_ABORTED, last_agent="old")
+        session["path"] = str(path)
+        session["mtime"] = time.time() - 10_000
+        self.hub.store.sessions = {"pi": [session]}
         self.hub._detect_status_changes()
         self.assertEqual(self.calls, [])
 

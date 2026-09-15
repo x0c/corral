@@ -52,6 +52,11 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+# Match corral package default before any test module can import textual.
+# Some serial-lane tests historically imported textual before corral; workers
+# and the in-process retry path must still freeze DISABLE_KITTY_KEY correctly.
+os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
+
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))

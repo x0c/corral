@@ -5,7 +5,11 @@ Pilot 驱动真实 Textual 事件循环（与 test_ui.py 同一模式），不 m
 
 from __future__ import annotations
 
+import os
 import unittest
+
+# Before any textual import (isort places textual ahead of first-party corral).
+os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
 
 from textual.app import App, ComposeResult
 

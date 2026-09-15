@@ -19,6 +19,8 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from sesskit import titles as sesskit_titles
+
 from corral import embed, keepalive, titles
 from corral.cache import history_signature
 from corral.i18n import t
@@ -47,6 +49,8 @@ MESSAGE_PAGE_BYTES = 256 * 1024
 MESSAGE_EVENT_BYTES = 64 * 1024
 _MAX_IN_MEMORY_TRANSCRIPTS = 48
 _CONVERSATION_DELTA_LIMIT = 200  # 每条被看会话只留最近这么多增量；溢出则 replay 失败走 tail
+# New session keys that first appear already terminal still notify if this fresh.
+_STATUS_NOTIFY_FRESH_SECONDS = 300.0
 
 _ATTENTION_LABELS = {"none": "none", "unread": "unread", "working": "working", "waiting": "waiting"}
 
@@ -1692,21 +1696,37 @@ class SessionHub:
     def _detect_status_changes(self) -> None:
         """SessKit status_tag 变化 → 推送层（已完成 / 已中断）。
 
-        首扫只建基线不推；同值抖动不推。具体是否发出由 PushNotifier 按标签过滤。
+        启动基线不推。同值抖动不推。若新会话在两次扫描之间已经结束（首次出现
+        就是已完成/已中断），只要历史很新仍要推——否则短会话会漏通知。
         """
         hook = self._status_hook
         if hook is None:
             return
         layout = self._layout()
+        now = time.time()
         for session in self.store.all_sessions():
             key = session_key(session)
             current = str(session.get("status_tag") or "")
             previous = self._last_status.get(key)
             self._last_status[key] = current
-            if previous is None or current == previous:
+            if previous is not None and current == previous:
                 continue
+            if previous is None:
+                # First sight of this key after start: only notify if it is already
+                # terminal and the history is fresh (completed between scans).
+                if current not in (
+                    sesskit_titles.STATUS_DONE,
+                    sesskit_titles.STATUS_ABORTED,
+                ):
+                    continue
+                try:
+                    mtime = float(session.get("mtime") or 0.0)
+                except (TypeError, ValueError):
+                    mtime = 0.0
+                if mtime <= 0 or (now - mtime) > _STATUS_NOTIFY_FRESH_SECONDS:
+                    continue
             try:
-                hook(self.session_payload(session, layout), previous, current)
+                hook(self.session_payload(session, layout), previous or "", current)
             except Exception:
                 continue
 
