@@ -437,6 +437,8 @@ class SessionHub:
         self._threads: list[threading.Thread] = []
         self._last_attention: dict[str, str] = {}
         self._attention_hook = None  # 由推送层注入：(session, 旧状态, 新状态)
+        self._last_status: dict[str, str] = {}
+        self._status_hook = None  # 推送层：SessKit status_tag 已完成/已中断
         self._history_watcher = None
 
     # -- 生命周期 ---------------------------------------------------------
@@ -451,6 +453,7 @@ class SessionHub:
         watcher.start()
         self.store.load()
         self._snapshot_attention()
+        self._snapshot_status()
         for target in (self._refresh_loop, self._screen_loop, self._conversation_loop):
             thread = threading.Thread(target=target, daemon=True, name=f"remote-{target.__name__}")
             thread.start()
@@ -470,6 +473,10 @@ class SessionHub:
     def set_attention_hook(self, hook) -> None:
         """注册关注状态变化回调，供推送层订阅。"""
         self._attention_hook = hook
+
+    def set_status_hook(self, hook) -> None:
+        """注册 SessKit status_tag 变化回调（已完成 / 已中断 → 系统通知）。"""
+        self._status_hook = hook
 
     # -- 后台循环 ---------------------------------------------------------
 
@@ -521,6 +528,7 @@ class SessionHub:
             title_keys.update(self.store.poll_title_updates())
             self._follow_key_migrations()
             self._detect_attention_changes()
+            self._detect_status_changes()
             if (changed or title_keys) and self._sessions_watchers:
                 self._on_event("sessions", self.list_snapshot())
             if title_keys:
@@ -1633,11 +1641,17 @@ class SessionHub:
             session_key(s): str(s.get("attention_kind") or "none") for s in self.store.all_sessions()
         }
 
+    def _snapshot_status(self) -> None:
+        self._last_status = {
+            session_key(s): str(s.get("status_tag") or "") for s in self.store.all_sessions()
+        }
+
     def _detect_attention_changes(self) -> None:
         """关注状态变化：正在看的对话走实时事件；系统推送仍只报「等你回答」。
 
         推送层只收 waiting 跃迁，避免长任务刷屏。已经打开详情的手机必须立刻
         看到「正在处理 / 等你回答」，所以 conversation watch 订阅任意状态变化。
+        一轮结束通知走 ``_detect_status_changes``（SessKit status_tag），不在这里发。
         """
         hook = self._attention_hook
         layout = self._layout() if hook else None
@@ -1674,6 +1688,27 @@ class SessionHub:
                     hook(self.session_payload(session, layout), previous, current)
                 except Exception:
                     continue
+
+    def _detect_status_changes(self) -> None:
+        """SessKit status_tag 变化 → 推送层（已完成 / 已中断）。
+
+        首扫只建基线不推；同值抖动不推。具体是否发出由 PushNotifier 按标签过滤。
+        """
+        hook = self._status_hook
+        if hook is None:
+            return
+        layout = self._layout()
+        for session in self.store.all_sessions():
+            key = session_key(session)
+            current = str(session.get("status_tag") or "")
+            previous = self._last_status.get(key)
+            self._last_status[key] = current
+            if previous is None or current == previous:
+                continue
+            try:
+                hook(self.session_payload(session, layout), previous, current)
+            except Exception:
+                continue
 
     # -- 杂项 -------------------------------------------------------------
 
