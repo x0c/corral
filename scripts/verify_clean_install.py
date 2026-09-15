@@ -26,6 +26,11 @@ def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
     subprocess.run(cmd, check=True, cwd=ROOT, env=env)
 
 
+def _clean_env() -> dict[str, str]:
+    """Drop PYTHONPATH so a maintainer checkout cannot satisfy sesskit for pip."""
+    return {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+
+
 def _resolve_python() -> str:
     """Prefer a Python whose ensurepip works (Homebrew / CORRAL_CLEAN_PYTHON)."""
     candidates = [
@@ -59,18 +64,18 @@ def main(argv: list[str] | None = None) -> int:
     sesskit_dep.verify_published_digests()
     python = _resolve_python()
 
+    env = _clean_env()
     with tempfile.TemporaryDirectory(prefix="corral-clean-install-") as tmp:
         tmp_path = pathlib.Path(tmp)
         venv_dir = tmp_path / "venv"
-        _run([python, "-m", "venv", str(venv_dir)])
+        _run([python, "-m", "venv", str(venv_dir)], env=env)
         py = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         pip = [str(py), "-m", "pip"]
-        _run([*pip, "install", "--upgrade", "pip"])
-        _run([*pip, "install", sesskit_dep.wheel_requirement()])
+        _run([*pip, "install", "--upgrade", "pip"], env=env)
+        _run([*pip, "install", sesskit_dep.wheel_requirement()], env=env)
         # Install from the working tree like a source user would after cloning.
         extra = ".[remote]" if args.with_remote else "."
-        _run([*pip, "install", extra])
-        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        _run([*pip, "install", extra], env=env)
         check = (
             "import corral, sesskit; "
             "assert corral.__version__; "
