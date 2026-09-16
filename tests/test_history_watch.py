@@ -57,12 +57,16 @@ class HistoryWatcherTests(unittest.TestCase):
             if watcher.backend == "none":
                 watcher.stop()
                 self.skipTest("no fsevents/inotify on this platform")
+            # One tight burst: no inter-write sleep, so native FS queues must
+            # collapse under the debounce window. Spacing writes (e.g. 20ms)
+            # lets a loaded machine stretch events past the quiet period and
+            # flake the upper bound.
             for i in range(5):
                 (root / f"burst-{i}.txt").write_text(str(i), encoding="utf-8")
-                time.sleep(0.02)
             self.assertTrue(watcher.wait(timeout=2.0))
-            time.sleep(0.3)
-            self.assertLessEqual(len(fires), 3)
+            time.sleep(0.35)
+            self.assertGreaterEqual(len(fires), 1)
+            self.assertLessEqual(len(fires), 2)
             watcher.stop()
 
     def test_stop_unblocks_wait(self) -> None:

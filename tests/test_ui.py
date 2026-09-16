@@ -3176,6 +3176,15 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             )
             stack = list_view.query_one(OlderStackCard)
             self.assertEqual(stack.count, 2)
+            stack_plain = stack.render().plain
+            self.assertIn("┌", stack_plain)
+            self.assertIn("┐┐", stack_plain)
+            self.assertIn("││", stack_plain)
+            self.assertIn("┘┘", stack_plain)
+            self.assertIn("▶ Older", stack_plain)
+            self.assertIn("2 sessions", stack_plain)
+            # Must not look like bare decorative rules (the rejected first design).
+            self.assertNotRegex(stack_plain, r"(?m)^─+$")
             plains = [
                 card.render().plain for card in list_view.query(PinSeparatorCard)
             ]

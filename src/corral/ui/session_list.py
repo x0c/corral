@@ -13,8 +13,9 @@
 `$primary` 蓝横线；未置顶按本地日历日切桶（今天 / 昨天 / 近 7 日内其余各日用星期几
 / 更早合成一桶），桶内不重排。命名桶后面还有内容时才在该桶末尾插线（标签为
 `Today↑` 这种「名字 + 向上箭头」，标明上面这一段）。分隔高 1、disabled、键盘跳过；
-禁止 Older/其他标签。默认只展开今天与昨天；比昨天更早的块收进一张高 3 的
-「三层叠卡」（`OlderStackCard`），点击或回车才展开，再点收回。项目筛选命中时
+禁止在日期分隔线上写 Older/其他标签。默认只展开今天与昨天；更早收成高 3 的
+「三层叠卡」（`OlderStackCard`：带框的正面卡片 + 右侧两道叠边，内含 ▶/▼ 与数量），
+点击或回车展开。项目筛选命中时
 自动展开，避免搜到的旧会话被藏住。斑马纹按**块**交替，
 不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块，三层叠卡也是一块；
 `＋ 新建`、活跃会话看板与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
@@ -1062,7 +1063,12 @@ def _append_calendar_buckets(
 
 
 class OlderStackCard(Widget):
-    """Folded gate for sessions older than yesterday: three stacked bars + summary."""
+    """Folded gate for sessions older than yesterday: a three-deep card stack.
+
+    Draws as a bordered front card with two peeks on the right edge so it reads
+    as a clickable pile of sessions, not as decorative ``─`` rules. Chevron +
+    label live inside the front card (same language as SessionGroupCard).
+    """
 
     ALLOW_SELECT = False
 
@@ -1071,7 +1077,7 @@ class OlderStackCard(Widget):
         height: 3;
         width: 1fr;
         pointer: pointer;
-        color: $foreground 70%;
+        color: $foreground 88%;
         &.-stripe {
             background: $foreground 8%;
         }
@@ -1097,28 +1103,30 @@ class OlderStackCard(Widget):
         event.stop()
         self.post_message(OlderStackToggleRequested())
 
-    def _stack_line(self, width: int, layer: int) -> str:
-        import corral
-
-        offset = layer
-        inner = max(3, width - offset - 1)
-        return corral._fit_cell((" " * offset) + ("─" * inner), width).rstrip()
-
     def render(self) -> Text:
         import corral
 
+        # ┌────────────────┐┐┐
+        # │ ▶ Older · N …  │││
+        # └────────────────┘┘┘
+        # Front card holds the affordance; the doubled right edge is the stack.
         width = max(10, self.size.width or 40)
+        peek = 2  # two cards behind the front face
+        inner_w = max(1, width - 2 - peek)
         arrow = "▼" if self.expanded else "▶"
         label = t("list.older_stack")
         count_text = t("list.older_stack_count", count=self.count)
-        summary = corral._fit_cell(f"{arrow} {label} · {count_text}", width)
+        body = corral._fit_cell(f" {arrow} {label} · {count_text} ", inner_w)
+        body_pad = max(0, inner_w - corral._text_width(body))
+        if body_pad:
+            body = body + (" " * body_pad)
+        top = "┌" + ("─" * inner_w) + "┐" + ("┐" * peek)
+        mid = "│" + body + "│" + ("│" * peek)
+        bot = "└" + ("─" * inner_w) + "┘" + ("┘" * peek)
         out = Text()
-        out.append(self._stack_line(width, 0) + "\n")
-        out.append(self._stack_line(width, 1) + "\n", style="dim")
-        out.append(summary.rstrip())
-        pad = max(0, width - corral._text_width(summary))
-        if pad:
-            out.append(" " * pad)
+        out.append(corral._fit_cell(top, width) + "\n", style="bold")
+        out.append(corral._fit_cell(mid, width) + "\n", style="bold")
+        out.append(corral._fit_cell(bot, width), style="bold")
         return out
 
 
