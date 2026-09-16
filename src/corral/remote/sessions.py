@@ -441,6 +441,7 @@ class SessionHub:
         self._threads: list[threading.Thread] = []
         self._last_attention: dict[str, str] = {}
         self._attention_hook = None  # 由推送层注入：(session, 旧状态, 新状态)
+        self._last_live: dict[str, bool] = {}
         self._last_status: dict[str, str] = {}
         self._status_hook = None  # 推送层：SessKit status_tag 已完成/已中断
         self._history_watcher = None
@@ -457,6 +458,7 @@ class SessionHub:
         watcher.start()
         self.store.load()
         self._snapshot_attention()
+        self._snapshot_live()
         self._snapshot_status()
         for target in (self._refresh_loop, self._screen_loop, self._conversation_loop):
             thread = threading.Thread(target=target, daemon=True, name=f"remote-{target.__name__}")
@@ -532,6 +534,7 @@ class SessionHub:
             title_keys.update(self.store.poll_title_updates())
             self._follow_key_migrations()
             self._detect_attention_changes()
+            self._detect_live_changes()
             self._detect_status_changes()
             if (changed or title_keys) and self._sessions_watchers:
                 self._on_event("sessions", self.list_snapshot())
@@ -1645,6 +1648,11 @@ class SessionHub:
             session_key(s): str(s.get("attention_kind") or "none") for s in self.store.all_sessions()
         }
 
+    def _snapshot_live(self) -> None:
+        self._last_live = {
+            session_key(s): bool(s.get("live")) for s in self.store.all_sessions()
+        }
+
     def _snapshot_status(self) -> None:
         self._last_status = {
             session_key(s): str(s.get("status_tag") or "") for s in self.store.all_sessions()
@@ -1683,6 +1691,9 @@ class SessionHub:
                         "kind": "attention",
                         "session": watch.key,
                         "attention": label,
+                        # Open details may have dropped list watch; live must ride
+                        # with attention or the phone keeps showing Ended.
+                        "live": bool(session.get("live")),
                     },
                 )
             if hook is None or previous is None:
@@ -1692,6 +1703,47 @@ class SessionHub:
                     hook(self.session_payload(session, layout), previous, current)
                 except Exception:
                     continue
+
+    def _detect_live_changes(self) -> None:
+        """Process alive flips for open conversation watches.
+
+        List watch is often torn down on the detail page, so a live-only flip
+        (still ``working``, but process rebound) must patch the open detail via
+        metadata — otherwise the header stays on Ended while messages keep
+        arriving.
+        """
+        with self._lock:
+            watches = [
+                watch
+                for watch in self._conversations.values()
+                if watch.watchers > 0
+            ]
+        if not watches:
+            # Still advance the baseline so the first open after a flip is clean.
+            for session in self.store.all_sessions():
+                self._last_live[session_key(session)] = bool(session.get("live"))
+            return
+        layout = self._layout()
+        for session in self.store.all_sessions():
+            key = session_key(session)
+            current = bool(session.get("live"))
+            previous = self._last_live.get(key)
+            self._last_live[key] = current
+            if previous is None or previous == current:
+                continue
+            summary = self.session_payload(session, layout)
+            for watch in watches:
+                if watch.key != key and watch.canonical_key != key:
+                    continue
+                self._on_event(
+                    f"session:{watch.key}",
+                    {
+                        "version": 1,
+                        "kind": "metadata",
+                        "session": watch.key,
+                        "summary": summary,
+                    },
+                )
 
     def _detect_status_changes(self) -> None:
         """SessKit status_tag 变化 → 推送层（已完成 / 已中断）。

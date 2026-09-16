@@ -955,9 +955,36 @@ class SessionHubPayloadTests(unittest.TestCase):
                 "kind": "attention",
                 "session": "claude:a",
                 "attention": "waiting",
+                "live": False,
             },
         )
         self.hub.unwatch_conversation("claude:a")
+
+    def test_live_change_publishes_metadata_to_conversation_watch(self) -> None:
+        events: list[tuple[str, dict]] = []
+        self.hub._on_event = lambda channel, data: events.append((channel, data))
+        path = Path(self._tmp.name) / "cursor.jsonl"
+        path.write_text("", encoding="utf-8")
+        session = _session(source="cursor", sid="fold", attention="working")
+        session["path"] = str(path)
+        session["live"] = False
+        self.hub.store.sessions = {"cursor": [session]}
+        self.hub.watch_conversation("cursor:fold")
+        self.hub._snapshot_attention()
+        self.hub._snapshot_live()
+        events.clear()
+        session["live"] = True
+        self.hub._detect_live_changes()
+        metadata = [
+            (channel, payload)
+            for channel, payload in events
+            if payload.get("kind") == "metadata"
+        ]
+        self.assertEqual(len(metadata), 1)
+        self.assertEqual(metadata[0][0], "session:cursor:fold")
+        self.assertTrue(metadata[0][1]["summary"]["live"])
+        self.assertEqual(metadata[0][1]["summary"]["attention"], "working")
+        self.hub.unwatch_conversation("cursor:fold")
 
     def test_conversation_poll_interval_tightens_when_working(self) -> None:
         path = Path(self._tmp.name) / "claude.jsonl"
