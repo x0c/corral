@@ -257,6 +257,14 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Sunday",
         "zh": "周日",
     },
+    "list.older_stack": {
+        "en": "Older",
+        "zh": "更早",
+    },
+    "list.older_stack_count": {
+        "en": "{count} sessions",
+        "zh": "{count} 个会话",
+    },
     "status.running": {
         "en": "Running",
         "zh": "运行中",

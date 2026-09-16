@@ -1189,6 +1189,10 @@ class MainScreen(
         if session_list.is_activity_board_selected():
             self._show_activity_board(focus_pane=True)
             return
+        if session_list.is_older_stack_selected():
+            session_list.toggle_older_stack()
+            self._focus_list()
+            return
         self._leave_activity_board()
         group = session_list.selected_group()
         if group is not None:

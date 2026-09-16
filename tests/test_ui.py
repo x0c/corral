@@ -74,12 +74,14 @@ from corral.ui.session_list import (
     ACTIVITY_BOARD_ID,
     GROUP_ID_PREFIX,
     NEW_SESSION_ID,
+    OLDER_STACK_ID,
     PIN_SEP_ID,
     STICKY_IDS,
     TODAY_SEP_ID,
     YESTERDAY_SEP_ID,
     ActivityBoardCard,
     NewSessionCard,
+    OlderStackCard,
     PinSeparatorCard,
     SessionCard,
     SessionGroupCard,
@@ -2087,6 +2089,9 @@ class SidebarVisualLayoutTests(unittest.IsolatedAsyncioTestCase):
         app = CorralApp(store, embed_ok=False)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(delay=0.2)
+            list_view = app.screen.query_one(SessionListView)
+            list_view._older_stack_expanded = True
+            await list_view.rebuild()
             cards = list(app.screen.query(SessionCard))
             self.assertEqual(len(cards), len(ages))
             brightness = []
@@ -2948,6 +2953,8 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 lambda s: s.toggle_session_pin("claude:pin-me")
             )
             await list_view.rebuild()
+            list_view._older_stack_expanded = True
+            await list_view.rebuild()
             await pilot.pause()
             search = app.screen.query_one("#project-search", Input)
             new_card = app.screen.query_one(NewSessionCard)
@@ -3008,6 +3015,8 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 list_view.on_layout_change(
                     lambda s, k=f"claude:pin-{i}": s.toggle_session_pin(k)
                 )
+            await list_view.rebuild()
+            list_view._older_stack_expanded = True
             await list_view.rebuild()
             await pilot.pause()
             sticky = list_view.query_one("#sidebar-sticky")
@@ -3120,7 +3129,13 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 identities[:sep_at],
                 ["claude:new-a", "claude:new-b"],
             )
-            self.assertEqual(identities[sep_at + 1 :], ["claude:old-c"])
+            self.assertEqual(identities[sep_at + 1 :], [OLDER_STACK_ID])
+            list_view._older_stack_expanded = True
+            await list_view.rebuild()
+            expanded = [row.identity for row in list_view._sidebar_rows()]
+            sep_at = expanded.index(TODAY_SEP_ID)
+            self.assertEqual(expanded[:sep_at], ["claude:new-a", "claude:new-b"])
+            self.assertEqual(expanded[sep_at + 1 :], [OLDER_STACK_ID, "claude:old-c"])
             plains = [card.render().plain for card in list_view.query(PinSeparatorCard)]
             joined = "\n".join(plains)
             self.assertIn("Today↑", joined)
@@ -3129,11 +3144,11 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("其他", joined)
             self.assertEqual(
                 list_view._current_row_identities(),
-                identities,
+                expanded,
             )
 
     async def test_yesterday_and_weekday_separators(self) -> None:
-        """Today / Yesterday / weekday lines appear; unlabeled tail has no Older."""
+        """Today / Yesterday lines stay visible; older buckets fold behind stack."""
         now = time.time()
         sessions = [
             _claude_session("today-a", _local_day_mtime(0, now=now), "今天"),
@@ -3156,22 +3171,41 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                     TODAY_SEP_ID,
                     "claude:yest-b",
                     YESTERDAY_SEP_ID,
-                    "claude:mid-c",
-                    weekday_sep,
-                    "claude:old-d",
+                    OLDER_STACK_ID,
                 ],
             )
+            stack = list_view.query_one(OlderStackCard)
+            self.assertEqual(stack.count, 2)
             plains = [
                 card.render().plain for card in list_view.query(PinSeparatorCard)
             ]
             joined = "\n".join(plains)
             self.assertIn("Today↑", joined)
             self.assertIn("Yesterday↑", joined)
-            self.assertIn(f"{t(_sep_label_key(weekday_sep))}↑", joined)
             self.assertNotIn("Other", joined)
-            self.assertNotIn("Older", joined)
             self.assertNotIn("其他", joined)
             self.assertEqual(list_view._current_row_identities(), identities)
+
+            list_view._older_stack_expanded = True
+            await list_view.rebuild()
+            expanded = [row.identity for row in list_view._sidebar_rows()]
+            self.assertEqual(
+                expanded,
+                [
+                    "claude:today-a",
+                    TODAY_SEP_ID,
+                    "claude:yest-b",
+                    YESTERDAY_SEP_ID,
+                    OLDER_STACK_ID,
+                    "claude:mid-c",
+                    weekday_sep,
+                    "claude:old-d",
+                ],
+            )
+            joined = "\n".join(
+                card.render().plain for card in list_view.query(PinSeparatorCard)
+            )
+            self.assertIn(f"{t(_sep_label_key(weekday_sep))}↑", joined)
 
     async def test_today_separator_absent_when_all_recent(self) -> None:
         store, app = await self._grouped_app()
@@ -3225,6 +3259,19 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                     "claude:new-a",
                     "claude:new-b",
                     TODAY_SEP_ID,
+                    OLDER_STACK_ID,
+                ],
+            )
+            list_view._older_stack_expanded = True
+            await list_view.rebuild()
+            expanded = [row.identity for row in list_view._sidebar_rows()]
+            self.assertEqual(
+                expanded,
+                [
+                    "claude:new-a",
+                    "claude:new-b",
+                    TODAY_SEP_ID,
+                    OLDER_STACK_ID,
                     "claude:mid-old",
                 ],
             )
@@ -3260,7 +3307,12 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 before[1:],
                 ["claude:g-new", "claude:g-old1", "claude:g-old2"],
             )
-            self.assertEqual(identities[sep_at + 1 :], ["claude:solo-old"])
+            self.assertEqual(identities[sep_at + 1 :], [OLDER_STACK_ID])
+            list_view._older_stack_expanded = True
+            await list_view.rebuild()
+            expanded = [row.identity for row in list_view._sidebar_rows()]
+            sep_at = expanded.index(TODAY_SEP_ID)
+            self.assertEqual(expanded[sep_at + 1 :], [OLDER_STACK_ID, "claude:solo-old"])
 
     async def test_keyboard_skips_both_separators(self) -> None:
         now = time.time()
@@ -3289,7 +3341,7 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                     PIN_SEP_ID,
                     "claude:today-b",
                     TODAY_SEP_ID,
-                    "claude:old-c",
+                    OLDER_STACK_ID,
                 ],
             )
             list_view.focus()
@@ -3304,10 +3356,8 @@ class SessionGroupSidebarTests(unittest.IsolatedAsyncioTestCase):
                 {PIN_SEP_ID, TODAY_SEP_ID},
             )
             list_view.action_cursor_down()
-            self.assertEqual(
-                corral.session_key(list_view.selected_session()),
-                "claude:old-c",
-            )
+            self.assertTrue(list_view.is_older_stack_selected())
+            self.assertIsNone(list_view.selected_session())
             self.assertNotIn(
                 getattr(list_view.highlighted_child, "id", None),
                 {PIN_SEP_ID, TODAY_SEP_ID},

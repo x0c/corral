@@ -13,13 +13,15 @@
 `$primary` 蓝横线；未置顶按本地日历日切桶（今天 / 昨天 / 近 7 日内其余各日用星期几
 / 更早合成一桶），桶内不重排。命名桶后面还有内容时才在该桶末尾插线（标签为
 `Today↑` 这种「名字 + 向上箭头」，标明上面这一段）。分隔高 1、disabled、键盘跳过；
-禁止 Older/其他标签。斑马纹按**块**交替，
-不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块；
+禁止 Older/其他标签。默认只展开今天与昨天；比昨天更早的块收进一张高 3 的
+「三层叠卡」（`OlderStackCard`），点击或回车才展开，再点收回。项目筛选命中时
+自动展开，避免搜到的旧会话被藏住。斑马纹按**块**交替，
+不是按卡片：独立会话一块，会话组（组卡 + 全部成员）一块，三层叠卡也是一块；
 `＋ 新建`、活跃会话看板与分隔线不参与、不计入相位，分隔线之后相位重置（其后一区从无条纹
-起头）。条纹画在 `SessionCard` / `SessionGroupCard` 上，用 `$foreground` 的半透明
-底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类 DEFAULT_CSS 会压过
-ListView 自带的 `.-highlight`，把选中底色吃掉。光标停在会话组卡上时，组卡和
-全部成员贴 `-group-selected`（整组高光），激活格对应成员再叠 `-split-active`。
+起头）。条纹画在 `SessionCard` / `SessionGroupCard` / `OlderStackCard` 上，用
+`$foreground` 的半透明底与下层选中/分屏底色合成；禁止写到 `ListItem` 上——子类
+DEFAULT_CSS 会压过 ListView 自带的 `.-highlight`，把选中底色吃掉。光标停在会话组卡上时，
+组卡和全部成员贴 `-group-selected`（整组高光），激活格对应成员再叠 `-split-active`。
 
 业务格式化逻辑（相对时间、宽字符对齐、标题兜底）直接复用 corral.py 里已测试的
 纯函数，这里只负责「怎么在 Textual 里画卡片、怎么响应选择」。
@@ -64,10 +66,13 @@ PIN_SEP_ID = "__pin_sep__"
 TODAY_SEP_ID = "__today_sep__"
 YESTERDAY_SEP_ID = "__yesterday_sep__"
 DATE_SEP_PREFIX = "__date_sep_"
+OLDER_STACK_ID = "__older_stack__"
 SEP_ABOVE_MARK = "↑"
 GROUP_ID_PREFIX = "__group__-"
 # Named calendar buckets: 0=today, 1=yesterday, 2–6=weekday; 7+ is unlabeled.
+# Buckets at index >= _RECENT_BUCKET_LIMIT are hidden behind OlderStackCard by default.
 _OLDER_BUCKET = 7
+_RECENT_BUCKET_LIMIT = 2
 _WEEKDAY_LABEL_KEYS = (
     "list.sep_monday",
     "list.sep_tuesday",
@@ -196,6 +201,12 @@ class SessionGroupToggleRequested(Message):
         self.group_id = group_id
 
 
+class OlderStackToggleRequested(Message):
+    """点击三层叠卡：展开或收起比昨天更早的会话。"""
+
+    bubble = True
+
+
 @dataclass(frozen=True)
 class _SidebarRow:
     """侧边栏的一行逻辑条目；组卡与会话卡共用同一套重建顺序。"""
@@ -208,6 +219,9 @@ class _SidebarRow:
     tree_position: str | None = None
     pinned: bool = False
     stripe: bool = False
+    # older_stack only: how many top-level blocks (sessions/groups) are folded away.
+    count: int = 0
+    expanded: bool = False
 
 
 _MAX_SPLICE_REGION = 8
@@ -256,9 +270,14 @@ def _region_splice(
 
 
 def _stripe_block_start(row: _SidebarRow) -> bool:
-    return row.kind == "group" or (
+    return row.kind in {"group", "older_stack"} or (
         row.kind == "session" and row.tree_position is None
     )
+
+
+def _count_top_level_blocks(rows: list[_SidebarRow]) -> int:
+    """Count independent sessions + group cards (members do not add extra)."""
+    return sum(1 for row in rows if _stripe_block_start(row))
 
 
 def _assign_block_stripes(rows: list[_SidebarRow]) -> list[_SidebarRow]:
@@ -1013,6 +1032,96 @@ class PinSeparatorCard(Widget):
         return Text(line)
 
 
+def _append_calendar_buckets(
+    rows: list[_SidebarRow],
+    buckets: list[list[_SidebarRow]],
+    start: int,
+    end: int,
+    now: float,
+    *,
+    with_separators: bool,
+    separator_through: int | None = None,
+) -> None:
+    """Append unpinned rows for calendar bucket indices ``[start, end)``."""
+    scan_end = separator_through if separator_through is not None else end
+    for index in range(start, end):
+        bucket_rows = buckets[index]
+        if not bucket_rows:
+            continue
+        rows.extend(bucket_rows)
+        if not with_separators:
+            continue
+        has_later = any(buckets[later] for later in range(index + 1, scan_end))
+        if has_later and index < _OLDER_BUCKET:
+            rows.append(
+                _SidebarRow(
+                    kind="separator",
+                    identity=_named_date_sep_id(index, now),
+                )
+            )
+
+
+class OlderStackCard(Widget):
+    """Folded gate for sessions older than yesterday: three stacked bars + summary."""
+
+    ALLOW_SELECT = False
+
+    DEFAULT_CSS = """
+    OlderStackCard {
+        height: 3;
+        width: 1fr;
+        pointer: pointer;
+        color: $foreground 70%;
+        &.-stripe {
+            background: $foreground 8%;
+        }
+    }
+    """
+
+    def __init__(self, count: int, *, expanded: bool = False, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.count = count
+        self.expanded = expanded
+        self._render_signature = (count, expanded)
+
+    def apply_update(self, count: int, *, expanded: bool) -> None:
+        signature = (count, expanded)
+        if signature == self._render_signature:
+            return
+        self.count = count
+        self.expanded = expanded
+        self._render_signature = signature
+        self.refresh()
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.post_message(OlderStackToggleRequested())
+
+    def _stack_line(self, width: int, layer: int) -> str:
+        import corral
+
+        offset = layer
+        inner = max(3, width - offset - 1)
+        return corral._fit_cell((" " * offset) + ("─" * inner), width).rstrip()
+
+    def render(self) -> Text:
+        import corral
+
+        width = max(10, self.size.width or 40)
+        arrow = "▼" if self.expanded else "▶"
+        label = t("list.older_stack")
+        count_text = t("list.older_stack_count", count=self.count)
+        summary = corral._fit_cell(f"{arrow} {label} · {count_text}", width)
+        out = Text()
+        out.append(self._stack_line(width, 0) + "\n")
+        out.append(self._stack_line(width, 1) + "\n", style="dim")
+        out.append(summary.rstrip())
+        pad = max(0, width - corral._text_width(summary))
+        if pad:
+            out.append(" " * pad)
+        return out
+
+
 class _SidebarList(ListView):
     """侧边栏一段列表：固定头（新建 + 活动看板）或会话滚动区（置顶与未置顶一起滚）。"""
 
@@ -1208,6 +1317,7 @@ class SessionListView(Vertical):
         self._tail_rows: list[_SidebarRow] | None = None
         self._tail_token = -1
         self.board_snapshot: BoardSnapshot | None = None
+        self._older_stack_expanded = False
 
     def compose(self) -> ComposeResult:
         self._sticky_list = _SidebarList(self, sticky=True, id="sidebar-sticky")
@@ -1506,6 +1616,8 @@ class SessionListView(Vertical):
                     identities.append(item.id)
             elif isinstance(card, SessionGroupCard):
                 identities.append(f"{GROUP_ID_PREFIX}{card.group.group_id}")
+            elif isinstance(card, OlderStackCard):
+                identities.append(OLDER_STACK_ID)
             elif isinstance(card, SessionCard):
                 identities.append(corral.session_key(card.session))
         return identities
@@ -1523,7 +1635,9 @@ class SessionListView(Vertical):
         for widget, row in zip(widgets, rows, strict=False):
             if row.kind == "separator" or isinstance(widget, PinSeparatorCard):
                 continue
-            if isinstance(widget, SessionGroupCard) and row.group is not None:
+            if isinstance(widget, OlderStackCard):
+                widget.apply_update(row.count, expanded=row.expanded)
+            elif isinstance(widget, SessionGroupCard) and row.group is not None:
                 widget.apply_update(
                     row.group, row.member_sessions, pinned=row.pinned
                 )
@@ -1729,18 +1843,46 @@ class SessionListView(Vertical):
         # 两侧都有可见项时才画分隔，避免「只剩置顶」或「没有置顶」时多出一条空线。
         if pinned_rows and unpinned_visible:
             rows.append(_SidebarRow(kind="separator", identity=PIN_SEP_ID))
-        for index, bucket_rows in enumerate(buckets):
-            if not bucket_rows:
-                continue
-            rows.extend(bucket_rows)
-            has_later = any(buckets[later] for later in range(index + 1, len(buckets)))
-            if has_later and index < _OLDER_BUCKET:
-                rows.append(
-                    _SidebarRow(
-                        kind="separator",
-                        identity=_named_date_sep_id(index, now),
-                    )
+        _append_calendar_buckets(
+            rows,
+            buckets,
+            0,
+            _RECENT_BUCKET_LIMIT,
+            now,
+            with_separators=True,
+            separator_through=len(buckets),
+        )
+        older_slice = buckets[_RECENT_BUCKET_LIMIT:]
+        if not any(older_slice):
+            return _assign_block_stripes(rows)
+        older_rows: list[_SidebarRow] = []
+        _append_calendar_buckets(
+            older_rows,
+            buckets,
+            _RECENT_BUCKET_LIMIT,
+            len(buckets),
+            now,
+            with_separators=True,
+        )
+        has_recent = any(buckets[i] for i in range(_RECENT_BUCKET_LIMIT))
+        # Collapse only when today/yesterday already give the user something to
+        # look at. An all-older list should open flat — a lone stack gate with
+        # no recent sessions above it is just an extra click for no gain.
+        expand_older = (
+            self._older_stack_expanded or bool(query) or not has_recent
+        )
+        count = _count_top_level_blocks(older_rows)
+        if count > 0 and has_recent:
+            rows.append(
+                _SidebarRow(
+                    kind="older_stack",
+                    identity=OLDER_STACK_ID,
+                    count=count,
+                    expanded=expand_older,
                 )
+            )
+        if expand_older:
+            rows.extend(older_rows)
         return _assign_block_stripes(rows)
 
     def selected_session(self) -> dict | None:
@@ -1772,6 +1914,13 @@ class SessionListView(Vertical):
 
     def is_activity_board_selected(self) -> bool:
         return self._selected_item_id() == ACTIVITY_BOARD_ID
+
+    def is_older_stack_selected(self) -> bool:
+        return self._selected_item_id() == OLDER_STACK_ID
+
+    def toggle_older_stack(self) -> None:
+        self._older_stack_expanded = not self._older_stack_expanded
+        self.call_next(self.rebuild)
 
     def select_activity_board(self) -> None:
         """把高亮挪到活跃会话入口（固定头第二项）。"""
@@ -1864,7 +2013,7 @@ class SessionListView(Vertical):
             if item.id not in _STICKY_ID_SET and item.children
         ]
         for widget, row in zip(widgets, rows, strict=False):
-            if isinstance(widget, (SessionCard, SessionGroupCard)):
+            if isinstance(widget, (SessionCard, SessionGroupCard, OlderStackCard)):
                 widget.set_class(row.stripe, "-stripe")
 
     def _apply_multi_markers(self) -> None:
@@ -1904,6 +2053,9 @@ class SessionListView(Vertical):
         self._apply_multi_markers()
 
     def action_toggle_multi(self) -> None:
+        if self.is_older_stack_selected():
+            self.toggle_older_stack()
+            return
         group = self.selected_group()
         if group is not None:
             self._toggle_group(group.group_id)
@@ -1973,6 +2125,12 @@ class SessionListView(Vertical):
         event.stop()
         self._toggle_group(event.group_id)
 
+    def on_older_stack_toggle_requested(
+        self, event: OlderStackToggleRequested,
+    ) -> None:
+        event.stop()
+        self.toggle_older_stack()
+
     def _toggle_group(self, group_id: str) -> None:
         if self.group_store is None or self.on_layout_change is None:
             return
@@ -2006,6 +2164,11 @@ class SessionListView(Vertical):
                 if self.index != target:
                     self.index = target
                 return True
+        if not self._older_stack_expanded and not self.nav.project_query.strip():
+            session = self.store.find_session(session_key)
+            if session is not None and _session_days_ago(session, time.time()) >= _RECENT_BUCKET_LIMIT:
+                self._older_stack_expanded = True
+                self.call_next(self.rebuild)
         if self.group_store is not None:
             group = self.group_store.get_group(session_key)
             if group is not None:
@@ -2047,6 +2210,8 @@ class SessionListView(Vertical):
         card = item.children[0] if item.children else None
         if isinstance(card, SessionGroupCard):
             return f"{GROUP_ID_PREFIX}{card.group.group_id}"
+        if isinstance(card, OlderStackCard):
+            return OLDER_STACK_ID
         if isinstance(card, SessionCard):
             return corral.session_key(card.session)
         return None
@@ -2088,6 +2253,11 @@ class SessionListView(Vertical):
                 PinSeparatorCard(_sep_label_key(row.identity)),
                 id=row.identity,
                 disabled=True,
+            )
+        if row.kind == "older_stack":
+            return NoSelectListItem(
+                OlderStackCard(row.count, expanded=row.expanded),
+                id=OLDER_STACK_ID,
             )
         if row.kind == "group" and row.group is not None:
             card: Widget = SessionGroupCard(
