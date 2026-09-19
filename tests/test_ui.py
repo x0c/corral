@@ -9409,8 +9409,9 @@ class SessionHudSummaryTests(unittest.TestCase):
     def test_injected_runtime_prompts_are_dropped(self) -> None:
         """Your prompts 只列人敲的话；扫描层留下的注入轮次必须在这里丢掉。
 
-        样本取自本机真实历史：Cursor 计划附件、任务收尾提示、corral 接力词、
-        Codex skill/中断包裹、OpenConductor 角色提示。用户自己敲的 `$doc-update`
+        样本取自本机真实历史：Cursor 计划附件、任务收尾提示、
+        Codex skill/中断包裹、OpenConductor 角色提示。corral 自身的跨运行时接力词
+        视作真人提问，不在这里过滤。用户自己敲的 `$doc-update`
         和带图提问要留下。
         """
         from corral.ui.session_hud import is_injected_user_prompt, summarize_user_messages
@@ -9420,8 +9421,6 @@ class SessionHudSummaryTests(unittest.TestCase):
             " and perform any follow-up actions (if needed).",
             "侧边栏块级斑马纹\n\nImplement the plan as specified,"
             " it is attached for your reference. Do NOT edit the plan file itself.",
-            "任务：Subswap 余量不显示\n\n你正在接力一个来自 Cursor 的会话。"
-            "请新建自己的会话继续工作；这不是对原会话的原生恢复。",
             "Implement the plan.",
             "<skill>\n<name>grilling</name>\n<path>/tmp/SKILL.md</path>",
             "<turn_aborted>\nThe user interrupted the previous turn on purpose.\n</turn_aborted>",
@@ -9451,16 +9450,22 @@ class SessionHudSummaryTests(unittest.TestCase):
         for body in kept:
             self.assertFalse(is_injected_user_prompt(body), body[:60])
 
+        handoff = (
+            "任务：Subswap 余量不显示\n\n你正在接力一个来自 Cursor 的会话。"
+            "请新建自己的会话继续工作；这不是对原会话的原生恢复。"
+        )
+        self.assertFalse(is_injected_user_prompt(handoff), handoff[:60])
         mixed = [
             corral.ConversationMessage("user", injected[0]),
             corral.ConversationMessage("user", "人敲的第一句"),
             corral.ConversationMessage("assistant", "回复"),
-            corral.ConversationMessage("user", injected[2]),
+            corral.ConversationMessage("user", handoff),
             corral.ConversationMessage("user", "人敲的第二句"),
         ]
         data = summarize_user_messages(mixed)
-        self.assertEqual(data.count, 2)
-        self.assertEqual([body for _stamp, body in data.entries], ["人敲的第一句", "人敲的第二句"])
+        self.assertEqual(data.count, 3)
+        self.assertIn("人敲的第一句", [body for _stamp, body in data.entries])
+        self.assertIn("人敲的第二句", [body for _stamp, body in data.entries])
 
     def test_image_wrapper_keeps_the_caption(self) -> None:
         from corral.ui.session_hud import summarize_user_messages

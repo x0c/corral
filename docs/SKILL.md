@@ -220,10 +220,12 @@ corral list --live --keepalive --compact
    - `Briefly inform the user about the task result…` 这类运行时内部提示；
    - Codex 的 `Implement the plan.`（整句）、`<skill>…` 全文展开、`<turn_aborted>`、
      `<subagent_notification>`；
-   - OpenConductor 角色提示（`你是 OpenConductor 的…`、`【权威对话账本`、带 `用户最新补充` 的 `原始任务：`）；
-   - **corral 自己生成的跨运行时接力提示词**，特征是以 `任务：` 开头且含 `你正在接力一个来自 … 的会话`。
+   - OpenConductor 角色提示（`你是 OpenConductor 的…`、`【权威对话账本`、带 `用户最新补充` 的 `原始任务：`）。
 
    `$doc-update`、`/grilling` 和带 `<image>` 配文的提问是真人输入，不要当注入丢掉。
+   corral 自身的跨运行时接力提示词（「你正在接力一个来自…」「You are picking up
+   a session from…」）视作真人提问：Your prompts 小窗、手机对话时间线与本节都不再
+   把它当注入过滤。
 
    TUI 的 Your prompts 小窗已经按同一套特征过滤（`is_injected_user_prompt`）；本接口的
    `show`/`export` 仍返回原文，调用方写周报时要自己剔除。

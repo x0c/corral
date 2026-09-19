@@ -264,11 +264,9 @@ _PHONE_INJECTED_USER_MARKERS = (
     "Implement the plan as specified, it is attached for your reference",
     "Do NOT edit the plan file itself",
     "To-do's from the plan have already been created",
-    "你正在接力一个来自",
-    "You are picking up a session from",
-    "这是跨运行时接力，不是原生恢复",
     "【本轮回复契约】",
 )
+# 注意：corral 自身的跨运行时接力提示词视作真人提问，不在这里过滤。
 
 
 def _phone_injected_user(text: str) -> bool:

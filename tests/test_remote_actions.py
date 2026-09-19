@@ -123,6 +123,10 @@ class FakeHub:
         self._record("handoff_session", key, target_runtime_id)
         return {"key": "claude:new", "title": "接力"}
 
+    def copy_session(self, key: str):
+        self._record("copy_session", key)
+        return {"key": key + ":copy", "title": "副本"}
+
     def prompts(self, key: str) -> list[dict]:
         self._record("prompts", key)
         return list(self.prompts_result)
@@ -174,6 +178,7 @@ class RemoteActionTests(unittest.TestCase):
             protocol.M_SESSION_NEW,
             protocol.M_SESSION_RESUME,
             protocol.M_SESSION_HANDOFF,
+            protocol.M_SESSION_COPY,
             protocol.M_SESSION_STOP,
             protocol.M_SESSION_DELETE,
             protocol.M_SESSION_PIN,
@@ -213,6 +218,13 @@ class RemoteActionTests(unittest.TestCase):
         self.assertTrue(reply["ok"])
         self.assertEqual(reply["d"]["session"]["key"], "claude:new")
         self.assertIn(("handoff_session", ("codex:abc", "claude")), self.hub.calls)
+
+    def test_copy_session(self) -> None:
+        connection = self._pair()
+        reply = self._call(connection, protocol.M_SESSION_COPY, {"key": "codex:abc"})
+        self.assertTrue(reply["ok"])
+        self.assertEqual(reply["d"]["session"]["key"], "codex:abc:copy")
+        self.assertIn(("copy_session", ("codex:abc",)), self.hub.calls)
 
     def test_stop_and_delete(self) -> None:
         connection = self._pair()

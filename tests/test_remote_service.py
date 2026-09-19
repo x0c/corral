@@ -508,6 +508,43 @@ class RemoteServiceTests(unittest.TestCase):
         self.assertEqual(reply["d"]["capabilities"]["planes"], ["control", "data"])
         self.assertNotIn("data_bind", reply["d"])
 
+    def test_hello_advertises_completion_notify(self) -> None:
+        connection = self._connect()
+        reply = self._call(connection, protocol.M_HELLO, {"name": "iPhone"})
+        self.assertTrue(reply["ok"])
+        self.assertTrue(reply["d"]["capabilities"]["completion_notify"])
+
+    def test_push_register_stores_notify_prefs(self) -> None:
+        connection = self._paired()
+        reply = self._call(
+            connection,
+            protocol.M_PUSH_REGISTER,
+            {
+                "token": "b" * 64,
+                "env": "sandbox",
+                "notify_completed": False,
+                "notify_aborted": True,
+            },
+        )
+        self.assertTrue(reply["ok"])
+        device = remote_config.find_device(self.service.state, connection.device_public_key)
+        assert device is not None
+        self.assertFalse(device.notify_completed)
+        self.assertTrue(device.notify_aborted)
+
+    def test_push_register_without_prefs_keeps_defaults(self) -> None:
+        connection = self._paired()
+        reply = self._call(
+            connection,
+            protocol.M_PUSH_REGISTER,
+            {"token": "b" * 64, "env": "sandbox"},
+        )
+        self.assertTrue(reply["ok"])
+        device = remote_config.find_device(self.service.state, connection.device_public_key)
+        assert device is not None
+        self.assertTrue(device.notify_completed)
+        self.assertTrue(device.notify_aborted)
+
     def test_hello_with_want_data_plane_issues_bind_token(self):
         connection = self._paired()
         reply = self._call(connection, protocol.M_HELLO, {"name": "iPhone", "want_data_plane": True})

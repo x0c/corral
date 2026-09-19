@@ -443,6 +443,7 @@ class SessionHub:
         self._attention_hook = None  # 由推送层注入：(session, 旧状态, 新状态)
         self._last_live: dict[str, bool] = {}
         self._last_status: dict[str, str] = {}
+        self._last_completion: dict[str, str] = {}
         self._status_hook = None  # 推送层：SessKit status_tag 已完成/已中断
         self._history_watcher = None
 
@@ -664,6 +665,10 @@ class SessionHub:
             "attention": _ATTENTION_LABELS.get(attention, "none"),
             "last_user": str(session.get("last_user_msg") or "")[:160],
             "last_agent": str(session.get("last_agent_msg") or "")[:160],
+            # 完成通知去重与事后核对用：只读透传，不进排序/筛选/版本指纹。
+            "completion_id": str(session.get("completion_id") or ""),
+            "file_mtime": self._wire_float(session.get("file_mtime") or session.get("mtime")),
+            "size_bytes": int(session.get("size_bytes") or 0),
             "rich": richmsg.supports_tool_calls(str(session.get("source") or "")),
             # 布局读失败时也给出稳定布尔，避免手机端 optional 与「未置顶」语义漂移
             "pinned": False,
@@ -1641,6 +1646,26 @@ class SessionHub:
             raise ActionError("unavailable", t("remote.err.handoff_failed", error=exc)) from exc
         return self._host(plan, target_runtime_id, f"接力 · {title}", session.get("cwd"))
 
+    def copy_session(self, key: str) -> dict:
+        """同助手复制会话：官方分叉优先，否则磁盘克隆后原生恢复。
+
+        复用注册表 `prepare_copy_request`（标题/copy 后缀/未安装报错都在里面）
+        与 `build_launch_plan`（Claude/Codex/OpenCode/Pi 走官方分叉，Cursor/Kimi
+        走磁盘克隆后再原生恢复），不另起炉灶。缺历史/不支持分叉时把原
+        LaunchError message 透出，不伪造路径。
+        """
+        if not embed.available():
+            raise ActionError("unavailable", t("remote.err.tmux_missing_handoff"))
+        session = self.require_session(key)
+        title = self.store.get_title(session)
+        try:
+            request = self.registry.prepare_copy_request(session, title)
+            plan = self.registry.build_launch_plan(request)
+        except LaunchError as exc:
+            raise ActionError("unavailable", t("remote.err.handoff_failed", error=exc)) from exc
+        copy_title = request.title
+        return self._host(plan, request.target_runtime_id, copy_title, session.get("cwd"))
+
     # -- 关注状态变化 -----------------------------------------------------
 
     def _snapshot_attention(self) -> None:
@@ -1656,6 +1681,9 @@ class SessionHub:
     def _snapshot_status(self) -> None:
         self._last_status = {
             session_key(s): str(s.get("status_tag") or "") for s in self.store.all_sessions()
+        }
+        self._last_completion = {
+            session_key(s): str(s.get("completion_id") or "") for s in self.store.all_sessions()
         }
 
     def _detect_attention_changes(self) -> None:
@@ -1748,8 +1776,10 @@ class SessionHub:
     def _detect_status_changes(self) -> None:
         """SessKit status_tag 变化 → 推送层（已完成 / 已中断）。
 
-        启动基线不推。同值抖动不推。若新会话在两次扫描之间已经结束（首次出现
-        就是已完成/已中断），只要历史很新仍要推——否则短会话会漏通知。
+        启动基线不推。同值抖动不推——但同一会话 `completion_id` 变了
+        说明新一轮结束了（DONE→DONE 也要推，由 PushNotifier 按轮去重）。
+        若新会话在两次扫描之间已经结束（首次出现就是已完成/已中断），
+        只要历史很新仍要推——否则短会话会漏通知。
         """
         hook = self._status_hook
         if hook is None:
@@ -1761,8 +1791,19 @@ class SessionHub:
             current = str(session.get("status_tag") or "")
             previous = self._last_status.get(key)
             self._last_status[key] = current
+            current_cid = str(session.get("completion_id") or "")
+            previous_cid = self._last_completion.get(key)
+            self._last_completion[key] = current_cid
             if previous is not None and current == previous:
-                continue
+                # 同标签但新一轮（completion_id 变了）：DONE→DONE 也推。
+                # 非终端态没有 completion_id，不在此列。
+                if not current_cid or current_cid == (previous_cid or ""):
+                    continue
+                if current not in (
+                    sesskit_titles.STATUS_DONE,
+                    sesskit_titles.STATUS_ABORTED,
+                ):
+                    continue
             if previous is None:
                 # First sight of this key after start: only notify if it is already
                 # terminal and the history is fresh (completed between scans).

@@ -21,7 +21,7 @@ from pathlib import Path
 from corral.cache import cache_dir, enabled, history_signature
 from corral.remote.richmsg import RichMessage
 
-PARSER_VERSION = "2026-09-13.1"  # Pi toolCall/toolResult on mobile activity cards
+PARSER_VERSION = "2026-09-19.1"  # handoff prompt counts as human prompt on mobile
 _SCHEMA_VERSION = 1
 
 

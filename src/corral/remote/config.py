@@ -200,6 +200,9 @@ class PairedDevice:
     push_env: str = ""
     platform: str = ""
     access: str = "full"
+    # 完成/中断通知偏好：缺字段=开（老设备不受影响）。False 才不发。
+    notify_completed: bool = True
+    notify_aborted: bool = True
 
     @classmethod
     def from_dict(cls, raw: dict) -> PairedDevice:
@@ -216,6 +219,8 @@ class PairedDevice:
             push_env=str(raw.get("push_env") or ""),
             platform=sanitize_display_name(str(raw.get("platform") or ""), max_len=20, fallback=""),
             access=access,
+            notify_completed=False if raw.get("notify_completed") is False else True,
+            notify_aborted=False if raw.get("notify_aborted") is False else True,
         )
 
 

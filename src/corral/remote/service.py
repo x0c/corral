@@ -664,6 +664,7 @@ class RemoteService:
                 "planes": list(protocol.CAPABILITY_PLANES),
                 protocol.CAPABILITY_COMMAND_RECEIPTS: True,
                 protocol.CAPABILITY_TOOL_DETAIL: True,
+                protocol.CAPABILITY_COMPLETION_NOTIFY: True,
             },
         }
         # 数据面 hello 只做附着确认，不再签发新令牌。
@@ -993,6 +994,11 @@ class RemoteService:
             raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
         return {"session": self.hub.handoff_session(_key(params), str(params.get("runtime") or ""))}
 
+    def _session_copy(self, connection: Connection, params: dict):
+        if not ratelimit.SESSION_CREATE.allow_request(connection.device_public_key):
+            raise ActionError(protocol.E_RATE_LIMITED, t("remote.err.action_rate_limited"))
+        return {"session": self.hub.copy_session(_key(params))}
+
     def _projects_list(self, connection: Connection, params: dict):
         return {"projects": self.hub.projects()}
 
@@ -1011,11 +1017,16 @@ class RemoteService:
         env = str(params.get("env") or "").strip().lower()
         if env and env not in ("sandbox", "production"):
             raise ActionError(protocol.E_USAGE, t("remote.err.bad_push_env"))
+        # 完成/中断通知偏好：字段出现才覆盖（缺字段=开，老手机不受影响）。
+        updates: dict = {"push_token": token, "push_env": env}
+        if "notify_completed" in params:
+            updates["notify_completed"] = bool(params.get("notify_completed"))
+        if "notify_aborted" in params:
+            updates["notify_aborted"] = bool(params.get("notify_aborted"))
         device = remote_config.touch_device(
             self.state,
             connection.device_public_key,
-            push_token=token,
-            push_env=env,
+            **updates,
         )
         self._sync_state_mtime()
         if device is None:
@@ -1132,6 +1143,7 @@ _HANDLERS = {
     protocol.M_SESSION_NEW: RemoteService._session_new,
     protocol.M_SESSION_RESUME: RemoteService._session_resume,
     protocol.M_SESSION_HANDOFF: RemoteService._session_handoff,
+    protocol.M_SESSION_COPY: RemoteService._session_copy,
     protocol.M_SESSION_STOP: RemoteService._session_stop,
     protocol.M_SESSION_DELETE: RemoteService._session_delete,
     protocol.M_SESSION_PIN: RemoteService._session_pin,

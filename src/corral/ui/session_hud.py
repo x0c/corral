@@ -7,7 +7,8 @@
   「条数 + 最初 + 最近」三行，把遮挡与滚轮穿透代价压到最小（Textual 没有点击穿透）。
 - **顺序恒为从上到下、由旧到新**，与右栏完整对话一致。
 - **只列真人提问**：`load_conversation` 仍保留完整 user 轮次（导出/预览要看原文），
-  但小窗标题是 Your prompts，必须再滤掉 runtime 注入、接力词、管家角色提示等。
+  但小窗标题是 Your prompts，必须再滤掉 runtime 注入、管家角色提示等。corral 自身的
+  跨运行时接力提示词视作真人提问，不在这里过滤。
 - **过长提问折叠**：展开态每条最多 `_MAX_PROMPT_LINES` 行，超出末行加 `...`；
   整窗高度靠滚动封顶。条纹按提问块交替，半透明叠在浮层底上，不跟 hover 抢底。
 - **实时托管格与静态对话预览格都画，且每个分屏格各自一份**。长对话里完整预览仍
@@ -91,11 +92,10 @@ _INJECTED_SUBSTRINGS = (
     "Do NOT edit the plan file itself",
     "To-do's from the plan have already been created",
     "Briefly inform the user about the task result",
-    "你正在接力一个来自",
-    "You are picking up a session from",
-    "这是跨运行时接力，不是原生恢复",
     "【本轮回复契约】",
 )
+# 注意：corral 自身的跨运行时接力提示词（「你正在接力一个来自…」「You are picking up
+# a session from…」「这是跨运行时接力…」）视作真人提问，不在这里过滤。
 _INJECTED_EXACT = {
     "Implement the plan.",
     "只回复 OK。",
@@ -143,7 +143,7 @@ def _short_time(timestamp: float, now: float | None = None) -> str:
 
 
 def is_injected_user_prompt(text: str) -> bool:
-    """这条 user 轮次是不是 runtime / 管家 / 接力注入，而不是人敲进去的。
+    """这条 user 轮次是不是 runtime / 管家注入，而不是人敲进去的。
 
     `load_conversation` 必须保留原文（`corral show`/`export`、右栏预览都还要用）；
     Your prompts 小窗才在这里二次过滤。特征来自本机全量历史抽查，宁可漏一条
@@ -154,10 +154,7 @@ def is_injected_user_prompt(text: str) -> bool:
         return False
     if raw in _INJECTED_EXACT:
         return True
-    if raw.startswith("任务：") and (
-        "你正在接力一个来自" in raw or "这是跨运行时接力" in raw
-    ):
-        return True
+    # corral 跨运行时接力提示词视作真人提问：不再以「任务：」开头做整条过滤。
     if raw.startswith("原始任务：") and (
         "用户最新补充" in raw or "【本轮回复契约】" in raw
     ):
@@ -197,8 +194,9 @@ def summarize_user_messages(messages: list[ConversationMessage]) -> HudData:
 
     只认 `role == "user"`，并丢掉 `is_injected_user_prompt` 命中的注入轮次。
     扫描层已经挡掉 Claude/Kimi 的 `origin.kind` 系统事件；Cursor 计划附件、
-    Codex `<skill>`/`<turn_aborted>`、OpenConductor 角色提示、corral 自己的
-    接力词仍会以 user 身份进 `load_conversation`，必须在这里再滤一次。
+    Codex `<skill>`/`<turn_aborted>`、OpenConductor 角色提示仍会以 user 身份进
+    `load_conversation`，必须在这里再滤一次。corral 自己的跨运行时接力提示词
+    视作真人提问，不在这里过滤。
 
     相邻且压成一行后正文相同的提问只留先到的那条：新版 Codex 同一句会各写
     一遍 `response_item` 和 `event_msg`，扫描层已按原文去重，这里再按展示

@@ -51,6 +51,8 @@ def _session(
 @unittest.skipUnless(_HAS_CRYPTO, _SKIP)
 class PushNotifierSessionEndTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
         self.device_private = crypto.generate_private_key_bytes()
         self.host_private = crypto.generate_private_key_bytes()
         self.sent: list[tuple[str, str, bytes]] = []
@@ -68,7 +70,12 @@ class PushNotifierSessionEndTests(unittest.TestCase):
                 )
             ],
         )
-        self.notifier = PushNotifier(state, self.host_private, sender=self._capture)
+        self.notifier = PushNotifier(
+            state,
+            self.host_private,
+            sender=self._capture,
+            sent_path=Path(self._tmp.name) / "push-sent.json",
+        )
 
     def _capture(self, token: str, env: str, payload: bytes) -> None:
         self.sent.append((token, env, payload))
@@ -89,6 +96,7 @@ class PushNotifierSessionEndTests(unittest.TestCase):
             "runtime": "pi",
             "cwd_display": "/tmp",
             "last_agent": "all good",
+            "completion_id": "100:10:done:aaaa",
         }
         self.notifier.on_status_change(
             session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
@@ -99,12 +107,97 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         self.assertEqual(payload["body"], "all good")
         self.assertEqual(payload["key"], "pi:s1")
 
+    def test_done_without_completion_id_is_silent(self) -> None:
+        """已完成但缺 completion_id（老 SessKit / Cursor 弱证据）不推。"""
+        session = {"key": "pi:s1", "title": "probe", "last_agent": "maybe done"}
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(self.sent, [])
+
+    def test_second_round_same_session_sends_again(self) -> None:
+        """同一会话 120 秒内完成两轮：不同 completion_id 都推。"""
+        first = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "round one",
+            "completion_id": "100:10:done:aaaa",
+        }
+        second = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "round two",
+            "completion_id": "200:20:done:bbbb",
+        }
+        self.notifier.on_status_change(
+            first, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.notifier._last_sent.clear()  # 绕过 120 秒节流，验证去重键本身
+        self.notifier.on_status_change(
+            second, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 2)
+
+    def test_same_round_does_not_resend(self) -> None:
+        """同一轮重复跃迁：已发集合挡住，不重推。"""
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.notifier._last_sent.clear()
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+
+    def test_completed_pref_off_is_silent(self) -> None:
+        self.notifier.state.devices[0].notify_completed = False
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(self.sent, [])
+
+    def test_aborted_pref_off_blocks_aborted_only(self) -> None:
+        self.notifier.state.devices[0].notify_aborted = False
+        aborted = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "quota",
+            "completion_id": "100:10:aborted:cccc",
+        }
+        self.notifier.on_status_change(
+            aborted, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_ABORTED
+        )
+        self.assertEqual(self.sent, [])
+        done = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "200:20:done:dddd",
+        }
+        self.notifier.on_status_change(
+            done, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+
     def test_pending_to_aborted_keeps_error_body(self) -> None:
         session = {
             "key": "pi:s1",
             "title": "probe",
             "runtime": "pi",
             "last_agent": "429 weekly limit",
+            "completion_id": "100:10:aborted:cccc",
         }
         self.notifier.on_status_change(
             session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_ABORTED
@@ -137,6 +230,7 @@ class PushNotifierSessionEndTests(unittest.TestCase):
             "key": "pi:s1",
             "title": "probe",
             "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
         }
         self.notifier.on_status_change(
             session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
@@ -146,10 +240,68 @@ class PushNotifierSessionEndTests(unittest.TestCase):
         )
         self.assertEqual(len(self.sent), 1)
 
+    def test_restart_does_not_resend(self) -> None:
+        """重启后同一轮不重推：已发集合落盘，新实例读盘。"""
+        session = {
+            "key": "pi:s1",
+            "title": "probe",
+            "last_agent": "done",
+            "completion_id": "100:10:done:aaaa",
+        }
+        self.notifier.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+        rebooted = PushNotifier(
+            self.notifier.state,
+            self.host_private,
+            sender=self._capture,
+            sent_path=Path(self._tmp.name) / "push-sent.json",
+        )
+        rebooted.on_status_change(
+            session, sesskit_titles.STATUS_PENDING, sesskit_titles.STATUS_DONE
+        )
+        self.assertEqual(len(self.sent), 1)
+
+    def test_done_done_new_round_fires_through_hub(self) -> None:
+        """SessionHub DONE→DONE 新一轮（completion_id 变）会调 hook 并推送。"""
+        hub = SessionHub()
+        hub.set_status_hook(self.notifier.on_status_change)
+        path = Path(self._tmp.name) / "hub.jsonl"
+        path.write_text("", encoding="utf-8")
+        session = _session(
+            status_tag=sesskit_titles.STATUS_PENDING, last_agent="working"
+        )
+        session["path"] = str(path)
+        session["mtime"] = 1_700_000_000.0
+        hub.store.sessions = {"pi": [session]}
+        hub._snapshot_status()
+        session["status_tag"] = sesskit_titles.STATUS_DONE
+        session["completion_id"] = "100:10:done:aaaa"
+        session["last_agent_msg"] = "round one done"
+        session["mtime"] = 1_700_000_100.0
+        hub._detect_status_changes()
+        self.assertEqual(len(self.sent), 1)
+        # 同一轮再次扫描：不重推。
+        hub._detect_status_changes()
+        self.assertEqual(len(self.sent), 1)
+        # 新一轮：completion_id 变 + 节流窗外 -> 再推一条。
+        session["completion_id"] = "200:20:done:bbbb"
+        session["last_agent_msg"] = "round two done"
+        session["mtime"] = 1_700_000_200.0
+        self.notifier._last_sent.clear()
+        hub._detect_status_changes()
+        self.assertEqual(len(self.sent), 2)
+
     def test_skips_device_without_token(self) -> None:
         self.notifier.state.devices[0].push_token = ""
         self.notifier.on_status_change(
-            {"key": "pi:s1", "title": "x", "last_agent": "y"},
+            {
+                "key": "pi:s1",
+                "title": "x",
+                "last_agent": "y",
+                "completion_id": "100:10:done:aaaa",
+            },
             sesskit_titles.STATUS_PENDING,
             sesskit_titles.STATUS_DONE,
         )

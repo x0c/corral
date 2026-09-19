@@ -198,6 +198,8 @@ DATA_BIND_TTL_SEC = 120              # data_bind 最长存活秒数；一次性�
 CAPABILITY_COMMAND_RECEIPTS = "command_receipts"
 # History wire omits tool bodies; client fetches via session.toolDetail when needed.
 CAPABILITY_TOOL_DETAIL = "tool_detail"
+# Host supports per-device completion/abort notification prefs via push.register.
+CAPABILITY_COMPLETION_NOTIFY = "completion_notify"
 M_PAIR = "pair"                      # 用一次性配对码完成配对
 M_PUSH_REGISTER = "push.register"    # 上报推送令牌
 M_COMMAND_STATUS = "command.status"  # 只读：按 command_id 查回执（含 unseen）
@@ -225,6 +227,9 @@ M_INPUT_IMAGE = "input.image"
 M_SESSION_NEW = "session.new"
 M_SESSION_RESUME = "session.resume"
 M_SESSION_HANDOFF = "session.handoff"
+# 同助手复制会话：params 只有 {key}，返回 {"session": SessionSummary}，与 handoff/resume 同形。
+# 官方分叉优先，否则磁盘克隆；故意不进 service._READONLY_METHODS（只读配对服务端拒掉）。
+M_SESSION_COPY = "session.copy"
 M_SESSION_STOP = "session.stop"
 M_SESSION_DELETE = "session.delete"
 M_SESSION_PIN = "session.pin"
