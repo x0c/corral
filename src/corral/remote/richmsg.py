@@ -914,7 +914,11 @@ def _codex_custom_input(raw: str) -> tuple[str, str]:
 
 
 def _parse_codex(reader: RichReader) -> list[RichMessage]:
-    from corral.scan.codex import assistant_message_text, user_message_text
+    from corral.scan.codex import (
+        assistant_message_text,
+        task_complete_error_text,
+        user_message_text,
+    )
 
     messages: list[RichMessage] = []
 
@@ -946,6 +950,10 @@ def _parse_codex(reader: RichReader) -> list[RichMessage]:
             assistant_text = str(payload.get("message") or payload.get("text") or "").strip()
         if not assistant_text and entry.get("type") == "event_msg" and kind == "task_complete":
             assistant_text = str(payload.get("last_agent_message") or "").strip()
+            if not assistant_text:
+                # Quota / 401 / provider failures complete with null text;
+                # keep the error visible instead of dropping the turn.
+                assistant_text = task_complete_error_text(payload)
         if assistant_text:
             append_chat("assistant", assistant_text, timestamp)
 
@@ -1033,12 +1041,38 @@ def _codex_injected(text: str) -> bool:
 
 def _parse_claude(reader: RichReader) -> list[RichMessage]:
     from corral.scan.claude import INTERRUPTED_MARKER, entry_time, extract_text
+    try:
+        from corral.scan.claude import system_error_text
+    except ImportError:
+        # 随 SessKit 下个版本发布；老包上手机详情暂不显示上游报错，列表不受影响。
+        def system_error_text(entry):
+            return ""
+
+    def _flush_pending_error() -> None:
+        pend = getattr(reader, "_claude_pending_error", None)
+        if not pend:
+            return
+        text, ts = pend
+        reader._claude_pending_error = None
+        clipped = _clip(text, _MAX_TEXT)
+        if clipped and (not messages or messages[-1].role != "assistant" or messages[-1].text != clipped):
+            messages.append(RichMessage(reader._next_seq(), "assistant", clipped, ts))
 
     messages: list[RichMessage] = []
     for entry in _iter_new_jsonl(reader):
         if entry.get("isMeta") or entry.get("isSidechain"):
             continue
         entry_type = entry.get("type")
+        if entry_type == "system":
+            # 2.1+ 上游报错（401/504/连接失败）：重试连记多条，只留最后一条。
+            err_text = system_error_text(entry)
+            if err_text:
+                try:
+                    err_ts = entry_time(entry)
+                except Exception:
+                    err_ts = None
+                reader._claude_pending_error = (err_text, err_ts)
+            continue
         message = entry.get("message")
         if not isinstance(message, dict):
             continue
@@ -1070,6 +1104,7 @@ def _parse_claude(reader: RichReader) -> list[RichMessage]:
             text = extract_text(content or "")
             clipped = _clip(text or "", _MAX_TEXT)
             if clipped and clipped != INTERRUPTED_MARKER and not _phone_injected_user(clipped):
+                _flush_pending_error()
                 messages.append(RichMessage(reader._next_seq(), "user", clipped, timestamp))
             continue
 
@@ -1100,12 +1135,16 @@ def _parse_claude(reader: RichReader) -> list[RichMessage]:
             )
             tools.append(tool)
         if texts or tools:
+            if texts:
+                # 真实正文落地=本轮已恢复，丢掉之前攒的报错。
+                reader._claude_pending_error = None
             message = RichMessage(
                 reader._next_seq(), "assistant", _clip("\n\n".join(texts), _MAX_TEXT), timestamp, tools
             )
             messages.append(message)
             for tool in tools:
                 reader._register_tool(message, tool)
+    _flush_pending_error()
     return messages
 
 
@@ -1349,7 +1388,13 @@ def _pi_build_messages(path: str) -> list[RichMessage]:
                     tools.append(tool)
 
         if not texts and not tools:
-            continue
+            # Empty-body failures (rate limit / connection error) still own the turn.
+            stop_reason = str(message.get("stopReason") or "").strip()
+            error_text = str(message.get("errorMessage") or "").strip()
+            if error_text and (stop_reason in {"error", "aborted"} or error_text):
+                texts.append(error_text)
+            else:
+                continue
         host = RichMessage(
             next_seq(),
             "assistant",

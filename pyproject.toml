@@ -40,7 +40,7 @@ dependencies = [
   "textual>=8.0",
   # Until SessKit is on PyPI, pip/git users install sesskit from GitHub; Homebrew
   # vendors it as a formula resource so offline brew installs still work.
-  "sesskit>=0.1.6",
+  "sesskit>=0.1.7",
 ]
 
 # 手机端接力（corral remote）需要的额外组件。刻意不进主依赖：只在终端里用 corral
