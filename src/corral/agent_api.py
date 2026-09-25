@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -88,7 +89,7 @@ class JSONArgumentParser(argparse.ArgumentParser):
                 "code": "usage_error",
                 "message": message,
                 "hint": "运行 corral describe 或 corral describe <command> 查看用法",
-                "next_commands": ["corral describe"],
+                "next_commands": [f"{_bin()} describe"],
             },
             "meta": {"version": AGENT_API_VERSION},
         })
@@ -100,6 +101,101 @@ def _print_envelope(payload: dict, compact: bool = False) -> None:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     else:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _bin() -> str:
+    """当前 CLI 的绝对入口身份：next_commands 必须保持它，而不是裸命令名。
+
+    pipx 与源码树两份 corral 并存是常态（diagnose 的 stale_source_warning 即为此存在）；
+    裸 `corral show …` 可能命中 PATH 上另一份 capabilities 对不上的副本。给人类看的 hint
+    文案仍用短名，只有机器照抄的 next_commands 走绝对身份。
+    """
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0.endswith("__main__.py"):
+        # `python -m corral …` 时 argv[0] 是 __main__.py 路径，不能直接执行，拼回 -m 形式。
+        return f"{sys.executable} -m corral"
+    if argv0:
+        candidate = argv0 if os.path.isabs(argv0) else os.path.abspath(argv0)
+        try:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        except OSError:
+            pass
+    return shutil.which("corral") or "corral"
+
+
+def _resolve_out_path(out: str) -> str:
+    """校验 --out 写路径并返回规范绝对路径。
+
+    写文件只允许发生在调用方显式传 --out 时（默认无副作用）；这里只做输入校验，
+    不改变“已存在同名普通文件会被覆盖”的既有语义：
+    - 拒绝空路径与 NUL 字节；
+    - 拒绝已存在的目录与不存在的父目录（沿用旧报错文案）；
+    - 拒绝已存在但不是普通文件的目标（fifo/socket/device），避免把 JSON 灌进奇怪的节点。
+    """
+    if not out or "\x00" in out:
+        raise ApiError(
+            "usage_error", f"输出路径无效：{out!r}", EXIT_USAGE,
+            hint="--out 需要一个可写的文件路径，父目录必须已存在",
+            next_commands=[f"{_bin()} describe"],
+        )
+    output_path = os.path.abspath(out)
+    if os.path.isdir(output_path):
+        raise ApiError("usage_error", f"输出路径是目录：{output_path}", EXIT_USAGE)
+    parent = os.path.dirname(output_path) or "."
+    if not os.path.isdir(parent):
+        raise ApiError("usage_error", f"输出目录不存在：{parent}", EXIT_USAGE)
+    if os.path.lexists(output_path) and not os.path.isfile(output_path):
+        raise ApiError(
+            "usage_error", f"输出路径不是普通文件，拒绝写入：{output_path}", EXIT_USAGE,
+            hint="--out 只能写入普通文件",
+        )
+    return output_path
+
+
+# session_payload 产出的全部字段名：--fields 白名单的真源（与 payload 共用定义，不另写一套）。
+_SESSION_FIELD_NAMES = frozenset({
+    "runtime", "id", "short_id", "title", "cwd", "cwd_display", "time", "mtime",
+    "size_kb", "status", "status_tag", "history_path", "resumable", "resume_command",
+    "live", "keepalive", "attention", "pid", "last_user", "last_agent",
+})
+_SEARCH_EXTRA_FIELDS = frozenset({"score", "matched_via", "matched_fields", "snippet"})
+_SHOW_EXTRA_FIELDS = frozenset({"messages", "message_count_shown", "message_count_total"})
+
+
+def _check_fields(fields: list[str] | None, valid: frozenset, command: str) -> None:
+    """未知 --fields 必须报 usage_error，而不是静默丢弃。
+
+    静默丢弃比直接报错更危险：调用方看到 exit 0，以为过滤生效，实际证据与请求对不上。
+    错误里直接列出可用字段——这是最便宜的 Agent 自愈（照着改就行，不用再查一轮 describe）。
+    """
+    if not fields:
+        return
+    unknown = [f for f in fields if f not in valid]
+    if unknown:
+        raise ApiError(
+            "usage_error",
+            f"未知字段：{', '.join(unknown)}（{command} 可用字段：{', '.join(sorted(valid))}）",
+            EXIT_USAGE,
+            hint="字段名以 describe 为准",
+            next_commands=[f"{_bin()} describe {command}"],
+        )
+
+
+def _scan_coverage(scanned: dict[str, list[dict]], failures: dict[str, str], limit: int) -> dict:
+    """list/search/export 共用的覆盖面自述。
+
+    `count=0` 只有在已证明的覆盖面里才等于“没有命中”：读了 0 条、有分片失败、
+    或某家正好顶到扫描深度（截断信号），都必须显式说出来，不能让调用方把三种
+    情况都总结成“全量干净”。
+    """
+    truncated = sorted(rid for rid, items in scanned.items() if limit and len(items) >= limit)
+    return {
+        "scanned": sum(len(items) for items in scanned.values()),
+        "truncated_runtimes": truncated,
+        "failed_runtimes": dict(failures),
+        "potentially_limited": bool(failures) or bool(truncated),
+    }
 
 
 def _ok(data) -> dict:
@@ -219,27 +315,30 @@ def _match_sessions(sessions: list[dict], ident: str) -> list[dict]:
     ]
 
 
-def _scan_runtimes(runtimes: list, limit: int) -> dict[str, list[dict]]:
-    """并发扫描多个运行时的会话列表，返回 {运行时 id: 会话列表}。
+def _scan_runtimes(runtimes: list, limit: int) -> tuple[dict[str, list[dict]], dict[str, str]]:
+    """并发扫描多个运行时的会话列表，返回 ({运行时 id: 会话列表}, {运行时 id: 失败摘要})。
 
     与 runtime.registry.scan_all 同语义：各运行时读取完全独立的历史目录，
-    线程池只是为了重叠磁盘 I/O 等待；单个运行时扫描异常时降级为空列表，
+    线程池只是为了重叠磁盘 I/O 等待；单个运行时扫描异常时该分片降级为空列表，
     不拖累其余运行时的结果，也不让 list/search/show 等命令因为一条脏数据
-    直接报错退出。
+    直接报错退出——但失败必须出现在 failures 里由调用方如实上报，不能吞成
+    “该运行时没有会话”（解析失败要指向适配器升级，而不是零命中）。
     """
     def _scan_one(runtime):
         try:
-            return runtime.scan_sessions(limit)
-        except Exception:
-            return []
+            return (runtime.id, runtime.scan_sessions(limit), "")
+        except Exception as exc:
+            return (runtime.id, [], f"{type(exc).__name__}: {exc}")
 
     # 与 scan_all 一样开一轮扫描期，让每个运行时的派生缓存元数据只查一次库。
     # 扫描期协议收敛在 cache.scan_period（见其 docstring），异常由它吞掉，
     # 派生缓存永远不能影响原始会话扫描结果。
     with scan_period():
         with ThreadPoolExecutor(max_workers=max(1, len(runtimes))) as pool:
-            scanned = pool.map(_scan_one, runtimes)
-        return {runtime.id: result for runtime, result in zip(runtimes, scanned, strict=True)}
+            rows = list(pool.map(_scan_one, runtimes))
+    scanned = {rid: items for rid, items, _ in rows}
+    failures = {rid: err for rid, _, err in rows if err}
+    return scanned, failures
 
 
 def resolve_ref(registry, ref: str, limit: int) -> dict:
@@ -247,6 +346,7 @@ def resolve_ref(registry, ref: str, limit: int) -> dict:
     if not ref:
         raise ApiError("usage_error", "缺少会话标识", EXIT_USAGE)
 
+    failures: dict[str, str] = {}
     if ":" in ref:
         runtime_id, _, ident = ref.partition(":")
         try:
@@ -256,16 +356,19 @@ def resolve_ref(registry, ref: str, limit: int) -> dict:
         matches = _match_sessions(runtime.scan_sessions(limit), ident)
     else:
         runtimes = list(registry)
-        scanned = _scan_runtimes(runtimes, limit)
+        scanned, failures = _scan_runtimes(runtimes, limit)
         matches = []
         for runtime in runtimes:
             matches.extend(_match_sessions(scanned[runtime.id], ref))
 
     if not matches:
+        hint = "确认会话 ID 或前缀是否正确，可先用 corral search 或 corral list 查看"
+        if failures:
+            hint += f"；以下运行时本次扫描失败，结果可能不全：{', '.join(sorted(failures))}，可跑 corral diagnose 排查"
         raise ApiError(
             "not_found", f"未找到匹配会话：{ref}", EXIT_NOT_FOUND,
-            hint="确认会话 ID 或前缀是否正确，可先用 corral search 或 corral list 查看",
-            next_commands=[f"corral search {ref}", "corral list"],
+            hint=hint,
+            next_commands=[f"{_bin()} search {ref}", f"{_bin()} list"],
         )
     liveness.annotate(matches)
     _attach_attention(matches)
@@ -278,7 +381,7 @@ def resolve_ref(registry, ref: str, limit: int) -> dict:
         raise ApiError(
             "ambiguous", f"会话标识存在多个候选：{ref}", EXIT_AMBIGUOUS,
             hint="使用更长的前缀或完整 runtime:id",
-            next_commands=[f"corral show {c}" for c in candidates],
+            next_commands=[f"{_bin()} show {c}" for c in candidates],
         )
     return matches[0]
 
@@ -336,10 +439,11 @@ def cmd_list(args, registry) -> dict:
     compact = getattr(args, "compact", False)
     top = getattr(args, "top", None)
     fields = _parse_fields(getattr(args, "fields", None), DEFAULT_LIST_FIELDS if compact else None)
+    _check_fields(fields, _SESSION_FIELD_NAMES, "list")
     runtimes = [registry.get(args.runtime)] if args.runtime else list(registry)
     cache = titles.load_cache()
 
-    scanned = _scan_runtimes(runtimes, args.limit)
+    scanned, failures = _scan_runtimes(runtimes, args.limit)
     flat = [session for bucket in scanned.values() for session in bucket]
     liveness.annotate(flat)
     _attach_attention(flat)
@@ -361,15 +465,21 @@ def cmd_list(args, registry) -> dict:
             candidates.append((runtime, session))
 
     candidates.sort(key=lambda item: item[1].get("mtime") or 0, reverse=True)
+    matched = len(candidates)
+    coverage = _scan_coverage(scanned, failures, args.limit)
     candidates = _apply_top(candidates, top)
     sessions = [session_payload(session, cache, runtime, fields) for runtime, session in candidates]
 
-    return _ok({
+    data = {
         "count": len(sessions),
         "scan_limit": args.limit,
         "top": top,
         "sessions": sessions,
-    })
+        "matched": matched,
+        "returned": len(sessions),
+    }
+    data.update(coverage)
+    return _ok(data)
 
 
 def cmd_search(args, registry) -> dict:
@@ -377,10 +487,11 @@ def cmd_search(args, registry) -> dict:
     compact = getattr(args, "compact", False)
     top = getattr(args, "top", None)
     fields = _parse_fields(getattr(args, "fields", None), DEFAULT_SEARCH_FIELDS if compact else None)
+    _check_fields(fields, _SESSION_FIELD_NAMES | _SEARCH_EXTRA_FIELDS, "search")
     runtimes = [registry.get(args.runtime)] if args.runtime else list(registry)
     cache = titles.load_cache()
 
-    scanned = _scan_runtimes(runtimes, args.limit)
+    scanned, failures = _scan_runtimes(runtimes, args.limit)
     flat = [session for bucket in scanned.values() for session in bucket]
     liveness.annotate(flat)
     _attach_attention(flat)
@@ -421,6 +532,8 @@ def cmd_search(args, registry) -> dict:
                     results.append((score, "deep", matched_fields, runtime, session, snippet))
 
     results.sort(key=lambda item: (item[0], item[4].get("mtime") or 0), reverse=True)
+    matched = len(results)
+    coverage = _scan_coverage(scanned, failures, args.limit)
     results = _apply_top(results, top)
     sessions = []
     for score, matched_via, matched_fields, runtime, session, snippet in results:
@@ -432,14 +545,18 @@ def cmd_search(args, registry) -> dict:
             payload["snippet"] = snippet
         sessions.append(_apply_fields(payload, fields))
 
-    return _ok({
+    data = {
         "query": args.keywords,
         "deep": args.deep,
         "count": len(sessions),
         "scan_limit": args.limit,
         "top": top,
         "sessions": sessions,
-    })
+        "matched": matched,
+        "returned": len(sessions),
+    }
+    data.update(coverage)
+    return _ok(data)
 
 
 def cmd_show(args, registry) -> dict:
@@ -449,6 +566,7 @@ def cmd_show(args, registry) -> dict:
     compact = getattr(args, "compact", False)
     out = getattr(args, "out", None)
     fields = _parse_fields(getattr(args, "fields", None), DEFAULT_SHOW_FIELDS if compact else None)
+    _check_fields(fields, _SESSION_FIELD_NAMES | _SHOW_EXTRA_FIELDS, "show")
     payload = session_payload(session, cache, runtime)
     messages = _load_conversation(runtime, session)
     total_messages = len(messages)
@@ -470,12 +588,7 @@ def cmd_show(args, registry) -> dict:
 
     if out:
         envelope = _ok(payload)
-        output_path = os.path.abspath(out)
-        parent = os.path.dirname(output_path) or "."
-        if not os.path.isdir(parent):
-            raise ApiError("usage_error", f"输出目录不存在：{parent}", EXIT_USAGE)
-        if os.path.isdir(output_path):
-            raise ApiError("usage_error", f"输出路径是目录：{output_path}", EXIT_USAGE)
+        output_path = _resolve_out_path(out)
         with open(output_path, "w", encoding="utf-8") as fp:
             json.dump(envelope, fp, ensure_ascii=False, separators=(",", ":") if compact else None,
                       indent=None if compact else 2)
@@ -537,7 +650,7 @@ def cmd_export(args, registry) -> dict:
     runtimes = [registry.get(args.runtime)] if args.runtime else list(registry)
     cache = titles.load_cache()
 
-    scanned = _scan_runtimes(runtimes, args.limit)
+    scanned, failures = _scan_runtimes(runtimes, args.limit)
     flat = [session for bucket in scanned.values() for session in bucket]
     liveness.annotate(flat)
     _attach_attention(flat)
@@ -586,18 +699,14 @@ def cmd_export(args, registry) -> dict:
         "scan_limit": args.limit,
         "sessions": sessions,
     }
+    data.update(_scan_coverage(scanned, failures, args.limit))
 
     out = getattr(args, "out", None)
     if not out:
         return _ok(data)
 
     envelope = _ok(data)
-    output_path = os.path.abspath(out)
-    parent = os.path.dirname(output_path) or "."
-    if not os.path.isdir(parent):
-        raise ApiError("usage_error", f"输出目录不存在：{parent}", EXIT_USAGE)
-    if os.path.isdir(output_path):
-        raise ApiError("usage_error", f"输出路径是目录：{output_path}", EXIT_USAGE)
+    output_path = _resolve_out_path(out)
     with open(output_path, "w", encoding="utf-8") as fp:
         json.dump(envelope, fp, ensure_ascii=False,
                   separators=(",", ":") if compact else None,
@@ -641,12 +750,7 @@ def build_share_payload(session: dict, registry) -> dict:
 
 def write_share_envelope(payload: dict, out_path: str, *, compact: bool = False) -> str:
     """把 share envelope 写到 ``out_path``，返回绝对路径。"""
-    output_path = os.path.abspath(out_path)
-    parent = os.path.dirname(output_path) or "."
-    if not os.path.isdir(parent):
-        raise ApiError("usage_error", f"输出目录不存在：{parent}", EXIT_USAGE)
-    if os.path.isdir(output_path):
-        raise ApiError("usage_error", f"输出路径是目录：{output_path}", EXIT_USAGE)
+    output_path = _resolve_out_path(out_path)
     with open(output_path, "w", encoding="utf-8") as fp:
         json.dump(
             _ok(payload),
@@ -744,13 +848,13 @@ def cmd_plan_continue(args, registry) -> dict:
         raise ApiError(
             "not_resumable", f"该会话无法生成续接计划：{exc}", EXIT_ERROR,
             hint="确认会话所属运行时支持带新指令的原生续接",
-            next_commands=[f"corral context {session_key(session)}"],
+            next_commands=[f"{_bin()} context {session_key(session)}"],
         ) from exc
     except Exception as exc:
         raise ApiError(
             "not_resumable", f"该会话无法生成续接计划：{exc}", EXIT_ERROR,
             hint="确认会话所属运行时支持带新指令的原生续接",
-            next_commands=[f"corral context {session_key(session)}"],
+            next_commands=[f"{_bin()} context {session_key(session)}"],
         ) from exc
 
     return _ok({
@@ -826,17 +930,23 @@ def cmd_diagnose(args, registry) -> dict:
 
 
 def _describe_command(spec: dict, full: bool) -> dict:
-    entry = {
+    entry: dict = {
         "name": spec["name"],
         "help": spec["help"],
-        "args": [
-            {
-                "flags": arg["flags"],
-                **{k: v for k, v in arg["kwargs"].items() if k in ("help", "default", "choices", "required", "nargs")},
-            }
-            for arg in spec.get("args", [])
-        ],
+        # 副作用分级：Agent 不试运行就能枚举安全边界（read = 只读无副作用）。
+        "risk": spec.get("risk", "read"),
+        "args": [],
     }
+    for arg in spec.get("args", []):
+        arg_entry: dict = {"flags": arg["flags"]}
+        for key in ("help", "default", "choices", "required", "nargs"):
+            if key in arg["kwargs"]:
+                arg_entry[key] = arg["kwargs"][key]
+        arg_type = arg["kwargs"].get("type")
+        if isinstance(arg_type, type):
+            # type 对象本身进不了 JSON envelope；只暴露类型名（如 "int"）供调用方组装参数。
+            arg_entry["type"] = arg_type.__name__
+        entry["args"].append(arg_entry)
     if full:
         entry["fields"] = spec.get("fields", {})
     return entry
@@ -846,6 +956,7 @@ COMMANDS = [
     {
         "name": "list",
         "help": "结构化列出已注册运行时的会话",
+        "risk": "read",
         "args": [
             {"flags": ["--runtime"], "kwargs": {"help": "只看指定运行时（claude / codex / opencode / kimi / cursor）"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 50, "help": "每个运行时最多扫描多少条历史（扫描深度）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
@@ -882,6 +993,12 @@ COMMANDS = [
             "last_user": "最后一条真人消息，硬截断精简，一眼看懂最近在聊什么",
             "last_agent": "助手最后一轮回复片段，硬截断精简",
             "history_path": "历史 JSONL 文件路径",
+            "scanned": "本次各运行时实际读到的会话总数（过滤前）；count=0 时先看它：为 0 说明根本没读到，不是“全量干净”",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            "matched": "过滤后（扫描深度内、全部过滤条件命中）的会话数；--top 截断前",
+            "returned": "本次实际返回的会话数（--top 截断后，与 count 一致）",
+            "truncated_runtimes": "读满扫描深度（--limit）的运行时 ID 列表；命中说明该运行时可能还有更早的会话没读到，调大 --limit 再查",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            "failed_runtimes": "本次扫描抛异常的运行时 {id: 失败摘要}；非空时零命中结论不可信",
+            "potentially_limited": "truncated_runtimes 或 failed_runtimes 非空时为 true，提醒调用方覆盖面可能不全",
             "resumable": "是否可生成同运行时原生恢复命令",
             "resume_command": "同运行时原生恢复该会话的 shell 命令（可能为 null）",
         },
@@ -889,6 +1006,7 @@ COMMANDS = [
     {
         "name": "search",
         "help": "按关键词搜会话；默认搜标题/首尾消息/目录，--deep 时额外全文搜索对话内容",
+        "risk": "read",
         "args": [
             {"flags": ["keywords"], "kwargs": {"nargs": "+", "help": "关键词（多个关键词为 AND 关系）"}},
             {"flags": ["--deep"], "kwargs": {"action": "store_true", "help": "对未命中的会话额外读取完整对话内容再搜一遍（较慢）"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
@@ -909,11 +1027,18 @@ COMMANDS = [
             "matched_via": "quick（元数据命中）或 deep（全文命中），兼容旧调用方",
             "matched_fields": "命中的字段列表，如 title / first_user_msg / conversation",
             "snippet": "deep 命中时的上下文片段",
+            "scanned": "本次各运行时实际读到的会话总数（过滤前）",
+            "matched": "关键词命中的会话数；--top 截断前",
+            "returned": "本次实际返回的会话数（与 count 一致）",
+            "truncated_runtimes": "读满扫描深度的运行时 ID 列表；命中时调大 --limit 再查",
+            "failed_runtimes": "本次扫描抛异常的运行时 {id: 失败摘要}；非空时零命中结论不可信",
+            "potentially_limited": "覆盖面可能不全时为 true",
         },
     },
     {
         "name": "show",
         "help": "查看单个会话的详情和对话内容",
+        "risk": "read",
         "args": [
             {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
             {"flags": ["--messages"], "kwargs": {"type": int, "help": "只显示最后 N 条消息（默认 20）"}},
@@ -934,6 +1059,7 @@ COMMANDS = [
     {
         "name": "export",
         "help": "导出某个时间范围内所有会话的完整对话，合并为一个 JSON",
+        "risk": "read",
         "args": [
             {"flags": ["--since"], "kwargs": {"help": "起始时间（含）：2026-07-20 / '2026-07-20 15:30' / 7d、24h、30m（距今）/ Unix 时间戳；省略则不设下界"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             {"flags": ["--until"], "kwargs": {"help": "结束时间（含）：格式同 --since；只给日期时按当天 23:59:59 计；省略则不设上界"}},  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
@@ -950,11 +1076,16 @@ COMMANDS = [
             "scan_limit": "本次每个运行时的扫描深度（同 --limit）",
             "sessions": "按最后更新时间正序排列的会话数组；每条含 list 的全部字段，外加 messages 完整对话（结构同 show --full）与 message_count_total",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
             "output_path": "--out 模式下写入的 JSON 文件绝对路径；此模式 stdout 只回文件引用摘要，sessions_omitted 为 true",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+            "scanned": "本次各运行时实际读到的会话总数（时间/状态过滤前）",
+            "truncated_runtimes": "读满扫描深度的运行时 ID 列表",
+            "failed_runtimes": "本次扫描抛异常的运行时 {id: 失败摘要}",
+            "potentially_limited": "覆盖面可能不全时为 true",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         },
     },
     {
         "name": "share",
         "help": "导出单条会话的统一 transcript（含 thinking 与工具调用），供其他 Agent 做元认知；不改 show/export 的纯文本契约",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+        "risk": "read",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         "args": [
             {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
             {"flags": ["--out"], "kwargs": {"help": "把完整 transcript 写入指定 JSON 文件，stdout 只返回文件引用摘要"}},
@@ -975,6 +1106,7 @@ COMMANDS = [
     {
         "name": "context",
         "help": "生成接续该会话所需的完整上下文数据包（不执行任何操作）",
+        "risk": "read",
         "args": [
             {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
             {"flags": ["--limit"], "kwargs": {"type": int, "default": 200, "help": "定位会话时的扫描深度"}},
@@ -998,6 +1130,7 @@ COMMANDS = [
     {
         "name": "plan continue",
         "help": "生成携带新指令的非交互式原生续接计划（只返回数据，不执行）",
+        "risk": "read",
         "args": [
             {"flags": ["session"], "kwargs": {"help": "会话标识：完整 ID / ID 前缀 / runtime:id"}},
             {"flags": ["--instruction"], "kwargs": {"required": True, "help": "续接时发送给原会话的新指令"}},
@@ -1016,6 +1149,7 @@ COMMANDS = [
     {
         "name": "describe",
         "help": "查看命令列表或某个命令的完整参数 / 输出字段说明",
+        "risk": "read",
         "args": [
             {"flags": ["target"], "kwargs": {"nargs": "*", "help": "命令名；省略则列出全部命令，可使用 plan continue"}},
         ],
@@ -1024,6 +1158,7 @@ COMMANDS = [
     {
         "name": "diagnose",
         "help": "只读诊断 TUI/缓存可观测性路径（events.log、embed-error.log、最近闪退、截图目录、tmux、安装路径）；不启动界面",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
+        "risk": "read",  # noqa: E501 - COMMANDS 数据表，一行一条参数/字段文档
         "args": [],
         "fields": {
             "cache_dir": "本地缓存目录（默认 ~/.cache/corral）",
@@ -1114,6 +1249,19 @@ def dispatch(argv: list[str]) -> int:
     except ApiError as exc:
         _print_envelope(_err(exc), compact=getattr(args, "compact", False))
         return exc.exit_code
+    except Exception as exc:  # noqa: BLE001 - 机器契约：任何未预料异常都必须是 stdout envelope，不能是裸 traceback
+        _print_envelope({
+            "ok": False,
+            "data": None,
+            "error": {
+                "code": "internal_error",
+                "message": f"命令执行失败：{exc}",
+                "hint": "这是 corral 未预料的内部错误；请带上本输出提 issue，可先跑 diagnose 收集环境信息",
+                "next_commands": [f"{_bin()} diagnose"],
+            },
+            "meta": {"version": AGENT_API_VERSION},
+        }, compact=getattr(args, "compact", False))
+        return EXIT_ERROR
 
     _print_envelope(result, compact=getattr(args, "compact", False))
     return EXIT_OK

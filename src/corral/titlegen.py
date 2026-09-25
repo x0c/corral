@@ -150,7 +150,12 @@ class GatewayTitleGenerator(TitleGenerator):
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
-                "max_tokens": 256,
+                # 2048, not 256: openrouter-auto can route to a reasoning model
+                # whose thinking eats the whole output budget (finish=length with
+                # content=null at 256; single-session prompts still overflow 1024
+                # on unlucky samples with 4000+ chars of thinking; verified
+                # 2026-09-23). Cost stays ~$0.0006/call.
+                "max_tokens": 2048,
                 "stream": False,
             },
             ensure_ascii=False,
@@ -183,7 +188,21 @@ def _assistant_text(body: Any) -> str | None:
     if not isinstance(message, dict):
         return None
     content = message.get("content")
-    return content if isinstance(content, str) else None
+    if isinstance(content, str):
+        return content
+    # Some routed models (e.g. via openrouter-auto) return the OpenAI-style
+    # content-block list instead of a plain string. Join text blocks; anything
+    # else stays a transport failure so the batch retries later.
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        text = "".join(parts)
+        return text or None
+    return None
 
 
 _GENERATOR = GatewayTitleGenerator()

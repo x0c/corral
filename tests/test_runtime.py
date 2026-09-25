@@ -455,8 +455,12 @@ class RuntimeTests(unittest.TestCase):
             )
 
             self.assertEqual(plan.argv[0], "claude")
-            self.assertIn("opencode export", plan.argv[-1])
+            self.assertIn("opencode session export", plan.argv[-1])
             self.assertIn("ses_abc123", plan.argv[-1])
+            # 接力提示词里的正文位置是 v2 口径（两表两路径），不得回退到 v1 三表描述。
+            self.assertIn("session_message", plan.argv[-1])
+            self.assertIn("session_v2", plan.argv[-1])
+            self.assertNotIn("part.data", plan.argv[-1])
 
     def test_opencode_handoff_requires_db_file(self) -> None:
         session = self._session("opencode", "/tmp/missing-opencode.db", os.getcwd())
@@ -775,11 +779,48 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(plan.argv, ("opencode", "run", "--auto", "把测试修到全绿"))
 
     def test_opencode_passthrough_skips_auto_for_subcommands_that_reject_it(self) -> None:
-        """stats/export/auth 等子命令不认 --auto，垫上会用法错误退出。"""
-        for args in (["stats"], ["export", "ses_123"], ["auth", "login"]):
+        """stats/session/auth 等子命令不认 --auto，垫上会用法错误退出。"""
+        for args in (["stats"], ["session", "export", "ses_123"], ["auth", "login"]):
             with self.subTest(args=args):
                 plan = default_registry().build_passthrough_plan("opencode", args)
                 self.assertEqual(plan.argv, ("opencode", *args))
+
+    def test_opencode_subcommands_match_v2_help(self) -> None:
+        """SUBCOMMANDS 与 v2（2.0.16 `--help`）全集一致：cli.py 靠它区分直启透传与项目快捷启动。"""
+        from corral.runtime.opencode import OpenCodeRuntime
+
+        self.assertEqual(
+            OpenCodeRuntime.SUBCOMMANDS,
+            frozenset(
+                (
+                    "upgrade", "update", "uninstall", "acp", "api", "debug",
+                    "auth", "mcp", "plugin", "models", "stats", "mini", "run",
+                    "session", "service", "reload", "pair", "serve",
+                )
+            ),
+        )
+        for dead in ("attach", "agent", "export", "import", "github", "pr", "db", "completion"):
+            self.assertNotIn(dead, OpenCodeRuntime.SUBCOMMANDS)
+
+    def test_opencode_passthrough_passes_mini_through_verbatim(self) -> None:
+        """mini 不认 --auto：`corral opencode mini …` 原样透传，不垫参数。"""
+        for args in (["mini"], ["mini", "--replay"], ["mini", "-m", "agent"]):
+            with self.subTest(args=args):
+                plan = default_registry().build_passthrough_plan("opencode", args)
+                self.assertEqual(plan.argv, ("opencode", *args))
+
+    def test_opencode_passthrough_mini_wins_over_same_name_path(self) -> None:
+        """cwd 下有 mini 同名目录也不能把它当成项目路径（否则会前置 --auto 导致起不来）。"""
+        with tempfile.TemporaryDirectory() as td:
+            mini_dir = Path(td) / "mini"
+            mini_dir.mkdir()
+            old_cwd = os.getcwd()
+            os.chdir(td)
+            try:
+                plan = default_registry().build_passthrough_plan("opencode", ["mini"])
+            finally:
+                os.chdir(old_cwd)
+            self.assertEqual(plan.argv, ("opencode", "mini"))
 
     def test_opencode_passthrough_treats_leading_path_as_project(self) -> None:
         with tempfile.TemporaryDirectory() as td:

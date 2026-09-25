@@ -652,6 +652,115 @@ class SubprocessIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "usage_error")
 
 
+class AgentFriendlyContractTests(unittest.TestCase):
+    """agent-friendly-cli 契约回归：只加不断言旧字段消失，覆盖面/错误自愈/写守卫。"""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.history_path = str(Path(self._tmpdir.name) / "aaaa1111.jsonl")
+        Path(self.history_path).write_text("{}\n", encoding="utf-8")
+        self.session = _session(self.history_path)
+        self.runtime = FakeRuntime([self.session], {})
+        self.registry = RuntimeRegistry((self.runtime,))
+        cache_patcher = mock.patch.object(titles, "load_cache", return_value={})
+        cache_patcher.start()
+        self.addCleanup(cache_patcher.stop)
+
+    def _list_args(self, **overrides):
+        base = dict(runtime=None, limit=50, top=None, status=None, cwd=None,
+                    fields=None, compact=False)
+        base.update(overrides)
+        return argparse_namespace(**base)
+
+    def test_list_reports_coverage_counts(self) -> None:
+        result = agent_api.cmd_list(self._list_args(), self.registry)
+        data = result["data"]
+        self.assertEqual(data["scanned"], 1)
+        self.assertEqual(data["matched"], 1)
+        self.assertEqual(data["returned"], 1)
+        self.assertEqual(data["count"], 1)  # 旧字段保留
+        self.assertFalse(data["potentially_limited"])
+        self.assertEqual(data["failed_runtimes"], {})
+
+    def test_list_matched_vs_returned_under_top(self) -> None:
+        twin = _session(self.history_path, id="bbbb2222-0000-0000-0000-000000000000",
+                        short_id="bbbb2222")
+        registry = RuntimeRegistry((FakeRuntime([self.session, twin], {}),))
+        result = agent_api.cmd_list(self._list_args(top=1), registry)
+        data = result["data"]
+        self.assertEqual(data["matched"], 2)
+        self.assertEqual(data["returned"], 1)
+
+    def test_list_surfaces_failed_runtime_instead_of_zero_hit(self) -> None:
+        registry = RuntimeRegistry((self.runtime, BrokenRuntime()))
+        result = agent_api.cmd_list(self._list_args(), registry)
+        data = result["data"]
+        self.assertEqual(data["count"], 1)
+        self.assertIn("broken", data["failed_runtimes"])
+        self.assertTrue(data["potentially_limited"])
+
+    def test_list_flags_truncation_at_scan_limit(self) -> None:
+        result = agent_api.cmd_list(self._list_args(limit=1), self.registry)
+        self.assertIn("fake", result["data"]["truncated_runtimes"])
+        self.assertTrue(result["data"]["potentially_limited"])
+
+    def test_search_zero_hits_stays_readable(self) -> None:
+        args = argparse_namespace(keywords=["__no_such_topic__"], deep=False,
+                                  runtime=None, limit=50, top=None, fields=None,
+                                  compact=False)
+        result = agent_api.cmd_search(args, self.registry)
+        data = result["data"]
+        self.assertEqual(data["count"], 0)
+        self.assertEqual(data["matched"], 0)
+        self.assertGreater(data["scanned"], 0)  # 读过、可断言“范围内干净”
+        self.assertFalse(data["potentially_limited"])
+
+    def test_unknown_fields_are_usage_error_with_valid_values(self) -> None:
+        args = self._list_args(fields="id,no_such_field")
+        with self.assertRaises(agent_api.ApiError) as cm:
+            agent_api.cmd_list(args, self.registry)
+        self.assertEqual(cm.exception.exit_code, agent_api.EXIT_USAGE)
+        self.assertIn("no_such_field", cm.exception.message)
+        self.assertIn("id", cm.exception.message)  # 错误里直接给可用值
+        self.assertTrue(cm.exception.next_commands)
+
+    def test_out_rejects_nul_and_directory(self) -> None:
+        args = argparse_namespace(session="aaaa1111", messages=None, full=True,
+                                  limit=200, out="a\x00b", compact=False, fields=None)
+        with self.assertRaises(agent_api.ApiError) as cm:
+            agent_api.cmd_show(args, self.registry)
+        self.assertEqual(cm.exception.exit_code, agent_api.EXIT_USAGE)
+        args = argparse_namespace(session="aaaa1111", messages=None, full=True,
+                                  limit=200, out=self._tmpdir.name, compact=False,
+                                  fields=None)
+        with self.assertRaises(agent_api.ApiError) as cm2:
+            agent_api.cmd_show(args, self.registry)
+        self.assertEqual(cm2.exception.exit_code, agent_api.EXIT_USAGE)
+
+    def test_dispatch_scan_crash_is_envelope_not_traceback(self) -> None:
+        registry = RuntimeRegistry((BrokenRuntime(),))
+        with mock.patch.object(agent_api, "default_registry", return_value=registry):
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = agent_api.dispatch(["show", "broken:xxx"])
+        self.assertEqual(exit_code, agent_api.EXIT_ERROR)
+        payload = json.loads(stdout.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "internal_error")
+
+    def test_describe_carries_risk_and_arg_types(self) -> None:
+        result = agent_api.cmd_describe(argparse_namespace(target=None), self.registry)
+        by_name = {c["name"]: c for c in result["data"]["commands"]}
+        self.assertEqual(by_name["list"]["risk"], "read")
+        full = agent_api.cmd_describe(argparse_namespace(target="list"), self.registry)
+        limit_arg = next(a for a in full["data"]["args"] if "--limit" in a["flags"])
+        self.assertEqual(limit_arg["type"], "int")
+
+    def test_bin_returns_usable_identity(self) -> None:
+        self.assertTrue(agent_api._bin())
+
+
 def argparse_namespace(**kwargs):
     return _Namespace(**kwargs)
 

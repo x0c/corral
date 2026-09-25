@@ -45,6 +45,23 @@ class ShimTargetTableTests(unittest.TestCase):
              "--export", "--list-models"),
         )
 
+    def test_opencode_v2_headless_calls_pass_through_and_mini_is_hosted(self):
+        """opencode v2（本机实装 2.0.16 `--help` 实测）：无头/管理类放行。
+
+        v1 独有的 github 在 v2 已不存在，不得再出现在放行表里；mini 是交互式
+        子命令，必须托管，不得放行。
+        """
+        opencode = next(target for target in shim.TARGETS if target.command == "opencode")
+        self.assertTrue(opencode.default_on)
+        self.assertEqual(opencode.runtime_id, "opencode")
+        self.assertEqual(
+            opencode.passthrough_words,
+            ("run", "serve", "auth", "upgrade", "models",
+             "api", "service", "reload", "pair", "session", "update"),
+        )
+        self.assertNotIn("github", opencode.passthrough_words)
+        self.assertNotIn("mini", opencode.passthrough_words)
+
     def test_agent_stays_opt_in_when_the_binary_is_not_cursor(self):
         agent = next(t for t in shim.TARGETS if t.command == "agent")
         self.assertFalse(agent.default_on)
@@ -139,6 +156,15 @@ class ShimScriptRenderTests(unittest.TestCase):
         self.assertIn("|".join(shim.COMMON_PASSTHROUGH), script)
         codex = next(t for t in shim.TARGETS if t.command == "codex")
         self.assertIn("exec", codex.passthrough_words)
+
+    def test_opencode_v2_passthrough_words_are_rendered_into_the_script(self):
+        opencode = next(target for target in shim.TARGETS if target.command == "opencode")
+        script = shim.render_script("bash", (opencode,))
+        self.assertIn('command corral opencode "$@"', script)
+        self.assertIn(
+            '"run serve auth upgrade models api service reload pair session update"',
+            script,
+        )
 
     def test_pi_routes_interactive_commands_and_passes_management_calls_through(self):
         pi = next(target for target in shim.TARGETS if target.command == "pi")

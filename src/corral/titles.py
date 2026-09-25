@@ -26,7 +26,13 @@ from corral.models import session_key
 
 CACHE_DIR = str(_product_cache_dir())
 CACHE_FILE = os.path.join(CACHE_DIR, "titles.json")
-TITLE_CACHE_VERSION = 4
+# Bumped 4 -> 7 on 2026-09-23: the gateway parser only accepted string
+# `content` (list-content answers misrecorded as transport failures), the output
+# budget was too small for routed reasoning models (finish=length, null content),
+# and multi-session batches overflow it again (measured: batch-5 ~4% hit rate,
+# batch-1 3/3). Old failure marks no longer gate retries; accepted successes
+# carry no version check and stay stable.
+TITLE_CACHE_VERSION = 7
 _GENERATION_STATE_FAILED = "failed"
 _GENERATION_STATE_INSUFFICIENT = "insufficient"
 _FAILURE_REASON_MISSING_CONFIG = "missing_config"
@@ -678,8 +684,15 @@ def _batch_failure_reason(raw: dict[str, str]) -> str:
     return "invalid"
 
 
-_BATCH_SIZE = 5  # 每次模型调用处理 5 条会话，控制单条提示词体量。
-_MAX_PARALLEL_BATCHES = 5  # 最多同时运行 5 批，即至多并行补全 25 条标题。
+# 1 session per call: openrouter-auto can route to a reasoning model whose
+# thinking scales with prompt size (measured 2026-09-23: batch-5 ~4% hit rate,
+# batch-2 still overflows, batch-1 3/3 with finish=stop). More calls, far fewer
+# wasted ones; per-call cost stays ~$0.0003.
+_BATCH_SIZE = 1
+# 2 parallel batches: 5 concurrent calls hang against the shared route
+# (socket timeouts under sustained parallelism, measured 2026-09-23) while
+# 2 concurrent complete in ~3s. Slower backfill, far steadier hit rate.
+_MAX_PARALLEL_BATCHES = 2
 
 
 def _failed_cache_entry(
@@ -729,8 +742,8 @@ def refresh_titles(
     """对一批待生成的会话批量生成标题,写回缓存,返回 {会话键: title} 增量。
 
     内部按 _BATCH_SIZE 拆批，并以最多 _MAX_PARALLEL_BATCHES 批并行生成。
-    例如 25 条待生成会话会启动 5 个并行任务，每个任务处理 5 条；超过
-    25 条时，完成的任务会继续领取下一批，避免同时启动过多模型请求。
+    例如 5 条待生成会话会启动 5 个并行任务，每个任务处理 1 条；超过
+    5 条时，完成的任务会继续领取下一批，避免同时启动过多模型请求。
     generator 为 None 时使用 titlegen 暴露的网关候选；本机未配置虚拟 Key
     （网关不可用）时返回空增量并写入失败终态，避免界面永久转圈。
     """
@@ -750,7 +763,11 @@ def refresh_titles(
     persist_lock = threading.Lock()
     # 首次调用每个助手时只允许一个批次探测；探测成功后立即放开并行。这样既能
     # 避免多个批次同时撞上一个失效助手，又不会把健康助手的后续批次串行化。
+    # 最近一次无应答的时间：全员不可用时兜底复用“最久没失败”的候选，而不是整轮
+    # 停摆（flaky 路由下首个探测失败就毒化整轮是反模式；跨轮重复消耗仍由失败终态
+    # + 冷却拦住，单轮浪费上界是待处理批次数）。
     generator_states = {candidate.id: "待探测" for candidate in generators}
+    last_failure: dict[str, float] = {}
     availability = threading.Condition()
 
     def usable_results(chunk: list[dict], raw: dict[str, str]) -> tuple[dict[str, str], set[str]]:
@@ -792,34 +809,62 @@ def refresh_titles(
     # 所有可用助手；单批失败只影响本批，立刻由余下候选接手。
     start = secrets.randbelow(len(generators)) if generator is None else 0
 
-    def generate_chunk(chunk: list[dict], offset: int) -> dict[str, str]:
-        """单批生成；平权轮转选首个候选，失败时遍历其他候选。"""
-        ordered = generators[offset:] + generators[:offset]
-        for candidate in ordered:
-            with availability:
-                while generator_states[candidate.id] == "探测中":
-                    availability.wait()
-                if generator_states[candidate.id] == "不可用":
-                    continue
-                is_probe = generator_states[candidate.id] == "待探测"
-                if is_probe:
-                    generator_states[candidate.id] = "探测中"
-            try:
-                raw = generate_titles_batch(chunk, candidate)
-            except Exception:
-                raw = _BatchRaw(kind=_FAILURE_REASON_TRANSPORT)
-            valid, insufficient = usable_results(chunk, raw)
-            kind = getattr(raw, "kind", "ok" if raw else _FAILURE_REASON_TRANSPORT)
-            answered = bool(valid or insufficient) or kind == "invalid" or bool(raw)
+    def _attempt(chunk: list[dict], candidate, *, allow_unavailable: bool = False) -> dict[str, str] | None:
+        """尝试一个候选：返回模型原文；None 表示本轮跳过（探测中或已标不可用）。"""
+        with availability:
+            while generator_states[candidate.id] == "探测中":
+                availability.wait()
+            if generator_states[candidate.id] == "不可用" and not allow_unavailable:
+                return None
+            is_probe = generator_states[candidate.id] == "待探测"
             if is_probe:
-                with availability:
-                    generator_states[candidate.id] = "可用" if answered else "不可用"
-                    availability.notify_all()
-            elif not answered:
-                with availability:
-                    generator_states[candidate.id] = "不可用"
-                    availability.notify_all()
+                generator_states[candidate.id] = "探测中"
+        try:
+            # 150s, not the 90s default: routed reasoning models legitimately
+            # take 60s+ on a good day; timing out early misrecords transport.
+            raw = generate_titles_batch(chunk, candidate, timeout=150)
+        except Exception:
+            raw = _BatchRaw(kind=_FAILURE_REASON_TRANSPORT)
+        valid, insufficient = usable_results(chunk, raw)
+        kind = getattr(raw, "kind", "ok" if raw else _FAILURE_REASON_TRANSPORT)
+        answered = bool(valid or insufficient) or kind == "invalid" or bool(raw)
+        with availability:
             if answered:
+                generator_states[candidate.id] = "可用"
+            else:
+                generator_states[candidate.id] = "不可用"
+                last_failure[candidate.id] = time.time()
+            availability.notify_all()
+        return raw if answered else _BatchRaw(kind=_FAILURE_REASON_TRANSPORT)
+
+    def generate_chunk(chunk: list[dict], offset: int) -> dict[str, str]:
+        """单批生成；平权轮转选首个可用候选，失败时遍历其他候选。
+
+        第一遍只走可用/待探测候选（坏掉的首选只被探测一次，见
+        test_refresh_titles_probes_bad_preferred_generator_only_once）；若全员
+        不可用，第二遍兜底复用最久没失败的候选再试一次，不同会话的批次互不
+        毒化。返回的 transport 终态仍由 persist_chunk 落盘并进入冷却。
+        """
+        ordered = generators[offset:] + generators[:offset]
+        fallback: list = []
+        attempted: set[str] = set()
+        for candidate in ordered:
+            if generator_states.get(candidate.id) == "不可用":
+                fallback.append(candidate)
+                continue
+            attempted.add(candidate.id)
+            raw = _attempt(chunk, candidate)
+            if raw is None:
+                fallback.append(candidate)
+                continue
+            if getattr(raw, "kind", None) != _FAILURE_REASON_TRANSPORT or raw:
+                return raw
+            fallback.append(candidate)
+        for candidate in sorted(fallback, key=lambda c: last_failure.get(c.id, 0.0)):
+            if candidate.id in attempted:
+                continue  # 本批已试过：不立刻原地重试，把机会留给别的候选或下一批。
+            raw = _attempt(chunk, candidate, allow_unavailable=True)
+            if raw is not None:
                 return raw
         return _BatchRaw(kind=_FAILURE_REASON_TRANSPORT)
 

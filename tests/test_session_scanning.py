@@ -766,8 +766,13 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
                 result = titles.refresh_titles(sessions, cache, generator=mock.Mock())
 
         self.assertEqual(result, {})
-        mocked.assert_called_once()
-        save_mock.assert_called_once()
+        # One persist per batch; batch size lives in titles._BATCH_SIZE. Chunks for
+        # distinct sessions never poison each other: with no healthy candidate left,
+        # each chunk best-efforts the least-recently-failed one once. Cross-run
+        # retry storms are still prevented by the persisted failure marks below.
+        expected_batches = (len(sessions) + titles._BATCH_SIZE - 1) // titles._BATCH_SIZE
+        self.assertEqual(mocked.call_count, expected_batches)
+        self.assertEqual(save_mock.call_count, expected_batches)
         for session in sessions:
             entry = cache[titles.session_key(session)]
             self.assertEqual(entry["generation_state"], "failed")
@@ -865,7 +870,7 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
             for i in range(titles._BATCH_SIZE * 3)
         ]
 
-        def fake_batch(chunk, model="haiku"):
+        def fake_batch(chunk, model="haiku", timeout=90):
             return {titles.session_key(s): f"生成{s['id']}" for s in chunk}
 
         with mock.patch.object(titles, "generate_titles_batch", side_effect=fake_batch):
@@ -875,7 +880,7 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
         self.assertEqual(len(result), titles._BATCH_SIZE * 3)
         self.assertEqual(save_mock.call_count, 3)
 
-    def test_refresh_titles_runs_five_batches_in_parallel(self) -> None:
+    def test_refresh_titles_runs_max_batches_in_parallel(self) -> None:
         sessions = [
             {"id": f"s{i}", "source": "claude", "mtime": 1, "size_kb": 1, "fallback_title": f"标题{i}"}
             for i in range(titles._BATCH_SIZE * (titles._MAX_PARALLEL_BATCHES + 1))
@@ -889,7 +894,7 @@ class ClaudeScanTests(TimezoneMixin, unittest.TestCase):
         def fake_batch(chunk, generator, timeout=90):
             with lock:
                 state["calls"] += 1
-                # 第一批是串行健康探测，必须先正常完成；后面的五批才并发。
+                # 第一批是串行健康探测，必须先正常完成；后面的批次才并发。
                 if state["calls"] == 1:
                     return {titles.session_key(s): f"生成{s['id']}" for s in chunk}
                 state["active"] += 1

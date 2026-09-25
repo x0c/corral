@@ -124,6 +124,8 @@ def _output_json(registry, limit: int) -> None:
 
     供大模型或自动化脚本调用：不启动 TUI，不触发后台标题生成，
     不消耗 Claude 额度。标题使用本地临时兜底标题（fallback_title）。
+
+    兼容保留的扁平数组形状（无 envelope、无状态枚举）；新集成请用 `corral list`。
     """
     scanned = registry.scan_all(limit)
     result = []
@@ -453,6 +455,8 @@ def main() -> None:
         return
 
     if args.json_mode or args.no_input:
+        # 显式 legacy 路径：stderr 给一句迁移提示，stdout 保持纯数组可解析。
+        print(t("cli.json.legacy_hint"), file=sys.stderr)
         _output_json(registry, args.limit)
         return
 

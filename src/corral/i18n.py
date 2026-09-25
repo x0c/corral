@@ -965,6 +965,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Do not print status hints",
         "zh": "不打印状态提示",
     },
+    "remote.help.dry_run": {
+        "en": "Preview only; do not change anything",
+        "zh": "仅演练，不做任何更改",
+    },
     "remote.help.pair": {
         "en": "Generate a pairing QR code (service must be on to connect after scanning)",
         "zh": "生成配对二维码（扫码后要服务已打开才能连上）",
@@ -1264,6 +1268,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "No device with id {device_id}",
         "zh": "没有找到编号为 {device_id} 的设备",
     },
+    "remote.unpair.hint": {
+        "en": "List paired devices with corral remote devices, then unpair by id.",
+        "zh": "用 corral remote devices 列出已配对设备，再按 id 解绑。",
+    },
     "remote.unpair.done": {
         "en": (
             "Unpaired. If phone handoff is on, that phone will be kicked off "
@@ -1374,6 +1382,46 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "Check your network or package source and retry."
         ),
         "zh": "手机接力所需组件未能自动安装。请检查网络或软件源后重试。",
+    },
+    "remote.deps.install_hint": {
+        "en": "Missing packages: {packages}. Install manually with: {command}",
+        "zh": "缺少组件：{packages}。手动安装命令：{command}",
+    },
+    "remote.dry_run.banner": {
+        "en": "Dry run — nothing was changed.",
+        "zh": "演练模式——未做任何更改。",
+    },
+    "remote.dry_run.on_running": {
+        "en": "Service is already running (pid {pid}); dry run changes nothing.",
+        "zh": "服务已在运行（进程 {pid}）；演练不做任何更改。",
+    },
+    "remote.dry_run.on_start": {
+        "en": "Would start the background service and remember the switch; not started in dry run.",
+        "zh": "将会拉起后台服务并记住开关；演练未执行。",
+    },
+    "remote.dry_run.off_running": {
+        "en": "Would stop the service (pid {pid}); not stopped in dry run.",
+        "zh": "将会关掉服务（进程 {pid}）；演练未执行。",
+    },
+    "remote.dry_run.pair": {
+        "en": "Would open a ten-minute pairing window ({mode}); no window opened in dry run.",
+        "zh": "将会打开十分钟配对窗口（{mode}）；演练未打开。",
+    },
+    "remote.dry_run.unpair": {
+        "en": "Would unpair device “{name}”; not removed in dry run.",
+        "zh": "将会解绑设备“{name}”；演练未删除。",
+    },
+    "remote.dry_run.rotate": {
+        "en": "Would rotate the host key and re-register; key unchanged in dry run.",
+        "zh": "将会轮换本机密钥并重新注册；演练未改动。",
+    },
+    "remote.dry_run.rename": {
+        "en": "Would rename this machine to “{name}”; not renamed in dry run.",
+        "zh": "将会把本机改名为“{name}”；演练未改名。",
+    },
+    "remote.dry_run.rename_cleared": {
+        "en": "Would reset the name to “{name}”; not renamed in dry run.",
+        "zh": "将会把名称恢复为“{name}”；演练未改名。",
     },
     # 命令拦截 shim
     "shim.status.installed": {
@@ -1592,8 +1640,18 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh": "每个来源最多列出多少条",
     },
     "cli.help.json": {
-        "en": "Print the session list as JSON and exit without starting the TUI",
-        "zh": "以 JSON 格式输出会话列表后退出，不启动 TUI",
+        "en": (
+            "Print the session list as JSON and exit without starting the TUI "
+            "(legacy flat array; new integrations should use `corral list`)"
+        ),
+        "zh": "以 JSON 格式输出会话列表后退出，不启动 TUI（兼容保留的扁平数组；新集成请用 `corral list`）",
+    },
+    "cli.json.legacy_hint": {
+        "en": (
+            "Hint: `corral list` returns the same sessions with status enums and a "
+            "stable envelope; this flat --json output is kept for compatibility."
+        ),
+        "zh": "提示：`corral list` 返回同样会话且带状态枚举与稳定 envelope；本 --json 扁平输出为兼容保留。",
     },
     "cli.help.no_input": {
         "en": "Disable interaction and print a JSON session list; for scripts and agent callers",

@@ -61,6 +61,7 @@ class GatewayTitleGeneratorTests(unittest.TestCase):
         self.assertEqual(seen["headers"]["Authorization"], "Bearer vk-test")
         self.assertEqual(seen["payload"]["model"], "budget-chat")
         self.assertEqual(seen["payload"]["temperature"], 0)
+        self.assertEqual(seen["payload"]["max_tokens"], 2048)
         self.assertEqual(seen["timeout"], 7)
 
     def test_missing_key_is_unavailable_and_makes_no_request(self) -> None:
@@ -117,6 +118,51 @@ class GatewayTitleGeneratorTests(unittest.TestCase):
 
         with self._env(), mock.patch.object(titlegen.urllib.request, "urlopen", side_effect=fake_urlopen):
             self.assertEqual(titlegen.title_model(), "default-chat")
+
+    def test_list_content_blocks_are_joined(self) -> None:
+        body = {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": '{"a": "Title A", '},
+                            {"type": "text", "text": '"b": "Title B"}'},
+                        ]
+                    }
+                }
+            ]
+        }
+
+        def fake_urlopen(request, timeout):
+            return _Response(json.dumps(body).encode("utf-8"))
+
+        with self._env(), mock.patch.object(titlegen.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = titlegen.GatewayTitleGenerator().generate("prompt", 7)
+        self.assertEqual(result, '{"a": "Title A", "b": "Title B"}')
+
+    def test_list_content_ignores_non_text_blocks(self) -> None:
+        body = {
+            "choices": [
+                {"message": {"content": [{"type": "image_url", "image_url": {}}, "tail"]}}
+            ]
+        }
+
+        def fake_urlopen(request, timeout):
+            return _Response(json.dumps(body).encode("utf-8"))
+
+        with self._env(), mock.patch.object(titlegen.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = titlegen.GatewayTitleGenerator().generate("prompt", 7)
+        self.assertEqual(result, "tail")
+
+    def test_empty_list_content_is_a_failure(self) -> None:
+        body = {"choices": [{"message": {"content": []}}]}
+
+        def fake_urlopen(request, timeout):
+            return _Response(json.dumps(body).encode("utf-8"))
+
+        with self._env(), mock.patch.object(titlegen.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = titlegen.GatewayTitleGenerator().generate("prompt", 7)
+        self.assertIsNone(result)
 
     def test_http_failure_and_malformed_response_are_failures(self) -> None:
         with self._env(), mock.patch.object(titlegen.urllib.request, "urlopen", side_effect=OSError):

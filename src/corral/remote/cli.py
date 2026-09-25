@@ -3,8 +3,15 @@
 远程服务是开关语义：`on` 打开（后台常驻，命令立刻返回）、`off` 关掉，
 都幂等。配对二维码只走 `pair`，不跟开关联动。
 
-退出码沿用 corral 既有的一套：0 成功、1 一般失败、2 用法错误。带 `--json` 的
-子命令输出与 `agent_api` 同形状的 envelope，方便脚本和管家 Agent 调用。
+退出码沿用 corral 既有的一套：0 成功、1 一般失败、2 用法错误、3 资源不存在
+（`unpair` 找不到设备）。带 `--json` 的子命令输出与 `agent_api` 同形状的
+envelope（`{ok, data, error{code,message,hint,next_commands}, meta{version}}`），
+方便脚本和管家 Agent 调用。登录/中继失败仍是 exit 1，用 `error.code`
+（`account_error`/`missing_dependencies` 等）区分，不靠解析文案。
+
+副作用命令（`on`/`off`/`pair`/`unpair`/`rotate-key`/`rename`）支持 `--dry-run`：
+只演练不更改，输出形状与真实执行一致（多一个 `dry_run: true`，`changed` 恒为 false）。
+`login`/`logout` 是鉴权引导步骤，不支持 `--dry-run`。
 
 兼容别名：`start`→`on`、`stop`→`off`（行为已改为开关，不再前台占终端、
 也不再顺带刷配对码）。
@@ -14,8 +21,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -31,26 +40,83 @@ from corral.remote import crypto, pairing
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
+EXIT_NOT_FOUND = 3
+
+REMOTE_API_VERSION = 1
 
 _PAIRING_TTL = 10 * 60
 _READY_WAIT_SECONDS = 15.0
 _READY_POLL_SECONDS = 0.05
 
 
-def _envelope(ok: bool, data=None, message: str = "") -> str:
+def _bin() -> str:
+    """当前 corral 入口的绝对路径：next_commands 保持它，而不是裸命令名。
+
+    与 agent_api._bin 同逻辑（独立实现，避免 remote 提前拖入整棵 runtime 依赖）：
+    pipx 与源码树两份 corral 并存是常态，裸 `corral remote …` 可能命中旧副本。
+    """
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0.endswith("__main__.py"):
+        return f"{sys.executable} -m corral"
+    if argv0:
+        candidate = argv0 if os.path.isabs(argv0) else os.path.abspath(argv0)
+        try:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        except OSError:
+            pass
+    import shutil
+
+    return shutil.which("corral") or "corral"
+
+
+def _is_dry_run(args) -> bool:
+    """读 --dry-run 开关。必须用 `is True`：测试里 args 常是裸 Mock，未传的属性是 truthy Mock。"""
+    return getattr(args, "dry_run", False) is True
+
+
+def _envelope(ok: bool, data=None, *, code: str = "ok", message: str = "",
+              hint: str | None = None, next_commands: list[str] | None = None) -> str:
+    """与 agent_api 同形状的 envelope：{ok, data, error{code,message,hint,next_commands}, meta}。
+
+    只加字段不改旧语义：成功沿用 {ok,data}，失败的 error 在旧 {message} 上追加
+    code/hint/next_commands，老调用方只读 message 照样工作。
+    """
+    if ok:
+        error = None
+    else:
+        error = {
+            "code": code,
+            "message": message,
+            "hint": hint,
+            "next_commands": list(next_commands or []),
+        }
     return json.dumps(
-        {"ok": ok, "data": data, "error": None if ok else {"message": message}},
+        {"ok": ok, "data": data if ok else None, "error": error,
+         "meta": {"version": REMOTE_API_VERSION}},
         ensure_ascii=False,
         indent=2,
     )
 
 
-def _fail(message: str, as_json: bool = False) -> int:
+def _fail(message: str, as_json: bool = False, *, code: str = "remote_error",
+          hint: str | None = None, next_commands: list[str] | None = None,
+          exit_code: int = EXIT_ERROR) -> int:
     if as_json:
-        print(_envelope(False, message=message))
+        print(_envelope(False, code=code, message=message, hint=hint,
+                        next_commands=next_commands))
     else:
         print(message, file=sys.stderr)
-    return EXIT_ERROR
+        if hint:
+            print(hint, file=sys.stderr)
+    return exit_code
+
+
+def _dependency_hint(missing: list[str]) -> tuple[str, list[str]]:
+    """缺失组件的 hint + 可直接执行的手动安装命令（next_commands 照抄即可）。"""
+    cmd = shlex.join(_dependency_install_command(missing))
+    hint = t("remote.deps.install_hint", packages=" ".join(missing), command=cmd)
+    return hint, [cmd]
 
 
 def _access_label(access: str) -> str:
@@ -141,8 +207,8 @@ def _stop_pid(pid: int) -> None:
         os.kill(pid, signal.SIGKILL)
 
 
-def _apply_service_flags(args, state: remote_config.RemoteState) -> str | None:
-    """把 on 上的中继/局域网开关写进 state；失败返回错误文案。"""
+def _validate_service_flags(args, state: remote_config.RemoteState) -> str | None:
+    """把 on 上的中继/局域网开关写进 state（只改内存）；失败返回错误文案。"""
     if args.relay_url:
         try:
             state.relay_url = remote_config.validate_relay_url(
@@ -163,6 +229,14 @@ def _apply_service_flags(args, state: remote_config.RemoteState) -> str | None:
         state.local_enabled = False
     if args.port:
         state.local_port = int(args.port)
+    return None
+
+
+def _apply_service_flags(args, state: remote_config.RemoteState) -> str | None:
+    """校验开关并落盘；dry-run 请用 _validate_service_flags 作用在副本上，不要调这里。"""
+    error = _validate_service_flags(args, state)
+    if error is not None:
+        return error
     remote_config.save_state(state)
     return None
 
@@ -225,14 +299,52 @@ def _remember_wanted(state: remote_config.RemoteState, wanted: bool) -> None:
 
 
 def _cmd_on(args) -> int:
+    dry_run = _is_dry_run(args)
+    if dry_run:
+        # 演练分支必须全程只读：不自动安装依赖（只报缺什么）、不写开关记忆、
+        # 不拉起守护进程、不注册主机。输出形状与真实执行一致 + dry_run 标记。
+        missing = _missing_dependencies()
+        if missing:
+            hint, next_commands = _dependency_hint(missing)
+            return _fail(_check_dependencies(), args.json, code="missing_dependencies",
+                         hint=hint, next_commands=next_commands)
+        state = remote_config.load_state()
+        flag_error = _validate_service_flags(args, copy.copy(state))
+        if flag_error:
+            return _fail(flag_error, args.json, code="usage_error", exit_code=EXIT_USAGE)
+        running = remote_config.read_pid()
+        data = {
+            "enabled": True,
+            "wanted": True,
+            "running": bool(running),
+            "autostart": remote_autostart.is_installed(),
+            "pid": running,
+            "changed": False,
+            "dry_run": True,
+            "would": "already_running" if running else "start",
+            "host_name": state.host_name,
+        }
+        if args.json:
+            print(_envelope(True, data))
+        elif not args.quiet:
+            print(t("remote.dry_run.banner"))
+            if running:
+                print(t("remote.dry_run.on_running", pid=running))
+            else:
+                print(t("remote.dry_run.on_start"))
+        return EXIT_OK
+
     problem = _ensure_dependencies()
     if problem:
-        return _fail(problem, args.json)
+        missing = _missing_dependencies()
+        hint, next_commands = _dependency_hint(missing) if missing else (None, None)
+        return _fail(problem, args.json, code="missing_dependencies",
+                     hint=hint, next_commands=next_commands)
 
     state = remote_config.load_state()
     flag_error = _apply_service_flags(args, state)
     if flag_error:
-        return _fail(flag_error, args.json)
+        return _fail(flag_error, args.json, code="usage_error", exit_code=EXIT_USAGE)
 
     _remember_wanted(state, True)
     state = remote_config.load_state()
@@ -266,7 +378,8 @@ def _cmd_on(args) -> int:
 
         ok, message = remote_account.register_host(state)
         if not ok:
-            return _fail(message, args.json)
+            return _fail(message, args.json, code="account_error",
+                         next_commands=[f"{_bin()} remote status --json"])
 
     # Arm OS autostart before starting so a crash mid-on still comes back after reboot.
     autostart_error = remote_autostart.enable()
@@ -329,6 +442,28 @@ def _cmd_on(args) -> int:
 
 def _cmd_off(args) -> int:
     state = remote_config.load_state()
+    if _is_dry_run(args):
+        # 演练：不写开关记忆、不解 armed、不杀进程。
+        pid = remote_config.read_pid()
+        data = {
+            "enabled": False,
+            "wanted": False,
+            "running": bool(pid),
+            "autostart": remote_autostart.is_installed(),
+            "pid": pid,
+            "changed": False,
+            "dry_run": True,
+            "would": "already_off" if not pid else "stop",
+        }
+        if args.json:
+            print(_envelope(True, data))
+        elif not getattr(args, "quiet", False):
+            print(t("remote.dry_run.banner"))
+            if pid:
+                print(t("remote.dry_run.off_running", pid=pid))
+            else:
+                print(t("remote.off.already"))
+        return EXIT_OK
     _remember_wanted(state, False)
     # Disarm first so KeepAlive / systemd Restart cannot race the stop.
     remote_autostart.disable()
@@ -415,9 +550,34 @@ def _print_pairing(state, code: str, public_key: bytes, local_port: int, *, mode
 # ---------------------------------------------------------------------------
 
 def _cmd_pair(args) -> int:
+    mode = "readonly" if getattr(args, "readonly", False) else "full"
+    if _is_dry_run(args):
+        # 演练：不装依赖、不创建本机身份（load_or_create_identity 会写文件）、
+        # 不 mint 配对码、不写配对窗口。返回预检式预览（服务状态 + 依赖），
+        # 而不是形状相同但 code 为假的载荷——假码会被调用方当真去扫。
+        missing = _check_dependencies()
+        if missing:
+            hint, next_commands = _dependency_hint(_missing_dependencies())
+            return _fail(missing, args.json, code="missing_dependencies",
+                         hint=hint, next_commands=next_commands)
+        data = {
+            "service_running": bool(remote_config.read_pid()),
+            "dependencies_ok": True,
+            "mode": mode,
+            "dry_run": True,
+        }
+        if args.json:
+            print(_envelope(True, data))
+        else:
+            print(t("remote.dry_run.banner"))
+            print(t("remote.dry_run.pair", mode=_access_label(mode)))
+        return EXIT_OK
     problem = _ensure_dependencies()
     if problem:
-        return _fail(problem, args.json)
+        missing = _missing_dependencies()
+        hint, next_commands = _dependency_hint(missing) if missing else (None, None)
+        return _fail(problem, args.json, code="missing_dependencies",
+                     hint=hint, next_commands=next_commands)
     state = remote_config.load_state()
     public_key = crypto.public_key_bytes(remote_config.load_or_create_identity())
     code = crypto.new_pairing_code()
@@ -656,50 +816,95 @@ def _cmd_devices(args) -> int:
 def _cmd_unpair(args) -> int:
     state = remote_config.load_state()
     device = remote_config.find_device_by_id(state, args.device_id)
-    if device is None or not remote_config.remove_device(state, args.device_id):
-        return _fail(t("remote.unpair.not_found", device_id=args.device_id), args.json)
+    if device is None:
+        return _fail(t("remote.unpair.not_found", device_id=args.device_id), args.json,
+                     code="not_found", exit_code=EXIT_NOT_FOUND,
+                     hint=t("remote.unpair.hint"),
+                     next_commands=[f"{_bin()} remote devices --json"])
+    if _is_dry_run(args):
+        data = {
+            "device_id": args.device_id,
+            "device_name": getattr(device, "name", "") or args.device_id,
+            "removed": False,
+            "dry_run": True,
+        }
+        if args.json:
+            print(_envelope(True, data))
+        else:
+            print(t("remote.dry_run.banner"))
+            print(t("remote.dry_run.unpair", name=data["device_name"]))
+        return EXIT_OK
+    if not remote_config.remove_device(state, args.device_id):
+        return _fail(t("remote.unpair.not_found", device_id=args.device_id), args.json,
+                     code="not_found", exit_code=EXIT_NOT_FOUND,
+                     hint=t("remote.unpair.hint"),
+                     next_commands=[f"{_bin()} remote devices --json"])
     message = t("remote.unpair.done")
-    print(_envelope(True, {"device_id": args.device_id}) if args.json else message)
+    data = {"device_id": args.device_id, "removed": True}
+    print(_envelope(True, data) if args.json else message)
     return EXIT_OK
 
 
 def _cmd_rename(args) -> int:
     state = remote_config.load_state()
+    dry_run = _is_dry_run(args)
     if getattr(args, "clear", False):
-        state.host_name = remote_config.default_host_name()
-        remote_config.save_state(state)
-        message = t("remote.rename.cleared", default_name=state.host_name)
-        if args.json:
-            print(_envelope(True, {"host_name": state.host_name, "cleared": True}))
-        else:
-            print(message)
-        return EXIT_OK
-    name = remote_config.sanitize_display_name(
-        str(getattr(args, "name", "") or ""), max_len=80, fallback=""
-    )
-    if not name:
-        if args.json:
-            print(_envelope(False, message=t("remote.rename.empty")))
-        else:
-            print(t("remote.rename.empty"), file=sys.stderr)
-        return EXIT_USAGE
-    state.host_name = name
-    remote_config.save_state(state)
-    if args.json:
-        print(_envelope(True, {"host_name": state.host_name, "cleared": False}))
+        new_name = remote_config.default_host_name()
+        cleared = True
     else:
-        print(t("remote.rename.done", name=state.host_name))
+        new_name = remote_config.sanitize_display_name(
+            str(getattr(args, "name", "") or ""), max_len=80, fallback=""
+        )
+        cleared = False
+    if not new_name:
+        return _fail(t("remote.rename.empty"), args.json,
+                     code="usage_error", exit_code=EXIT_USAGE)
+    if dry_run:
+        data = {"host_name": new_name, "cleared": cleared, "changed": False,
+                "dry_run": True}
+        if args.json:
+            print(_envelope(True, data))
+        else:
+            print(t("remote.dry_run.banner"))
+            if cleared:
+                print(t("remote.dry_run.rename_cleared", name=new_name))
+            else:
+                print(t("remote.dry_run.rename", name=new_name))
+        return EXIT_OK
+    changed = state.host_name != new_name
+    state.host_name = new_name
+    remote_config.save_state(state)
+    if cleared:
+        message = t("remote.rename.cleared", default_name=state.host_name)
+    else:
+        message = t("remote.rename.done", name=state.host_name)
+    data = {"host_name": state.host_name, "cleared": cleared, "changed": changed}
+    if args.json:
+        print(_envelope(True, data))
+    else:
+        print(message)
     return EXIT_OK
 
 
 def _cmd_rotate_key(args) -> int:
     state = remote_config.load_state()
+    if _is_dry_run(args):
+        # 演练：不轮换密钥、不重新注册。轮换天生非幂等（每次都是新密钥），
+        # dry-run 是唯一的 rehearsal 手段。
+        data = {"rotated": False, "host_id": state.host_id, "dry_run": True}
+        if args.json:
+            print(_envelope(True, data))
+        else:
+            print(t("remote.dry_run.banner"))
+            print(t("remote.dry_run.rotate"))
+        return EXIT_OK
     remote_config.rotate_host_key(state)
     from corral.remote import account as remote_account
 
     ok, message = remote_account.register_host(state)
     if not ok:
-        return _fail(message, args.json)
+        return _fail(message, args.json, code="account_error",
+                     next_commands=[f"{_bin()} remote status --json"])
     text = t("remote.rotate.done")
     if args.json:
         print(_envelope(True, {"rotated": True, "host_id": state.host_id}))
@@ -715,7 +920,8 @@ def _cmd_login(args) -> int:
 
     ok, message = remote_account.login(relay)
     if not ok:
-        return _fail(message, args.json)
+        return _fail(message, args.json, code="account_error",
+                     next_commands=[f"{_bin()} remote status --json"])
     print(_envelope(True, remote_account.whoami()) if args.json else message)
     return EXIT_OK
 
@@ -770,6 +976,7 @@ def _add_service_flags(parser: argparse.ArgumentParser) -> None:
         help=t("remote.help.foreground"),
     )
     parser.add_argument("--quiet", action="store_true", help=t("remote.help.quiet"))
+    parser.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -791,9 +998,11 @@ def build_parser() -> argparse.ArgumentParser:
     start.set_defaults(func=_cmd_on)
 
     off = sub.add_parser("off", help=t("remote.help.off"))
+    off.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
     off.set_defaults(func=_cmd_off)
 
     stop = sub.add_parser("stop", help=t("remote.help.stop"))
+    stop.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
     stop.set_defaults(func=_cmd_off)
 
     serve = sub.add_parser("_serve", help=argparse.SUPPRESS)
@@ -805,6 +1014,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=t("remote.help.readonly"),
     )
+    pair.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
     pair.set_defaults(func=_cmd_pair)
 
     status = sub.add_parser("status", help=t("remote.help.status"))
@@ -815,9 +1025,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     unpair = sub.add_parser("unpair", help=t("remote.help.unpair"))
     unpair.add_argument("device_id")
+    unpair.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
     unpair.set_defaults(func=_cmd_unpair)
 
     rotate = sub.add_parser("rotate-key", help=t("remote.help.rotate_key"))
+    rotate.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
     rotate.set_defaults(func=_cmd_rotate_key)
 
     rename = sub.add_parser("rename", help=t("remote.help.rename"))
@@ -825,6 +1037,7 @@ def build_parser() -> argparse.ArgumentParser:
                           help=t("remote.help.rename_value"))
     rename.add_argument("--clear", action="store_true",
                         help=t("remote.help.rename_clear"))
+    rename.add_argument("--dry-run", action="store_true", help=t("remote.help.dry_run"))
     rename.set_defaults(func=_cmd_rename)
 
     login = sub.add_parser("login", help=t("remote.help.login"))

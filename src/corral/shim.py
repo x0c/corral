@@ -103,8 +103,20 @@ TARGETS: tuple[ShimTarget, ...] = (
                ("update", "doctor", "mcp", "config", "install", "migrate-installer", "setup-token")),
     ShimTarget("codex", "codex", True,
                ("exec", "apply", "login", "logout", "mcp", "completion")),
+    # opencode v2（本机实装 2.0.16 `--help` 实测，全集 18 个：upgrade/update/
+    # uninstall/acp/api/debug/auth/mcp/plugin/models/stats/mini/run/session/
+    # service/reload/pair/serve）。其中无头或管理类子命令直接放行，不进托管。
+    # `mini`（"Start the minimal interactive interface"）是交互式子命令，故意
+    # 不进放行表：`opencode mini …` 走 `corral opencode mini …` 托管（直启侧按
+    # SUBCOMMANDS 透传；真实终端默认 TUI 内嵌，非终端/--no-keepalive/内嵌不可用
+    # 时走 cli.py 的 keepalive wrap + execvp 全屏接管旧路径）。
+    # v1 独有的 github（含 attach/agent/export/import/pr/db/completion）在 v2
+    # 已不存在（`opencode github --help` 回到顶层帮助），删掉：此后
+    # `opencode github …` 不再直通真身，改为托管进 `corral opencode github …`，
+    # 而 v2 的 opencode 本来就没有 github，任何路径都是明确报错、可接受。
     ShimTarget("opencode", "opencode", True,
-               ("run", "serve", "auth", "upgrade", "models", "github")),
+               ("run", "serve", "auth", "upgrade", "models",
+                "api", "service", "reload", "pair", "session", "update")),
     ShimTarget("kimi", "kimi", True, ("update", "mcp", "config", "login", "logout")),
     # Pi 的主命令名不通用，默认接管；安装、维护、认证与导出类调用不能进托管会话。
     ShimTarget("pi", "pi", True,

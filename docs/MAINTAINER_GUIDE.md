@@ -365,6 +365,33 @@ helper，不要先照抄再改。运行时私有的解析格式（JSONL 字段�
 - `list`/`search`/`show`/`context`/`plan continue`/`describe` 的 JSON envelope 结构（`{ok, data, error, meta}`）、
   退出码分配（0/1/2/3/5）和已发布字段名是对外契约，一旦发布过版本就按“只加不改不删”演进；
   确需破坏性变更时同步提升 `agent_api.AGENT_API_VERSION` 并在 `docs/SKILL.md` 标注。
+- **覆盖面自述与分片失败上报**：`list`/`search`/`export` 的 `data` 必须带 `scanned`（实际读到的会话总数，过滤前）、
+  `truncated_runtimes`（读满 `--limit` 的运行时，提示调大深度重查）、`failed_runtimes`（`{id: 失败摘要}`）
+  和 `potentially_limited`（前两者任一非空即 true）；`list`/`search` 另带 `matched`（过滤命中，`--top` 截断前）
+  与 `returned`。`_scan_runtimes` 返回 `(scanned, failures)` 二元组，单运行时异常只污染自己的分片，
+  但必须进 `failures` 由调用方上报——吞成空列表就是把“解析失败”伪装成“零命中”，下次格式升级会静默丢会话。
+  新增扫描调用点时复用 `_scan_coverage` 组装这组字段，不要各写一套。
+- **`--fields` 未知字段必须报 `usage_error`**（`_check_fields`，白名单以各命令的字段全集为真源）：静默丢弃会让调用方
+  在 exit 0 里拿到与请求对不上的证据，比报错更危险。错误里直接列出可用值 + `describe <command>` 的
+  `next_commands`。`show --fields` 的合法集是会话字段 + `messages/message_count_shown/message_count_total`。
+- **`--out` 写守卫**（`_resolve_out_path`，`show`/`export`/`share` 共用）：拒绝空路径/NUL 字节、已存在的目录、
+  不存在的父目录、已存在但非普通文件的目标；已存在同名普通文件仍会被覆盖（落盘前由调用方确认路径，
+  不要在这里加二次确认把主路径变慢）。写文件只允许显式 `--out` 触发。
+- **`describe` 自带安全边界与参数类型**：`COMMANDS` 每条带 `risk: read`（只读面现状；将来若加写命令按
+  `read|write_local|write_remote` 标注），`_describe_command` 原样透出；参数的 `type: int` 之类以类型名
+  字符串暴露（type 对象本身进不了 JSON）。新增参数只改 `COMMANDS`，`describe` 与 argparse 自动跟随。
+- **dispatch 兜底 envelope**：`HANDLERS` 之外的任何异常（如 `runtime:id` 分支的单运行时扫描崩溃）必须转成
+  stdout 的 `internal_error` envelope + 退出码 1，绝不能把裸 traceback 丢给机器调用方。`SystemExit`
+ （参数解析）与 `KeyboardInterrupt` 不进这条分支。
+- **`next_commands` 保持绝对入口身份**（`agent_api._bin` / `remote.cli._bin`）：pipx 与源码树两份 corral 并存是常态，
+  裸 `corral …` 可能命中旧副本；给机器照抄的命令必须带绝对路径（`-m` 调用拼回 `sys.executable -m corral`），
+  给人看的 hint 文案仍用短名。改 next_commands 时不要退回裸命令名。
+- **`remote --json` 与读命令同 envelope**（`{ok,data,error{code,message,hint,next_commands},meta{version}}`，
+  `REMOTE_API_VERSION`）：只加字段（`code`/`hint`/`next_commands`/`meta`），`error.message` 语义不动，老解析照样工作。
+  `unpair` 找不到设备是退出码 3（`not_found`）；非法开关值是 2；登录/中继失败仍是 1，用 `error.code`
+ （`account_error`/`missing_dependencies`）区分。`on/off/pair/unpair/rotate-key/rename` 支持 `--dry-run`
+ （同形状 + `dry_run: true` + `changed: false`；`pair` 演练返回预检摘要而不给假配对码）；读 `args.dry_run`
+  必须用 `is True`（测试里裸 Mock 的未传属性是 truthy，不是 False）。`login`/`logout` 是鉴权引导步骤，免 rehearsal。
 - 新增子命令或参数只在 `agent_api.py` 的 `COMMANDS` 列表里加一份定义——`corral describe` 的输出、
   `argparse` 的参数解析共用同一份数据，不要为 `describe` 另写一套文案，否则会和真实行为漂移。
 - **`--compact` 精简字段集是「给人看」的默认值，不是「给机器控制逻辑」的默认值**：`list`/`show`

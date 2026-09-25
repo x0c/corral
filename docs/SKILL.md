@@ -18,13 +18,28 @@ SQLite 数据库（`~/.local/share/opencode/opencode.db`，只读打开）下的
 
 失败时 `ok` 为 `false`，`data` 为 `null`，`error` 包含：
 
-- `code`：程序可判断的错误分类（`usage_error` / `not_found` / `ambiguous` / `history_unavailable`）
+- `code`：程序可判断的错误分类（`usage_error` / `not_found` / `ambiguous` / `history_unavailable` / `not_resumable` / `internal_error`）
 - `message`：人类可读的错误说明
 - `hint`：建议的排查方向
-- `next_commands`：可以直接执行的后续命令列表
+- `next_commands`：可以直接执行的后续命令列表（绝对入口身份，照抄即可；不要改写成裸 `corral`，以免命中 PATH 上另一份旧副本）
 
-退出码：`0` 成功、`1` 一般失败、`2` 用法错误（参数不对）、`3` 会话不存在、`5` 会话标识有歧义。
+退出码：`0` 成功、`1` 一般失败（含未预料的 `internal_error`）、`2` 用法错误（参数不对，含未知 `--fields`）、`3` 会话不存在、`5` 会话标识有歧义。
 不要只看 stdout 是否有内容来判断成功，检查退出码或 `ok` 字段。
+
+## 安装与探针（CLI 缺失时不要停下问人）
+
+调任何子命令前先确认入口与能力。`corral` 不在 PATH 上时，按下面可信源装到用户目录后继续原任务（用户要这个能力即已授权用户目录安装；`sudo`/系统目录/覆盖已装版本仍需显式授权）：
+
+- 可信源：`github.com/x0c/corral`（`corral` 包）。安装渠道三选一：`pipx install corral`、`brew install x0c/corral/corral`、源码树内 `bash cli/scripts/dev-install.sh`（editable，供开发）。
+- 装完先钉绝对路径并验能力（之后全会话只用该绝对路径；`next_commands` 给的即是）：
+
+```bash
+CORRAL_BIN="$(command -v corral)"          # 钉住本会话唯一入口
+"$CORRAL_BIN" describe >/dev/null && echo describe-ok
+"$CORRAL_BIN" diagnose | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['ok']; print('diagnose-ok', d['data']['version'])"
+```
+
+- `diagnose` 的 `package_file` / `install_channel` / `stale_source_warning` 告诉你当前跑的是哪份拷贝；源码树里开发却加载了别处副本时会有告警，以告警为准换入口。
 
 ## 命令
 
@@ -159,6 +174,8 @@ corral list --live --keepalive --compact
   再按更新时间倒序；`matched_via` 是 `quick` 或 `deep`，兼容旧调用方；`matched_fields` 是命中的字段
   列表，如 `title`、`first_user_msg`、`conversation`。
 - `mtime`：Unix 时间戳，按更新时间排序或做"最近"过滤时用这个，不要解析 `time` 的人类可读格式。
+- `scanned` / `matched` / `returned` / `potentially_limited`（`list`/`search`；`export` 有除 `matched`/`returned` 外的同名字段）：零命中时先看这组数再下结论——`scanned` 是实际读到的会话总数（过滤前），`matched` 是命中数（`--top` 截断前），`returned` 是实际返回数。`count=0` 且 `scanned>0`、`potentially_limited=false` 才是"范围内干净"；`scanned=0` 是根本没读到；`failed_runtimes` 非空（{运行时: 失败摘要}）说明某家扫描抛异常，结论不可信；`truncated_runtimes` 非空说明某家读满了 `--limit`，更早的会话没读到，调大 `--limit` 再查。
+- `--fields` 只接受 `describe <command>` 列出的字段：未知字段直接 `usage_error`（退出码 2）并在错误里列出可用值，照着改就行。不要传猜出来的字段名。
 - `--limit` 控制的是**扫描深度**（每个运行时最多看多少条历史），不是"最多返回几条"——过滤条件
   （`--status`、`--cwd`、关键词）是在扫描出的这批里再筛选，如果确定目标会话较早，适当调大
   `--limit`（`show`/`context` 默认扫描深度是 200，比 `list`/`search` 的 50 更大）。
@@ -169,7 +186,7 @@ corral list --live --keepalive --compact
   `cwd`/`pid`，只要调用方需要这两项（如判断会话在哪个目录、能否对运行中进程发信号），必须显式传
   `--fields` 指名，不能只传 `--compact` 就假设拿得到。
 - `show --full` 可能很大；需要完整历史时优先加 `--out <path>`，stdout 会只返回输出文件路径、字节数
-  和消息数量，完整 JSON envelope 写在该文件里。
+  和消息数量，完整 JSON envelope 写在该文件里。`--out` 只写入普通文件（目录/不存在的父目录/特殊文件直接 `usage_error`）；已存在的同名普通文件会被覆盖，落盘前确认路径。
 - `corral export` 是「按时间范围批量拿完整对话」的入口：等价于对区间内每条会话跑一次 `show --full`，
   再按最后更新时间正序合并成一个 JSON（`data.sessions[]`，每条含 `list` 全部字段 + `messages` 完整
   对话）。`--since`/`--until` 均为闭区间，任一侧省略即无界；时间可写 `2026-07-20`、`'2026-07-20 15:30'`、
@@ -261,6 +278,22 @@ corral list --live --keepalive --compact
 2. 用 `corral` 返回的 `cwd` 去匹配：`cwd` 等于某个 `path`，或 `cwd` 位于该 `path` 之下（前缀匹配），命中的
    那一项的 `id` 就是要用的项目标识。
 3. 不要在 `corral` 侧本地计算或猜测这个 ID——匹配逻辑属于调用方职责，不属于 `corral`。
+
+## 写操作面（`remote` / `cache` / `shim`）：本文档的只读约定之外
+
+上面的 `list`/`search`/`show`/`share`/`export`/`context`/`plan continue`/`describe`/`diagnose`
+是只读的；下面这些**真的会改本机状态**，调用前先认：
+
+- `corral remote on/off/pair/unpair/rotate-key/rename`：开关常驻服务、配对手机、解绑设备、轮换密钥、改名。`describe` 不覆盖它们，用 `--help` 看参数。副作用命令统一支持 `--dry-run`（只演练不更改；输出形状与真实执行一致，多 `dry_run: true`，`changed` 恒 false）：
+
+```bash
+corral remote off --dry-run --json   # 先看会关掉哪个 pid，再决定是否真关
+corral remote unpair <id> --dry-run --json
+```
+
+  `on`/`off` 已是开关语义（重复执行收敛到 `changed: false`）；`unpair` 找不到设备报退出码 3（`not_found`）；`login`/`logout` 是鉴权引导步骤，不支持 `--dry-run`。`--json` 下 envelope 与读命令同形状（含 `error.code`/`hint`/`next_commands` 与 `meta.version`）。
+- `corral cache clear --dry-run`：预览将清理的缓存，不删除；`corral shim install/uninstall --dry-run`：预览将改的 shell 配置，不写文件。
+- `corral --json`（TUI 根命令的扁平数组）是兼容保留，新集成一律用 `corral list`（带状态枚举、`short_id` 与稳定 envelope）。
 
 ## 非 Agent 用法
 
