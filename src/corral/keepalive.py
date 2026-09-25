@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Mapping
@@ -219,6 +220,13 @@ def wrap_plan(plan: LaunchPlan, runtime_id: str, ident: str) -> LaunchPlan:
         # 安装失败直接抛错中止启动，禁止静默退回 cwd/mtime 猜测。
         pi_identity.ensure_extension_installed()
         identity_env = pi_identity.instance_env_pairs(pi_identity.new_instance_id())
+    elif runtime_id == "codex":
+        # The exact thread id comes from this pane's own app-server responses.
+        # Do not rely on an optional PATH wrapper or infer identity from cwd.
+        plan = LaunchPlan(
+            argv=(sys.executable, "-m", "corral.codex_proxy", "--", *plan.argv),
+            cwd=plan.cwd,
+        )
     name = _session_name(runtime_id, ident)
     argv = [*_BASE_ARGV, "-f", _ensure_config_file(), "new-session", "-A", "-s", name]
     if plan.cwd:
@@ -419,4 +427,3 @@ def __getattr__(name: str):
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-

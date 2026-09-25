@@ -330,6 +330,10 @@ def _annotate_unmatched_by_session_name(
         if parsed is None:
             continue
         runtime, _ident = parsed
+        if runtime == "codex":
+            # A short tmux ident isn't a Codex thread id. Only the app-server
+            # claim (or an actual open rollout descriptor) may bind this pane.
+            continue
         matches = [
             session
             for session in unnamed

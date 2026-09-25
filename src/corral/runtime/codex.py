@@ -20,7 +20,9 @@ class CodexRuntime(BaseRuntime):
     auto_approve_args = ("--dangerously-bypass-approvals-and-sandbox",)
 
     def scan_signature(self) -> object | None:
-        return scan_codex.scan_signature()
+        from corral.codex_identity import claim_signature
+
+        return (scan_codex.scan_signature(), claim_signature())
 
     def scan_sessions(self, limit: int, keep_ids: set[str] | None = None) -> list[SessionInfo]:
         from corral.runtime.sesskit_bridge import call_scan

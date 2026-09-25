@@ -29,6 +29,8 @@ _TITLE_STALE_SPAWN_SECONDS = 30.0
 
 def _session_matches_keepalive_ident(session: dict, name: str) -> bool:
     """托管名末段 ident 是否对得上这条会话 id（占位 8 位或完整 id）。"""
+    if session.get("source") == "codex":
+        return False
     ident = str(name or "").rsplit("-", 1)[-1]
     sid = str(session.get("id") or "")
     if not ident or not sid:
@@ -781,6 +783,10 @@ class SessionStore:
         """
         runtime_id = str(provisional.get("source") or "")
         if not runtime_id:
+            return None
+        if runtime_id == "codex":
+            # Codex UUIDs are independent of pane id and cwd. Wait for an
+            # exact claim rather than converting a nearby history card.
             return None
         cwd = normalize_cwd(provisional.get("cwd"))
         known = set(self._order)

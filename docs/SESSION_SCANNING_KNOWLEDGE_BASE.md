@@ -120,7 +120,7 @@ sequenceDiagram
 | 助手 | 判活来源 | 归属规则 | 降级行为 |
 |---|---|---|---|
 | Claude | `~/.claude/sessions/<pid>.json` + `os.kill(pid, 0)` | 文件中的 `sessionId` 映射到 pid | 注册文件损坏或进程不存在则视为已结束 |
-| Codex | 活着的 `codex` 进程持有的 `rollout-*.jsonl` | 从打开的文件名提取会话 UUID；再按进程祖先链关联回 Corral 托管窗口 | Linux 读 `/proc/<pid>/fd`；macOS 合并一次 `lsof`。启动包装器可在一个托管窗口内先后拉起多层 Codex 进程，未出现确切 UUID 时必须保留占位态，不能用短托管标识或同目录最新记录认领 |
+| Codex | Corral 托管 pane 的 app-server 精确回执；旧/外部进程实际打开的 `rollout-*.jsonl` | 回执用完整 UUID、rollout 路径和 pane PID；旧会话从打开的文件名提取 UUID | 新空白会话的文件可尚未出现，先保留占位；不能用短托管标识或同目录最新记录认领。Linux 读 `/proc/<pid>/fd`，macOS 合并一次 `lsof` 兼容旧会话 |
 | OpenCode | 命令行 `-s` / `--session`；完整 `CORRAL_SESSION_ID`；其余 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 禁止再按「同 cwd 仅最新一条」猜测。`run`/`serve` 等子命令不算 TUI。`--prompt` 后的接力说明词不当 argv | 无法探测时返回空映射 |
 | Kimi | 命令行 `-S` / `--session`；完整 `CORRAL_SESSION_ID`；其余 TUI 按「进程启动 ≤ 会话创建」一对一认领 | 禁止再按「同 cwd 仅最新一条」猜测。`-p` 打印模式与 `server` / `web` 不算 TUI | 无法探测时返回空映射 |
 | Cursor | `agent` 进程；优先解析命令行 `--resume <chatId>`，其次读打开的 `store.db` 路径，再次读 `CORRAL_SESSION_ID`/`SC_SESSION_ID`。命中的 chat 若是 Task/subagent（`meta.isSubagent` 或 `store.db` 的 `subagentInfo`），改绑到 `rootParentAgentId` / `parentAgentId` 对应的父会话 | 只按上述正向证据精确绑定；禁止再按「cwd → 最新会话」猜测。空白新建的临时 8 位标识不参与匹配。**子代理不得进列表，但其活进程必须让父会话保持进行中** | 无法探测时返回空列表 |
@@ -264,7 +264,7 @@ flowchart TD
 | 时间修正 | 有效会话时间 | `models.effective_session_time()` | 文件 mtime 与真实事件时间脱节时 |
 | 共享组件 | 路径/时间/按 cwd 判活 | `scan/common.py` | 多扫描器一致的展示和活性兜底 |
 | 进程活性 | Claude 专用 pid 注册 | `scan.claude._live_session_ids()` | 会话与 Claude pid 的精确关联 |
-| 进程活性 | Codex 打开文件关联 | `scan.codex._live_session_ids()` | 会话与 rollout 文件描述符关联 |
+| 进程活性 | Corral claim 与 Codex 打开文件关联 | `codex_identity.live_claims()`、`scan.codex._live_session_ids()` | 新托管窗口用准确回执；旧/外部会话用 rollout 文件描述符关联 |
 | 进程活性 | 全部同名进程列表 / cwd→单 pid 折叠 | `scan.common.live_processes()`、`live_pids_by_process_name()`、`process_start_time()` | Cursor / Pi / OpenCode / Kimi 用前者做精确绑定；`live_pids_by_process_name` 只留给仍按 cwd 折叠的路径 |
 
 ## §6 核心业务规则与隐性约束
@@ -311,7 +311,7 @@ flowchart TD
 - **AI 易错点**【必须】过滤 OpenConductor 管家临时 cwd：路径任一段以 `oc-manager-` 开头（如 `/tmp/oc-manager-codex/...`）时丢弃（`is_ephemeral_agent_cwd`）。原因：这类目录会删了再建，旧会话因「cwd 不存在」被滤掉后又整批复活；若再被 `SessionStore` 当成 fresh 插最前，侧边栏会被几天前的管家会话刷屏。
 - **AI 易错点**【必须】`SessionStore` 合并 fresh 时：mtime 在约 2 天内才 prepend；更旧的 fresh 追加到 `_order` 末尾（原因：即使漏过滤的目录复活，也不能把冷会话顶到视口）。
 - **AI 易错点**【必须】Codex `load_conversation` 对用户消息也做相邻正文去重：新版同一句会各写一遍 `response_item` 和 `event_msg`，助手侧早已去重，用户侧漏了预览 / Your prompts 会成对出现。只折相邻、留先到的时间戳；不相邻的同一句是两轮。回归：`test_codex_conversation_dedupes_response_item_and_event_msg_user`。
-- **AI 易错点**【扫描消费身份】Codex 托管窗口的短标识不是 Codex 原生会话 ID。扫描侧只能用「进程实际打开的 `rollout-*.jsonl` → 完整 UUID」作正向证据，再交给存活判定每窗最多绑一条；尚未拿到该证据时保留临时卡。**禁止**按同 cwd 最新会话、八位前缀、tmux 名字或进程启动顺序猜测。claim 协议、包装器回执、`/new`/`/resume`/`/fork` 换绑——见身份设计附录「Codex 托管身份」，不要在本域重写。回归与并发验收要求也在该附录。
+- **AI 易错点**【扫描消费身份】Codex 托管窗口的短标识不是 Codex 原生会话 ID。新 pane 由 Corral 自己的透明 app-server bridge 从 `thread/start` / `thread/resume` / `thread/fork` 的成功响应写出完整 UUID、rollout 路径和 pane PID；外部/旧会话才靠进程实际打开的 `rollout-*.jsonl`。首条 prompt 前文件可以不存在，claim 先保住临时卡；文件出现后核 header。扫描签名必须包含 claim 文件变化，否则恢复旧 JSONL 时不会触发换绑。**禁止**按同 cwd 最新会话、八位前缀、tmux 名字或进程启动顺序猜测。协议与并发验收见身份设计附录「Codex 托管身份」。
 - **AI 易错点**【必须】Codex 过滤 `thread_source == "subagent"`，OpenCode 过滤 `parent_id IS NOT NULL`，Kimi 忽略非 main agent 的 wire 文件，Cursor 过滤 `meta.json` 的 `isSubagent === true`，Claude 过滤会话开头的 `type=="agent-name"`、`isSidechain`，以及首条非 meta 用户输入为 `<teammate-message teammate_id="team-lead">` 的会话。**禁止**把完整头部里任意一处 `agent-name` 当成内部会话：Claude 2.1+ 会给顶层会话自己写入显示名（kebab-case slug，出现在首条真人消息之后），扫到就会把正在用的真会话从列表抹掉。**禁止**用 `teamName` 或任意 `<teammate-message>` 过滤：team lead 会话同样带前者，也会收到成员的后者（原因：这些是助手内部子任务，不是用户发起的顶层会话，列出会造成重复；误杀 team lead 则会使真实会话消失）。Claude Task 子 agent 在 `<sessionId>/subagents/` 子目录，扫描器不递归，天然不列出；Teammates 模式队友是顶层 `.jsonl`，必须显式过滤。后写入的 kebab-case `ai-title` 不得盖掉已经拿到的可读标题。**Cursor 过滤子代理出列表之后，活着的子代理进程仍须让父会话显示进行中**，见上条「子代理进程改绑父会话」；不要为了修已结束而把子代理重新列出来。
 - **AI 易错点**【性能】Claude、Codex、Kimi、Cursor 先用廉价 `stat` 排候选并凑够有效 `limit` 后停止；不得退回“完整解析全部历史再截断”（原因：首屏会随历史数量线性恶化）。
 - **AI 易错点**【性能】对会话 cwd 的存在性检查按一次扫描记忆化；Codex 在 macOS 对全部 pid 合并一次 `lsof`（原因：大量会话共享 cwd，逐条 `isdir` 或逐 pid `lsof` 会耗尽首屏预算）。
