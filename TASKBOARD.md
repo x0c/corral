@@ -1,4 +1,3 @@
-> 🔒 发版中 v0.24.222（sesskit pin 0.1.8），勿改树 — 完事删除
 # TASKBOARD — 多 Agent 并行协作看板
 
 > 规则见 agentsync 全局 docs/AGENT_TASKBOARD_GUIDE.md。只编辑自己的条目；完成后删除。

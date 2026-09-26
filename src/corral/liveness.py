@@ -16,6 +16,8 @@ jsonl 已关）仍按 ``corral-<runtime>-<ident>`` 唯一命中贴名，避免�
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -33,6 +35,7 @@ from corral.legacy_names import (
 
 _CALL_TIMEOUT = 1.5
 _MAX_ANCESTOR_DEPTH = 20
+_CODEX_THREAD_ID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.I)
 # annotate + adopt_foreign 在同一轮合并里可能各列一次 tmux；用「本轮波次」
 # 字典去重，禁止跨刷新 / 跨单测的 TTL 缓存（否则 mock 的 list-sessions 会串味）。
 _tmux_list_wave: dict[str, list[list[str]]] | None = None
@@ -246,6 +249,25 @@ def _name_matches_session(name: str, session: dict) -> bool:
     return compact.startswith(ident) or ident.startswith(compact[:8])
 
 
+def _codex_resumed_thread_id(pane_pid: int) -> str | None:
+    """只从活着的旧版 Codex pane 启动命令读取完整恢复线程 ID。"""
+    try:
+        command = subprocess.check_output(
+            ["ps", "-ww", "-p", str(pane_pid), "-o", "command="],
+            stderr=subprocess.DEVNULL,
+            timeout=keepalive.SUBPROCESS_TIMEOUT,
+        ).decode().strip()
+        argv = shlex.split(command)
+    except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    for index, arg in enumerate(argv[:-1]):
+        if os.path.basename(arg) != "codex" or argv[index + 1] != "resume":
+            continue
+        ids = [value for value in argv[index + 2:] if _CODEX_THREAD_ID.fullmatch(value)]
+        return ids[0] if len(ids) == 1 else None
+    return None
+
+
 def annotate(sessions) -> None:
     """给命中保活的会话就地加上 `keepalive_name` 字段；不生成新列表，不改变顺序。
 
@@ -262,7 +284,7 @@ def annotate(sessions) -> None:
     if not sessions:
         return
     candidates = {s.get("pid"): s for s in sessions if s.get("pid")}
-    tmux_sessions = _list_tmux_sessions("#{session_name}|#{pane_pid}")
+    tmux_sessions = _list_tmux_sessions("#{session_name}|#{pane_pid}|#{pane_current_command}")
     if not tmux_sessions:
         return
 
@@ -331,8 +353,23 @@ def _annotate_unmatched_by_session_name(
             continue
         runtime, _ident = parsed
         if runtime == "codex":
-            # A short tmux ident isn't a Codex thread id. Only the app-server
-            # claim (or an actual open rollout descriptor) may bind this pane.
+            # 旧版直连 pane 没有 claim；仅完整 resume UUID 能证明归属。
+            # 八位 tmux ident 不能单独绑定历史，避免串到相邻会话。
+            if len(row) > 2 and row[2] not in {"codex", "node"}:
+                continue
+            try:
+                pane_pid = int(row[1])
+            except (IndexError, ValueError):
+                continue
+            thread_id = _codex_resumed_thread_id(pane_pid)
+            matches = [
+                session for session in unnamed
+                if session.get("source") == "codex" and session.get("id") == thread_id
+            ]
+            if len(matches) == 1:
+                matches[0]["keepalive_name"] = name
+                assigned_names.add(name)
+                unnamed.remove(matches[0])
             continue
         matches = [
             session

@@ -42,6 +42,7 @@ class CodexRuntime(BaseRuntime):
             argv=(
                 self.executable,
                 "resume",
+                "--no-daemon",
                 *self.auto_approve_args,
                 str(session["id"]),
             ),

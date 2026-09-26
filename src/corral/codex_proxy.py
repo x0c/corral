@@ -20,11 +20,14 @@ from corral.codex_identity import write_claim
 _THREAD_METHODS = {"thread/start", "thread/resume", "thread/fork"}
 _MAX_RPC_LINE = 64 * 1024 * 1024
 _AUTO_APPROVE = "--dangerously-bypass-approvals-and-sandbox"
+_NO_DAEMON = "--no-daemon"
 
 
 def _remote_launch_args(args: list[str]) -> tuple[list[str], list[str]]:
-    """Codex remote resume rejects TUI permission flags; set server defaults."""
-    tui_args = args[1:]
+    """Keep direct-resume flags off the private remote TUI and set server defaults."""
+    # The private app-server already bypasses the shared daemon. Codex rejects
+    # combining --no-daemon with --remote, which this bridge adds below.
+    tui_args = [arg for arg in args[1:] if arg != _NO_DAEMON]
     server_args = ["app-server", "--stdio"]
     if tui_args and tui_args[0] in ("resume", "fork") and _AUTO_APPROVE in tui_args:
         tui_args = [arg for arg in tui_args if arg != _AUTO_APPROVE]

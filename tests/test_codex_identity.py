@@ -10,6 +10,7 @@ from unittest import mock
 
 from corral import codex_identity, codex_proxy, keepalive, liveness
 from corral.models import LaunchPlan
+from corral.runtime.codex import CodexRuntime
 from corral.store import SessionStore
 
 
@@ -71,10 +72,11 @@ class CodexClaimTests(unittest.TestCase):
         self.assertEqual(plan.argv[-2:], ("codex", "--dangerously-bypass-approvals-and-sandbox"))
 
     def test_remote_resume_keeps_default_auto_approval_on_app_server(self) -> None:
-        tui_args, server_args = codex_proxy._remote_launch_args([
-            "codex", "resume", "--dangerously-bypass-approvals-and-sandbox", "thread-id",
-        ])
+        plan = CodexRuntime().build_resume_plan({"id": "thread-id", "cwd": "/tmp"})
+        self.assertEqual(plan.argv[:3], ("codex", "resume", "--no-daemon"))
+        tui_args, server_args = codex_proxy._remote_launch_args(list(plan.argv))
         self.assertEqual(tui_args, ["resume", "thread-id"])
+        self.assertEqual(server_args[:2], ["app-server", "--stdio"])
         self.assertIn("approval_policy=never", server_args)
         self.assertIn("sandbox_mode=danger-full-access", server_args)
 
@@ -90,6 +92,32 @@ class CodexClaimTests(unittest.TestCase):
         self.assertIsNone(store._claim_unique_hosted_newcomer(
             "codex:01a0d813", {"source": "codex", "cwd": "/tmp", "id": "01a0d813"},
         ))
+
+    def test_legacy_resume_pane_binds_only_full_matching_thread_id(self) -> None:
+        thread_id = "01a0dc04-5b42-75d2-9b3f-27ddb25e1c3b"
+        other_id = "01a0dc04-1111-2222-3333-444444444444"
+        sessions = [
+            {"source": "codex", "id": thread_id, "live": True, "pid": 17033},
+            {"source": "codex", "id": other_id, "live": True, "pid": 17033},
+        ]
+        command = f"node /opt/homebrew/bin/codex resume --dangerously-bypass-approvals-and-sandbox {thread_id}\n"
+        with (
+            mock.patch.object(liveness, "_list_tmux_sessions", return_value=[["corral-codex-01a0dc04", "35450"]]),
+            mock.patch.object(liveness, "_build_ppid_map", return_value={}),
+            mock.patch.object(liveness.subprocess, "check_output", return_value=command.encode()),
+        ):
+            liveness.annotate(sessions)
+        self.assertEqual(sessions[0]["keepalive_name"], "corral-codex-01a0dc04")
+        self.assertNotIn("keepalive_name", sessions[1])
+
+    def test_external_codex_process_is_not_adopted_by_short_pane_name(self) -> None:
+        session = {"source": "codex", "id": "01a0dc04-5b42-75d2-9b3f-27ddb25e1c3b"}
+        with (
+            mock.patch.object(liveness, "_list_tmux_sessions", return_value=[["corral-codex-01a0dc04", "35450"]]),
+            mock.patch.object(liveness.subprocess, "check_output", return_value=b"python unrelated.py\n"),
+        ):
+            liveness.annotate([session])
+        self.assertNotIn("keepalive_name", session)
 
 
 if __name__ == "__main__":
