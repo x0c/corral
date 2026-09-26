@@ -126,6 +126,8 @@ sequenceDiagram
 | Cursor | `agent` 进程；优先解析命令行 `--resume <chatId>`，其次读打开的 `store.db` 路径，再次读 `CORRAL_SESSION_ID`/`SC_SESSION_ID`。命中的 chat 若是 Task/subagent（`meta.isSubagent` 或 `store.db` 的 `subagentInfo`），改绑到 `rootParentAgentId` / `parentAgentId` 对应的父会话 | 只按上述正向证据精确绑定；禁止再按「cwd → 最新会话」猜测。空白新建的临时 8 位标识不参与匹配。**子代理不得进列表，但其活进程必须让父会话保持进行中** | 无法探测时返回空列表 |
 | Pi | 有效 claim 是 live 第一权威；扫描消费 claim 给出的精确 session id，对不上再按 sessionFile 路径 | 没有有效 claim 时保持占位或未绑定，**禁止**用 cwd / mtime /「目录最新文件」补身份。`-p` 与 `auth`/`install` 等非交互命令仍不算 TUI | 身份不确定时不抢别人的会话；协议、插件、迁移、双 writer 不在本域，见身份设计 |
 
+Legacy Corral managed Codex panes may have no app-server identity claim. A scan can still report the shared app-server PID as live, leaving the pane unbound and making the UI incorrectly say that the session runs in another terminal. `liveness.annotate()` restores `keepalive_name` only when the live pane's launch command contains `codex resume` with a full UUID exactly equal to the scanned session ID. The eight-character pane name, working directory, and shared daemon PID do not establish ownership. On 2026-09-26 a local legacy pane carried the full original UUID, and this check restored its hosted association; an external process without exact evidence remains unbound.
+
 ### 2.2.1 扫描如何消费托管身份（症状入口仍走这里）
 
 <span id="221-pi-每会话隔离目录故障与替换约束2026-08-26-裁定"></span>
