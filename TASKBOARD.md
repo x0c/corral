@@ -1,10 +1,10 @@
+> 🔒 发版中 v0.24.222（sesskit pin 0.1.8），勿改树 — 完事删除
 # TASKBOARD — 多 Agent 并行协作看板
 
 > 规则见 agentsync 全局 docs/AGENT_TASKBOARD_GUIDE.md。只编辑自己的条目；完成后删除。
 
 | 任务 | 状态 | 影响范围 | 开始 | 最近更新 | 备注 |
 |---|---|---|---|---|---|
-| 发版中 v0.24.221+ milyen sesionesKT0.1.8，勿改树 | 发版中 | 全树只读冻结 | 01:42 | 2026-09-26 01:42 | 发版执行人加锁，完事删除 |
 | 修复 Corral Codex 托管身份与重启 | 待发布 | src/corral/codex_identity.py、src/corral/codex_proxy.py、src/corral/keepalive.py、src/corral/liveness.py、src/corral/store.py、src/corral/runtime/codex.py、pyproject.toml、Codex 身份测试与设计文档 | 18:14 | 2026-09-25 18:45 | 30e5050 已推 origin/main；真实 pane→PID→UUID→结束后原 UUID 恢复、1680 全量测试（1 偶发重跑通过）、干净安装及截图通过。旧无 claim 会话不能安全补绑；完整发版仍受其他进行中的未提交功能阻挡。隔离后的 selftest 前 5 项通过，随后旧焦点提示断言失败。 |
 | 移动端单会话置顶去分组化 | 进行中 | src/corral/split_layout.py（提升改展示派生+落盘过滤）、src/corral/remote/sessions.py（toggle_pin/payload/搜索/版本指纹只认独立钉）、tests/test_remote_sessions.py、ios 会话列表置顶/搜索（见 ios 看板） | 21:29 | 2026-09-15 00:05 | CLI 134 用例+ruff 绿；用户场景 4 步全过；iOS 构建绿+新单测绿；iOS 全量回归仅剩键盘/Working 旧失败（与本改动无关，HEAD 同样红）。未提交，等发布窗口 |
 | 局域网探测失效 + 换网无感 | 进行中 | REMOTE_KB/AGENTS 文档；本机 remote 重启+zeroconf；iOS LanDiscovery（见 ios 看板） | 17:41 | 2026-09-13 17:41 | 不碰 send_turn/sessions；CLI 代码已在 207 |
